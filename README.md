@@ -1,6 +1,20 @@
 # LLM Council Orchestrator Monorepo
 
+[![CI](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![pnpm](https://img.shields.io/badge/pnpm-workspace-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Repo Visibility](https://img.shields.io/badge/visibility-public-blue)](https://github.com/isakli05/llm_council_orchestrator)
+
 A multi-model LLM orchestration system that coordinates multiple AI providers (OpenAI, Anthropic, Z.AI, Gemini) for comprehensive code analysis and architectural recommendations.
+
+## Highlights
+
+- Multi-provider orchestration with configurable model routing and aggregation.
+- Domain-oriented pipeline architecture (discovery, indexing, role-based analysis, synthesis).
+- Monorepo structure with reusable shared packages for types, config loading, and utilities.
+- Docker Compose deployment for local or production-like environments.
 
 ## Architecture
 
@@ -13,6 +27,20 @@ And three shared packages:
 - packages/shared-types
 - packages/shared-utils
 - packages/shared-config
+
+## Workspace Layout
+
+```text
+apps/
+  docs/          # Architecture and service design references
+  orchestrator/  # Main orchestration API and pipeline engine
+  indexer/       # Indexing and semantic search service
+  mcp_bridge/    # MCP server bridge for editor integrations
+packages/
+  shared-types/  # Shared type contracts
+  shared-utils/  # Shared utilities
+  shared-config/ # Layered config loading and validation
+```
 
 ## Quick Start
 
@@ -32,6 +60,15 @@ And three shared packages:
    ```bash
    docker compose up -d
    ```
+
+### Useful Commands
+
+```bash
+pnpm dev            # Run workspace dev scripts in parallel
+pnpm build          # Build all packages/apps
+pnpm test           # Run test suite
+pnpm test:coverage  # Run tests with coverage
+```
 
 ## Configuration
 
