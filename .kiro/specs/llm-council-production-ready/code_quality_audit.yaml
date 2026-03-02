@@ -1,0 +1,260 @@
+spec_version: "1.0.0"
+name: "Code Quality & Completeness Audit"
+created_at: "2025-12-13"
+priority: "P0"
+status: "ready_for_implementation"
+
+overview: |
+  Comprehensive audit results identifying placeholder implementations, incomplete code,
+  TODO markers, security vulnerabilities, and production-readiness gaps across the entire
+  LLM Council codebase. This spec addresses critical issues that must be resolved before
+  production deployment.
+
+critical_findings:
+  placeholder_implementations:
+    - location: "apps/orchestrator/src/models/ModelGateway.ts"
+      issue: "createPlaceholderResponse method returns fake responses"
+      severity: "CRITICAL"
+      impact: "No real LLM calls are being made - entire system is non-functional"
+      line_range: [95, 110]
+      
+    - location: "apps/indexer/src/embedding/EmbeddingEngine.ts"
+      issue: "generatePseudoEmbedding creates deterministic fake embeddings"
+      severity: "CRITICAL"
+      impact: "Semantic search is completely broken - returns meaningless results"
+      line_range: [95, 125]
+      
+    - location: "apps/orchestrator/src/indexer/IndexClient.ts"
+      issue: "All methods return placeholder data without HTTP calls"
+      severity: "CRITICAL"
+      impact: "Orchestrator cannot communicate with Indexer service"
+      line_range: [30, 120]
+      
+    - location: "apps/orchestrator/src/roles/RoleManager.ts"
+      issue: "executeModels returns placeholder outputs"
+      severity: "CRITICAL"
+      impact: "Role-based analysis produces fake results"
+      line_range: [150, 170]
+      
+    - location: "apps/orchestrator/src/aggregation/Aggregator.ts"
+      issue: "Simple concatenation instead of LLM synthesis"
+      severity: "HIGH"
+      impact: "Final reports lack coherent synthesis"
+      line_range: [80, 95]
+
+  incomplete_implementations:
+    - location: "apps/orchestrator/src/models/adapters/"
+      issue: "Empty directory - no provider adapters implemented"
+      severity: "CRITICAL"
+      impact: "Cannot call any LLM providers (OpenAI, Anthropic, Z.AI, Gemini)"
+      
+    - location: "apps/indexer/src/embedding/EmbeddingEngine.ts"
+      issue: "loadModel method is empty placeholder"
+      severity: "HIGH"
+      impact: "Embedding model never actually loads"
+      line_range: [40, 50]
+      
+    - location: "apps/orchestrator/src/discovery/SignalExtractor.ts"
+      issue: "Framework detection incomplete for many frameworks"
+      severity: "MEDIUM"
+      impact: "Domain discovery misses important architectural signals"
+      line_range: [900, 1440]
+
+  todo_markers:
+    - location: "apps/indexer/src/embedding/EmbeddingEngine.ts:45"
+      todo: "TODO: Load actual model here"
+      severity: "CRITICAL"
+      
+    - location: "apps/indexer/src/embedding/EmbeddingEngine.ts:90"
+      todo: "TODO: Cleanup model resources"
+      severity: "MEDIUM"
+      
+    - location: "apps/orchestrator/src/models/ModelGateway.ts:85"
+      todo: "TODO: Integrate with Aggregator service once implemented"
+      severity: "HIGH"
+      
+    - location: "apps/orchestrator/src/pipeline/PipelineEngine.ts:75"
+      todo: "TODO: Integrate with StateMachine, RoleManager, ModelGateway, IndexClient"
+      severity: "CRITICAL"
+
+  security_vulnerabilities:
+    - location: "apps/indexer/src/api/IndexController.ts"
+      issue: "No input validation on projectRoot parameter"
+      severity: "CRITICAL"
+      vulnerability_type: "Path Traversal"
+      impact: "Attacker can read arbitrary files on server"
+      cwe: "CWE-22"
+      
+    - location: "apps/orchestrator/src/api/validators.ts"
+      issue: "Missing validation for domain exclusion justification"
+      severity: "HIGH"
+      vulnerability_type: "Input Validation"
+      impact: "Empty or malicious justifications accepted"
+      
+    - location: "apps/indexer/src/vector_index/storage.ts"
+      issue: "No sanitization of file paths before write"
+      severity: "HIGH"
+      vulnerability_type: "Path Traversal"
+      impact: "Can write files outside intended directory"
+      
+    - location: "apps/orchestrator/src/server.ts"
+      issue: "Stack traces exposed in error responses"
+      severity: "MEDIUM"
+      vulnerability_type: "Information Disclosure"
+      impact: "Reveals internal implementation details"
+      line_range: [120, 135]
+
+  memory_leaks:
+    - location: "apps/orchestrator/src/api/PipelineController.ts"
+      issue: "activeRuns Map grows unbounded"
+      severity: "HIGH"
+      impact: "Memory exhaustion after many pipeline runs"
+      line_range: [15, 20]
+      
+    - location: "apps/orchestrator/src/observability/Trace.ts"
+      issue: "traces Map never cleaned up"
+      severity: "HIGH"
+      impact: "Memory grows indefinitely with each pipeline run"
+      line_range: [40, 45]
+      
+    - location: "apps/orchestrator/src/discovery/cache.ts"
+      issue: "No automatic cleanup of expired cache entries"
+      severity: "MEDIUM"
+      impact: "Cache grows over time even with TTL"
+
+  blocking_operations:
+    - location: "apps/orchestrator/src/discovery/DomainSpecWriter.ts"
+      issue: "fs.writeFileSync blocks event loop"
+      severity: "HIGH"
+      impact: "Server becomes unresponsive during spec generation"
+      line_range: [95, 100]
+      
+    - location: "apps/indexer/src/scanner/Scanner.ts"
+      issue: "fs.readdirSync blocks event loop"
+      severity: "HIGH"
+      impact: "Indexing blocks all other operations"
+      line_range: [75, 90]
+      
+    - location: "apps/indexer/src/incremental/IncrementalTracker.ts"
+      issue: "fs.readFileSync and fs.writeFileSync block event loop"
+      severity: "HIGH"
+      impact: "Hash operations block server"
+      line_range: [120, 140]
+
+  missing_error_handling:
+    - location: "apps/orchestrator/src/models/ModelGateway.ts"
+      issue: "No timeout handling for model calls"
+      severity: "HIGH"
+      impact: "Hung requests never timeout"
+      
+    - location: "apps/indexer/src/embedding/EmbeddingEngine.ts"
+      issue: "No retry logic for embedding API failures"
+      severity: "MEDIUM"
+      impact: "Transient failures cause indexing to fail"
+      
+    - location: "apps/orchestrator/src/indexer/IndexClient.ts"
+      issue: "No exponential backoff for retries"
+      severity: "MEDIUM"
+      impact: "Retry storms can overwhelm services"
+
+  configuration_issues:
+    - location: "architect.config.json"
+      issue: "Placeholder model names (gpt-5.1, claude-opus-4.5)"
+      severity: "HIGH"
+      impact: "Models don't exist - will fail on first call"
+      
+    - location: ".env.example"
+      issue: "File doesn't exist"
+      severity: "HIGH"
+      impact: "Users don't know what environment variables to set"
+      
+    - location: "apps/orchestrator/src/core/orchestratorCore.ts"
+      issue: "No validation of config file structure"
+      severity: "MEDIUM"
+      impact: "Invalid configs cause cryptic runtime errors"
+
+  missing_features:
+    - feature: "API key authentication for Indexer"
+      severity: "CRITICAL"
+      impact: "Indexer API is completely open to anyone"
+      
+    - feature: "Rate limiting"
+      severity: "HIGH"
+      impact: "Service can be overwhelmed by excessive requests"
+      
+    - feature: "Request correlation IDs"
+      severity: "MEDIUM"
+      impact: "Cannot trace requests across services"
+      
+    - feature: "Graceful shutdown"
+      severity: "MEDIUM"
+      impact: "In-flight requests lost on shutdown"
+
+remediation_plan:
+  phase_1_critical:
+    priority: "P0"
+    timeline: "Week 1"
+    tasks:
+      - "Implement all provider adapters (OpenAI, Anthropic, Z.AI, Gemini)"
+      - "Replace placeholder embedding with real HTTP client"
+      - "Implement IndexClient HTTP integration"
+      - "Add path traversal protection"
+      - "Implement LRU cache for memory leak prevention"
+      
+  phase_2_high:
+    priority: "P1"
+    timeline: "Week 2"
+    tasks:
+      - "Refactor all sync file I/O to async"
+      - "Implement LLM-based aggregation"
+      - "Add comprehensive input validation"
+      - "Implement API key authentication"
+      - "Add error sanitization for production"
+      
+  phase_3_medium:
+    priority: "P2"
+    timeline: "Week 3"
+    tasks:
+      - "Add retry logic with exponential backoff"
+      - "Implement graceful shutdown"
+      - "Add request correlation IDs"
+      - "Create comprehensive .env.example"
+      - "Add config validation"
+
+acceptance_criteria:
+  - "Zero placeholder implementations remain"
+  - "All TODO markers resolved or documented as future work"
+  - "No CRITICAL or HIGH severity security vulnerabilities"
+  - "Memory usage stable over 24-hour test run"
+  - "No blocking file I/O operations"
+  - "All API endpoints have input validation"
+  - "Error responses don't expose stack traces in production"
+  - "Config validation prevents invalid configurations"
+  - "All provider adapters functional with real API calls"
+  - "Embedding engine uses real model via HTTP"
+
+testing_requirements:
+  unit_tests:
+    - "Provider adapters with mocked HTTP responses"
+    - "Path sanitization with traversal attempts"
+    - "LRU cache eviction logic"
+    - "Input validation edge cases"
+    
+  integration_tests:
+    - "End-to-end pipeline with real services"
+    - "Memory leak test (1000 pipeline runs)"
+    - "Concurrent request handling"
+    - "Error recovery scenarios"
+    
+  security_tests:
+    - "Path traversal attack attempts"
+    - "SQL injection in search queries"
+    - "Malformed input handling"
+    - "Stack trace exposure verification"
+
+metrics:
+  code_coverage: "80% minimum"
+  security_scan: "Zero HIGH or CRITICAL findings"
+  memory_leak_test: "Stable memory over 24 hours"
+  performance: "P95 latency < 5 seconds for pipeline runs"
+  availability: "99.9% uptime target"

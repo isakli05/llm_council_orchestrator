@@ -1,0 +1,408 @@
+module:
+  name: "orchestrator_api_module"
+  layer: "api"
+  description: >
+    Orchestrator çekirdeği (pipeline engine, state machine, role manager, aggregator,
+    index_client, observability) için HTTP tabanlı bir yüzey sağlar. MCP Bridge ve
+    diğer istemciler bu modül üzerinden pipeline çalıştırır, ilerleme ve sonuçları
+    okur, index durumunu ve spec dosyalarını alır.
+
+  goals:
+    - "Orchestrator’ı tek bir HTTP API üzerinden erişilebilir hale getirmek."
+    - "MCP Bridge için deterministik, dokümante edilmiş endpoint sözleşmeleri sağlamak."
+    - "Zod ile istek gövdelerini ve query parametrelerini doğrulamak."
+    - "Observability (logging + trace) ile entegre, tutarlı hata modeli sunmak."
+
+  non_goals:
+    - "Pipeline iş mantarını değiştirmek (engine/state machine/roles/aggregator tarafı)."
+    - "Indexing logic’i uygulamak (sadece IndexClient’ı çağırır)."
+    - "Spec üretme veya council kararları alma (sadece var olan spec dosyalarını sunar)."
+    - "Authentication/authorization (ilk fazda yok)."
+
+  runtime:
+    http_server: "fastify"
+    port_env: "ORCH_PORT"
+    host_env: "ORCH_HOST"
+    defaults:
+      port: 7001
+      host: "127.0.0.1"
+    timeouts:
+      request_timeout_ms: 600000        # 10 dakika; uzun süren pipeline’lar için
+      idle_timeout_ms: 120000
+
+  dependencies:
+    internal:
+      - module: "orchestrator_core_module"
+        usage: "Server bootstrap sırasında config yükleme ve temel wiring."
+      - module: "orchestrator_pipeline_engine_module"
+        usage: "Pipeline run başlatma, durum ve sonuç sorgulama."
+      - module: "orchestrator_state_machine_module"
+        usage: "Pipeline adım geçişleri; engine üzerinden dolaylı olarak kullanılır."
+      - module: "orchestrator_role_manager_module"
+        usage: "Engine/aggregator tarafından kullanılacağı için dolaylı bağımlılık."
+      - module: "orchestrator_aggregator_module"
+        usage: "Final mimari rapor ve spec generation sonuçlarını üretir."
+      - module: "orchestrator_index_client_module"
+        usage: "Index ensure/status operasyonlarını çağırmak için."
+      - module: "orchestrator_observability_module"
+        usage: "Logger ve trace altyapısı (run_id ve span bazlı)."
+    external:
+      - name: "fastify"
+        purpose: "HTTP sunucu."
+      - name: "zod"
+        purpose: "Request/response şema validasyonu."
+      - name: "node:fs"
+        purpose: "Spec YAML dosyalarının okunması (project_context + modules)."
+      - name: "node:path"
+        purpose: "Spec dosya yollarının güvenli şekilde çözümlenmesi."
+
+  configuration:
+    env:
+      - key: "ORCH_PORT"
+        type: "number"
+        default: 7001
+        description: "Orchestrator HTTP API portu."
+      - key: "ORCH_HOST"
+        type: "string"
+        default: "127.0.0.1"
+        description: "Dinlenecek host."
+      - key: "ORCH_SPEC_ROOT"
+        type: "string"
+        default: "apps/orchestrator"
+        description: "Spec dosyalarını bulmak için kök dizin (project_context.yaml ve modules/)."
+      - key: "ORCH_LOG_LEVEL"
+        type: "string"
+        default: "info"
+        allowed: ["debug", "info", "warn", "error"]
+        description: "Orchestrator logger seviyesi."
+
+  http_api:
+    base_path: "/api/v1"
+    version: "v1"
+    version_notes: |
+      All API endpoints are prefixed with /api/v1/ for versioning support.
+      Health check endpoints (/health, /health/live, /health/ready) are not versioned.
+    error_model:
+      shape:
+        type: "object"
+        fields:
+          ok: { type: "boolean", fixed: false }
+          error:
+            type: "object"
+            fields:
+              code: { type: "string" }
+              message: { type: "string" }
+              details: { type: "unknown", optional: true }
+              run_id: { type: "string", optional: true }
+      common_error_codes:
+        - "BAD_REQUEST"
+        - "VALIDATION_ERROR"
+        - "PIPELINE_NOT_FOUND"
+        - "PIPELINE_ALREADY_RUNNING"
+        - "PIPELINE_RUN_NOT_FOUND"
+        - "PIPELINE_INTERNAL_ERROR"
+        - "INDEX_ERROR"
+        - "SPEC_NOT_FOUND"
+        - "UNEXPECTED_ERROR"
+
+    endpoints:
+
+      # ------------------------------------------------------
+      # PIPELINE: RUN
+      # ------------------------------------------------------
+      - name: "run_pipeline"
+        method: "POST"
+        path: "/api/v1/pipeline/run"
+        description: "Yeni bir pipeline run başlatır."
+        handler: "PipelineController.runPipeline"
+        request:
+          body_schema:
+            type: "zod"
+            identifier: "RunPipelineRequestSchema"
+            shape:
+              pipeline_mode:
+                type: "enum"
+                values: ["quick_diagnostic", "full_analysis", "spec_generation", "refinement"]
+              prompt:
+                type: "string"
+                min_length: 1
+              models_override:
+                type: "array"
+                of: { type: "string" }
+                optional: true
+              metadata:
+                type: "record"
+                key: "string"
+                value: "unknown"
+                optional: true
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "RunPipelineResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              run_id: { type: "string" }
+              started_at: { type: "string" }
+              pipeline_mode: { type: "string" }
+          error_schema_ref: "error_model"
+        behavior:
+          - "Pipeline engine’e yeni run isteği gönderir."
+          - "Yeni bir run_id üretir veya engine’den alır."
+          - "Observability trace başlatır."
+          - "Index hazır değilse, index client üzerinden ensureIndexed tetikleyebilir (engine kararına göre)."
+
+      # ------------------------------------------------------
+      # PIPELINE: STATUS (ÖZET)
+      # ------------------------------------------------------
+      - name: "get_pipeline_status"
+        method: "GET"
+        path: "/api/v1/pipeline/status/:run_id"
+        description: "Belirli bir pipeline run’ın yüksek seviye durumunu döner."
+        handler: "PipelineController.getPipelineStatus"
+        request:
+          params:
+            run_id:
+              type: "string"
+              description: "Pipeline run kimliği."
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "PipelineStatusResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              run_id: { type: "string" }
+              status:
+                type: "enum"
+                values: ["pending", "running", "completed", "failed", "cancelled"]
+              current_step: { type: "string", optional: true }
+              started_at: { type: "string", optional: true }
+              finished_at: { type: "string", optional: true }
+          error_schema_ref: "error_model"
+        behavior:
+          - "State machine/engine üzerinden run state sorgulanır."
+          - "Run yoksa PIPELINE_RUN_NOT_FOUND döner."
+
+      # ------------------------------------------------------
+      # PIPELINE: RESULT (FINAL REPORT / SPEC OUTPUT)
+      # ------------------------------------------------------
+      - name: "get_pipeline_result"
+        method: "GET"
+        path: "/api/v1/pipeline/result/:run_id"
+        description: "Tamamlanmış bir pipeline run’ın sonucunu döner."
+        handler: "PipelineController.getPipelineResult"
+        request:
+          params:
+            run_id:
+              type: "string"
+              description: "Pipeline run kimliği."
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "PipelineResultResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              run_id: { type: "string" }
+              status:
+                type: "enum"
+                values: ["completed"]
+              result:
+                type: "unknown"
+                description: "FinalArchitecturalReport veya spec generation çıktısı."
+          error_schema_ref: "error_model"
+        behavior:
+          - "Aggregator’dan final sonuç alınır."
+          - "Run henüz tamamlanmamışsa, uygun hata veya partial bilgi döner."
+
+      # ------------------------------------------------------
+      # PIPELINE: PROGRESS / TRACE
+      # ------------------------------------------------------
+      - name: "get_pipeline_progress"
+        method: "GET"
+        path: "/api/v1/pipeline/progress/:run_id"
+        description: "Pipeline’ın adım adım ilerleme loglarını ve trace bilgisini döner."
+        handler: "ProgressController.getPipelineProgress"
+        request:
+          params:
+            run_id:
+              type: "string"
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "PipelineProgressResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              run_id: { type: "string" }
+              trace:
+                type: "array"
+                of:
+                  type: "object"
+                  fields:
+                    span_id: { type: "string" }
+                    name: { type: "string" }
+                    started_at: { type: "string" }
+                    finished_at: { type: "string", optional: true }
+                    status:
+                      type: "enum"
+                      values: ["pending", "running", "success", "error"]
+                    metadata: { type: "unknown", optional: true }
+          error_schema_ref: "error_model"
+        behavior:
+          - "Orchestrator observability trace API’si üzerinden alınır."
+          - "Büyük trace’ler için dilimleme/paging ileride eklenebilir (şimdilik tam liste)."
+
+      # ------------------------------------------------------
+      # INDEX: ENSURE
+      # ------------------------------------------------------
+      - name: "ensure_indexed"
+        method: "POST"
+        path: "/api/v1/index/ensure"
+        description: "Verilen proje path’i için index’in hazır olmasını garanti eder."
+        handler: "IndexController.ensureIndexed"
+        request:
+          body_schema:
+            type: "zod"
+            identifier: "EnsureIndexedRequestSchema"
+            shape:
+              project_root:
+                type: "string"
+                min_length: 1
+              force_reindex:
+                type: "boolean"
+                optional: true
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "EnsureIndexedResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              project_root: { type: "string" }
+              indexed_at: { type: "string" }
+              changed_files_count: { type: "number" }
+          error_schema_ref: "error_model"
+        behavior:
+          - "IndexClient üzerinden Indexer API çağrılır."
+          - "Incremental index mantığı Indexer tarafındadır; burada sadece tetiklenir."
+
+      # ------------------------------------------------------
+      # INDEX: STATUS
+      # ------------------------------------------------------
+      - name: "get_index_status"
+        method: "GET"
+        path: "/api/v1/index/status"
+        description: "Index durumunu döner (hazır mı, kaç dosya, en son ne zaman güncellendi vs.)."
+        handler: "IndexController.getIndexStatus"
+        request:
+          query:
+            project_root:
+              type: "string"
+              optional: true
+              description: "Belirli bir proje path’i; verilmezse default current project."
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "IndexStatusResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              project_root: { type: "string" }
+              status:
+                type: "enum"
+                values: ["not_indexed", "indexing", "ready", "error"]
+              last_indexed_at: { type: "string", optional: true }
+              documents_count: { type: "number", optional: true }
+          error_schema_ref: "error_model"
+        behavior:
+          - "IndexClient üzerinden Indexer’dan status alınır."
+
+      # ------------------------------------------------------
+      # SPEC: PROJECT CONTEXT
+      # ------------------------------------------------------
+      - name: "get_project_context_spec"
+        method: "GET"
+        path: "/api/v1/spec/project_context"
+        description: "orchestrator_project_context.yaml içeriğini string olarak döner."
+        handler: "SpecController.getProjectContext"
+        request: {}
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "ProjectContextSpecResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              filename: { type: "string" }
+              content: { type: "string" }
+          error_schema_ref: "error_model"
+        behavior:
+          - "ORCH_SPEC_ROOT altından orchestrator_project_context.yaml okunur."
+          - "Dosya bulunamazsa SPEC_NOT_FOUND hatası döner."
+
+      # ------------------------------------------------------
+      # SPEC: MODULES LIST
+      # ------------------------------------------------------
+      - name: "get_module_specs"
+        method: "GET"
+        path: "/api/v1/spec/modules"
+        description: "Orchestrator modül YAML dosyalarının listesini ve içeriklerini döner."
+        handler: "SpecController.getModuleSpecs"
+        request: {}
+        response:
+          success_schema:
+            type: "zod"
+            identifier: "ModuleSpecsResponseSchema"
+            shape:
+              ok: { type: "literal", value: true }
+              modules:
+                type: "array"
+                of:
+                  type: "object"
+                  fields:
+                    name: { type: "string" }
+                    filename: { type: "string" }
+                    content: { type: "string" }
+          error_schema_ref: "error_model"
+        behavior:
+          - "development_specs altındaki orchestrator_*_module.yaml dosyaları okunur."
+          - "Gerekirse liste filtrelenebilir (API seviyesinde hepsi dönecek)."
+
+  files:
+    - path: "src/api/PipelineController.ts"
+      purpose: "Pipeline run, status ve result endpoint implementasyonları."
+      exports:
+        - "PipelineController"
+    - path: "src/api/ProgressController.ts"
+      purpose: "Pipeline progress/trace endpoint implementasyonu."
+      exports:
+        - "ProgressController"
+    - path: "src/api/IndexController.ts"
+      purpose: "Index ensure ve status endpoint implementasyonları."
+      exports:
+        - "IndexController"
+    - path: "src/api/SpecController.ts"
+      purpose: "project_context ve module spec YAML’larını dönen endpointler."
+      exports:
+        - "SpecController"
+    - path: "src/api/validators.ts"
+      purpose: "Tüm request gövdeleri ve parametreleri için Zod şemaları."
+      exports:
+        - "RunPipelineRequestSchema"
+        - "EnsureIndexedRequestSchema"
+        - "IndexStatusQuerySchema"
+        - "ZodErrorMapper"
+    - path: "src/server.ts"
+      purpose: >
+        Fastify server bootstrap: env okuma, route’ları register etme, global
+        error handler tanımlama, orchestrator logger ile entegrasyon.
+      exports:
+        - "startServer"
+
+  error_handling:
+    strategy:
+      - "Tüm throw edilen domain hataları tek bir central error handler’da yakalanır."
+      - "ZodValidation hataları VALIDATION_ERROR kodu ile döner."
+      - "Beklenmeyen hatalar UNEXPECTED_ERROR kodu ile loglanır ve maskelenmiş mesaj döner."
+      - "Her hata log içinde run_id ve ilgili endpoint adı ile birlikte kaydedilir."
+
+  logging:
+    integration:
+      - "orchestrator_observability_module içindeki Logger üzerinden structured log."
+      - "Her istek için run_id veya request_id üretilir veya devralınır."
+      - "Her endpoint call’unun başlangıç/bitiş zamanları loglanır."

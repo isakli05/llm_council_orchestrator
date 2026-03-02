@@ -1,0 +1,517 @@
+# Domain Discovery Engine - Data Contracts
+# Version: 1.0.0
+# Status: BINDING
+# Last Updated: 2024-12-12
+
+metadata:
+  spec_type: data_contracts
+  system: llm_council_orchestrator
+  component: domain_discovery_engine
+  
+# ============================================================================
+# INPUT CONTRACTS
+# ============================================================================
+
+input_contracts:
+  index_metadata:
+    description: "Metadata produced by indexing phase, consumed by discovery"
+    source: "IndexClient.ensureIndex() response"
+    schema_version: "1.0.0"
+    
+    structure:
+      totalChunks:
+        type: number
+        required: true
+        constraints: ">= 0"
+        
+      totalFiles:
+        type: number
+        required: true
+        constraints: ">= 0"
+        
+      filesByExtension:
+        type: "Record<string, number>"
+        required: true
+        example:
+          ".ts": 150
+          ".js": 80
+          ".php": 200
+          ".py": 50
+          
+      directoryStructure:
+        type: "DirectoryNode[]"
+        required: true
+        schema:
+          name: string
+          path: string
+          type: "file" | "directory"
+          children: "DirectoryNode[]"
+          
+      detectedFrameworks:
+        type: "string[]"
+        required: false
+        example: ["Laravel", "Express", "React"]
+        
+      dependencies:
+        type: "DependencyInfo[]"
+        required: false
+        schema:
+          name: string
+          version: string
+          type: "production" | "development"
+          
+  user_exclusions:
+    description: "User-specified domains to exclude from analysis"
+    source: "PipelineRequest.domainExclusions"
+    schema_version: "1.0.0"
+    
+    structure:
+      type: "DomainExclusion[]"
+      required: false
+      default: []
+      
+      item_schema:
+        domainId:
+          type: string
+          required: true
+          pattern: "^[a-z0-9_]+$"
+          example: "auth_domain"
+          
+        justification:
+          type: string
+          required: true
+          constraints: "non-empty"
+          min_length: 10
+          example: "Authentication is handled by external OAuth provider"
+
+# ============================================================================
+# OUTPUT CONTRACTS
+# ============================================================================
+
+output_contracts:
+  discovery_result:
+    description: "Complete discovery output with all domains"
+    consumer: "PipelineEngine, RoleManager, Aggregator"
+    schema_version: "1.0.0"
+    
+    structure:
+      schemaVersion:
+        type: string
+        required: true
+        value: "1.0.0"
+        
+      discoveredAt:
+        type: string
+        required: true
+        format: ISO8601
+        example: "2024-12-12T10:30:00Z"
+        
+      domains:
+        type: "Domain[]"
+        required: true
+        constraints: "length >= 1 (fallback domain if empty)"
+        
+      statistics:
+        type: object
+        required: true
+        schema:
+          totalDomains:
+            type: number
+            constraints: ">= 1"
+            
+          deepDomains:
+            type: number
+            constraints: ">= 0"
+            
+          excludedDomains:
+            type: number
+            constraints: ">= 0"
+            
+      executionMetadata:
+        type: object
+        required: true
+        schema:
+          discoveryTimeMs:
+            type: number
+            constraints: ">= 0"
+            
+          indexChunksAnalyzed:
+            type: number
+            constraints: ">= 0"
+            
+          signalTypesUsed:
+            type: "string[]"
+            example: ["file_pattern", "dependency", "framework"]
+            
+          fallbackApplied:
+            type: boolean
+            description: "True if discovery failed and fallback was used"
+            
+  domain:
+    description: "Single discovered architectural domain"
+    schema_version: "1.0.0"
+    
+    structure:
+      id:
+        type: string
+        required: true
+        pattern: "^[a-z0-9_]+$"
+        example: "auth_domain"
+        description: "Unique identifier for domain"
+        
+      name:
+        type: string
+        required: true
+        example: "Authentication"
+        description: "Human-readable domain name"
+        
+      confidence:
+        type: number
+        required: true
+        constraints: "0.0 <= confidence <= 1.0"
+        description: "Discovery confidence (does NOT affect analysisDepth)"
+        
+      analysisDepth:
+        type: string
+        required: true
+        enum: ["DEEP", "EXCLUDED"]
+        default: "DEEP"
+        description: "Analysis depth (DEEP unless user excluded)"
+        
+      signals:
+        type: "Signal[]"
+        required: true
+        constraints: "length >= 1"
+        description: "Signals that led to domain discovery"
+        
+      evidence:
+        type: "Evidence[]"
+        required: true
+        constraints: "length >= 0"
+        description: "Code locations supporting domain existence"
+        
+      subDomains:
+        type: "Domain[]"
+        required: false
+        description: "Nested sub-domains (e.g., auth_api under api)"
+        
+      exclusionMetadata:
+        type: object
+        required: false
+        present_when: "analysisDepth === EXCLUDED"
+        schema:
+          excludedAt:
+            type: string
+            format: ISO8601
+            
+          justification:
+            type: string
+            constraints: "non-empty"
+            
+  signal:
+    description: "Architectural signal extracted from codebase"
+    schema_version: "1.0.0"
+    
+    structure:
+      type:
+        type: string
+        required: true
+        enum: ["file_pattern", "dependency", "framework", "route", "config"]
+        
+      value:
+        type: string
+        required: true
+        example: "/auth"
+        description: "Signal value (path, package name, etc.)"
+        
+      weight:
+        type: number
+        required: true
+        constraints: "0.0 <= weight <= 1.0"
+        description: "Signal reliability/importance"
+        
+      source:
+        type: string
+        required: true
+        example: "directory_structure"
+        description: "Where signal was extracted from"
+        
+  evidence:
+    description: "Code location supporting domain discovery"
+    schema_version: "1.0.0"
+    
+    structure:
+      filePath:
+        type: string
+        required: true
+        example: "src/auth/AuthController.php"
+        description: "Relative path to file"
+        
+      lineRange:
+        type: object
+        required: false
+        schema:
+          start:
+            type: number
+            constraints: ">= 1"
+            
+          end:
+            type: number
+            constraints: ">= start"
+            
+      snippet:
+        type: string
+        required: false
+        max_length: 200
+        description: "Code snippet (truncated)"
+        
+      relevanceScore:
+        type: number
+        required: true
+        constraints: "0.0 <= relevanceScore <= 1.0"
+        description: "How relevant this evidence is to domain"
+
+# ============================================================================
+# INTERMEDIATE DATA STRUCTURES
+# ============================================================================
+
+intermediate_structures:
+  signal_extraction_result:
+    description: "Raw signals before classification"
+    internal: true
+    
+    structure:
+      signals:
+        type: "Signal[]"
+        
+      extractionTimeMs:
+        type: number
+        
+      signalsByType:
+        type: "Record<string, Signal[]>"
+        
+  domain_classification_result:
+    description: "Domains before user exclusion application"
+    internal: true
+    
+    structure:
+      domains:
+        type: "Domain[]"
+        constraints: "All have analysisDepth = DEEP"
+        
+      classificationTimeMs:
+        type: number
+        
+      overlapResolutions:
+        type: "Array<{parent: string, child: string}>"
+
+# ============================================================================
+# PERSISTENCE CONTRACTS
+# ============================================================================
+
+persistence_contracts:
+  deep_domain_spec:
+    description: "Spec file for DEEP domain"
+    format: YAML
+    filename_pattern: "{domain_id}_domain.yaml"
+    location: "spec_output_directory"
+    
+    structure:
+      header:
+        domain_id: string
+        domain_name: string
+        discovered_at: ISO8601
+        confidence: number
+        analysis_depth: "DEEP"
+        schema_version: "1.0.0"
+        
+      discovery_metadata:
+        signals: "Signal[]"
+        evidence: "Evidence[]"
+        sub_domains: "Domain[]"
+        
+      architectural_analysis:
+        role_outputs: "RoleResponse[]"
+        synthesis: string
+        key_findings: "string[]"
+        
+      recommendations:
+        type: "Recommendation[]"
+        schema:
+          priority: "high" | "medium" | "low"
+          action: string
+          rationale: string
+          
+      confidence_assessment:
+        discovery_confidence: number
+        analysis_confidence: number
+        uncertainty_factors: "string[]"
+        
+  excluded_domain_record:
+    description: "Record for EXCLUDED domain"
+    format: YAML
+    filename_pattern: "{domain_id}.excluded.yaml"
+    location: "spec_output_directory"
+    
+    structure:
+      header:
+        domain_id: string
+        domain_name: string
+        excluded_at: ISO8601
+        analysis_depth: "EXCLUDED"
+        schema_version: "1.0.0"
+        
+      exclusion_metadata:
+        justification: string
+        excluded_by: "user"
+        
+      original_discovery:
+        confidence: number
+        signals: "Signal[]"
+        evidence: "Evidence[]"
+        
+      warning:
+        message: "This domain was not analyzed"
+        risk: "Potential architectural gaps may exist"
+        
+  master_domain_index:
+    description: "Index of all domains (DEEP and EXCLUDED)"
+    format: YAML
+    filename: "domain_index.yaml"
+    location: "spec_output_directory"
+    
+    structure:
+      summary:
+        total_domains: number
+        deep_domains: number
+        excluded_domains: number
+        generated_at: ISO8601
+        
+      domains:
+        type: "DomainIndexEntry[]"
+        schema:
+          domain_id: string
+          domain_name: string
+          status: "deep" | "excluded"
+          spec_path: string
+          confidence: number
+
+# ============================================================================
+# VALIDATION RULES
+# ============================================================================
+
+validation_rules:
+  discovery_result:
+    - "domains array MUST NOT be empty (fallback domain if needed)"
+    - "statistics.totalDomains MUST equal domains.length"
+    - "statistics.deepDomains MUST equal count of domains with analysisDepth=DEEP"
+    - "statistics.excludedDomains MUST equal count of domains with analysisDepth=EXCLUDED"
+    - "All domains MUST have unique id"
+    - "All domains MUST have at least one signal"
+    - "All EXCLUDED domains MUST have exclusionMetadata"
+    - "All DEEP domains MUST NOT have exclusionMetadata"
+    
+  domain:
+    - "id MUST match pattern ^[a-z0-9_]+$"
+    - "confidence MUST be between 0.0 and 1.0"
+    - "analysisDepth MUST be DEEP or EXCLUDED"
+    - "signals array MUST NOT be empty"
+    - "If analysisDepth=EXCLUDED, exclusionMetadata MUST be present"
+    - "If analysisDepth=DEEP, exclusionMetadata MUST be absent"
+    - "subDomains, if present, MUST have same analysisDepth as parent"
+    
+  signal:
+    - "type MUST be one of: file_pattern, dependency, framework, route, config"
+    - "weight MUST be between 0.0 and 1.0"
+    - "value MUST be non-empty"
+    - "source MUST be non-empty"
+    
+  evidence:
+    - "filePath MUST be non-empty"
+    - "relevanceScore MUST be between 0.0 and 1.0"
+    - "If lineRange present, start MUST be >= 1"
+    - "If lineRange present, end MUST be >= start"
+    - "If snippet present, length MUST be <= 200"
+    
+  user_exclusions:
+    - "domainId MUST match pattern ^[a-z0-9_]+$"
+    - "justification MUST be non-empty"
+    - "justification MUST be at least 10 characters"
+    - "domainId MUST exist in discovery result"
+
+# ============================================================================
+# ERROR CONTRACTS
+# ============================================================================
+
+error_contracts:
+  discovery_failure:
+    code: "DISCOVERY_ERROR"
+    message: string
+    details: object
+    recovery: "Fallback to default domain"
+    
+  invalid_exclusion:
+    code: "INVALID_EXCLUSION"
+    message: "Domain ID not found in discovery result"
+    details:
+      requested_domain_id: string
+      available_domain_ids: "string[]"
+    recovery: "Ignore invalid exclusion, log warning"
+    
+  signal_extraction_failure:
+    code: "SIGNAL_EXTRACTION_ERROR"
+    message: string
+    details: object
+    recovery: "Retry up to 3 times"
+    
+  classification_failure:
+    code: "CLASSIFICATION_ERROR"
+    message: string
+    details: object
+    recovery: "Retry up to 3 times"
+
+# ============================================================================
+# SERIALIZATION CONTRACTS
+# ============================================================================
+
+serialization:
+  json:
+    discovery_result: "JSON.stringify(discoveryResult)"
+    domain: "JSON.stringify(domain)"
+    signal: "JSON.stringify(signal)"
+    evidence: "JSON.stringify(evidence)"
+    
+  yaml:
+    deep_domain_spec: "YAML.stringify(spec)"
+    excluded_domain_record: "YAML.stringify(record)"
+    master_domain_index: "YAML.stringify(index)"
+    
+  constraints:
+    - "All dates MUST be ISO8601 format"
+    - "All numbers MUST be finite (no NaN, Infinity)"
+    - "All strings MUST be UTF-8 encoded"
+    - "All enums MUST use exact string values (case-sensitive)"
+
+# ============================================================================
+# BACKWARD COMPATIBILITY
+# ============================================================================
+
+backward_compatibility:
+  schema_version: "1.0.0"
+  
+  breaking_changes:
+    - "Changing DiscoveryResult structure"
+    - "Changing Domain structure"
+    - "Removing required fields"
+    - "Changing enum values"
+    
+  non_breaking_changes:
+    - "Adding optional fields"
+    - "Adding new signal types"
+    - "Adding new evidence fields"
+    - "Improving confidence calculation"
+    
+  migration_strategy:
+    - "Schema version MUST be checked before deserialization"
+    - "Unknown fields MUST be ignored (forward compatibility)"
+    - "Missing optional fields MUST use default values"

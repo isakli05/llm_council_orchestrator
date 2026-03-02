@@ -1,0 +1,65 @@
+project:
+  name: "llm_council_mcp_bridge"
+  app: "mcp_bridge"
+  root_dir: "apps/mcp_bridge"
+  language: "typescript"
+  module_system: "commonjs"
+  runtime:
+    node_version: ">=20.19.5"
+  description: >
+    MCP (Model Context Protocol) uyumlu istemciler ile Orchestrator servisi arasında
+    köprü görevi gören adapter katmanı. Cursor, Claude Code, Cline, Kiro, Continue gibi
+    AI coding agent’ları bu uygulama üzerinden Orchestrator pipeline’larını tetikler.
+
+scope:
+  responsibilities:
+    - "MCP server implementasyonu (transport + tool registration)."
+    - "Pipeline tetikleme komutlarını Orchestrator API’sine iletmek."
+    - "Spec dosyalarını MCP üzerinden istemcilere döndürmek."
+    - "Index durumu, pipeline progress ve run_id bilgisini expose etmek."
+    - "Orchestrator ile MCP client arasında format dönüşümü yapmak."
+  non_responsibilities:
+    - "Pipeline state machine çalıştırmak (orchestrator sorumluluğu)."
+    - "LLM çağrıları yapmak."
+    - "Indexing yapmak."
+
+architecture:
+  layers:
+    - name: "transport"
+      description: "MCP protokolü implementasyonu ve socket/stdio köprüsü."
+    - name: "tooling"
+      description: "MCP tool kayıtları, komut mapping."
+    - name: "adapter"
+      description: "MCP taleplerini Orchestrator API’ye çeviren katman."
+    - name: "observability"
+      description: "MCP trace/debug logları."
+
+constraints:
+  - "MCP protokolü ile tam uyum."
+  - "Blocking I/O olmamalı."
+  - "JSON-RPC message framing doğru yapılmalı."
+
+dependencies:
+  internal:
+    - package: "@llm/shared-types"
+    - package: "@llm/shared-utils"
+  external:
+    - name: "Model Context Protocol (MCP)"
+      purpose: "Server + Tool registration"
+    - name: "Orchestrator API"
+      purpose: "Pipeline tetikleme + sonuç alma"
+
+inputs:
+  - "MCP client komutları (get_index_state, run_pipeline, get_spec_files, vb.)"
+  - "Orchestrator’dan dönen pipeline sonuçları"
+
+outputs:
+  - "MCP client’a tool result"
+  - "Spec dosyalarının içerikleri"
+  - "Pipeline diagnostic bilgisi"
+
+modules:
+  - "mcp_transport_module.yaml"
+  - "mcp_tools_module.yaml"
+  - "mcp_adapter_module.yaml"
+  - "mcp_observability_module.yaml"

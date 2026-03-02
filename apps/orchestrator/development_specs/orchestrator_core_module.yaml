@@ -1,0 +1,43 @@
+module:
+  name: "orchestrator_core"
+  layer: "api_layer"
+  root_dir: "apps/orchestrator/src"
+  description: >
+    Orchestrator’ın giriş noktası. Dış dünyadan gelen istekleri (pipeline çalıştırma isteği)
+    alır, konfigürasyonu yükler ve PipelineEngine’e delegasyon yapar.
+
+scope:
+  responsibilities:
+    - "Main entrypoint fonksiyonunu sağlamak (CLI, MCP Bridge veya HTTP handler tarafından çağrılabilir)."
+    - "architect.config.json dosyasını okumak ve doğrulamak."
+    - "Kullanıcıdan gelen pipeline isteklerini validate etmek."
+    - "PipelineEngine’e doğru parametreleri iletmek ve final sonucu geri döndürmek."
+  non_responsibilities:
+    - "Pipeline adımlarını yönetmek (pipeline_engine sorumluluğu)."
+    - "Model çağrılarını doğrudan yapmak (model_gateway sorumluluğu)."
+
+files:
+  - "src/main.ts"
+  - "src/core/orchestratorCore.ts"
+
+public_api:
+  functions:
+    - name: "runOrchestratorPipeline"
+      description: "Tek bir pipeline isteğini çalıştırır."
+      params:
+        - "mode: PipelineMode"
+        - "prompt: string"
+        - "options?: { modelsOverride?: Record<string, string | string[]> }"
+      returns: "Promise<PipelineResult>"
+
+details:
+  config_loading:
+    file: "architect.config.json"
+    behavior:
+      - "Config dosyası root dizinden okunur."
+      - "Eksik veya hatalı formatta ise anlamlı bir hata fırlatılır."
+  validation:
+    - "Mode, PIPELINE_MODES içinde olmalı."
+    - "Prompt boş olamaz (specifik modlar hariç)."
+  error_handling:
+    - "Config veya validation hataları PipelineResult içinde structured error olarak dönmeli."

@@ -1,0 +1,475 @@
+spec_version: "1.0.0"
+name: "Complete Production Hardening Specification"
+created_at: "2025-12-13"
+priority: "P0"
+status: "ready_for_implementation"
+
+overview: |
+  Comprehensive production hardening specification covering all aspects required for
+  Fortune 500 enterprise deployment. This spec consolidates code quality fixes,
+  security hardening, performance optimization, observability, and operational excellence.
+
+architecture_principles:
+  - "Zero placeholder code in production"
+  - "Defense in depth security"
+  - "Fail-safe defaults"
+  - "Graceful degradation"
+  - "Observable and debuggable"
+  - "Horizontally scalable"
+  - "Zero-downtime deployments"
+
+security_hardening:
+  authentication:
+    indexer_api:
+      mechanism: "API Key (X-API-Key header)"
+      key_rotation: "90 days"
+      key_storage: "Environment variable INDEXER_API_KEY"
+      validation: "Constant-time comparison to prevent timing attacks"
+      
+    orchestrator_api:
+      mechanism: "Optional API Key (X-API-Key header)"
+      key_rotation: "90 days"
+      key_storage: "Environment variable ORCHESTRATOR_API_KEY"
+      
+  authorization:
+    principle: "Least privilege"
+    file_access: "Restricted to project root directory"
+    api_access: "Rate limited per API key"
+    
+  input_validation:
+    strategy: "Whitelist validation with Zod schemas"
+    path_sanitization:
+      - "Normalize with path.normalize()"
+      - "Resolve with path.resolve()"
+      - "Validate starts with project root"
+      - "Reject if contains ../ after normalization"
+    string_validation:
+      - "Max length limits (prompt: 50KB, justification: 1KB)"
+      - "Character whitelist for IDs: [a-z0-9_]"
+      - "Escape special regex characters in search queries"
+    array_validation:
+      - "Max array length: 100 items"
+      - "Validate each array element"
+      
+  output_sanitization:
+    error_responses:
+      production:
+        - "Generic error messages"
+        - "No stack traces"
+        - "No internal paths"
+        - "Error codes only"
+      development:
+        - "Detailed error messages"
+        - "Full stack traces"
+        - "Internal debugging info"
+    logging:
+      - "Always log full errors internally"
+      - "Sanitize PII before logging"
+      - "Redact API keys in logs"
+      
+  dependency_security:
+    scanning: "npm audit on every build"
+    policy: "Zero HIGH or CRITICAL vulnerabilities"
+    updates: "Weekly security patch review"
+    
+  secrets_management:
+    storage: "Environment variables only"
+    rotation: "90-day rotation policy"
+    access: "Principle of least privilege"
+    audit: "Log all secret access attempts"
+
+performance_optimization:
+  async_operations:
+    file_io:
+      - "Use fs.promises for all file operations"
+      - "Parallel operations with Promise.all"
+      - "Stream large files instead of loading into memory"
+    http_requests:
+      - "Connection pooling with keep-alive"
+      - "Request pipelining where possible"
+      - "Timeout all requests (default: 60s)"
+      
+  memory_management:
+    lru_caches:
+      active_runs:
+        max_size: 100
+        eviction: "Least recently used"
+        ttl: "1 hour"
+      traces:
+        max_size: 100
+        eviction: "Oldest first"
+        ttl: "24 hours"
+      pattern_cache:
+        max_size: 1000
+        eviction: "LRU"
+        ttl: "5 minutes"
+    cleanup_schedule:
+      - "Every 15 minutes: Trace cleanup"
+      - "Every 15 minutes: Cache cleanup"
+      - "Every 1 hour: Active runs cleanup"
+    monitoring:
+      - "Log memory usage every 5 minutes"
+      - "Alert if heap usage > 80%"
+      - "Trigger aggressive cleanup at 80%"
+      
+  database_optimization:
+    qdrant:
+      connection_pooling: true
+      batch_operations: true
+      index_optimization: "HNSW with m=16, ef_construct=100"
+      
+  caching_strategy:
+    embedding_cache:
+      - "Cache embeddings by content hash"
+      - "TTL: 24 hours"
+      - "Max size: 10,000 embeddings"
+    search_cache:
+      - "Cache search results by query hash"
+      - "TTL: 5 minutes"
+      - "Max size: 1,000 queries"
+
+observability:
+  logging:
+    framework: "Structured JSON logging"
+    levels:
+      - "ERROR: All errors with full context"
+      - "WARN: Retryable errors, fallbacks, degraded performance"
+      - "INFO: Request/response, state transitions, cleanup events"
+      - "DEBUG: Detailed execution traces, cache hits/misses"
+    fields:
+      - "timestamp: ISO 8601"
+      - "level: ERROR|WARN|INFO|DEBUG"
+      - "message: Human-readable description"
+      - "correlation_id: Request tracking ID"
+      - "service: orchestrator|indexer|mcp_bridge"
+      - "context: Additional structured data"
+    rotation:
+      - "Daily rotation"
+      - "Compress after 7 days"
+      - "Delete after 30 days"
+      
+  metrics:
+    collection: "Prometheus format"
+    endpoints:
+      - "GET /metrics (Prometheus scrape endpoint)"
+    key_metrics:
+      http_requests:
+        - "http_requests_total (counter)"
+        - "http_request_duration_seconds (histogram)"
+        - "http_requests_in_flight (gauge)"
+      pipeline:
+        - "pipeline_runs_total (counter)"
+        - "pipeline_duration_seconds (histogram)"
+        - "pipeline_failures_total (counter)"
+      model_calls:
+        - "model_calls_total (counter)"
+        - "model_call_duration_seconds (histogram)"
+        - "model_call_tokens_total (counter)"
+      indexer:
+        - "index_operations_total (counter)"
+        - "index_chunks_total (gauge)"
+        - "search_queries_total (counter)"
+        - "search_duration_seconds (histogram)"
+      memory:
+        - "process_heap_bytes (gauge)"
+        - "cache_size_bytes (gauge)"
+        - "cache_hit_rate (gauge)"
+        
+  tracing:
+    framework: "OpenTelemetry compatible"
+    spans:
+      - "pipeline_execution"
+      - "model_call"
+      - "index_operation"
+      - "search_query"
+      - "domain_discovery"
+    attributes:
+      - "service.name"
+      - "service.version"
+      - "deployment.environment"
+      - "trace.id"
+      - "span.id"
+      - "parent.span.id"
+      
+  health_checks:
+    liveness:
+      endpoint: "GET /health/live"
+      checks:
+        - "Process is running"
+        - "Event loop not blocked"
+      response_time: "< 100ms"
+      
+    readiness:
+      endpoint: "GET /health/ready"
+      checks:
+        - "All dependencies reachable"
+        - "Indexer service responsive"
+        - "Qdrant accessible"
+        - "Embedding service responsive"
+      response_time: "< 1s"
+      
+    startup:
+      endpoint: "GET /health/startup"
+      checks:
+        - "Configuration loaded"
+        - "Provider adapters initialized"
+        - "Database connections established"
+      timeout: "30s"
+
+reliability:
+  error_handling:
+    retry_strategy:
+      max_retries: 3
+      backoff: "Exponential (1s, 2s, 4s)"
+      jitter: "±20% random jitter"
+      retryable_errors:
+        - "Network timeouts (ETIMEDOUT, ECONNRESET)"
+        - "Rate limits (429)"
+        - "Service unavailable (503)"
+        - "Temporary provider errors"
+      non_retryable_errors:
+        - "Authentication failures (401, 403)"
+        - "Invalid requests (400)"
+        - "Not found (404)"
+        - "Quota exceeded (permanent)"
+        
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 5
+      timeout: "30s"
+      half_open_requests: 3
+      
+    fallback_strategies:
+      model_calls:
+        - "Retry with exponential backoff"
+        - "Try alternative model if configured"
+        - "Return partial results with warning"
+      aggregation:
+        - "LLM synthesis (primary)"
+        - "Simple concatenation (fallback)"
+        - "Return individual outputs (last resort)"
+      discovery:
+        - "Full discovery (primary)"
+        - "Fallback domain (last resort)"
+        
+  graceful_shutdown:
+    signal_handling:
+      - "SIGTERM: Graceful shutdown (30s timeout)"
+      - "SIGINT: Graceful shutdown (30s timeout)"
+      - "SIGKILL: Immediate termination"
+    shutdown_sequence:
+      1: "Stop accepting new requests"
+      2: "Wait for in-flight requests (max 30s)"
+      3: "Close database connections"
+      4: "Flush logs and metrics"
+      5: "Exit process"
+      
+  rate_limiting:
+    strategy: "Token bucket algorithm"
+    limits:
+      per_api_key:
+        requests_per_minute: 100
+        burst: 20
+      per_ip:
+        requests_per_minute: 200
+        burst: 50
+    response:
+      status: 429
+      headers:
+        - "X-RateLimit-Limit"
+        - "X-RateLimit-Remaining"
+        - "X-RateLimit-Reset"
+        - "Retry-After"
+
+scalability:
+  horizontal_scaling:
+    orchestrator:
+      instances: "2-10 (auto-scale)"
+      load_balancer: "Round-robin with health checks"
+      session_affinity: "None (stateless)"
+      
+    indexer:
+      instances: "1-3 (manual scale)"
+      load_balancer: "Consistent hashing by project_root"
+      session_affinity: "Required for same project"
+      
+  vertical_scaling:
+    orchestrator:
+      cpu: "2-8 cores"
+      memory: "4-16 GB"
+      
+    indexer:
+      cpu: "4-16 cores"
+      memory: "8-32 GB"
+      
+  database_scaling:
+    qdrant:
+      sharding: "By collection"
+      replication: "3 replicas"
+      backup: "Daily snapshots"
+
+deployment:
+  containerization:
+    base_image: "node:20-alpine"
+    multi_stage_build: true
+    security:
+      - "Non-root user"
+      - "Read-only filesystem where possible"
+      - "No unnecessary packages"
+      - "Security scanning with Trivy"
+      
+  orchestration:
+    platform: "Docker Compose (dev) / Kubernetes (prod)"
+    services:
+      - "orchestrator"
+      - "indexer"
+      - "embedding"
+      - "qdrant"
+      - "mcp_bridge (optional)"
+      
+  configuration:
+    method: "Environment variables + config files"
+    precedence: "env vars > config files > defaults"
+    validation: "Fail fast on invalid config"
+    secrets: "External secrets manager (Vault, AWS Secrets Manager)"
+    
+  monitoring:
+    health_checks: "Every 10 seconds"
+    restart_policy: "On failure, max 3 attempts"
+    resource_limits:
+      orchestrator:
+        cpu: "2 cores"
+        memory: "4 GB"
+      indexer:
+        cpu: "4 cores"
+        memory: "8 GB"
+
+testing_strategy:
+  unit_tests:
+    framework: "Vitest"
+    coverage: "80% minimum"
+    scope:
+      - "Provider adapters"
+      - "Input validation"
+      - "Path sanitization"
+      - "LRU cache"
+      - "Error handling"
+      
+  integration_tests:
+    framework: "Vitest + Testcontainers"
+    scope:
+      - "HTTP communication"
+      - "Database operations"
+      - "End-to-end pipeline"
+      - "Error recovery"
+      
+  security_tests:
+    framework: "Custom + OWASP ZAP"
+    scope:
+      - "Path traversal attempts"
+      - "SQL injection"
+      - "XSS attempts"
+      - "Authentication bypass"
+      - "Rate limit enforcement"
+      
+  performance_tests:
+    framework: "k6"
+    scenarios:
+      load_test:
+        duration: "10 minutes"
+        vus: 50
+        target_rps: 100
+      stress_test:
+        duration: "5 minutes"
+        vus: 200
+        target_rps: 500
+      soak_test:
+        duration: "24 hours"
+        vus: 20
+        target_rps: 10
+        
+  chaos_tests:
+    framework: "Chaos Mesh"
+    scenarios:
+      - "Random pod kills"
+      - "Network latency injection"
+      - "CPU stress"
+      - "Memory pressure"
+      - "Disk I/O throttling"
+
+documentation:
+  required_docs:
+    - "README.md: Quick start guide"
+    - "ARCHITECTURE.md: System architecture"
+    - "API.md: API reference"
+    - "DEPLOYMENT.md: Deployment guide"
+    - "SECURITY.md: Security considerations"
+    - "TROUBLESHOOTING.md: Common issues"
+    - "CONTRIBUTING.md: Development guide"
+    
+  api_documentation:
+    format: "OpenAPI 3.0"
+    generation: "Automatic from Zod schemas"
+    hosting: "Swagger UI at /api-docs"
+    
+  runbooks:
+    - "Incident response procedures"
+    - "Scaling procedures"
+    - "Backup and restore"
+    - "Security incident response"
+    - "Performance tuning"
+
+compliance:
+  data_privacy:
+    - "GDPR compliance for EU users"
+    - "Data retention policies"
+    - "Right to deletion"
+    - "Data export capabilities"
+    
+  audit_logging:
+    - "All API calls logged"
+    - "Authentication attempts logged"
+    - "Configuration changes logged"
+    - "Logs immutable and tamper-evident"
+    
+  security_standards:
+    - "OWASP Top 10 compliance"
+    - "CWE/SANS Top 25 mitigation"
+    - "SOC 2 Type II controls"
+
+success_criteria:
+  functionality:
+    - "All placeholder code replaced with real implementations"
+    - "All provider adapters functional"
+    - "End-to-end pipeline executes successfully"
+    - "All API endpoints operational"
+    
+  security:
+    - "Zero CRITICAL or HIGH vulnerabilities"
+    - "All inputs validated"
+    - "Path traversal protection verified"
+    - "Secrets not exposed in logs or errors"
+    
+  performance:
+    - "P95 latency < 5 seconds for pipeline runs"
+    - "Memory stable over 24-hour soak test"
+    - "No memory leaks detected"
+    - "CPU usage < 80% under normal load"
+    
+  reliability:
+    - "99.9% uptime over 30 days"
+    - "Graceful degradation on dependency failures"
+    - "Automatic recovery from transient errors"
+    - "Zero data loss on crashes"
+    
+  observability:
+    - "All key metrics exposed"
+    - "Structured logging implemented"
+    - "Distributed tracing functional"
+    - "Health checks respond correctly"
+    
+  scalability:
+    - "Horizontal scaling verified"
+    - "Load balancing functional"
+    - "No single points of failure"
+    - "Database sharding operational"

@@ -1,0 +1,83 @@
+{
+  "models": {
+    "legacy_analysis": [
+      {
+        "model": "glm-4.6",
+        "provider": "zai",
+        "base_url": "https://api.z.ai/api/coding/paas/v4",
+        "thinking": {
+          "type": "enabled"
+        }
+      },
+      {
+        "model": "gpt-5.2",
+        "provider": "openai",
+        "reasoning": {
+          "effort": "high"
+        }
+      }
+    ],
+    "architect": [
+      {
+        "model": "gpt-5.2",
+        "provider": "openai",
+        "reasoning": {
+          "effort": "high"
+        }
+      },
+      {
+        "model": "claude-opus-4-5",
+        "provider": "anthropic",
+        "thinking": {
+          "type": "enabled",
+          "budget_tokens": 4096
+        }
+      }
+    ],
+    "migration": [
+      {
+        "model": "gpt-5.2",
+        "provider": "openai",
+        "reasoning": {
+          "effort": "high"
+        }
+      }
+    ],
+    "security": [
+      {
+        "model": "claude-sonnet-4-5",
+        "provider": "anthropic",
+        "thinking": {
+          "type": "enabled",
+          "budget_tokens": 2048
+        }
+      }
+    ],
+    "aggregator": {
+      "model": "gpt-5.2-pro",
+      "provider": "openai",
+      "reasoning": {
+        "effort": "xhigh"
+      }
+    }
+  },
+  "embedding": {
+    "engine": "local-bge-large-v1.5",
+    "dimensions": 1024,
+    "endpoint": "http://localhost:8000",
+    "alternatives": [
+      "multilingual-e5-large-instruct",
+      "bge-m3"
+    ]
+  },
+  "services": {
+    "indexer": {
+      "url": "http://localhost:9001",
+      "api_key_env": "INDEXER_API_KEY"
+    },
+    "qdrant": {
+      "url": "http://localhost:6333"
+    }
+  },
+  "note": "Production configuration with real model names and thinking mode support. API keys are managed via environment variables."
+}

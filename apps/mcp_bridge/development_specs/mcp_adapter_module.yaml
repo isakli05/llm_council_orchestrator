@@ -1,0 +1,20 @@
+module:
+  name: "mcp_adapter"
+  layer: "adapter"
+  root_dir: "apps/mcp_bridge/src"
+  description: >
+    MCP tool çağrılarını Orchestrator API’sine çeviren ara katman.
+
+responsibilities:
+  - "run_pipeline → orchestrator/run"
+  - "get_index_state → orchestrator/index/state"
+  - "get_spec_files → orchestrator/spec/output"
+  - "get_pipeline_progress → orchestrator/?progress"
+non_responsibilities:
+  - "MCP message framing"
+
+files:
+  - "src/adapter/OrchestratorAdapter.ts"
+
+config:
+  orchestrator_endpoint: "http://localhost:3005"   # ileride değişebilir

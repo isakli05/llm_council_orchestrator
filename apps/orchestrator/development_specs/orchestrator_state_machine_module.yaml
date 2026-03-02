@@ -1,0 +1,50 @@
+module:
+  name: "orchestrator_state_machine"
+  layer: "pipeline_engine"
+  root_dir: "apps/orchestrator/src"
+  description: >
+    Pipeline modlarına göre hangi adımların, hangi sırayla, hangi koşullarda çalışacağını tanımlayan
+    state machine implementasyonu.
+
+scope:
+  responsibilities:
+    - "Her PipelineMode için step listesini ve transition kurallarını tanımlamak."
+    - "Step koşullarını (guard) kontrol etmek (ör: index hazır mı?)."
+    - "Hata durumunda retry / skip / abort kararını üretmek."
+  non_responsibilities:
+    - "Rol ajanlarını çağırmak (RoleManager sorumluluğu)."
+    - "Model çağrılarını yapmak (ModelGateway sorumluluğu)."
+
+files:
+  - "src/pipeline/stateMachine.ts"
+  - "src/pipeline/states.ts"
+
+states:
+  common:
+    - "INIT"
+    - "INDEX"
+    - "ANALYZE"
+    - "AGGREGATE"
+    - "SPECIFY"
+    - "GENERATE"
+    - "OUTPUT"
+    - "ABORTED"
+    - "COMPLETED"
+
+  by_mode:
+    quick_diagnostic:
+      sequence: ["INIT", "ANALYZE", "OUTPUT"]
+    full_analysis:
+      sequence: ["INIT", "INDEX", "ANALYZE", "AGGREGATE", "OUTPUT"]
+    spec_generation:
+      sequence: ["INIT", "INDEX", "ANALYZE", "AGGREGATE", "SPECIFY", "OUTPUT"]
+    refinement:
+      sequence: ["INIT", "INDEX", "ANALYZE", "GENERATE", "OUTPUT"]
+
+transitions:
+  - "Her state, success durumunda bir sonraki state’e geçer."
+  - "Step içinde fatal error varsa ABORTED state’e geçilir."
+  - "Retryable error’larda belirli bir sayıya kadar retry yapılabilir."
+
+config:
+  - "State machine pure fonksiyon mantığında olmalı; yan etkiler PipelineEngine üzerinden yapılmalı."

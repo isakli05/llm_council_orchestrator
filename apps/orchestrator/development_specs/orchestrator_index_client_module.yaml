@@ -1,0 +1,30 @@
+module:
+  name: "orchestrator_index_client"
+  layer: "integration_layer"
+  root_dir: "apps/orchestrator/src"
+  description: >
+    Indexer servisinin (ayrı bir process/app olabilir) orchestrator tarafından
+    tetiklenmesi ve semantic search için kullanılması.
+
+scope:
+  responsibilities:
+    - "Tam veya incremental index tetiklemek."
+    - "Belirli bir query için semantic search isteği yapmak."
+    - "Belirli dosya veya path için context almak."
+  non_responsibilities:
+    - "Embedding üretimini yapmak (indexer servisi sorumluluğu)."
+
+files:
+  - "src/indexer/IndexClient.ts"
+  - "src/indexer/types.ts"
+
+operations:
+  - name: "ensureIndex"
+    description: "Gerekirse tam index çalıştırır veya mevcut indexin hazır olduğunu doğrular."
+  - name: "semanticSearch"
+    description: "Verilen query için semantic sonuç listesi döner."
+  - name: "contextForPath"
+    description: "Belirli path için semantic olarak zenginleştirilmiş context döner."
+
+config:
+  - "Indexer endpoint veya IPC yöntemi burada yapılandırılacak (şimdilik stub)."

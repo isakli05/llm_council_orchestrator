@@ -1,0 +1,21 @@
+module:
+  name: "mcp_transport"
+  layer: "transport"
+  root_dir: "apps/mcp_bridge/src"
+  description: >
+    MCP server’ın stdio veya socket üzerinden başlatılması, message framing,
+    JSON-RPC paketlerinin parse/serialize edilmesi.
+
+responsibilities:
+  - "MCP server’ı başlatmak."
+  - "JSON-RPC mesajlarını parse etmek."
+  - "Tool response mesajlarını formatlamak."
+non_responsibilities:
+  - "Komutları işlemek (mcp_tools sorumluluğu)."
+
+files:
+  - "src/transport/MCPServer.ts"
+
+api:
+  - "startServer(): Promise<void>"
+  - "sendMessage(jsonrpcMessage): void"

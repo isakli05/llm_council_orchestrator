@@ -1,0 +1,30 @@
+{
+  "name": "@llm/indexer",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/main.ts",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node -r ts-node/register src/server.ts",
+    "start:legacy": "node -r ts-node/register src/main.ts",
+    "dev": "node --watch -r ts-node/register src/server.ts",
+    "dev:legacy": "node --watch -r ts-node/register src/main.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@llm/shared-utils": "workspace:*",
+    "@llm/shared-types": "workspace:*",
+    "@llm/shared-config": "workspace:*",
+    "axios": "^1.7.0",
+    "fastify": "^4.25.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "fast-check": "^3.22.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.0"
+  }
+}

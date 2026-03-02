@@ -1,0 +1,53 @@
+module:
+  name: "orchestrator_pipeline_engine"
+  layer: "pipeline_engine"
+  root_dir: "apps/orchestrator/src"
+  description: >
+    Pipeline state machine ile role manager, index client ve model gateway arasında yüksek seviyeli
+    orkestrasyonu yapan motor. Mode’a göre hangi adımların çalışacağını belirler.
+
+scope:
+  responsibilities:
+    - "PipelineMode’a göre state machine’i initialize etmek."
+    - "Her step için ilgili role manager / index client / model gateway çağrılarını koordine etmek."
+    - "Step sonuçlarını toplayıp Aggregator’a iletmek."
+    - "PipelineResult nesnesini üretmek."
+  non_responsibilities:
+    - "Tek tek step transition kurallarını kodlamak (state_machine sorumluluğu)."
+    - "Model çağrılarını doğrudan yapmak (model_gateway sorumluluğu)."
+    - "Loglama detaylarını yönetmek (observability sorumluluğu)."
+
+files:
+  - "src/pipeline/PipelineEngine.ts"
+  - "src/pipeline/types.ts"
+
+types:
+  - name: "PipelineContext"
+    description: "Tek bir pipeline çalışması için context bilgisi."
+  - name: "PipelineStepResult"
+    description: "Her adımın ürettiği sonuç."
+  - name: "PipelineResult"
+    description: "Kullanıcıya dönen final sonuç."
+
+collaborators:
+  - "StateMachine"        # orchestrator_state_machine_module
+  - "RoleManager"         # orchestrator_role_manager_module
+  - "ModelGateway"        # orchestrator_model_gateway_module
+  - "IndexClient"         # orchestrator_index_client_module
+  - "Aggregator"          # orchestrator_aggregator_module
+  - "Logger/Trace"        # orchestrator_observability_module
+
+behaviour:
+  modes:
+    quick_diagnostic:
+      description: "Hızlı analiz, sınırlı step seti, indexer minimum."
+    full_analysis:
+      description: "Tam indexleme + tüm rol ajanları + detaylı rapor."
+    spec_generation:
+      description: "project_context.yaml ve module.yaml üretimi gerçekleştirir."
+    refinement:
+      description: "Mevcut kod ve spec üzerinden iyileştirme önerileri üretir."
+
+error_handling:
+  - "Her step hata üretebilir; bu durumda state_machine’den gelen transition kuralı uygulanır."
+  - "Fatal hatalarda pipeline aborted state’e geçer, PipelineResult error alanı doldurulur."

@@ -1,0 +1,385 @@
+# Domain Discovery Engine - Architectural Contract
+# Version: 1.0.0
+# Status: BINDING
+# Last Updated: 2024-12-12
+
+metadata:
+  spec_type: architectural_contract
+  system: llm_council_orchestrator
+  component: domain_discovery_engine
+  binding_level: non_negotiable
+  
+architectural_decisions:
+  indexing_role:
+    decision: "Indexing is retrieval infrastructure only"
+    rationale: "Index produces data for higher layers but makes no analysis decisions"
+    enforcement: "IndexClient returns metadata only, no domain classification"
+    violations: "MUST NOT add domain detection logic to Scanner, Chunker, or VectorIndex"
+    
+  discovery_phase:
+    decision: "RAA (Retrieval-Augmented Analysis) phase exists as separate pipeline state"
+    rationale: "Discovery must be architecturally intentional, not accidental"
+    enforcement: "DISCOVER state executes after INDEX, before ANALYZE"
+    violations: "MUST NOT merge discovery into INDEX or ANALYZE states"
+    
+  default_deep_rule:
+    decision: "All discovered domains default to DEEP analysis"
+    rationale: "System never assumes a domain is irrelevant"
+    enforcement: "DomainClassifier tags all domains with analysisDepth = DEEP"
+    violations: "MUST NOT auto-exclude domains based on heuristics or confidence"
+    
+  user_exclusion_authority:
+    decision: "Only user may exclude domains"
+    rationale: "Exclusion is a user responsibility, not a system decision"
+    enforcement: "Exclusions applied only via explicit user request parameter"
+    violations: "MUST NOT implement automatic exclusion logic"
+    
+  exclusion_persistence:
+    decision: "Excluded domains generate exclusion records, not specs"
+    rationale: "User must see what was not analyzed and why"
+    enforcement: "Exclusion records persisted with timestamp and justification"
+    violations: "MUST NOT silently drop excluded domains from output"
+    
+  rag_scope:
+    decision: "RAG used only for deep analysis and spec generation"
+    rationale: "Discovery uses index metadata, not semantic retrieval"
+    enforcement: "RAG retrieval occurs in RoleManager, not DomainDiscoveryEngine"
+    violations: "MUST NOT use semantic search during discovery phase"
+    
+  pipeline_autonomy:
+    decision: "Pipeline runs end-to-end without user interaction"
+    rationale: "No step-by-step confirmations or interactive pauses"
+    enforcement: "User input is optional request parameter, not runtime prompt"
+    violations: "MUST NOT add interactive wizards or confirmation dialogs"
+
+pipeline_architecture:
+  state_sequence:
+    quick_mode:
+      - INIT
+      - ANALYZE
+      - OUTPUT
+      - COMPLETED
+    full_mode:
+      - INIT
+      - INDEX
+      - DISCOVER  # NEW
+      - ANALYZE
+      - AGGREGATE
+      - OUTPUT
+      - COMPLETED
+    spec_mode:
+      - INIT
+      - INDEX
+      - DISCOVER  # NEW
+      - ANALYZE
+      - AGGREGATE
+      - SPECIFY
+      - OUTPUT
+      - COMPLETED
+    refinement_mode:
+      - INIT
+      - INDEX
+      - DISCOVER  # NEW
+      - ANALYZE
+      - GENERATE
+      - OUTPUT
+      - COMPLETED
+      
+  state_transitions:
+    INDEX_to_DISCOVER:
+      guard: "context.indexReady === true"
+      data_flow: "IndexMetadata → DomainDiscoveryEngine"
+      
+    DISCOVER_to_ANALYZE:
+      guard: "context.discoveryComplete === true"
+      data_flow: "DiscoveryResult → RoleManager"
+      
+    DISCOVER_failure:
+      behavior: "Create fallback domain 'general_architecture' with DEEP analysis"
+      guarantee: "Pipeline never aborts due to discovery failure"
+      
+    DISCOVER_malformed_output:
+      behavior: "Validate discovery result, create fallback domain if invalid"
+      validation: "Check schema version, domains array, required fields per domain"
+      fallback: "Create 'general_architecture' domain with analysisDepth=DEEP"
+      guarantee: "System never proceeds with corrupted discovery data"
+
+domain_discovery_spec:
+  purpose: "Identify architectural domains present in codebase"
+  scope: "Executes after indexing, before role-based analysis"
+  
+  inputs:
+    index_metadata:
+      - totalChunks: number
+      - totalFiles: number
+      - filesByExtension: Record<string, number>
+      - directoryStructure: DirectoryNode[]
+      - detectedFrameworks: string[]
+      - dependencies: DependencyInfo[]
+      
+    user_exclusions:
+      - domainId: string
+      - justification: string
+      
+  outputs:
+    discovery_result:
+      - schemaVersion: "1.0.0"
+      - discoveredAt: ISO8601
+      - domains: Domain[]
+      - statistics: object
+      - executionMetadata: object
+      
+  guarantees:
+    - "All detectable domains included in output"
+    - "No domains auto-excluded without user consent"
+    - "All discovered domains tagged as DEEP by default"
+    - "User exclusions applied exactly as specified"
+    - "Fallback domain created if discovery produces zero domains"
+    
+  non_guarantees:
+    - "Domain boundaries are architecturally correct (user must validate)"
+    - "All domains are significant (user must judge)"
+    - "Excluded domains are truly irrelevant (user owns risk)"
+
+user_override_spec:
+  exclusion_mechanism:
+    request_parameter: "domainExclusions: DomainExclusion[]"
+    application_point: "DomainDiscoveryEngine.applyUserExclusions()"
+    effect: "Domain.analysisDepth set to EXCLUDED"
+    
+  exclusion_record:
+    format: "YAML file per excluded domain"
+    filename_pattern: "{domain_id}.excluded.yaml"
+    required_fields:
+      - domainId: string
+      - domainName: string
+      - excludedAt: ISO8601
+      - justification: string
+      - originalDiscoveryMetadata: object
+      - warning: "This domain was not analyzed"
+      
+  persistence:
+    location: "Alongside generated specs"
+    indexing: "Included in master index with status=excluded"
+    
+  validation:
+    - "Exclusion justification MUST be non-empty"
+    - "Excluded domain MUST exist in discovery result"
+    - "Exclusion MUST be recorded even if domain has zero evidence"
+
+rag_deep_analysis_spec:
+  trigger: "Domain.analysisDepth === DEEP"
+  
+  retrieval_strategy:
+    query_construction: "Domain name + evidence keywords"
+    filter_criteria: "File paths from domain evidence"
+    top_k: 20
+    
+  context_assembly:
+    domain_metadata:
+      - name: string
+      - confidence: number
+      - signals: Signal[]
+      - evidence: Evidence[]
+      
+    retrieved_chunks:
+      - filePath: string
+      - content: string
+      - relevanceScore: number
+      - lineRange: object
+      
+  hallucination_mitigation:
+    - "All retrieved chunks include file paths and line numbers"
+    - "Role prompts instructed to cite evidence"
+    - "Confidence scores provided as uncertainty signals"
+    - "Low-confidence domains flagged in role context"
+    
+  spec_generation:
+    per_domain: true
+    filename_pattern: "{domain_id}_domain.yaml"
+    required_sections:
+      - domain_overview
+      - discovery_metadata
+      - architectural_analysis
+      - recommendations
+      - confidence_assessment
+
+spec_output_contract:
+  deep_domain_spec:
+    format: YAML
+    schema_version: "1.0.0"
+    required_sections:
+      header:
+        - domain_id
+        - domain_name
+        - discovered_at
+        - confidence
+        - analysis_depth: "DEEP"
+        
+      discovery_metadata:
+        - signals: Signal[]
+        - evidence: Evidence[]
+        - sub_domains: Domain[]
+        
+      architectural_analysis:
+        - role_outputs: RoleResponse[]
+        - synthesis: string
+        - key_findings: string[]
+        
+      recommendations:
+        - priority: "high" | "medium" | "low"
+        - action: string
+        - rationale: string
+        
+      confidence_assessment:
+        - discovery_confidence: number
+        - analysis_confidence: number
+        - uncertainty_factors: string[]
+        
+  excluded_domain_record:
+    format: YAML
+    schema_version: "1.0.0"
+    required_sections:
+      header:
+        - domain_id
+        - domain_name
+        - excluded_at
+        - analysis_depth: "EXCLUDED"
+        
+      exclusion_metadata:
+        - justification: string
+        - excluded_by: "user"
+        
+      original_discovery:
+        - confidence: number
+        - signals: Signal[]
+        - evidence: Evidence[]
+        
+      warning:
+        - message: "This domain was not analyzed"
+        - risk: "Potential architectural gaps may exist"
+        
+  master_index:
+    format: YAML
+    filename: "domain_index.yaml"
+    required_sections:
+      summary:
+        - total_domains: number
+        - deep_domains: number
+        - excluded_domains: number
+        
+      domains:
+        - domain_id: string
+          domain_name: string
+          status: "deep" | "excluded"
+          spec_path: string
+          confidence: number
+
+responsibility_model:
+  system_guarantees:
+    - "All detectable domains discovered"
+    - "No auto-exclusion without user consent"
+    - "Default-deep tagging enforced"
+    - "User exclusions applied exactly"
+    - "Exclusion records persisted"
+    - "Fallback on discovery failure"
+    - "Pipeline never aborts due to discovery"
+    
+  user_responsibilities:
+    - "Validate domain boundaries"
+    - "Judge domain significance"
+    - "Accept exclusion risk"
+    - "Provide exclusion justification"
+    - "Review exclusion records"
+    
+  shared_responsibilities:
+    - "Interpret confidence scores"
+    - "Refine domain definitions over time"
+    - "Improve signal extraction heuristics"
+    
+  fault_attribution:
+    missing_domain:
+      cause: "Insufficient signals in codebase"
+      owner: "System (signal extraction incomplete)"
+      mitigation: "Improve signal extraction rules"
+      
+    incorrect_domain_boundary:
+      cause: "Ambiguous architectural structure"
+      owner: "User (must validate and correct)"
+      mitigation: "Manual domain refinement"
+      
+    excluded_critical_domain:
+      cause: "User exclusion decision"
+      owner: "User (explicit choice)"
+      mitigation: "Review exclusion records"
+      
+    low_confidence_domain:
+      cause: "Weak or conflicting signals"
+      owner: "Shared (system flags, user judges)"
+      mitigation: "Manual inspection of evidence"
+
+non_goals:
+  explicit_exclusions:
+    - "Automatic domain exclusion based on heuristics"
+    - "Domain prioritization by importance"
+    - "Code generation during discovery"
+    - "User interaction during discovery"
+    - "Index modification during discovery"
+    - "Spec generation during discovery"
+    - "Role execution during discovery"
+    - "Confidence-based exclusion thresholds"
+    - "Interactive domain refinement wizards"
+    - "Real-time domain discovery during indexing"
+    
+  out_of_scope:
+    - "Domain boundary validation (user responsibility)"
+    - "Architectural significance judgment (user responsibility)"
+    - "Cross-domain dependency analysis (future enhancement)"
+    - "Domain evolution tracking (future enhancement)"
+    - "Multi-project domain comparison (future enhancement)"
+
+implementation_constraints:
+  code_location:
+    discovery_engine: "apps/orchestrator/src/discovery/"
+    pipeline_integration: "apps/orchestrator/src/pipeline/"
+    role_integration: "apps/orchestrator/src/roles/"
+    
+  existing_components:
+    no_modification:
+      - "IndexClient (only consumes metadata)"
+      - "Scanner (only scans files)"
+      - "Chunker (only chunks content)"
+      - "VectorIndex (only stores embeddings)"
+      
+    extension_required:
+      - "StateMachine (add DISCOVER state)"
+      - "PipelineEngine (add discovery step)"
+      - "RoleManager (add domain-aware execution)"
+      
+  new_components:
+    required:
+      - "DomainDiscoveryEngine"
+      - "SignalExtractor"
+      - "DomainClassifier"
+      
+  testing_requirements:
+    unit_tests: "All new components"
+    integration_tests: "Pipeline and RoleManager integration"
+    property_tests:
+      - "Default-deep invariant"
+      - "Exclusion preservation"
+      - "Discovery completeness"
+      - "Signal extraction determinism"
+
+versioning:
+  schema_version: "1.0.0"
+  breaking_changes:
+    - "Adding new signal types (backward compatible)"
+    - "Changing domain classification algorithm (backward compatible)"
+    - "Modifying DiscoveryResult schema (BREAKING)"
+    - "Changing default-deep rule (BREAKING - PROHIBITED)"
+    
+  deprecation_policy:
+    - "Signal types may be deprecated but not removed"
+    - "Domain classification may be improved but not weakened"
+    - "Default-deep rule is permanent (no deprecation)"

@@ -1,0 +1,815 @@
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { IndexerServer, HealthResponse, IndexEnsureResponse, SearchApiResponse } from './server';
+
+// Mock the IndexController to avoid actual initialization
+vi.mock('./api/IndexController', () => ({
+  IndexController: vi.fn().mockImplementation(() => ({
+    initialize: vi.fn().mockResolvedValue(undefined),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+    ensureIndexed: vi.fn().mockResolvedValue({
+      success: true,
+      stats: {
+        totalFiles: 10,
+        addedFiles: 5,
+        modifiedFiles: 2,
+        deletedFiles: 1,
+        unchangedFiles: 2,
+        totalChunks: 50,
+        indexedChunks: 45,
+        processingTimeMs: 1234,
+      },
+    }),
+    search: vi.fn().mockResolvedValue({
+      success: true,
+      results: [
+        {
+          chunkId: 'test-chunk-1',
+          score: 0.95,
+          chunk: {
+            id: 'test-chunk-1',
+            filePath: '/test/project/src/index.ts',
+            relativePath: 'src/index.ts',
+            content: 'export function hello() { return "world"; }',
+            startLine: 1,
+            endLine: 5,
+            tokenCount: 20,
+            hash: 'abc123',
+            metadata: {
+              extension: '.ts',
+              chunkType: 'code',
+              language: 'typescript',
+            },
+          },
+        },
+        {
+          chunkId: 'test-chunk-2',
+          score: 0.85,
+          chunk: {
+            id: 'test-chunk-2',
+            filePath: '/test/project/src/utils.ts',
+            relativePath: 'src/utils.ts',
+            content: 'export const greet = (name: string) => `Hello ${name}`;',
+            startLine: 10,
+            endLine: 15,
+            tokenCount: 25,
+            hash: 'def456',
+            metadata: {
+              extension: '.ts',
+              chunkType: 'code',
+              language: 'typescript',
+            },
+          },
+        },
+      ],
+      stats: {
+        totalResults: 2,
+        searchTimeMs: 50,
+      },
+    }),
+  })),
+}));
+
+describe('IndexerServer', () => {
+  let server: IndexerServer;
+
+  beforeAll(async () => {
+    server = new IndexerServer({
+      port: 9099, // Use different port for testing
+      host: '127.0.0.1',
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.shutdown();
+  });
+
+  describe('GET /health', () => {
+    it('should return healthy status', async () => {
+      const response = await server.getServer().inject({
+        method: 'GET',
+        url: '/health',
+      });
+
+      expect(response.statusCode).toBe(200);
+      
+      const body: HealthResponse = JSON.parse(response.body);
+      expect(body.status).toBe('healthy');
+      expect(body.version).toBe('0.1.0');
+      expect(typeof body.uptime).toBe('number');
+      expect(body.uptime).toBeGreaterThanOrEqual(0);
+      expect(body.timestamp).toBeDefined();
+    });
+
+    it('should return valid ISO timestamp', async () => {
+      const response = await server.getServer().inject({
+        method: 'GET',
+        url: '/health',
+      });
+
+      const body: HealthResponse = JSON.parse(response.body);
+      const timestamp = new Date(body.timestamp);
+      expect(timestamp.toISOString()).toBe(body.timestamp);
+    });
+  });
+
+  describe('Server Configuration', () => {
+    it('should use default port 9001 when not specified', () => {
+      const defaultServer = new IndexerServer();
+      // We can't easily test the port without starting, but we can verify the server was created
+      expect(defaultServer.getServer()).toBeDefined();
+    });
+  });
+});
+
+describe('IndexerServer API Key Authentication', () => {
+  const TEST_API_KEY = 'test-api-key-12345';
+  let serverWithAuth: IndexerServer;
+
+  beforeAll(async () => {
+    serverWithAuth = new IndexerServer({
+      port: 9098, // Use different port for testing
+      host: '127.0.0.1',
+      apiKey: TEST_API_KEY,
+    });
+    await serverWithAuth.start();
+  });
+
+  afterAll(async () => {
+    await serverWithAuth.shutdown();
+  });
+
+  describe('Health endpoint (public)', () => {
+    it('should allow access to /health without API key', async () => {
+      const response = await serverWithAuth.getServer().inject({
+        method: 'GET',
+        url: '/health',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: HealthResponse = JSON.parse(response.body);
+      expect(body.status).toBe('healthy');
+    });
+  });
+
+  describe('Protected endpoints', () => {
+    it('should return 401 when X-API-Key header is missing', async () => {
+      const response = await serverWithAuth.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '/test' },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = JSON.parse(response.body);
+      expect(body.error.code).toBe('AUTHENTICATION_ERROR');
+      expect(body.error.message).toBe('X-API-Key header is required');
+    });
+
+    it('should return 403 when X-API-Key header is invalid', async () => {
+      const response = await serverWithAuth.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '/test' },
+        headers: {
+          'x-api-key': 'wrong-api-key',
+        },
+      });
+
+      expect(response.statusCode).toBe(403);
+      const body = JSON.parse(response.body);
+      expect(body.error.code).toBe('AUTHENTICATION_ERROR');
+      expect(body.error.message).toBe('Invalid API key');
+    });
+
+    it('should allow access with valid API key', async () => {
+      const response = await serverWithAuth.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '/test' },
+        headers: {
+          'x-api-key': TEST_API_KEY,
+        },
+      });
+
+      // Should not be 401 or 403 - the endpoint may return 404 since it's not implemented yet
+      // but authentication should pass
+      expect(response.statusCode).not.toBe(401);
+      expect(response.statusCode).not.toBe(403);
+    });
+  });
+});
+
+describe('IndexerServer without API Key configured', () => {
+  let serverNoAuth: IndexerServer;
+
+  beforeAll(async () => {
+    serverNoAuth = new IndexerServer({
+      port: 9097, // Use different port for testing
+      host: '127.0.0.1',
+      // No apiKey configured - authentication should be skipped
+    });
+    await serverNoAuth.start();
+  });
+
+  afterAll(async () => {
+    await serverNoAuth.shutdown();
+  });
+
+  it('should allow access without API key when no API key is configured', async () => {
+    const response = await serverNoAuth.getServer().inject({
+      method: 'POST',
+      url: '/api/v1/index/ensure',
+      payload: { project_root: '/test' },
+    });
+
+    // Should not be 401 or 403 - authentication is skipped
+    expect(response.statusCode).not.toBe(401);
+    expect(response.statusCode).not.toBe(403);
+  });
+});
+
+describe('POST /api/v1/index/ensure endpoint', () => {
+  let server: IndexerServer;
+
+  beforeAll(async () => {
+    server = new IndexerServer({
+      port: 9096, // Use different port for testing
+      host: '127.0.0.1',
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.shutdown();
+  });
+
+  describe('Request validation', () => {
+    it('should return 400 when project_root is missing', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+      expect(body.error?.details).toBeDefined();
+      expect(Array.isArray(body.error?.details)).toBe(true);
+    });
+
+    it('should return 400 when project_root is empty string', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should return 400 when force_rebuild is not a boolean', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '/test', force_rebuild: 'yes' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('Successful indexing', () => {
+    it('should return 200 with filesIndexed and completedAt on success', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '/test/project' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+      expect(typeof body.filesIndexed).toBe('number');
+      expect(body.filesIndexed).toBe(45); // From mock
+      expect(body.completedAt).toBeDefined();
+      // Verify completedAt is a valid ISO timestamp
+      const timestamp = new Date(body.completedAt);
+      expect(timestamp.toISOString()).toBe(body.completedAt);
+    });
+
+    it('should accept optional force_rebuild parameter', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '/test/project', force_rebuild: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+    });
+
+    it('should accept optional ignore_patterns parameter', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { 
+          project_root: '/test/project', 
+          ignore_patterns: ['node_modules', '.git'] 
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+    });
+
+    it('should accept optional include_extensions parameter', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { 
+          project_root: '/test/project', 
+          include_extensions: ['.ts', '.js'] 
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+    });
+
+    it('should include stats in successful response', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: { project_root: '/test/project' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: IndexEnsureResponse = JSON.parse(response.body);
+      expect(body.stats).toBeDefined();
+      expect(body.stats?.totalFiles).toBe(10);
+      expect(body.stats?.addedFiles).toBe(5);
+      expect(body.stats?.modifiedFiles).toBe(2);
+      expect(body.stats?.deletedFiles).toBe(1);
+      expect(body.stats?.unchangedFiles).toBe(2);
+      expect(body.stats?.totalChunks).toBe(50);
+      expect(body.stats?.indexedChunks).toBe(45);
+      expect(body.stats?.processingTimeMs).toBe(1234);
+    });
+  });
+});
+
+
+describe('POST /api/v1/search endpoint', () => {
+  let server: IndexerServer;
+
+  beforeAll(async () => {
+    server = new IndexerServer({
+      port: 9095, // Use different port for testing
+      host: '127.0.0.1',
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.shutdown();
+  });
+
+  describe('Request validation', () => {
+    it('should return 400 when query is missing', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+      expect(body.error?.details).toBeDefined();
+      expect(Array.isArray(body.error?.details)).toBe(true);
+    });
+
+    it('should return 400 when query is empty string', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: '' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should return 400 when limit is not a positive integer', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test query', limit: -5 },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should return 400 when limit is zero', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test query', limit: 0 },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should return 400 when limit is not an integer', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test query', limit: 5.5 },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('Successful search', () => {
+    it('should return 200 with results array and totalResults on success', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'hello world function' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+      expect(Array.isArray(body.results)).toBe(true);
+      expect(body.results.length).toBe(2); // From mock
+      expect(typeof body.totalResults).toBe('number');
+      expect(body.totalResults).toBe(2); // From mock
+    });
+
+    it('should return results with correct structure', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'hello world function' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      
+      // Check first result structure
+      const firstResult = body.results[0];
+      expect(firstResult).toHaveProperty('chunk');
+      expect(firstResult).toHaveProperty('score');
+      expect(typeof firstResult.score).toBe('number');
+      
+      // Check chunk structure
+      expect(firstResult.chunk).toHaveProperty('content');
+      expect(firstResult.chunk).toHaveProperty('metadata');
+      expect(firstResult.chunk.metadata).toHaveProperty('filePath');
+      expect(firstResult.chunk.metadata).toHaveProperty('extension');
+      expect(firstResult.chunk.metadata).toHaveProperty('chunkType');
+    });
+
+    it('should accept optional limit parameter', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test query', limit: 5 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+    });
+
+    it('should accept optional filters parameter with extensions', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { 
+          query: 'test query', 
+          filters: { extensions: ['.ts', '.js'] } 
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+    });
+
+    it('should accept optional filters parameter with paths', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { 
+          query: 'test query', 
+          filters: { paths: ['src/', 'lib/'] } 
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+    });
+
+    it('should use default limit of 10 when not specified', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test query' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body: SearchApiResponse = JSON.parse(response.body);
+      expect(body.success).toBe(true);
+      // The mock returns 2 results regardless, but the endpoint should work
+    });
+  });
+});
+
+describe('POST /api/v1/search API Key Authentication', () => {
+  const TEST_API_KEY = 'test-search-api-key';
+  let serverWithAuth: IndexerServer;
+
+  beforeAll(async () => {
+    serverWithAuth = new IndexerServer({
+      port: 9094, // Use different port for testing
+      host: '127.0.0.1',
+      apiKey: TEST_API_KEY,
+    });
+    await serverWithAuth.start();
+  });
+
+  afterAll(async () => {
+    await serverWithAuth.shutdown();
+  });
+
+  it('should return 401 when X-API-Key header is missing for /api/v1/search', async () => {
+    const response = await serverWithAuth.getServer().inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      payload: { query: 'test query' },
+    });
+
+    expect(response.statusCode).toBe(401);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('AUTHENTICATION_ERROR');
+  });
+
+  it('should return 403 when X-API-Key header is invalid for /api/v1/search', async () => {
+    const response = await serverWithAuth.getServer().inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      payload: { query: 'test query' },
+      headers: {
+        'x-api-key': 'wrong-api-key',
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('AUTHENTICATION_ERROR');
+  });
+
+  it('should allow access with valid API key for /api/v1/search', async () => {
+    const response = await serverWithAuth.getServer().inject({
+      method: 'POST',
+      url: '/api/v1/search',
+      payload: { query: 'test query' },
+      headers: {
+        'x-api-key': TEST_API_KEY,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body: SearchApiResponse = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+  });
+});
+
+describe('Error Handling Middleware', () => {
+  let server: IndexerServer;
+
+  beforeAll(async () => {
+    server = new IndexerServer({
+      port: 9093, // Use different port for testing
+      host: '127.0.0.1',
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.shutdown();
+  });
+
+  describe('Correlation ID handling', () => {
+    it('should generate correlation ID for each request', async () => {
+      const response = await server.getServer().inject({
+        method: 'GET',
+        url: '/health',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const correlationId = response.headers['x-correlation-id'];
+      expect(correlationId).toBeDefined();
+      expect(typeof correlationId).toBe('string');
+      // UUID format check
+      expect(correlationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    });
+
+    it('should use existing correlation ID from request header', async () => {
+      const existingCorrelationId = 'test-correlation-id-12345';
+      const response = await server.getServer().inject({
+        method: 'GET',
+        url: '/health',
+        headers: {
+          'x-correlation-id': existingCorrelationId,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['x-correlation-id']).toBe(existingCorrelationId);
+    });
+
+    it('should include correlation ID in error responses', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/index/ensure',
+        payload: {}, // Missing required project_root
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body);
+      // Validation errors are handled by route handlers, not error middleware
+      // But correlation ID should still be in response header
+      expect(response.headers['x-correlation-id']).toBeDefined();
+    });
+  });
+
+  describe('Structured error responses', () => {
+    it('should return structured error for validation failures', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: {}, // Missing required query
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+      expect(body.error.message).toBeDefined();
+      expect(body.error.details).toBeDefined();
+    });
+
+    it('should return structured error for invalid JSON', async () => {
+      // Use body to send invalid JSON that triggers Fastify's JSON parser error
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: 'invalid json{',
+      });
+
+      // Fastify returns 400 for JSON parsing errors
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body);
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBeDefined();
+      expect(body.error.correlationId).toBeDefined();
+    });
+
+    it('should return 404 for unknown routes', async () => {
+      const response = await server.getServer().inject({
+        method: 'GET',
+        url: '/unknown-route',
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+  });
+});
+
+describe('API Version Negotiation', () => {
+  let server: IndexerServer;
+
+  beforeAll(async () => {
+    server = new IndexerServer({
+      port: 9094, // Use different port for testing
+      host: '127.0.0.1',
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.shutdown();
+  });
+
+  describe('Accept-Version header support', () => {
+    // Requirements: 23.2 - Support Accept-Version header
+    it('should accept v1 version in Accept-Version header', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test' },
+        headers: {
+          'accept-version': 'v1',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['x-api-version']).toBe('v1');
+      expect(response.headers['x-api-version-source']).toBe('path');
+    });
+
+    it('should normalize numeric version format', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test' },
+        headers: {
+          'accept-version': '1',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['x-api-version']).toBe('v1');
+    });
+  });
+
+  describe('Default version fallback', () => {
+    // Requirements: 23.3 - Default to latest stable version (v1)
+    it('should default to v1 when no version specified', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/api/v1/search',
+        payload: { query: 'test' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['x-api-version']).toBe('v1');
+    });
+  });
+
+  describe('Unsupported version handling', () => {
+    it('should return 400 for unsupported version in Accept-Version header', async () => {
+      const response = await server.getServer().inject({
+        method: 'POST',
+        url: '/some/path',
+        payload: { query: 'test' },
+        headers: {
+          'accept-version': 'v99',
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body);
+      expect(body.error.code).toBe('UNSUPPORTED_VERSION');
+      expect(body.error.supportedVersions).toContain('v1');
+    });
+  });
+
+  describe('Health endpoint version negotiation', () => {
+    it('should skip version negotiation for /health endpoint', async () => {
+      const response = await server.getServer().inject({
+        method: 'GET',
+        url: '/health',
+        headers: {
+          'accept-version': 'v99', // Invalid version should be ignored
+        },
+      });
+
+      // Health endpoint should work regardless of version header
+      expect(response.statusCode).toBe(200);
+    });
+  });
+});

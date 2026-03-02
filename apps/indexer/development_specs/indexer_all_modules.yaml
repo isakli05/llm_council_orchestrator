@@ -1,0 +1,107 @@
+modules:
+
+  # ----------------------------------------------------------
+  # 1) API MODULE
+  # ----------------------------------------------------------
+  - name: "indexer_api_module"
+    description: "Indexer’ın orchestrator’a sunduğu tüm API."
+    responsibilities:
+      - "ensureIndexed(projectRoot)"
+      - "semanticSearch(query, topK)"
+      - "getIndexerStats()"
+    inputs:
+      - "IndexerScanner"
+      - "IndexerChunker"
+      - "EmbeddingEngine"
+      - "VectorIndex"
+    outputs:
+      - "Semantic search results"
+      - "Updated vector index"
+    files:
+      - "src/api/IndexController.ts"
+
+  # ----------------------------------------------------------
+  # 2) SCANNER MODULE
+  # ----------------------------------------------------------
+  - name: "indexer_scanner_module"
+    description: "Kaynak kodu tarama ve filtreleme."
+    responsibilities:
+      - "Dosya sistemi tarama"
+      - "Ignore pattern uygulama"
+      - "Dosya metadata çıkarma"
+    inputs:
+      - "project_root_path"
+      - "ignore_patterns"
+    outputs:
+      - "FileList[]"
+    files:
+      - "src/scanner/Scanner.ts"
+
+  # ----------------------------------------------------------
+  # 3) CHUNKER MODULE
+  # ----------------------------------------------------------
+  - name: "indexer_chunker_module"
+    description: "Kaynak dosyaları stable chunk’lara bölme."
+    responsibilities:
+      - "Max token threshold belirlenecek"
+      - "Kod yapısı tespiti (function/class bazlı chunk’lama)"
+      - "Hash üretimi"
+    outputs:
+      - "Chunk[]"
+    files:
+      - "src/chunker/Chunker.ts"
+
+  # ----------------------------------------------------------
+  # 4) EMBEDDING MODULE
+  # ----------------------------------------------------------
+  - name: "indexer_embedding_module"
+    description: "Lokal embedding motoru."
+    responsibilities:
+      - "Embedding model yükleme"
+      - "CPU/GPU adaptasyonu"
+      - "Chunk embedding üretimi"
+    outputs:
+      - "Vector embeddings"
+    files:
+      - "src/embedding/EmbeddingEngine.ts"
+      - "src/embedding/model_config.ts"
+
+  # ----------------------------------------------------------
+  # 5) VECTOR INDEX MODULE
+  # ----------------------------------------------------------
+  - name: "indexer_vector_index_module"
+    description: "Vektör index depolama + arama."
+    responsibilities:
+      - "Index oluşturma"
+      - "Index güncelleme (incremental)"
+      - "Similarity search"
+    outputs:
+      - "SearchResult[]"
+    files:
+      - "src/vector_index/VectorIndex.ts"
+      - "src/vector_index/storage.ts"
+
+  # ----------------------------------------------------------
+  # 6) INCREMENTAL INDEX MODULE
+  # ----------------------------------------------------------
+  - name: "indexer_incremental_module"
+    description: "Değişen dosyaları tespit etmek için hash tabanlı takip."
+    responsibilities:
+      - "Hash store tutma"
+      - "Değişen dosyaların filtresi"
+    outputs:
+      - "ChangedFileList[]"
+    files:
+      - "src/incremental/IncrementalTracker.ts"
+
+  # ----------------------------------------------------------
+  # 7) OBSERVABILITY MODULE
+  # ----------------------------------------------------------
+  - name: "indexer_observability_module"
+    description: "Logging ve metrics sistemi."
+    responsibilities:
+      - "Structured logs"
+      - "Indexer stats"
+    files:
+      - "src/observability/Logger.ts"
+      - "src/observability/Stats.ts"

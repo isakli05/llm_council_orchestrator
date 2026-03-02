@@ -1,0 +1,22 @@
+{
+  "name": "@llm/mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/server.ts",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "node --watch -r ts-node/register src/server.ts",
+    "start": "node -r ts-node/register src/server.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@llm/shared-types": "workspace:*",
+    "@llm/shared-utils": "workspace:*",
+    "@llm/shared-config": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0"
+  }
+}

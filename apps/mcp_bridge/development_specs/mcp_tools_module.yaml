@@ -1,0 +1,24 @@
+module:
+  name: "mcp_tools"
+  layer: "tooling"
+  root_dir: "apps/mcp_bridge/src"
+  description: >
+    MCP protokolü üzerinden expose edilecek araçların tanımı.
+    Örneğin: runPipeline, getIndexState, getSpecFiles, getPipelineLogs.
+
+responsibilities:
+  - "Tüm MCP Tool’ların kayıt edilmesi."
+  - "Gelen tool çağrılarını adapter katmanına iletmek."
+non_responsibilities:
+  - "Orchestrator API çağrıları (adapter sorumludur)."
+
+files:
+  - "src/tools/registerTools.ts"
+  - "src/tools/types.ts"
+
+tools:
+  - "run_pipeline"
+  - "get_index_state"
+  - "get_spec_files"
+  - "get_pipeline_progress"
+  - "abort_pipeline"

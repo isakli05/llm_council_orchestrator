@@ -1,0 +1,31 @@
+module:
+  name: "orchestrator_observability"
+  layer: "observability"
+  root_dir: "apps/orchestrator/src"
+  description: >
+    Logging, basic metrics ve pipeline trace bilgisini yöneten katman.
+
+scope:
+  responsibilities:
+    - "Her pipeline run için unique run_id üretmek."
+    - "Her state transition’ı loglamak."
+    - "Model çağrılarının özet istatistiklerini toplamak (süre, token sayısı vb. – ileride)."
+  non_responsibilities:
+    - "Harici log altyapılarına entegrasyon (ilk aşamada gerekmez)."
+
+files:
+  - "src/observability/Logger.ts"
+  - "src/observability/Trace.ts"
+
+logging:
+  levels:
+    - "debug"
+    - "info"
+    - "warn"
+    - "error"
+  minimum_level: "info"
+
+trace:
+  - "Her pipeline için run_id"
+  - "Her step için start/end timestamp"
+  - "Error durumlarında stack/summary kaydı"

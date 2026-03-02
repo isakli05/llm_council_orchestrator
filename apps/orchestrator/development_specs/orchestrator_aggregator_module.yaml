@@ -1,0 +1,33 @@
+module:
+  name: "orchestrator_aggregator"
+  layer: "pipeline_engine"
+  root_dir: "apps/orchestrator/src"
+  description: >
+    Çoklu model ve çoklu rol sonuçlarını alıp tek bir final çıktıya dönüştüren,
+    özellikle mimari rapor ve spec üretiminde kilit rol oynayan bileşen.
+
+scope:
+  responsibilities:
+    - "Dual-model çıktılarının eleştiri ve birleştirme adımlarını çalıştırmak."
+    - "FinalArchitecturalReport objesini oluşturmak."
+    - "Spec modunda project_context.yaml ve module.yaml metinlerini üretmek."
+  non_responsibilities:
+    - "Model çağrılarını yönetmek (ModelGateway sorumluluğu)."
+
+files:
+  - "src/aggregation/Aggregator.ts"
+  - "src/aggregation/types.ts"
+
+inputs:
+  - "RoleManager’den gelen rol bazlı sonuçlar."
+  - "ModelGateway üzerinden gelen ham LLM cevapları."
+  - "Indexer’den gelen context bilgileri (gerekirse)."
+
+outputs:
+  - "FinalArchitecturalReport"
+  - "Spec text (yaml string) – spec modunda."
+  - "Refinement önerileri – refinement modunda."
+
+policy:
+  - "Mümkün olduğunca deterministik ve açıklanabilir birleşim kuralları kullanılmalı."
+  - "Her birleşim sonucunda hangi modellerin hangi katkıları yaptığı loglanmalı."

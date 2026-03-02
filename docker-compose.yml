@@ -1,0 +1,253 @@
+# LLM Council Orchestrator - Docker Compose Configuration
+# ============================================================================
+# This file defines all services required for the LLM Council system.
+# 
+# Services:
+#   - qdrant: Vector database for storing code embeddings
+#   - embedding: Local embedding server (BGE-Large, E5-Large, or BGE-M3)
+#   - indexer: Code indexing and semantic search service (port 9001)
+#   - orchestrator: Main orchestration service with LLM providers (port 7001)
+#   - mcp_bridge: Optional MCP bridge for VSCode extension
+#
+# Configuration:
+#   - Config files are mounted as read-only volumes
+#   - Environment variables are loaded from .env file
+#   - See .env.example for all available configuration options
+#
+# Requirements Reference: 15.6 (Configuration Management)
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # Qdrant Vector Database
+  # ==========================================================================
+  # Stores code embeddings for semantic search functionality.
+  # Data is persisted in a named volume.
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC API
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - llm-council
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================================================
+  # Local Embedding Server
+  # ==========================================================================
+  # Provides OpenAI-compatible embedding endpoint.
+  # Supports: local-bge-large-v1.5, multilingual-e5-large-instruct, bge-m3
+  # All models use 1024 dimensions for Qdrant compatibility (Requirements 9.2-9.5)
+  embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.2
+    container_name: local_embedding_server
+    ports:
+      - "8000:80"
+    environment:
+      - MODEL_ID=${EMBEDDING_MODEL:-BAAI/bge-large-en-v1.5}
+    volumes:
+      - embedding_cache:/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - llm-council
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Uncomment for GPU support (NVIDIA)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ==========================================================================
+  # Indexer Service
+  # ==========================================================================
+  # Handles code indexing and semantic search operations.
+  # Exposes REST API on port 9001 (Requirements 8.1-8.8)
+  # Requires API key authentication (Requirements 8.6, 8.7)
+  indexer:
+    build:
+      context: .
+      dockerfile: apps/indexer/Dockerfile
+    container_name: llm_council_indexer
+    ports:
+      - "9001:9001"
+    environment:
+      # Runtime environment
+      - NODE_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Service configuration
+      - INDEXER_PORT=9001
+      - INDEXER_HOST=0.0.0.0
+      - INDEXER_API_KEY=${INDEXER_API_KEY:?INDEXER_API_KEY is required}
+      - INDEXER_STORAGE_PATH=/data/indexer
+      # Embedding configuration (Requirements 9.1-9.7)
+      - EMBEDDING_URL=http://embedding:80
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-local-bge-large-v1.5}
+      # Qdrant configuration
+      - QDRANT_URL=http://qdrant:6333
+    volumes:
+      # Persistent storage for index data
+      - indexer_data:/data/indexer
+      # Mount config file as read-only (Requirements 15.6)
+      - ./architect.config.production.json:/app/architect.config.json:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:9001/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - llm-council
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ==========================================================================
+  # Orchestrator Service
+  # ==========================================================================
+  # Main service that orchestrates LLM calls and pipeline execution.
+  # Exposes REST API on port 7001
+  # Integrates with all LLM providers (Requirements 1-6)
+  orchestrator:
+    build:
+      context: .
+      dockerfile: apps/orchestrator/Dockerfile
+    container_name: llm_council_orchestrator
+    ports:
+      - "7001:7001"
+    environment:
+      # Runtime environment
+      - NODE_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Service configuration
+      - ORCH_PORT=7001
+      - ORCH_HOST=0.0.0.0
+      - ORCH_CONFIG_PATH=/app/architect.config.json
+      # Indexer connection (Requirements 7.1-7.7)
+      - INDEXER_URL=http://indexer:9001
+      - INDEXER_API_KEY=${INDEXER_API_KEY:?INDEXER_API_KEY is required}
+      # LLM Provider API Keys (Requirements 2-6)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
+      - ZAI_API_KEY=${ZAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # OpenRouter headers (Requirements 6.3)
+      - OPENROUTER_REFERER=${OPENROUTER_REFERER:-https://llm-council.local}
+      - OPENROUTER_TITLE=${OPENROUTER_TITLE:-LLM Council Orchestrator}
+    volumes:
+      # Mount config file as read-only (Requirements 15.6)
+      - ./architect.config.production.json:/app/architect.config.json:ro
+      # Persistent storage for generated specs
+      - orchestrator_specs:/app/specs
+      # Optional: Mount project directory for analysis (uncomment as needed)
+      # - /path/to/your/project:/workspace:ro
+    depends_on:
+      indexer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:7001/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - llm-council
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ==========================================================================
+  # MCP Bridge (Optional)
+  # ==========================================================================
+  # Provides MCP (Model Context Protocol) interface for VSCode extension.
+  # Only needed if using the VSCode extension integration.
+  mcp_bridge:
+    build:
+      context: .
+      dockerfile: apps/mcp_bridge/Dockerfile
+    container_name: llm_council_mcp_bridge
+    profiles:
+      - mcp  # Only starts with: docker compose --profile mcp up
+    environment:
+      - NODE_ENV=production
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ORCHESTRATOR_URL=http://orchestrator:7001
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - llm-council
+    stdin_open: true
+    tty: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ==========================================================================
+# Networks
+# ==========================================================================
+networks:
+  llm-council:
+    driver: bridge
+    name: llm-council-network
+
+# ==========================================================================
+# Volumes
+# ==========================================================================
+# Named volumes for persistent data storage
+volumes:
+  # Qdrant vector database storage
+  qdrant_storage:
+    name: llm-council-qdrant-storage
+  # Embedding model cache
+  embedding_cache:
+    name: llm-council-embedding-cache
+  # Indexer data (index files, hashes)
+  indexer_data:
+    name: llm-council-indexer-data
+  # Orchestrator generated specs
+  orchestrator_specs:
+    name: llm-council-orchestrator-specs

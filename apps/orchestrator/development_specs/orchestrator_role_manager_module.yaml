@@ -1,0 +1,38 @@
+module:
+  name: "orchestrator_role_manager"
+  layer: "pipeline_engine"
+  root_dir: "apps/orchestrator/src"
+  description: >
+    Legacy Analyzer, Architect, Migration, Security ve Aggregator gibi rol ajanlarını
+    tek bir unified API üzerinden çağıran bileşen.
+
+scope:
+  responsibilities:
+    - "Rollere göre hangi model setinin kullanılacağını belirlemek (architect.config.json + override)."
+    - "Dual-model çalışma (ör: GPT + GLM) için paralel çağrıları koordine etmek."
+    - "Rol bazlı prompt templating yapmak (role-specific system prompt’lar)."
+  non_responsibilities:
+    - "Model HTTP çağrılarını yapmak (ModelGateway sorumluluğu)."
+
+files:
+  - "src/roles/RoleManager.ts"
+  - "src/roles/types.ts"
+
+roles:
+  - "legacy_analysis"
+  - "architect"
+  - "migration"
+  - "security"
+  - "aggregator"
+
+behaviour:
+  dual_model:
+    description: "Belirli rollerde (ör: legacy_analysis, architect) iki model paralel çalıştırılır."
+    merge_policy:
+      - "Sonrasında Aggregator’a ham sonuçlar iletilir."
+      - "Aggregator, eleştiri ve fusion aşamasını üstlenir."
+
+config:
+  source: "architect.config.json"
+  override:
+    description: "Kullanıcı isterse belirli rol için model override edebilir (VSCode/MCP üzerinden)."

@@ -1,0 +1,73 @@
+project:
+  name: "llm_council_indexer"
+  app: "indexer"
+  root_dir: "apps/indexer"
+  language: "typescript"
+  module_system: "commonjs"
+  runtime:
+    node_version: ">=20.19.5"
+  description: >
+    Orchestrator’ın ihtiyaç duyduğu tüm kod, metin ve konfigürasyon dosyalarını
+    tarayan, chunk’layan, embed eden, vektör index oluşturan ve semantic search
+    API’leri sunan bağımsız servis.
+
+scope:
+  responsibilities:
+    - "Kaynak kodu taramak (TS/JS, PHP, HTML/Blade/Twig, JSON/YAML, SQL)."
+    - "Ignore kurallarını uygulamak (node_modules, vendor, .next, build, cache…)."
+    - "Chunking (sabit token boyutu + yapı farkındalığı)."
+    - "Embedding (lokal CPU/GPU modelleri)."
+    - "Vektör index oluşturma ve güncelleme."
+    - "Semantic search API."
+    - "Incremental index (sadece değişen dosyaları yeniden işleme)."
+  non_responsibilities:
+    - "Council pipeline çalıştırmak."
+    - "LLM modeli çağırmak."
+    - "Spec üretmek."
+
+architecture:
+  layers:
+    - name: "api_layer"
+      description: "HTTP + IPC API ile orchestrator’a hizmet verir."
+    - name: "scanner"
+      description: "Dosya sistemi tarayıcı (glob + filtreleme)."
+    - name: "chunker"
+      description: "Kod ve dokümanları anlamlı parçalara ayırma."
+    - name: "embedding_engine"
+      description: "Lokal model ile embedding üretme."
+    - name: "vector_index"
+      description: "Annoy/HNSW/Flat index (yerel dosya formatı)."
+    - name: "incremental_tracker"
+      description: "File hash takibi ile sadece değişenlerin yeniden işlenmesi."
+
+constraints:
+  - "Embedding işlemleri hiçbir koşulda remote API’ye gönderilemez."
+  - "Index kalıcı dosya formatı forward-compatible olmalıdır."
+  - "Index server blocking çağrı yapmamalı; tüm işlemler async."
+
+inputs:
+  - "Proje ana dizini."
+  - "Ignore pattern listesi."
+  - "İsteğe göre dosya uzantısı filtreleri."
+  - "Embedding model config (bge-large, e5-large, bge-m3)."
+
+outputs:
+  - "Semantic index dosyası (vector-store)."
+  - "Chunk metadata store (jsonl)."
+  - "Semantic search sonuçları."
+  - "Indexer durumu ve istatistikleri."
+
+quality_attributes:
+  - "Büyük projelerde yüksek performans (incremental index zorunlu)."
+  - "Deterministik chunk üretimi."
+  - "Index boyutunun kontrol edilebilir olması."
+  - "API yanıtlarının hızlı olması (<200ms ortalama semantic search)."
+
+modules:
+  - "indexer_api_module.yaml"
+  - "indexer_scanner_module.yaml"
+  - "indexer_chunker_module.yaml"
+  - "indexer_embedding_module.yaml"
+  - "indexer_vector_index_module.yaml"
+  - "indexer_incremental_module.yaml"
+  - "indexer_observability_module.yaml"

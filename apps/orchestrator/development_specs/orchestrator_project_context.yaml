@@ -1,0 +1,94 @@
+project:
+  name: "llm_council_orchestrator"
+  app: "orchestrator"
+  root_dir: "apps/orchestrator"
+  language: "typescript"
+  module_system: "commonjs"
+  runtime:
+    node_version: ">=20.19.5"
+  description: >
+    LLM Council sisteminin çekirdek beyni. Pipeline state machine, rol yönetimi, model çağrıları,
+    indexer orkestrasyonu ve sonuç birleştirme (aggregation) bu uygulamada gerçekleşir.
+
+scope:
+  responsibilities:
+    - "Kullanıcıdan gelen pipeline isteklerini almak (MCP Bridge veya VSCode üzerinden)."
+    - "Pipeline modunu (quick, full, spec, refinement) belirlemek ve ilgili state machine akışını çalıştırmak."
+    - "Indexer’i tetiklemek ve semantic context erişimini sağlamak."
+    - "Farklı rol ajanlarını (legacy_analysis, architect, migration, security, aggregator) çağırmak."
+    - "Çoklu model çıktısını birleştirip tekleştirilmiş sonuç üretmek."
+    - "Pipeline state’ini, loglarını ve hatalarını yönetmek."
+  non_responsibilities:
+    - "Doğrudan dosya sistemi okumak/yazmak (bu MCP Bridge üzerinden yapılır)."
+    - "IDE ile UI iletişimi kurmak (VSCode extension sorumluluğudur)."
+    - "Model provider’larla düşük seviye HTTP entegrasyonu (ileride ayrı bir service olabilir)."
+
+architecture:
+  layers:
+    - name: "api_layer"
+      description: "Orchestrator’a dış dünyadan (MCP Bridge / HTTP / CLI) gelen isteklerin girdiği katman."
+    - name: "pipeline_engine"
+      description: "Pipeline state machine, rol yönetimi ve adım orkestrasyonunun olduğu çekirdek katman."
+    - name: "integration_layer"
+      description: "Indexer, model gateway, config loader gibi dış bağımlılıkların bağlandığı katman."
+    - name: "observability"
+      description: "Logging, metrics ve pipeline trace kayıtlarının tutulduğu katman."
+
+constraints:
+  - "Tüm iş mantığı TypeScript ile yazılmalı, strict mode aktif olmalı."
+  - "Monorepo içindeki shared paketler `@llm/shared-*` isimleriyle kullanılmalı."
+  - "Orchestrator tarafı Node.js ortamında çalışacak, browser özellikleri varsayılmamalı."
+  - "Senkron bloklayıcı işlemler yerine mümkün olduğunca async/await kullanılmalı."
+  - "Her pipeline step’i, idempotent ve tekrar çalıştırılabilir olacak şekilde tasarlanmalı."
+
+dependencies:
+  internal:
+    - package: "@llm/shared-types"
+      purpose: "FinalArchitecturalReport ve benzeri ortak tipler."
+    - package: "@llm/shared-utils"
+      purpose: "safeJson gibi yardımcı fonksiyonlar."
+    - package: "@llm/shared-config"
+      purpose: "PIPELINE_MODES ve pipeline mod tipleri."
+  external:
+    - name: "HTTP/MCP client"
+      purpose: "Model çağrıları (OpenRouter, vendor API’leri) – ileride eklenecek."
+    - name: "Indexer service"
+      purpose: "Embedding tabanlı arama için dış servis (aynı monorepo içinde ayrı app olabilir)."
+
+inputs:
+  - "Kullanıcı promptu"
+  - "Seçilen pipeline modu (quick/full/spec/refinement)"
+  - "Opsiyonel: Kullanıcı tarafından seçilmiş modeller veya preset (override)."
+  - "architect.config.json içeriği"
+
+outputs:
+  - "FinalArchitecturalReport (full/spec modlarında)."
+  - "Spec dosyaları (project_context.yaml, module.yaml) – spec modunda."
+  - "Refinement önerileri veya patch açıklamaları – refinement modunda."
+  - "Quick diagnostic özeti – quick modunda."
+
+configuration:
+  primary_file: "architect.config.json"
+  content:
+    models:
+      description: "Rollere göre kullanılacak modellerin listesi."
+    embedding:
+      description: "Indexer tarafında kullanılacak embedding motoru bilgileri."
+    note:
+      description: "Bu dosya skeleton; gerçek secrets / endpoint bilgileri başka yerde tutulmalı."
+
+quality_attributes:
+  - "Deterministik pipeline adımları (aynı input → aynı step sırası)."
+  - "Rollerin açıkça ayrılmış olması (legacy, architect, migration, security, aggregator)."
+  - "Pipeline logları okunabilir ve filtrelenebilir olmalı."
+  - "Her step kendi içinde timeout ve error handling’e sahip olmalı."
+
+modules:
+  - "orchestrator_core_module.yaml"
+  - "orchestrator_pipeline_engine_module.yaml"
+  - "orchestrator_state_machine_module.yaml"
+  - "orchestrator_role_manager_module.yaml"
+  - "orchestrator_model_gateway_module.yaml"
+  - "orchestrator_index_client_module.yaml"
+  - "orchestrator_aggregator_module.yaml"
+  - "orchestrator_observability_module.yaml"

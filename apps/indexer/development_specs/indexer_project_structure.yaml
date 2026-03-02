@@ -1,0 +1,27 @@
+structure:
+  root: "apps/indexer"
+  folders:
+    - path: "src/api"
+      purpose: "HTTP + IPC API"
+    - path: "src/scanner"
+      purpose: "Glob tabanlı kaynak kod tarama + filtreleme"
+    - path: "src/chunker"
+      purpose: "Kod/doküman chunk üretimi"
+    - path: "src/embedding"
+      purpose: "Lokal embedding motoru"
+    - path: "src/vector_index"
+      purpose: "Annoy/HNSW/Flat index yönetimi"
+    - path: "src/incremental"
+      purpose: "Değişen dosya tespiti (hash cache)"
+    - path: "src/observability"
+      purpose: "Logging + metrics"
+
+  files:
+    - path: "src/main.ts"
+      purpose: "Indexer giriş noktası, config yükleme, server başlatma"
+    - path: "src/api/IndexController.ts"
+      purpose: "EnsureIndexed, Search, Stats endpoint’leri"
+    - path: "src/embedding/model_config.ts"
+      purpose: "Model seçimi ve adaptasyon"
+    - path: "src/vector_index/storage.ts"
+      purpose: "Index’in diske yazılması/okunması"

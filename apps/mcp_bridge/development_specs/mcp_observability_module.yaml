@@ -1,0 +1,12 @@
+module:
+  name: "mcp_observability"
+  layer: "observability"
+  root_dir: "apps/mcp_bridge/src"
+  description: "MCP bridge için minimal logging & diagnostics."
+
+files:
+  - "src/observability/Logger.ts"
+
+logging:
+  levels: ["debug", "info", "warn", "error"]
+  min_level: "info"
