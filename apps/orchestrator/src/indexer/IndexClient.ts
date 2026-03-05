@@ -452,28 +452,59 @@ export class IndexClient {
         throw new Error("Index not ready. Call ensureIndex() first.");
       }
 
-      // TODO: Make HTTP call to indexer service
-      // For now, return placeholder context
+      // Make HTTP call to indexer service to get context
+      const response = await this.executeWithRetry(async () => {
+        return this.httpClient.post<{
+          success: boolean;
+          context: Array<{
+            content: string;
+            filePath: string;
+            startLine?: number;
+            endLine?: number;
+          }>;
+          related?: Array<{
+            path: string;
+            relevance: number;
+          }>;
+          error?: string;
+        }>(`${API_V1_PREFIX}/context`, {
+          path: request.path,
+          maxChunks: request.maxRelated || 5,
+          includeRelated: request.includeRelated !== false,
+        });
+      });
 
-      const relatedFiles = request.includeRelated
-        ? [
-            {
-              path: "src/related/file1.ts",
-              relevance: 0.92,
-              reason: "Imports from target file",
-            },
-            {
-              path: "src/related/file2.ts",
-              relevance: 0.85,
-              reason: "Similar functionality",
-            },
-          ]
-        : undefined;
+      const data = response.data;
+
+      if (!data.success) {
+        throw new Error(data.error || "Failed to retrieve context");
+      }
+
+      // Combine all context chunks into a single content string
+      const content = data.context
+        .map((chunk) => {
+          const location = chunk.startLine && chunk.endLine
+            ? `:${chunk.startLine}-${chunk.endLine}`
+            : "";
+          return `// ${chunk.filePath}${location}\n${chunk.content}`;
+        })
+        .join("\n\n---\n\n");
+
+      // Transform related files to match expected format
+      const relatedFiles = data.related?.map((rel) => ({
+        path: rel.path,
+        relevance: rel.relevance,
+        reason: rel.relevance > 0.9
+          ? "Highly similar functionality"
+          : rel.relevance > 0.8
+          ? "Similar functionality"
+          : "Related code",
+      }));
 
       return {
         success: true,
         path: request.path,
-        content: `[Placeholder content for ${request.path}]`,
+        content,
         relatedFiles,
       };
     } catch (err) {

@@ -56,6 +56,27 @@ export interface StatsResponse {
   error?: string;
 }
 
+export interface ContextRequest {
+  path: string;
+  maxChunks?: number;
+  includeRelated?: boolean;
+}
+
+export interface ContextResponse {
+  success: boolean;
+  context: Array<{
+    content: string;
+    filePath: string;
+    startLine?: number;
+    endLine?: number;
+  }>;
+  related?: Array<{
+    path: string;
+    relevance: number;
+  }>;
+  error?: string;
+}
+
 export class IndexController {
   private scanner: Scanner | null = null;
   private chunker: Chunker;
@@ -246,6 +267,73 @@ export class IndexController {
           modelName: 'unknown',
         },
         error: error.message || 'Unknown error getting stats',
+      };
+    }
+  }
+
+  async getContext(request: ContextRequest): Promise<ContextResponse> {
+    try {
+      // Search for chunks related to the specified path
+      const maxChunks = request.maxChunks || 5;
+      
+      // Get all vectors to filter by path
+      const allVectors = Array.from(this.vectorIndex['vectors'].values());
+      
+      // Filter by path (exact match or contains)
+      const pathMatches = allVectors.filter(v => 
+        v.metadata.filePath === request.path ||
+        v.metadata.filePath.includes(request.path) ||
+        v.metadata.relativePath === request.path ||
+        v.metadata.relativePath.includes(request.path)
+      ).slice(0, maxChunks);
+
+      // Get chunks for matched vectors
+      const context = pathMatches.map(v => {
+        const chunk = this.vectorIndex['chunks'].get(v.id);
+        return {
+          content: chunk?.content || `[Content from ${v.metadata.relativePath}:${v.metadata.startLine}-${v.metadata.endLine}]`,
+          filePath: v.metadata.filePath,
+          startLine: v.metadata.startLine,
+          endLine: v.metadata.endLine,
+        };
+      });
+
+      // Get related files if requested
+      let related: Array<{ path: string; relevance: number }> | undefined;
+      if (request.includeRelated && pathMatches.length > 0) {
+        // Use the first chunk's embedding to find semantically similar chunks
+        const firstVector = pathMatches[0];
+        const searchResults = await this.vectorIndex.search(firstVector.vector, 10);
+        
+        // Filter out the original path and get unique file paths
+        const relatedPaths = new Map<string, number>();
+        for (const result of searchResults) {
+          const resultPath = result.chunk.filePath;
+          if (resultPath !== request.path && !resultPath.includes(request.path)) {
+            // Keep highest score for each path
+            if (!relatedPaths.has(resultPath) || relatedPaths.get(resultPath)! < result.score) {
+              relatedPaths.set(resultPath, result.score);
+            }
+          }
+        }
+        
+        // Convert to array and sort by relevance
+        related = Array.from(relatedPaths.entries())
+          .map(([path, relevance]) => ({ path, relevance }))
+          .sort((a, b) => b.relevance - a.relevance)
+          .slice(0, 5);
+      }
+
+      return {
+        success: true,
+        context,
+        related,
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        context: [],
+        error: error.message || 'Unknown error getting context',
       };
     }
   }

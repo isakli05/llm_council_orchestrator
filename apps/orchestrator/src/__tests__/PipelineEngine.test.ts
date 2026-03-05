@@ -5,9 +5,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PipelineExecutionState } from "@llm/shared-types";
 
-// Define PipelineExecutionState for use in tests and mocks
-const PipelineExecutionState = {
+// Define local PipelineExecutionState for use in tests and mocks
+const LocalPipelineExecutionState = {
   IDLE: "IDLE",
   RUNNING: "RUNNING",
   INDEXING: "INDEXING",
@@ -68,14 +69,14 @@ describe("PipelineExecutionStateMachine Cancellation", () => {
     it("should transition from RUNNING to CANCELLED", () => {
       stateMachine.start(); // IDLE -> RUNNING
       stateMachine.cancel();
-      expect(stateMachine.currentState).toBe(PipelineExecutionState.CANCELLED);
+      expect(stateMachine.currentState).toBe("cancelled" as any);
     });
 
     it("should transition from INDEXING to CANCELLED", () => {
       stateMachine.start(); // IDLE -> RUNNING
       stateMachine.startIndexing(); // RUNNING -> INDEXING
       stateMachine.cancel();
-      expect(stateMachine.currentState).toBe(PipelineExecutionState.CANCELLED);
+      expect(stateMachine.currentState).toBe("cancelled" as any);
     });
 
     it("should transition from DISCOVERING to CANCELLED", () => {
@@ -83,7 +84,7 @@ describe("PipelineExecutionStateMachine Cancellation", () => {
       stateMachine.startIndexing();
       stateMachine.startDiscovering();
       stateMachine.cancel();
-      expect(stateMachine.currentState).toBe(PipelineExecutionState.CANCELLED);
+      expect(stateMachine.currentState).toBe("cancelled" as any);
     });
 
     it("should transition from ANALYZING to CANCELLED", () => {
@@ -92,7 +93,7 @@ describe("PipelineExecutionStateMachine Cancellation", () => {
       stateMachine.startDiscovering();
       stateMachine.startAnalyzing();
       stateMachine.cancel();
-      expect(stateMachine.currentState).toBe(PipelineExecutionState.CANCELLED);
+      expect(stateMachine.currentState).toBe("cancelled" as any);
     });
 
     it("should transition from AGGREGATING to CANCELLED", () => {
@@ -102,7 +103,7 @@ describe("PipelineExecutionStateMachine Cancellation", () => {
       stateMachine.startAnalyzing();
       stateMachine.startAggregating();
       stateMachine.cancel();
-      expect(stateMachine.currentState).toBe(PipelineExecutionState.CANCELLED);
+      expect(stateMachine.currentState).toBe("cancelled" as any);
     });
 
     it("should emit stateChange event when cancelled", () => {
@@ -117,8 +118,8 @@ describe("PipelineExecutionStateMachine Cancellation", () => {
       
       // Check the cancel event
       const cancelEvent = stateChangeHandler.mock.calls[1][0];
-      expect(cancelEvent.previousState).toBe(PipelineExecutionState.RUNNING);
-      expect(cancelEvent.newState).toBe(PipelineExecutionState.CANCELLED);
+      expect(cancelEvent.previousState).toBe("running" as any);
+      expect(cancelEvent.newState).toBe("cancelled" as any);
       expect(cancelEvent.stepContext).toBe("pipeline_cancelled");
     });
   });
@@ -136,10 +137,10 @@ describe("PipelineExecutionStateMachine Cancellation", () => {
       stateMachine.start();
       stateMachine.cancel();
       
-      expect(stateMachine.canTransitionTo(PipelineExecutionState.RUNNING)).toBe(false);
-      expect(stateMachine.canTransitionTo(PipelineExecutionState.INDEXING)).toBe(false);
-      expect(stateMachine.canTransitionTo(PipelineExecutionState.COMPLETED)).toBe(false);
-      expect(stateMachine.canTransitionTo(PipelineExecutionState.FAILED)).toBe(false);
+      expect(stateMachine.canTransitionTo('running' as any)).toBe(false);
+      expect(stateMachine.canTransitionTo('indexing' as any)).toBe(false);
+      expect(stateMachine.canTransitionTo('completed' as any)).toBe(false);
+      expect(stateMachine.canTransitionTo('failed' as any)).toBe(false);
     });
   });
 
@@ -162,7 +163,7 @@ describe("VALID_TRANSITIONS for CANCELLED state", () => {
   it("should allow RUNNING to transition to CANCELLED", () => {
     const stateMachine = new PipelineExecutionStateMachine("test");
     stateMachine.start();
-    expect(stateMachine.canTransitionTo(PipelineExecutionState.CANCELLED)).toBe(true);
+    expect(stateMachine.canTransitionTo("cancelled" as any)).toBe(true);
   });
 
   it("should allow INDEXING to transition to CANCELLED", () => {
@@ -212,14 +213,14 @@ describe("VALID_TRANSITIONS for CANCELLED state", () => {
     stateMachine.startAnalyzing();
     stateMachine.startAggregating();
     stateMachine.complete();
-    expect(stateMachine.canTransitionTo(PipelineExecutionState.CANCELLED)).toBe(false);
+    expect(stateMachine.canTransitionTo("cancelled" as any)).toBe(false);
   });
 
   it("should NOT allow FAILED to transition to CANCELLED", () => {
     const stateMachine = new PipelineExecutionStateMachine("test");
     stateMachine.start();
     stateMachine.fail("test failure");
-    expect(stateMachine.canTransitionTo(PipelineExecutionState.CANCELLED)).toBe(false);
+    expect(stateMachine.canTransitionTo("cancelled" as any)).toBe(false);
   });
 });
 

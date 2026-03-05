@@ -4,6 +4,7 @@ import { IndexClient } from "../indexer/IndexClient";
 import { SearchRequest } from "../indexer/types";
 import { ModelGateway, ProviderConfig } from "../models/ModelGateway";
 import { ChatMessage } from "../models/types";
+import { ContextBuilder, createContextBuilder } from "../indexer/ContextBuilder";
 
 /**
  * RoleManager coordinates role agent execution with model selection and dual-model support.
@@ -16,6 +17,7 @@ export class RoleManager {
   private config: RoleConfig;
   private modelGateway: ModelGateway;
   private indexClient?: IndexClient;
+  private contextBuilder?: ContextBuilder;
 
   /**
    * Create a new RoleManager instance.
@@ -28,6 +30,11 @@ export class RoleManager {
     this.config = config;
     this.modelGateway = modelGateway;
     this.indexClient = indexClient;
+    
+    // Initialize ContextBuilder if IndexClient is available
+    if (indexClient) {
+      this.contextBuilder = createContextBuilder(indexClient);
+    }
   }
 
   /**
@@ -58,7 +65,8 @@ export class RoleManager {
         providerConfigs,
         systemPrompt,
         request.prompt,
-        request.context
+        request.context,
+        request.role // Pass role for RAG enrichment
       );
 
       // Per Requirements 10.4: Check ModelResponse.success for each output
@@ -259,13 +267,24 @@ export class RoleManager {
     providerConfigs: ProviderConfig[],
     systemPrompt: string,
     userPrompt: string,
-    context?: Record<string, unknown>
+    context?: Record<string, unknown>,
+    role?: RoleType
   ): Promise<RoleOutput[]> {
+    // Enrich user prompt with RAG context if available
+    let enrichedPrompt = userPrompt;
+    if (role && context) {
+      // Try to extract targetPath from context
+      const targetPath = this.extractTargetPath(context);
+      if (targetPath) {
+        enrichedPrompt = await this.enrichPromptWithRAG(role, userPrompt, targetPath);
+      }
+    }
+
     // Build chat messages with system prompt and user prompt
     // Per Requirements 10.2: Include role-specific system prompt
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
-      { role: "user", content: this.buildUserMessage(userPrompt, context) },
+      { role: "user", content: this.buildUserMessage(enrichedPrompt, context) },
     ];
 
     // Call ModelGateway.callModelsWithConfigs for parallel execution
@@ -287,6 +306,26 @@ export class RoleManager {
   }
 
   /**
+   * Extract target path from context for RAG enrichment
+   */
+  private extractTargetPath(context: Record<string, unknown>): string | undefined {
+    // Check common field names for file paths
+    if (typeof context.targetPath === 'string') return context.targetPath;
+    if (typeof context.filePath === 'string') return context.filePath;
+    if (typeof context.path === 'string') return context.path;
+    
+    // Check domain evidence for file paths
+    if (Array.isArray(context.domainEvidence)) {
+      const evidence = context.domainEvidence as any[];
+      if (evidence.length > 0 && evidence[0].filePath) {
+        return evidence[0].filePath;
+      }
+    }
+    
+    return undefined;
+  }
+
+  /**
    * Build the user message with optional context.
    * 
    * @param userPrompt - The base user prompt
@@ -301,6 +340,79 @@ export class RoleManager {
     // Include relevant context in the user message
     const contextStr = JSON.stringify(context, null, 2);
     return `${userPrompt}\n\n<context>\n${contextStr}\n</context>`;
+  }
+
+  /**
+   * Enrich user prompt with RAG context if available
+   * 
+   * @param role - Role type
+   * @param userPrompt - Base user prompt
+   * @param targetPath - Optional target file path for context
+   * @returns Enriched prompt with RAG context
+   */
+  private async enrichPromptWithRAG(
+    role: RoleType,
+    userPrompt: string,
+    targetPath?: string
+  ): Promise<string> {
+    // Skip if no ContextBuilder or no target path
+    if (!this.contextBuilder || !targetPath) {
+      return userPrompt;
+    }
+
+    try {
+      // Build context for the role
+      const formattedContext = await this.contextBuilder.buildForRole(
+        role as any, // Cast to ContextBuilder's RoleType
+        targetPath
+      );
+
+      // Skip if no context retrieved
+      if (!formattedContext.text || formattedContext.tokenCount === 0) {
+        return userPrompt;
+      }
+
+      // Add role-specific context instructions
+      const contextInstructions = this.getContextInstructions(role);
+
+      return `${contextInstructions}
+
+RETRIEVED CONTEXT:
+${formattedContext.text}
+
+---
+
+TASK:
+${userPrompt}`;
+    } catch (error) {
+      // Log error but continue without context
+      console.error(`Failed to enrich prompt with RAG context:`, error);
+      return userPrompt;
+    }
+  }
+
+  /**
+   * Get role-specific instructions for using RAG context
+   */
+  private getContextInstructions(role: RoleType): string {
+    const instructions = {
+      [RoleType.LEGACY_ANALYSIS]: `You have access to code context from the legacy codebase.
+Use this context to understand the existing architecture and identify patterns.`,
+      
+      [RoleType.ARCHITECT]: `Here is relevant code context for your architectural analysis.
+Focus on structural patterns and dependencies.`,
+      
+      [RoleType.MIGRATION]: `The following context shows the current codebase structure.
+Use it to plan the migration strategy.`,
+      
+      [RoleType.SECURITY]: `Here is code context for security analysis.
+Focus on authentication, authorization, and data handling patterns.`,
+      
+      [RoleType.AGGREGATOR]: `The following context contains code samples from analyzed domains.
+Use it to create a comprehensive final report.`,
+    };
+
+    return instructions[role] || instructions[RoleType.ARCHITECT];
   }
 
   /**

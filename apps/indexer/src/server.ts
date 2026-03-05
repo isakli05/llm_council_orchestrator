@@ -1,4 +1,5 @@
 import Fastify, { FastifyInstance, FastifyRequest, FastifyReply, FastifyError } from 'fastify';
+import cors from '@fastify/cors';
 import { z } from 'zod';
 import { logger, Logger } from './observability/Logger';
 import { IndexController } from './api/IndexController';
@@ -205,6 +206,17 @@ const SearchRequestSchema = z.object({
 
 export type SearchRequestBody = z.infer<typeof SearchRequestSchema>;
 
+// Context request schema
+const ContextRequestSchema = z.object({
+  path: safePathValidator,
+  options: z.object({
+    maxChunks: z.number().int().positive().max(20).optional().default(5),
+    includeRelated: z.boolean().optional().default(false),
+  }).optional(),
+});
+
+export type ContextRequest = z.infer<typeof ContextRequestSchema>;
+
 export interface IndexEnsureResponse {
   success: boolean;
   filesIndexed: number;
@@ -251,6 +263,28 @@ export interface SearchApiResponse {
   };
 }
 
+export interface ContextApiResponse {
+  success: boolean;
+  path: string;
+  context: Array<{
+    content: string;
+    metadata: {
+      filePath: string;
+      startLine?: number;
+      endLine?: number;
+    };
+  }>;
+  related?: Array<{
+    path: string;
+    relevance: number;
+  }>;
+  error?: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+}
+
 export interface ServerConfig {
   port: number;
   host: string;
@@ -277,7 +311,7 @@ const DEFAULT_CONFIG: ServerConfig = {
 };
 
 // Paths that don't require authentication
-const PUBLIC_PATHS = ['/health'];
+const PUBLIC_PATHS = ['/health', '/health/ready'];
 
 // Extend FastifyRequest to include correlation ID
 declare module 'fastify' {
@@ -292,6 +326,7 @@ export class IndexerServer {
   private controller: IndexController;
   private config: ServerConfig;
   private startTime: number;
+  private observabilityRegistered: boolean = false;
 
   constructor(config: Partial<ServerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -305,6 +340,7 @@ export class IndexerServer {
       requestTimeout: TIMEOUTS.HTTP_REQUEST,
       // connectionTimeout is needed for onTimeout hook to fire
       connectionTimeout: TIMEOUTS.HTTP_REQUEST,
+      trustProxy: true, // For rate limiting with correct IP
     });
 
     // Initialize IndexController
@@ -316,12 +352,116 @@ export class IndexerServer {
       }
     );
 
-    this.registerCorrelationIdMiddleware();
-    this.registerTimeoutHandling();
-    this.registerVersionNegotiationMiddleware();
-    this.registerAuthMiddleware();
+    // Note: setupMiddleware is async and will be called in start()
     this.registerRoutes();
     this.registerErrorHandler();
+  }
+
+  /**
+   * Setup all middleware in correct order
+   */
+  private async setupMiddleware(): Promise<void> {
+    // 1. Security (Helmet)
+    await this.registerSecurity();
+    
+    // 2. Rate limiting
+    await this.registerRateLimiting();
+    
+    // 3. Observability (only register once)
+    if (!this.observabilityRegistered) {
+      await this.registerObservability();
+      this.observabilityRegistered = true;
+    }
+    
+    // 4. CORS
+    this.registerCors();
+    
+    // 5. Correlation ID
+    this.registerCorrelationIdMiddleware();
+    
+    // 6. Timeout handling
+    this.registerTimeoutHandling();
+    
+    // 7. Version negotiation
+    this.registerVersionNegotiationMiddleware();
+    
+    // 8. Auth
+    this.registerAuthMiddleware();
+  }
+
+  /**
+   * Registers observability middleware (logging, metrics, tracing).
+   */
+  private async registerObservability(): Promise<void> {
+    const { getIndexerLogger, getIndexerMetrics } = await import('@llm/shared-observability');
+    
+    const logger = getIndexerLogger();
+    const metrics = getIndexerMetrics();
+    
+    // Logging middleware
+    this.server.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+      logger.info('Request started', {
+        method: request.method,
+        url: request.url,
+        ip: request.ip,
+      });
+    });
+    
+    // Metrics middleware
+    this.server.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+      const path = (request as any).routeOptions?.url || request.url;
+      metrics.httpRequestsInProgress.labels(request.method, path).inc();
+    });
+    
+    this.server.addHook('onResponse', async (request: FastifyRequest, reply: FastifyReply) => {
+      const path = (request as any).routeOptions?.url || request.url;
+      const statusCode = reply.statusCode.toString();
+      
+      metrics.httpRequestsTotal.labels(request.method, path, statusCode).inc();
+      metrics.httpRequestDuration.labels(request.method, path).observe(reply.elapsedTime / 1000);
+      metrics.httpRequestsInProgress.labels(request.method, path).dec();
+      
+      logger.info('Request completed', {
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        responseTime: reply.elapsedTime,
+      });
+    });
+    
+    // Metrics endpoint
+    this.server.get('/metrics', async (request, reply) => {
+      const metricsOutput = await metrics.getMetrics();
+      reply.type(metrics.getContentType());
+      return metricsOutput;
+    });
+  }
+
+  /**
+   * Registers security middleware (Helmet).
+   */
+  private async registerSecurity(): Promise<void> {
+    const { setupSecurity } = await import('./middleware/security');
+    await setupSecurity(this.server);
+  }
+
+  /**
+   * Registers rate limiting middleware.
+   */
+  private async registerRateLimiting(): Promise<void> {
+    const { setupRateLimiting } = await import('./middleware/rateLimiter');
+    await setupRateLimiting(this.server);
+  }
+
+  /**
+   * Registers CORS middleware.
+   * Allows cross-origin requests from configured origins.
+   */
+  private registerCors(): void {
+    this.server.register(cors, {
+      origin: process.env.CORS_ORIGINS?.split(',') || ['*'],
+      credentials: true,
+    });
   }
 
   /**
@@ -542,7 +682,7 @@ export class IndexerServer {
       } else if ('statusCode' in error && typeof error.statusCode === 'number') {
         // Fastify error with status code
         const fastifyError = error as FastifyError;
-        statusCode = fastifyError.statusCode;
+        statusCode = fastifyError.statusCode || 500;
         errorCode = fastifyError.code || 'REQUEST_ERROR';
         errorMessage = error.message;
       }
@@ -650,6 +790,45 @@ export class IndexerServer {
         uptime,
         timestamp: new Date().toISOString(),
       };
+    });
+
+    // Readiness check endpoint - GET /health/ready
+    this.server.get('/health/ready', async (_request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        // Check if controller is initialized
+        const stats = await this.controller.getStats();
+        
+        if (!stats.success) {
+          reply.status(503);
+          return {
+            status: 'not_ready',
+            checks: {
+              controller: false,
+              message: stats.error || 'Controller not initialized',
+            },
+            timestamp: new Date().toISOString(),
+          };
+        }
+
+        return {
+          status: 'ready',
+          checks: {
+            controller: true,
+            indexedChunks: stats.stats.indexedChunks,
+          },
+          timestamp: new Date().toISOString(),
+        };
+      } catch (error: any) {
+        reply.status(503);
+        return {
+          status: 'not_ready',
+          checks: {
+            controller: false,
+            message: error.message || 'Unknown error',
+          },
+          timestamp: new Date().toISOString(),
+        };
+      }
     });
 
     // POST /api/v1/index/ensure - Trigger indexing
@@ -834,10 +1013,106 @@ export class IndexerServer {
         };
       }
     });
+
+    // POST /api/v1/context - Get context for a specific path
+    this.server.post(`${API_V1_PREFIX}/context`, async (request: FastifyRequest, reply: FastifyReply): Promise<ContextApiResponse> => {
+      // Validate request body with Zod schema
+      const parseResult = ContextRequestSchema.safeParse(request.body);
+      
+      if (!parseResult.success) {
+        logger.warn('Validation error in POST /context', {
+          errors: parseResult.error.errors,
+        });
+        
+        reply.status(400);
+        return {
+          success: false,
+          path: '',
+          context: [],
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Request validation failed',
+            details: parseResult.error.errors.map(err => ({
+              path: err.path.join('.'),
+              message: err.message,
+            })),
+          },
+        };
+      }
+
+      const { path: filePath, options } = parseResult.data;
+
+      logger.info('Processing POST /context', {
+        path: filePath,
+        maxChunks: options?.maxChunks,
+        includeRelated: options?.includeRelated,
+      });
+
+      try {
+        // Get context from IndexController
+        const result = await this.controller.getContext({
+          path: filePath,
+          maxChunks: options?.maxChunks || 5,
+          includeRelated: options?.includeRelated || false,
+        });
+
+        if (!result.success) {
+          logger.error('Context retrieval failed', { error: result.error });
+          reply.status(500);
+          return {
+            success: false,
+            path: filePath,
+            context: [],
+            error: {
+              code: 'CONTEXT_ERROR',
+              message: result.error || 'Unknown error during context retrieval',
+            },
+          };
+        }
+
+        logger.info('Context retrieval completed successfully', {
+          path: filePath,
+          contextChunks: result.context.length,
+          relatedFiles: result.related?.length || 0,
+        });
+
+        return {
+          success: true,
+          path: filePath,
+          context: result.context.map(chunk => ({
+            content: chunk.content,
+            metadata: {
+              filePath: chunk.filePath,
+              startLine: chunk.startLine,
+              endLine: chunk.endLine,
+            },
+          })),
+          related: result.related?.map(r => ({
+            path: r.path,
+            relevance: r.relevance,
+          })),
+        };
+      } catch (error: any) {
+        logger.error('Unexpected error in POST /context', error);
+        reply.status(500);
+        return {
+          success: false,
+          path: filePath,
+          context: [],
+          error: {
+            code: 'INTERNAL_ERROR',
+            message: error.message || 'An unexpected error occurred',
+          },
+        };
+      }
+    });
   }
 
   async start(): Promise<void> {
     try {
+      // Setup middleware before starting (must be done before listen)
+      await this.setupMiddleware();
+      
       // Initialize the controller
       await this.controller.initialize();
       
@@ -884,7 +1159,7 @@ async function main() {
   const config: Partial<ServerConfig> = {
     port: parseInt(process.env.INDEXER_PORT || '9001', 10),
     host: process.env.INDEXER_HOST || '0.0.0.0',
-    storagePath: process.env.INDEXER_STORAGE_PATH,
+    storagePath: process.env.INDEXER_STORAGE_PATH || path.join(process.cwd(), '.indexer'),
     modelName: process.env.INDEXER_MODEL_NAME,
     device: (process.env.INDEXER_DEVICE as 'cpu' | 'gpu') || 'cpu',
     apiKey: process.env.INDEXER_API_KEY,

@@ -13,9 +13,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@llm/shared-utils": "workspace:*",
-    "@llm/shared-types": "workspace:*",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/helmet": "^10.1.1",
+    "@fastify/rate-limit": "^8.1.1",
     "@llm/shared-config": "workspace:*",
+    "@llm/shared-observability": "workspace:*",
+    "@llm/shared-types": "workspace:*",
+    "@llm/shared-utils": "workspace:*",
     "axios": "^1.7.0",
     "fastify": "^4.25.0",
     "zod": "^3.22.0"
