@@ -1,0 +1,38 @@
+# monitoring/promtail.yml
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: orchestrator
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: orchestrator
+          service: orchestrator
+          __path__: /app/logs/orchestrator*.log
+
+  - job_name: indexer
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: indexer
+          service: indexer
+          __path__: /app/logs/indexer*.log
+
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          __path__: /var/log/*log

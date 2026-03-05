@@ -79,7 +79,7 @@ async function testDiscoveryMetrics() {
       'Analyze this codebase',
       {},
       undefined,
-      []
+      undefined as any
     );
 
     console.log('\nPipeline execution completed');

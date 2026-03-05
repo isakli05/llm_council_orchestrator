@@ -1,0 +1,64 @@
+# monitoring/alert_rules.yml
+
+groups:
+  - name: llm_council_orchestrator
+    rules:
+      # High error rate
+      - alert: HighErrorRate
+        expr: rate(llm_council_http_requests_total{status=~"5.."}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }} requests/s"
+
+      # LLM provider unavailable
+      - alert: LLMProviderUnavailable
+        expr: up{job="orchestrator"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM provider unavailable"
+          description: "{{ $labels.instance }} is down"
+
+      # High latency
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(llm_council_http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "95th percentile latency is {{ $value }}s"
+
+      # Pipeline failures
+      - alert: PipelineFailures
+        expr: rate(llm_council_pipeline_runs_total{status="error"}[10m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High pipeline failure rate"
+          description: "Pipeline failure rate is {{ $value }} runs/s"
+
+      # Memory usage
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }}"
+
+      # Indexer queue backup
+      - alert: IndexerQueueBackup
+        expr: llm_council_indexer_operations_in_progress > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Indexer queue backing up"
+          description: "{{ $value }} operations in progress"

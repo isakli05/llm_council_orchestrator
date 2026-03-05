@@ -321,7 +321,7 @@ describe("PipelineEngine getContext", () => {
       expect(Object.isFrozen(context?.roleResponses?.[0]?.outputs?.[0])).toBe(true);
       
       // Verify values are preserved
-      expect(context?.config?.providerOptions?.openai?.temperature).toBe(0.7);
+      expect((context?.config?.providerOptions?.openai as any)?.temperature).toBe(0.7);
       expect(context?.errors?.[0]?.code).toBe("TIMEOUT");
       expect(context?.roleResponses?.[0]?.outputs?.length).toBe(2);
     });

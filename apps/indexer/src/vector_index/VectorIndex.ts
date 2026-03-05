@@ -175,6 +175,41 @@ export class VectorIndex {
     };
   }
 
+  /**
+   * Get chunks by file path
+   */
+  getByPath(path: string, limit: number = 10): StoredVector[] {
+    const results: StoredVector[] = [];
+    
+    for (const vector of this.vectors.values()) {
+      if (
+        vector.metadata.filePath === path ||
+        vector.metadata.filePath.includes(path) ||
+        vector.metadata.relativePath === path ||
+        vector.metadata.relativePath.includes(path)
+      ) {
+        results.push(vector);
+        if (results.length >= limit) break;
+      }
+    }
+    
+    return results;
+  }
+
+  /**
+   * Get all vectors (for internal use)
+   */
+  getAllVectors(): Map<string, StoredVector> {
+    return this.vectors;
+  }
+
+  /**
+   * Get all chunks (for internal use)
+   */
+  getAllChunks(): Map<string, Chunk> {
+    return this.chunks;
+  }
+
   hasChunk(chunkId: string): boolean {
     return this.vectors.has(chunkId);
   }

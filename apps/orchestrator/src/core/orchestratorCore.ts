@@ -187,7 +187,7 @@ export class OrchestratorCore {
         mode,
         prompt,
         config,
-        options?.modelsOverride
+        options?.modelsOverride as any
       );
     } catch (err) {
       const error = err as Error;

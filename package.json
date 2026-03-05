@@ -8,7 +8,12 @@
     "build": "pnpm run --recursive build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:unit": "vitest run --dir apps --dir packages",
+    "test:integration": "vitest run --dir tests/integration",
+    "test:e2e": "vitest run --dir tests/e2e",
+    "test:property": "vitest run --grep 'Property-Based'",
+    "test:all": "pnpm test:unit && pnpm test:integration && pnpm test:e2e"
   },
   "workspaces": [
     "apps/*",
@@ -17,6 +22,7 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@vitest/coverage-v8": "^2.1.0",
+    "axios": "^1.13.6",
     "fast-check": "^3.22.0",
     "tsx": "^4.21.0",
     "typescript": "^5.3.3",

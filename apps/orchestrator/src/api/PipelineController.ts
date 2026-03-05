@@ -334,8 +334,8 @@ export class PipelineController {
           ? "cancelled" 
           : "failed";
 
-      trace.endSpan(runId, spanId, traceStatus);
-      trace.endPipeline(runId, traceStatus);
+      trace.endSpan(runId, spanId, traceStatus === 'cancelled' ? 'failed' : traceStatus as 'completed' | 'failed');
+      trace.endPipeline(runId, traceStatus === 'cancelled' ? 'failed' : traceStatus as 'completed' | 'failed');
 
       logger.info("Pipeline execution completed", {
         success: result.success,

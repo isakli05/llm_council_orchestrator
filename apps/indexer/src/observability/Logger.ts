@@ -94,6 +94,3 @@ export { LogLevel };
 
 // Global logger instance
 export const logger = new Logger(LogLevel.INFO, { service: 'indexer' });
-
-// Export Logger class for creating child loggers
-export { Logger };

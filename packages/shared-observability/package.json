@@ -1,0 +1,30 @@
+{
+  "name": "@llm/shared-observability",
+  "version": "0.1.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "pino": "^8.17.0",
+    "pino-pretty": "^10.3.0",
+    "@opentelemetry/api": "^1.7.0",
+    "@opentelemetry/sdk-node": "^0.45.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.45.0",
+    "@opentelemetry/exporter-metrics-otlp-grpc": "^0.45.0",
+    "@opentelemetry/resources": "^1.18.0",
+    "@opentelemetry/semantic-conventions": "^1.18.0",
+    "@opentelemetry/sdk-trace-base": "^1.18.0",
+    "@opentelemetry/sdk-metrics": "^1.18.0",
+    "prom-client": "^15.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "vitest": "^2.1.0"
+  }
+}

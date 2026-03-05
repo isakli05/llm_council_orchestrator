@@ -531,12 +531,12 @@ export class ModelGateway {
       const errorCode = isTimeout ? ERROR_CODES.PROVIDER_TIMEOUT : ERROR_CODES.MODEL_CALL_ERROR;
 
       // Per Requirements 24.2: Return partial result if available
-      if (isTimeout && partialResult && partialResult.content) {
+      if (isTimeout && partialResult && (partialResult as any).content) {
         return {
-          ...partialResult,
+          ...(partialResult as any),
           success: false,
           metadata: {
-            ...partialResult.metadata,
+            ...(partialResult as any).metadata,
             latencyMs,
             partial: true,
           },

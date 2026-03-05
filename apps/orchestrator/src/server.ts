@@ -26,6 +26,10 @@ import { logger, LogLevel } from "./observability/Logger";
 import { scheduledCleanupManager } from "./observability/ScheduledCleanup";
 import { shutdownManager } from "./observability/ShutdownManager";
 import { mapZodError, ValidationError, PathTraversalError, InvalidFilePathError, SqlInjectionError } from "./api/validators";
+import { setupRateLimiting } from "./middleware/rateLimiter";
+import { setupSecurity } from "./middleware/security";
+import { circuitBreakerManager } from "./resilience/circuitBreaker";
+import { gracefulDegradation } from "./resilience/gracefulDegradation";
 
 /**
  * Server configuration from environment
@@ -129,7 +133,36 @@ async function createServer(config: ServerConfig): Promise<FastifyInstance> {
     // connectionTimeout is needed for onTimeout hook to fire
     connectionTimeout: TIMEOUTS.HTTP_REQUEST,
     bodyLimit: 10485760, // 10MB
+    trustProxy: true, // For rate limiting with correct IP
   });
+
+  // 1. Security middleware (first)
+  await setupSecurity(server, {
+    corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000', 'http://localhost:5173'],
+    contentSecurityPolicy: true,
+    hsts: true,
+    xssFilter: true,
+  });
+
+  // 2. Rate limiting
+  await setupRateLimiting(server);
+
+  // 3. Observability middleware
+  const { setupLogging } = await import('./middleware/logging');
+  const { setupMetrics } = await import('./middleware/metrics');
+  
+  await setupLogging(server);
+  await setupMetrics(server);
+  
+  // Tracing is optional (requires OTEL_ENABLED=true)
+  if (process.env.OTEL_ENABLED === 'true') {
+    try {
+      const { setupTracing } = await import('./middleware/tracing');
+      await setupTracing(server);
+    } catch (err) {
+      server.log.warn({ err }, 'Tracing setup failed, continuing without tracing');
+    }
+  }
 
   // Requirements: 24.1, 24.4, 24.5 - Log timeout events and return 504 Gateway Timeout
   // The onTimeout hook is called when the request times out and the socket is hung up
@@ -246,6 +279,9 @@ async function createServer(config: ServerConfig): Promise<FastifyInstance> {
   const indexController = new IndexController(indexClient);
   const specController = new SpecController(config.specRoot);
   const configController = new ConfigController(orchestratorConfig, modelGateway);
+
+  // Store indexClient on server for shutdown access
+  (server as any).indexClient = indexClient;
 
   // API Version prefix
   // Requirements: 23.1 - Support /api/v1/ prefix for all endpoints
@@ -457,6 +493,31 @@ async function createServer(config: ServerConfig): Promise<FastifyInstance> {
     }
   });
 
+  // Detailed health endpoint with circuit breaker status
+  server.get("/health/detailed", async () => {
+    const circuitStats = circuitBreakerManager.getAllStats();
+    const degradationLevel = gracefulDegradation.getLevel();
+
+    return {
+      status: degradationLevel === 'emergency' ? 'unhealthy' : 'healthy',
+      timestamp: Date.now(),
+      degradation: {
+        level: degradationLevel,
+        availableProviders: circuitBreakerManager.getAvailableProviders(),
+      },
+      circuits: Object.fromEntries(
+        Array.from(circuitStats.entries()).map(([provider, stats]) => [
+          provider,
+          {
+            state: stats.state,
+            failures: stats.failures,
+            successes: stats.successes,
+          },
+        ])
+      ),
+    };
+  });
+
   // Readiness probe endpoint
   // Requirements: 22.3, 22.4, 22.6, 22.7
   // - Check Qdrant connectivity
@@ -573,6 +634,21 @@ async function createServer(config: ServerConfig): Promise<FastifyInstance> {
       };
       return reply.code(503).send(response);
     }
+  });
+
+  // New observability health endpoints (with different paths to avoid conflicts)
+  const { HealthController } = await import('./api/HealthController');
+  
+  server.get('/health/liveness', async (request, reply) => {
+    return HealthController.liveness(request, reply);
+  });
+
+  server.get('/health/readiness', async (request, reply) => {
+    return HealthController.readiness(request, reply);
+  });
+
+  server.get('/health/full', async (request, reply) => {
+    return HealthController.detailed(request, reply);
   });
 
   // Global error handler
@@ -724,6 +800,9 @@ export async function startServer(): Promise<void> {
   serverStartTime = Date.now();
 
   const server = await createServer(config);
+  
+  // Get indexClient from server context for shutdown
+  const indexClient = (server as any).indexClient;
 
   try {
     await server.listen({ port: config.port, host: config.host });
@@ -752,9 +831,11 @@ export async function startServer(): Promise<void> {
     // Register IndexClient connection close callback
     // Requirements: 19.3
     // - Close database connections during shutdown
-    shutdownManager.registerConnectionClose("index-client", async () => {
-      await indexClient.close();
-    });
+    if (indexClient) {
+      shutdownManager.registerConnectionClose("index-client", async () => {
+        await indexClient.close();
+      });
+    }
     
     // Register SIGTERM and SIGINT signal handlers
     // Requirements: 19.1
@@ -762,6 +843,12 @@ export async function startServer(): Promise<void> {
     // - Set isShuttingDown flag
     // - Trigger shutdown sequence
     shutdownManager.registerSignalHandlers();
+    
+    // Register graceful shutdown for circuit breakers
+    shutdownManager.register("circuit-breakers", async () => {
+      await circuitBreakerManager.shutdown();
+      gracefulDegradation.shutdown();
+    }, 40);
     
     logger.info("Orchestrator API server started", {
       address: `http://${config.host}:${config.port}`,

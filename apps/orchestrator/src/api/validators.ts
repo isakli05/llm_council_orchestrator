@@ -8,6 +8,7 @@ import {
   isValidJustification,
   validateDomainExclusion as validateDomainExclusionShared 
 } from "@llm/shared-utils";
+import { SecurityUtils } from "../middleware/security";
 
 // Re-export shared validation utilities for convenience
 export { DOMAIN_ID_PATTERN, isValidDomainId, isValidJustification };
@@ -308,7 +309,7 @@ const safePathValidator = z.string().min(1).refine(
   {
     message: "Path contains invalid characters. Only alphanumeric characters, dots, underscores, hyphens, spaces, and path separators are allowed.",
   }
-);
+).transform((val) => SecurityUtils.sanitizePath(val));
 
 /**
  * Zod refinement for safe search query (no SQL injection)
@@ -320,6 +321,11 @@ const safeQueryValidator = z.string().min(1).refine(
     message: "Query contains potentially unsafe characters",
   }
 );
+
+/**
+ * Zod refinement for safe prompt (with injection protection)
+ */
+const safePromptValidator = z.string().min(1).max(50000).transform((val) => SecurityUtils.sanitizePrompt(val));
 
 // ============================================================================
 // Schema Definitions
@@ -412,7 +418,7 @@ export type RoleConfigsInput = z.infer<typeof RoleConfigsSchema>;
  */
 export const RunPipelineRequestSchema = z.object({
   pipeline_mode: PipelineModeSchema,
-  prompt: z.string().min(1, "Prompt must not be empty"),
+  prompt: safePromptValidator,
   project_root: safePathValidator.default(process.cwd()),
   force_reindex: z.boolean().optional().default(false),
   role_configs: RoleConfigsSchema,
