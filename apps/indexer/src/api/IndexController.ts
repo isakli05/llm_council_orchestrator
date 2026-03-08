@@ -3,6 +3,7 @@ import { Chunker, Chunk } from '../chunker/Chunker';
 import { EmbeddingEngine } from '../embedding/EmbeddingEngine';
 import { VectorIndex, SearchResult } from '../vector_index/VectorIndex';
 import { IncrementalTracker } from '../incremental/IncrementalTracker';
+import { MetadataAnalyzer } from '../analyzer/MetadataAnalyzer';
 
 export interface EnsureIndexedRequest {
   projectRoot: string;
@@ -22,6 +23,21 @@ export interface EnsureIndexedResponse {
     totalChunks: number;
     indexedChunks: number;
     processingTimeMs: number;
+  };
+  metadata?: {
+    filesByExtension: Record<string, number>;
+    directoryStructure: Array<{
+      name: string;
+      path: string;
+      fileCount: number;
+    }>;
+    detectedFrameworks: string[];
+    dependencies: Array<{
+      name: string;
+      version: string;
+      source: string;
+      isDev: boolean;
+    }>;
   };
   error?: string;
 }
@@ -134,6 +150,13 @@ export class IndexController {
       let indexedChunks = 0;
 
       if (filesToProcess.length > 0) {
+        // For modified files, remove old chunks first to prevent stale data
+        if (changes.modified.length > 0) {
+          const modifiedPaths = changes.modified.map(f => f.relativePath);
+          const removedCount = await this.vectorIndex.removeByFilePaths(modifiedPaths);
+          console.log(`Removed ${removedCount} stale chunks from ${changes.modified.length} modified files`);
+        }
+
         // Chunk files
         const chunks = await this.chunker.chunkFiles(filesToProcess);
         totalChunks = chunks.length;
@@ -149,18 +172,23 @@ export class IndexController {
         await this.incrementalTracker.updateHashes(filesToProcess);
       }
 
-      // Handle deleted files
+      // Handle deleted files - remove from both tracker and vector index
       if (changes.deleted.length > 0) {
+        // Remove chunks from vector index
+        const removedCount = await this.vectorIndex.removeByFilePaths(changes.deleted);
+        console.log(`Removed ${removedCount} chunks from ${changes.deleted.length} deleted files`);
+        
         // Remove from tracker
         await this.incrementalTracker.removeHashes(changes.deleted);
-        
-        // Note: We don't remove from vector index as we'd need to track chunk-to-file mapping
-        // This is acceptable as the index will be rebuilt on force rebuild
       }
 
       // Save state
       await this.vectorIndex.save();
       await this.incrementalTracker.save();
+
+      // Analyze metadata for discovery
+      const metadataAnalyzer = new MetadataAnalyzer(request.projectRoot);
+      const projectMetadata = await metadataAnalyzer.analyze(allFiles);
 
       const processingTimeMs = Date.now() - startTime;
 
@@ -176,6 +204,7 @@ export class IndexController {
           indexedChunks,
           processingTimeMs,
         },
+        metadata: projectMetadata,
       };
     } catch (error: any) {
       return {
@@ -287,14 +316,23 @@ export class IndexController {
         v.metadata.relativePath.includes(request.path)
       ).slice(0, maxChunks);
 
+      // If no matches found, return error
+      if (pathMatches.length === 0) {
+        return {
+          success: false,
+          context: [],
+          error: `No indexed content found for path: ${request.path}`,
+        };
+      }
+
       // Get chunks for matched vectors
       const context = pathMatches.map(v => {
         const chunk = this.vectorIndex['chunks'].get(v.id);
         return {
           content: chunk?.content || `[Content from ${v.metadata.relativePath}:${v.metadata.startLine}-${v.metadata.endLine}]`,
-          filePath: v.metadata.filePath,
-          startLine: v.metadata.startLine,
-          endLine: v.metadata.endLine,
+          filePath: chunk?.filePath || v.metadata.filePath,
+          startLine: chunk?.startLine || v.metadata.startLine,
+          endLine: chunk?.endLine || v.metadata.endLine,
         };
       });
 

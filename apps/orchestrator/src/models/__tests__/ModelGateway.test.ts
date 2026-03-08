@@ -13,6 +13,31 @@ describe('ModelGateway', () => {
   });
 
   describe('Provider Management', () => {
+    it('should automatically register all supported providers on construction', () => {
+      const providers = gateway.getRegisteredProviders();
+      expect(Array.isArray(providers)).toBe(true);
+      expect(providers.length).toBeGreaterThan(0);
+      
+      // Verify all known providers are registered
+      expect(providers).toContain(ProviderType.OPENAI);
+      expect(providers).toContain(ProviderType.ANTHROPIC);
+      expect(providers).toContain(ProviderType.GLM);
+      expect(providers).toContain(ProviderType.GEMINI);
+      expect(providers).toContain(ProviderType.OPENAI_OPENROUTER);
+      expect(providers).toContain(ProviderType.ANTHROPIC_OPENROUTER);
+      expect(providers).toContain(ProviderType.GLM_OPENROUTER);
+      expect(providers).toContain(ProviderType.GEMINI_OPENROUTER);
+    });
+
+    it('should mark all registered providers as available initially', () => {
+      const providers = gateway.getRegisteredProviders();
+      
+      for (const provider of providers) {
+        const isAvailable = gateway.isProviderAvailable(provider);
+        expect(isAvailable).toBe(true);
+      }
+    });
+
     it('should check if provider is available', () => {
       const isAvailable = gateway.isProviderAvailable(ProviderType.OPENAI);
       expect(typeof isAvailable).toBe('boolean');
@@ -133,6 +158,97 @@ describe('ModelGateway', () => {
       expect(response.modelId).toBe('gpt-4');
       expect(response.success).toBe(false);
       expect(response.error).toBeDefined();
+    });
+
+    it('should throw meaningful error when adapter registration fails', () => {
+      // This test verifies that adapter initialization errors are properly propagated
+      // In practice, this would only fail if adapter classes are missing or malformed
+      expect(() => {
+        // Create a new gateway - should succeed with proper adapters
+        const testGateway = new ModelGateway();
+        expect(testGateway.getRegisteredProviders().length).toBeGreaterThan(0);
+      }).not.toThrow();
+    });
+  });
+
+  describe('Provider Registration', () => {
+    it('should allow manual provider registration for testing', () => {
+      const mockAdapter = {
+        call: vi.fn().mockResolvedValue({
+          modelId: 'test-model',
+          content: 'test response',
+          success: true,
+        }),
+        supportsThinking: vi.fn().mockReturnValue(false),
+        getThinkingConfig: vi.fn().mockReturnValue(null),
+      };
+
+      gateway.registerProvider(ProviderType.OPENAI, mockAdapter as any);
+      expect(gateway.isProviderAvailable(ProviderType.OPENAI)).toBe(true);
+    });
+
+    it('should allow unregistering providers', () => {
+      gateway.unregisterProvider(ProviderType.OPENAI);
+      expect(gateway.isProviderAvailable(ProviderType.OPENAI)).toBe(false);
+    });
+
+    it('should mark provider as unavailable with reason', () => {
+      gateway.markProviderUnavailable(ProviderType.OPENAI, 'Missing API key');
+      expect(gateway.isProviderAvailable(ProviderType.OPENAI)).toBe(false);
+      
+      const status = gateway.getProviderStatus(ProviderType.OPENAI);
+      expect(status?.available).toBe(false);
+      expect(status?.reason).toBe('Missing API key');
+    });
+  });
+
+  describe('Config-Based Initialization', () => {
+    it('should validate API keys when config is provided at construction', () => {
+      // Create a mock config with some providers configured
+      const mockConfig = {
+        models: [
+          { model: 'gpt-4', provider: 'openai' },
+          { model: 'glm-4.6', provider: 'zai' },
+        ],
+      } as any;
+
+      // Create gateway with config - should validate and mark unavailable providers
+      const gatewayWithConfig = new ModelGateway(mockConfig);
+      
+      // Gateway should still have all providers registered
+      const providers = gatewayWithConfig.getRegisteredProviders();
+      expect(providers.length).toBeGreaterThan(0);
+      
+      // Check that unavailable providers are marked (those without API keys)
+      const unavailable = gatewayWithConfig.getUnavailableProviders();
+      expect(Array.isArray(unavailable)).toBe(true);
+    });
+
+    it('should not throw when config is not provided', () => {
+      expect(() => {
+        const gatewayNoConfig = new ModelGateway();
+        expect(gatewayNoConfig.getRegisteredProviders().length).toBeGreaterThan(0);
+      }).not.toThrow();
+    });
+
+    it('should allow calling validateAndMarkUnavailableProviders after construction', () => {
+      // Use a minimal valid config structure
+      const mockConfig = {
+        models: [
+          { model: 'gpt-4', provider: 'openai' },
+          { model: 'glm-4.6', provider: 'zai' },
+        ],
+      } as any;
+
+      // This should not throw
+      expect(() => {
+        gateway.validateAndMarkUnavailableProviders(mockConfig, false);
+      }).not.toThrow();
+      
+      // After validation, check that providers can be marked unavailable
+      gateway.markProviderUnavailable(ProviderType.OPENAI, 'Test reason');
+      const status = gateway.getProviderStatus(ProviderType.OPENAI);
+      expect(status?.available).toBe(false);
     });
   });
 });

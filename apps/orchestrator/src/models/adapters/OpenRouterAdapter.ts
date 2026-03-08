@@ -133,22 +133,13 @@ export abstract class OpenRouterAdapter implements ProviderAdapter {
 
   /**
    * Create a new OpenRouterAdapter instance.
-   * Validates that the OPENROUTER_API_KEY environment variable is set.
+   * API key validation is deferred to call time to allow adapter registration
+   * without requiring all API keys to be present at construction.
    * 
    * Per Requirements 6.2: Use OPENROUTER_API_KEY from environment
-   * 
-   * @throws {Error} If OPENROUTER_API_KEY environment variable is not set
    */
   constructor() {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    
-    if (!apiKey) {
-      throw new Error(
-        "OPENROUTER_API_KEY environment variable is required for OpenRouter adapter"
-      );
-    }
-
-    this.apiKey = apiKey;
+    this.apiKey = process.env.OPENROUTER_API_KEY || "";
     
     // Per Requirements 6.3: Include HTTP-Referer and X-Title headers
     this.client = axios.create({
@@ -230,6 +221,23 @@ export abstract class OpenRouterAdapter implements ProviderAdapter {
     options?: ModelCallOptions
   ): Promise<ModelResponse> {
     const startTime = Date.now();
+
+    // Validate API key at call time
+    if (!this.apiKey) {
+      return {
+        modelId,
+        content: "",
+        success: false,
+        metadata: {
+          latencyMs: Date.now() - startTime,
+        },
+        error: {
+          code: "AUTHENTICATION_ERROR",
+          message: "OPENROUTER_API_KEY environment variable is required for OpenRouter adapter",
+          retryable: false,
+        },
+      };
+    }
 
     try {
       // Build request body

@@ -60,6 +60,35 @@ export class Trace {
   }
 
   /**
+   * Initialize a pipeline trace with a provided runId
+   * 
+   * This is used when the runId is generated externally (e.g., by the API controller)
+   * to maintain ID consistency across the entire pipeline lifecycle.
+   * 
+   * @param runId - The pre-generated run ID
+   * @param mode - Pipeline execution mode
+   */
+  initializePipeline(runId: string, mode: string): void {
+    // Check if trace already exists (it might have been created by the controller)
+    if (this.traces.has(runId)) {
+      logger.debug(`Trace already exists for runId: ${runId}`);
+      return;
+    }
+
+    const trace: PipelineTrace = {
+      runId,
+      mode,
+      startTime: new Date().toISOString(),
+      spans: [],
+      status: "running",
+    };
+
+    this.traces.set(runId, trace);
+    logger.setRunId(runId);
+    logger.info(`Pipeline initialized with external runId`, { mode, runId });
+  }
+
+  /**
    * End a pipeline trace
    * 
    * Requirements: 27.7 - Support cancelled status for pipeline cancellation

@@ -4,3 +4,10 @@ dist/
 .env
 .env.local
 vscode-extension.vsix
+
+# Prevent compiled JS files in source directories
+# Only TypeScript source files should exist in src/
+apps/*/src/**/*.js
+packages/*/src/**/*.js
+!apps/*/src/**/*.test.js
+!apps/*/src/**/*.spec.js

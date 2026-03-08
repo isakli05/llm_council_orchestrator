@@ -19,9 +19,21 @@ export const TOOL_DEFINITIONS: MCPToolDefinition[] = [
           type: "string",
           description: "User prompt for the pipeline",
         },
+        projectRoot: {
+          type: "string",
+          description: "Optional project root directory path (defaults to current working directory)",
+        },
+        forceReindex: {
+          type: "boolean",
+          description: "Optional flag to force reindexing of the codebase (defaults to false)",
+        },
+        roleConfigs: {
+          type: "object",
+          description: "Optional role-specific configuration overrides",
+        },
         modelsOverride: {
           type: "object",
-          description: "Optional model overrides",
+          description: "Optional model overrides for specific roles",
         },
         domainExclusions: {
           type: "array",

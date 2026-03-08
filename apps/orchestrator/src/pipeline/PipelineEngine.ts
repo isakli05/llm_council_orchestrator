@@ -204,6 +204,7 @@ export class PipelineEngine {
    * @param forceReindex - Whether to force a full reindex
    * @param roleConfigs - Optional per-role model configurations (replaces modelsOverride)
    * @param domainExclusions - Optional domain exclusions
+   * @param runId - Optional pre-generated run ID (if not provided, a new one will be generated)
    */
   async execute(
     mode: PipelineMode,
@@ -212,7 +213,8 @@ export class PipelineEngine {
     projectRoot: string = process.cwd(),
     forceReindex: boolean = false,
     roleConfigs?: Record<string, RoleModelConfig>,
-    domainExclusions?: DomainExclusion[]
+    domainExclusions?: DomainExclusion[],
+    runId?: string
   ): Promise<PipelineResult> {
     // Per Requirements 15.3: Validate API keys for configured providers on startup
     // This marks unavailable providers in the ModelGateway
@@ -220,8 +222,15 @@ export class PipelineEngine {
       this.validateApiKeys(config as ArchitectConfig);
     }
     
-    // Start pipeline trace
-    const runId = trace.startPipeline(mode);
+    // Use provided runId or generate a new one
+    // If runId is provided by the controller, use it to maintain ID consistency
+    // across the entire pipeline lifecycle (API response, tracing, state management)
+    const pipelineRunId = runId || trace.startPipeline(mode);
+    
+    // If runId was provided externally, initialize the trace
+    if (runId) {
+      trace.initializePipeline(runId, mode);
+    }
     
     // Create AbortController for cancellation support
     // Requirements: 27.7 - Handle cancellation request during execution
@@ -242,13 +251,26 @@ export class PipelineEngine {
     const providerValidation = validateProviderAvailability(mergedRoleConfig);
     if (!providerValidation.valid) {
       // End pipeline trace with failure
-      trace.endPipeline(runId, "failed");
+      trace.endPipeline(pipelineRunId, "failed");
+      
+      const completedAt = new Date().toISOString();
+      const startedAt = new Date().toISOString(); // Just started, so use current time
       
       return {
         success: false,
         mode,
         error: providerValidation.error,
-        completedAt: new Date().toISOString(),
+        completedAt,
+        executionMetadata: {
+          runId: pipelineRunId,
+          durationMs: 0,
+          stepsCompleted: [],
+          totalStepsAttempted: 0,
+          successfulSteps: 0,
+          failedSteps: 0,
+          startedAt,
+          completedAt,
+        },
       };
     }
     
@@ -258,7 +280,7 @@ export class PipelineEngine {
     
     const context: PipelineContext = {
       // Pipeline metadata (Requirements: 28.1, 28.2)
-      runId,
+      runId: pipelineRunId,
       mode,
       startedAt: new Date().toISOString(),
       prompt,
@@ -280,18 +302,18 @@ export class PipelineEngine {
     
     // Create state machine for this run
     // Requirements: 27.7 - Track state for cancellation
-    const stateMachine = new PipelineExecutionStateMachine(runId);
-    this.stateMachines.set(runId, stateMachine);
+    const stateMachine = new PipelineExecutionStateMachine(pipelineRunId);
+    this.stateMachines.set(pipelineRunId, stateMachine);
     
     // Register active run for cancellation support
     // Requirements: 27.7 - Track active runs for cancellation
     const activeRun: ActivePipelineRun = {
-      runId,
+      runId: pipelineRunId,
       context,
       abortController,
       startedAt: context.startedAt,
     };
-    this.activeRuns.set(runId, activeRun);
+    this.activeRuns.set(pipelineRunId, activeRun);
 
     try {
       // Start the state machine
@@ -306,8 +328,8 @@ export class PipelineEngine {
       for (const stepName of steps) {
         // Check for cancellation before each step
         // Requirements: 27.7 - Handle cancellation request during execution
-        if (this.isCancelled(runId)) {
-          return this.handleCancellation(runId, context, stepResults);
+        if (this.isCancelled(pipelineRunId)) {
+          return this.handleCancellation(pipelineRunId, context, stepResults);
         }
         
         // Update current step in context and active run
@@ -322,8 +344,8 @@ export class PipelineEngine {
         
         // Check for cancellation after step execution
         // Requirements: 27.7 - Handle cancellation request during execution
-        if (this.isCancelled(runId)) {
-          return this.handleCancellation(runId, context, stepResults);
+        if (this.isCancelled(pipelineRunId)) {
+          return this.handleCancellation(pipelineRunId, context, stepResults);
         }
 
         // Handle step failure
@@ -343,7 +365,7 @@ export class PipelineEngine {
           
           // Record failure in trace span with error details
           // Requirements: 26.8 - Record failure in trace span with error details
-          this.recordStepFailureInTrace(runId, stepName, stepResult.error);
+          this.recordStepFailureInTrace(pipelineRunId, stepName, stepResult.error);
 
           // Check if this is a critical step failure
           // Requirements: 26.4 - Abort pipeline on critical step failure (INDEX)
@@ -355,7 +377,7 @@ export class PipelineEngine {
             });
 
             // End pipeline trace with failure
-            trace.endPipeline(runId, "failed");
+            trace.endPipeline(pipelineRunId, "failed");
 
             // Calculate completion timestamp for critical failure
             const criticalFailureCompletedAt = new Date().toISOString();
@@ -413,7 +435,7 @@ export class PipelineEngine {
       const finalData = await this.aggregateResults(stepResults, context);
 
       // End pipeline trace with success
-      trace.endPipeline(runId, "completed");
+      trace.endPipeline(pipelineRunId, "completed");
 
       // Calculate completion timestamp
       const completedAt = new Date().toISOString();
@@ -453,10 +475,10 @@ export class PipelineEngine {
       const error = err as Error;
       
       // Record unexpected error in trace
-      this.recordUnexpectedErrorInTrace(runId, error);
+      this.recordUnexpectedErrorInTrace(pipelineRunId, error);
       
       // Transition state machine to FAILED
-      const sm = this.stateMachines.get(runId);
+      const sm = this.stateMachines.get(pipelineRunId);
       if (sm && !sm.isTerminal()) {
         try {
           sm.fail(`pipeline_error: ${error.message}`);
@@ -466,7 +488,7 @@ export class PipelineEngine {
       }
       
       // End pipeline trace with failure
-      trace.endPipeline(runId, "failed");
+      trace.endPipeline(pipelineRunId, "failed");
       
       // Calculate completion timestamp for error response
       const errorCompletedAt = new Date().toISOString();
@@ -495,7 +517,7 @@ export class PipelineEngine {
     } finally {
       // Cleanup: Remove from active runs and state machines
       // Requirements: 27.7 - Release resources
-      this.cleanupRun(runId);
+      this.cleanupRun(pipelineRunId);
     }
   }
   
@@ -1623,15 +1645,24 @@ export class PipelineEngine {
       }
 
       // Build IndexMetadata from the result
-      // Note: The full IndexMetadata structure requires additional data from the indexer
-      // For now, we create a minimal structure that can be extended
+      // Extract rich metadata from indexer response
       const indexMetadata: IndexMetadata = {
-        totalChunks: 0, // Will be populated by indexer in future
+        totalChunks: indexResult.metadata?.directoryStructure.reduce((sum, dir) => sum + dir.fileCount, 0) || 0,
         totalFiles: indexResult.filesIndexed || 0,
-        filesByExtension: {}, // Will be populated by indexer in future
-        directoryStructure: [], // Will be populated by indexer in future
-        detectedFrameworks: [], // Will be populated by indexer in future
-        dependencies: [], // Will be populated by indexer in future
+        filesByExtension: indexResult.metadata?.filesByExtension || {},
+        directoryStructure: (indexResult.metadata?.directoryStructure || []).map(dir => ({
+          name: dir.name,
+          path: dir.path,
+          isDirectory: true,
+          children: [],
+        })),
+        detectedFrameworks: indexResult.metadata?.detectedFrameworks || [],
+        dependencies: (indexResult.metadata?.dependencies || []).map(dep => ({
+          name: dep.name,
+          version: dep.version,
+          source: dep.source as "npm" | "composer" | "pip" | "maven" | "other",
+          isDev: dep.isDev,
+        })),
       };
 
       // Store IndexMetadata in pipeline context with validation
@@ -1639,11 +1670,23 @@ export class PipelineEngine {
       // Requirements: 28.5 - Validate required fields before storing
       this.updateContextWithIndexMetadata(context, indexMetadata);
 
-      // Log indexing statistics
+      // Log indexing statistics with metadata summary
       logger.info("INDEX step completed successfully", {
         filesIndexed: indexResult.filesIndexed,
         completedAt: indexResult.completedAt,
         projectRoot: context.projectRoot,
+        metadata: {
+          totalChunks: indexMetadata.totalChunks,
+          extensionCount: Object.keys(indexMetadata.filesByExtension).length,
+          topExtensions: Object.entries(indexMetadata.filesByExtension)
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 5)
+            .map(([ext, count]) => `${ext}:${count}`),
+          directoryCount: indexMetadata.directoryStructure.length,
+          frameworkCount: indexMetadata.detectedFrameworks.length,
+          frameworks: indexMetadata.detectedFrameworks,
+          dependencyCount: indexMetadata.dependencies.length,
+        },
       });
 
       // Update trace span with indexing metrics
@@ -2615,23 +2658,198 @@ export class PipelineEngine {
   }
 
   /**
-   * Aggregate step results into final output
-   * TODO: Integrate with Aggregator service once implemented
+   * Aggregate results from all pipeline steps into final output
+   * 
+   * Combines step results and context data into a meaningful final result.
+   * This method constructs the final data payload that represents the actual
+   * value produced by the pipeline, not just execution metadata.
+   * 
+   * Requirements: 04 - Pipeline final result completion
+   * - Return real aggregate data instead of placeholder
+   * - Include FinalArchitecturalReport when available
+   * - Provide meaningful analysis summary and decisions
+   * - Make clear what data is available vs. placeholder
    */
   private async aggregateResults(
     stepResults: PipelineStepResult[],
     context: PipelineContext
   ): Promise<unknown> {
-    // Placeholder aggregation
-    return {
+    // Build comprehensive final data based on what was actually produced
+    const finalData: Record<string, unknown> = {
       mode: context.mode,
-      totalSteps: stepResults.length,
-      successfulSteps: stepResults.filter((s) => s.success).length,
-      results: stepResults.map((s) => ({
-        step: s.stepName,
-        success: s.success,
-      })),
+      summary: this.buildPipelineSummary(stepResults, context),
     };
+
+    // Include FinalArchitecturalReport if aggregate step completed successfully
+    // This is the primary output for FULL mode pipelines
+    if (context.finalReport) {
+      finalData.report = context.finalReport;
+      finalData.reportAvailable = true;
+      
+      // Extract key insights from the report for quick access
+      finalData.insights = {
+        sectionsCount: context.finalReport.sections.length,
+        sectionTitles: context.finalReport.sections.map(s => s.title),
+        generatedAt: context.finalReport.generatedAt,
+        usedFallback: context.finalReport.metadata?.usedFallback || false,
+      };
+      
+      // Include warning if fallback was used
+      if (context.finalReport.metadata?.warning) {
+        finalData.warning = context.finalReport.metadata.warning;
+      }
+    } else {
+      finalData.reportAvailable = false;
+      finalData.reportStatus = this.determineReportStatus(stepResults, context);
+    }
+
+    // Include discovery results summary if available
+    if (context.discoveryResult) {
+      finalData.discovery = {
+        totalDomains: context.discoveryResult.statistics.totalDomains,
+        deepDomains: context.discoveryResult.statistics.deepDomains,
+        excludedDomains: context.discoveryResult.statistics.excludedDomains,
+        domains: (context.discoveryResult.domains || []).map(d => ({
+          id: d.id,
+          name: d.name,
+          analysisDepth: d.analysisDepth,
+          confidence: d.confidence,
+          signalsCount: d.signals?.length || 0,
+        })),
+      };
+    }
+
+    // Include analysis summary if role responses are available
+    if (context.roleResponses && context.roleResponses.length > 0) {
+      const successfulResponses = context.roleResponses.filter(r => r.success);
+      const rolesSummary: Record<string, unknown> = {};
+      
+      // Group responses by role for summary
+      for (const response of successfulResponses) {
+        if (!rolesSummary[response.role]) {
+          rolesSummary[response.role] = {
+            executedAt: response.executedAt,
+            outputsCount: response.outputs.length,
+            domainSpecific: !!response.domainId,
+          };
+        }
+      }
+      
+      finalData.analysis = {
+        totalRoles: new Set(context.roleResponses.map(r => r.role)).size,
+        successfulRoles: new Set(successfulResponses.map(r => r.role)).size,
+        totalOutputs: context.roleResponses.reduce((sum, r) => sum + r.outputs.length, 0),
+        rolesSummary,
+      };
+    }
+
+    // Include index metadata summary if available
+    if (context.indexMetadata) {
+      finalData.index = {
+        totalFiles: context.indexMetadata.totalFiles,
+        totalChunks: context.indexMetadata.totalChunks,
+        detectedFrameworks: context.indexMetadata.detectedFrameworks,
+        topExtensions: Object.entries(context.indexMetadata.filesByExtension || {})
+          .sort(([, a], [, b]) => b - a)
+          .slice(0, 10)
+          .map(([ext, count]) => ({ extension: ext, count })),
+      };
+    }
+
+    // Include execution summary
+    finalData.execution = {
+      totalSteps: stepResults.length,
+      successfulSteps: stepResults.filter(s => s.success).length,
+      failedSteps: stepResults.filter(s => !s.success).length,
+      completedStepNames: stepResults.filter(s => s.success).map(s => s.stepName),
+      failedStepNames: stepResults.filter(s => !s.success).map(s => s.stepName),
+    };
+
+    return finalData;
+  }
+
+  /**
+   * Build a human-readable summary of the pipeline execution
+   * 
+   * Requirements: 04 - Pipeline final result completion
+   * 
+   * @param stepResults - Array of step results
+   * @param context - Pipeline execution context
+   * @returns Summary string describing what was accomplished
+   */
+  private buildPipelineSummary(
+    stepResults: PipelineStepResult[],
+    context: PipelineContext
+  ): string {
+    const successfulSteps = stepResults.filter(s => s.success).length;
+    const totalSteps = stepResults.length;
+    
+    // Build summary based on what was actually completed
+    const parts: string[] = [];
+    
+    if (context.indexReady) {
+      parts.push(`indexed ${context.indexMetadata?.totalFiles || 0} files`);
+    }
+    
+    if (context.discoveryComplete) {
+      parts.push(`discovered ${context.discoveryResult?.statistics.totalDomains || 0} domains`);
+    }
+    
+    if (context.analysisComplete) {
+      const rolesCount = context.roleResponses 
+        ? new Set(context.roleResponses.filter(r => r.success).map(r => r.role)).size 
+        : 0;
+      parts.push(`analyzed with ${rolesCount} roles`);
+    }
+    
+    if (context.aggregationComplete) {
+      parts.push(`generated final architectural report`);
+    }
+    
+    if (parts.length === 0) {
+      return `Pipeline completed ${successfulSteps}/${totalSteps} steps`;
+    }
+    
+    return `Pipeline ${parts.join(', ')} (${successfulSteps}/${totalSteps} steps completed)`;
+  }
+
+  /**
+   * Determine why the final report is not available
+   * 
+   * Requirements: 04 - Pipeline final result completion
+   * - Make clear what placeholder data represents
+   * - Explicitly state when features are not yet supported
+   * 
+   * @param stepResults - Array of step results
+   * @param context - Pipeline execution context
+   * @returns Status message explaining report availability
+   */
+  private determineReportStatus(
+    stepResults: PipelineStepResult[],
+    context: PipelineContext
+  ): string {
+    // Check if aggregate step was attempted
+    const aggregateStep = stepResults.find(s => s.stepName === "aggregate");
+    
+    if (!aggregateStep) {
+      // Aggregate step not in pipeline (e.g., QUICK mode)
+      if (context.mode === PIPELINE_MODES.QUICK) {
+        return "Final report not generated in QUICK mode - use FULL mode for comprehensive analysis";
+      }
+      return "Aggregate step not executed in this pipeline mode";
+    }
+    
+    if (!aggregateStep.success) {
+      // Aggregate step failed
+      return `Report generation failed: ${aggregateStep.error?.message || "Unknown error"}`;
+    }
+    
+    if (!context.roleResponses || context.roleResponses.length === 0) {
+      return "No analysis data available to aggregate";
+    }
+    
+    // Aggregate step succeeded but no report in context (shouldn't happen)
+    return "Report generation completed but report not found in context";
   }
 
   /**
@@ -2659,6 +2877,7 @@ export class PipelineEngine {
     const failedSteps = stepResults.filter(s => !s.success);
 
     return {
+      runId: context.runId,
       durationMs,
       stepsCompleted: successfulSteps.map(s => s.stepName),
       totalStepsAttempted: stepResults.length,

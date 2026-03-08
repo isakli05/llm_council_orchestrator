@@ -137,22 +137,13 @@ export class ZAIAdapter implements ProviderAdapter {
 
   /**
    * Create a new ZAIAdapter instance.
-   * Validates that the ZAI_API_KEY environment variable is set.
+   * API key validation is deferred to call time to allow adapter registration
+   * without requiring all API keys to be present at construction.
    * 
    * Per Requirements 4.1: Validate API key from environment variable ZAI_API_KEY
-   * 
-   * @throws {Error} If ZAI_API_KEY environment variable is not set
    */
   constructor() {
-    const apiKey = process.env.ZAI_API_KEY;
-    
-    if (!apiKey) {
-      throw new Error(
-        "ZAI_API_KEY environment variable is required for Z.AI adapter"
-      );
-    }
-
-    this.apiKey = apiKey;
+    this.apiKey = process.env.ZAI_API_KEY || "";
     this.client = axios.create({
       baseURL: ZAI_BASE_URL,
       headers: {
@@ -176,6 +167,23 @@ export class ZAIAdapter implements ProviderAdapter {
     options?: ModelCallOptions
   ): Promise<ModelResponse> {
     const startTime = Date.now();
+
+    // Validate API key at call time
+    if (!this.apiKey) {
+      return {
+        modelId,
+        content: "",
+        success: false,
+        metadata: {
+          latencyMs: Date.now() - startTime,
+        },
+        error: {
+          code: "AUTHENTICATION_ERROR",
+          message: "ZAI_API_KEY environment variable is required for Z.AI adapter",
+          retryable: false,
+        },
+      };
+    }
 
     try {
       // Build request body

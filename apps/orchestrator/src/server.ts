@@ -362,6 +362,10 @@ async function createServer(config: ServerConfig): Promise<FastifyInstance> {
     return pipelineController.getPipelineResult(request as any, reply);
   });
 
+  server.post(`${API_V1_PREFIX}/pipeline/cancel/:run_id`, async (request, reply) => {
+    return pipelineController.cancelPipeline(request as any, reply);
+  });
+
   // Register routes - Progress
   server.get(`${API_V1_PREFIX}/pipeline/progress/:run_id`, async (request, reply) => {
     return progressController.getPipelineProgress(request as any, reply);
@@ -520,9 +524,9 @@ async function createServer(config: ServerConfig): Promise<FastifyInstance> {
 
   // Readiness probe endpoint
   // Requirements: 22.3, 22.4, 22.6, 22.7
-  // - Check Qdrant connectivity
   // - Check embedding server connectivity
   // - Return 503 with failed dependency name
+  // Note: Qdrant check removed - not in critical data path (see apps/indexer/VECTOR_STORAGE_ARCHITECTURE.md)
   server.get("/health/ready", async (_request, reply) => {
     const timestamp = new Date().toISOString();
     const dependencies: ReadinessCheckResponse["dependencies"] = {};
@@ -530,51 +534,13 @@ async function createServer(config: ServerConfig): Promise<FastifyInstance> {
     let failedDependency: string | undefined;
 
     // Load configuration to get service URLs
-    let qdrantUrl = "http://localhost:6333";
     let embeddingUrl = "http://localhost:8000";
     
     try {
       const config = loadArchitectConfig({ throwOnError: false });
-      qdrantUrl = process.env.QDRANT_URL || config.services.qdrant.url;
       embeddingUrl = process.env.EMBEDDING_URL || config.embedding.endpoint.replace("/embeddings", "");
     } catch {
       // Use defaults if config loading fails
-    }
-
-    // Check Qdrant connectivity
-    // Requirements: 22.6 - WHEN Qdrant is unreachable THEN the system SHALL mark indexer as not ready
-    try {
-      const qdrantStart = Date.now();
-      // Qdrant health check endpoint
-      const qdrantResponse = await axios.get(`${qdrantUrl}/healthz`, {
-        timeout: 5000,
-      });
-      const qdrantLatency = Date.now() - qdrantStart;
-      
-      if (qdrantResponse.status === 200) {
-        dependencies["qdrant"] = {
-          status: "pass",
-          latencyMs: qdrantLatency,
-        };
-      } else {
-        dependencies["qdrant"] = {
-          status: "fail",
-          message: `Unexpected status code: ${qdrantResponse.status}`,
-          latencyMs: qdrantLatency,
-        };
-        allDependenciesReady = false;
-        if (!failedDependency) failedDependency = "qdrant";
-      }
-    } catch (error) {
-      const err = error as Error & { code?: string };
-      dependencies["qdrant"] = {
-        status: "fail",
-        message: err.code === "ECONNREFUSED" 
-          ? `Qdrant unreachable at ${qdrantUrl}` 
-          : `Qdrant health check failed: ${err.message}`,
-      };
-      allDependenciesReady = false;
-      if (!failedDependency) failedDependency = "qdrant";
     }
 
     // Check embedding server connectivity

@@ -26,4 +26,19 @@ export interface IndexResult {
   filesIndexed?: number;
   error?: ApiError;
   completedAt?: string;
+  metadata?: {
+    filesByExtension: Record<string, number>;
+    directoryStructure: Array<{
+      name: string;
+      path: string;
+      fileCount: number;
+    }>;
+    detectedFrameworks: string[];
+    dependencies: Array<{
+      name: string;
+      version: string;
+      source: string;
+      isDev: boolean;
+    }>;
+  };
 }

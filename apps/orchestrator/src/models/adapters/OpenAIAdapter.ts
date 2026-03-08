@@ -82,20 +82,11 @@ export class OpenAIAdapter implements ProviderAdapter {
 
   /**
    * Create a new OpenAIAdapter instance.
-   * Validates that the OPENAI_API_KEY environment variable is set.
-   * 
-   * @throws {Error} If OPENAI_API_KEY environment variable is not set
+   * API key validation is deferred to call time to allow adapter registration
+   * without requiring all API keys to be present at construction.
    */
   constructor() {
-    const apiKey = process.env.OPENAI_API_KEY;
-    
-    if (!apiKey) {
-      throw new Error(
-        "OPENAI_API_KEY environment variable is required for OpenAI adapter"
-      );
-    }
-
-    this.apiKey = apiKey;
+    this.apiKey = process.env.OPENAI_API_KEY || "";
     this.client = axios.create({
       baseURL: OPENAI_BASE_URL,
       headers: {
@@ -119,6 +110,23 @@ export class OpenAIAdapter implements ProviderAdapter {
     options?: ModelCallOptions
   ): Promise<ModelResponse> {
     const startTime = Date.now();
+
+    // Validate API key at call time
+    if (!this.apiKey) {
+      return {
+        modelId,
+        content: "",
+        success: false,
+        metadata: {
+          latencyMs: Date.now() - startTime,
+        },
+        error: {
+          code: "AUTHENTICATION_ERROR",
+          message: "OPENAI_API_KEY environment variable is required for OpenAI adapter",
+          retryable: false,
+        },
+      };
+    }
 
     try {
       // Build request body

@@ -84,12 +84,20 @@ export class EmbeddingEngine {
     this.validateModelDimensions(this.modelConfig);
     
     // Initialize Axios HTTP client
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    
+    // Add Authorization header if API key is provided
+    const apiKey = process.env.EMBEDDING_API_KEY;
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+    
     this.httpClient = axios.create({
       baseURL: this.embeddingUrl,
       timeout: 30000, // 30 seconds per batch
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
   }
 
