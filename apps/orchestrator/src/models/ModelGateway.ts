@@ -8,6 +8,7 @@ import {
   getProviderTimeout,
 } from "@llm/shared-config";
 import { withTimeout, retryWithBackoff, sleep } from "@llm/shared-utils";
+import { logger } from "../observability/Logger";
 import {
   ChatMessage,
   ModelCallOptions,
@@ -17,6 +18,16 @@ import {
   ThinkingConfig,
   ProviderConfig,
 } from "./types";
+import {
+  OpenAIAdapter,
+  AnthropicAdapter,
+  ZAIAdapter,
+  GeminiAdapter,
+  OpenAIOpenRouterAdapter,
+  AnthropicOpenRouterAdapter,
+  ZAIOpenRouterAdapter,
+  GeminiOpenRouterAdapter,
+} from "./adapters";
 
 // Re-export ProviderConfig for convenience
 export { ProviderConfig };
@@ -146,11 +157,64 @@ export class ModelGateway {
   private providers: Map<ProviderType, ProviderAdapter>;
   private providerAvailability: Map<ProviderType, ProviderStatus>;
   private config?: ArchitectConfig;
+  private adaptersInitialized: boolean = false;
 
   constructor(config?: ArchitectConfig) {
     this.providers = new Map();
     this.providerAvailability = new Map();
     this.config = config;
+    
+    // Automatically register all supported provider adapters
+    this.initializeAdapters();
+    
+    // Validate API keys and mark unavailable providers if config is provided
+    if (config) {
+      this.validateAndMarkUnavailableProviders(config, true);
+    }
+  }
+
+  /**
+   * Initialize all supported provider adapters.
+   * This method registers adapters for all known providers.
+   * Adapters are registered regardless of API key availability.
+   * API key validation happens separately via validateAndMarkUnavailableProviders.
+   * 
+   * Per Requirements: Provider registration must be deterministic and centralized
+   */
+  private initializeAdapters(): void {
+    if (this.adaptersInitialized) {
+      return;
+    }
+
+    try {
+      // Register official provider adapters
+      this.registerProvider(ProviderType.OPENAI, new OpenAIAdapter());
+      this.registerProvider(ProviderType.ANTHROPIC, new AnthropicAdapter());
+      this.registerProvider(ProviderType.GLM, new ZAIAdapter());
+      this.registerProvider(ProviderType.GEMINI, new GeminiAdapter());
+
+      // Register OpenRouter adapters
+      this.registerProvider(ProviderType.OPENAI_OPENROUTER, new OpenAIOpenRouterAdapter());
+      this.registerProvider(ProviderType.ANTHROPIC_OPENROUTER, new AnthropicOpenRouterAdapter());
+      this.registerProvider(ProviderType.GLM_OPENROUTER, new ZAIOpenRouterAdapter());
+      this.registerProvider(ProviderType.GEMINI_OPENROUTER, new GeminiOpenRouterAdapter());
+
+      this.adaptersInitialized = true;
+
+      const registeredProviders = this.getRegisteredProviders();
+      logger.info('ModelGateway: Provider adapters initialized successfully', {
+        totalProviders: registeredProviders.length,
+        providers: registeredProviders,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      const err = error as Error;
+      logger.error('ModelGateway: Failed to initialize provider adapters', {
+        error: err.message,
+        stack: err.stack,
+      });
+      throw new Error(`Provider adapter initialization failed: ${err.message}`);
+    }
   }
 
   /**
@@ -276,13 +340,29 @@ export class ModelGateway {
         } catch (err) {
           // Provider string couldn't be parsed - log and continue
           if (logWarnings) {
-            console.warn(
-              `[ModelGateway] Could not mark provider "${providerStatus.provider}" as unavailable: ${(err as Error).message}`
+            logger.warn(
+              `ModelGateway: Could not mark provider "${providerStatus.provider}" as unavailable: ${(err as Error).message}`
             );
           }
         }
       }
     }
+    
+    // Log summary of provider availability
+    const availableProviders = validationResult.providers.filter(p => p.available);
+    const unavailableProviders = validationResult.providers.filter(p => !p.available);
+    
+    logger.info('ModelGateway: Provider availability validated', {
+      totalProviders: validationResult.providers.length,
+      availableCount: availableProviders.length,
+      unavailableCount: unavailableProviders.length,
+      available: availableProviders.map(p => p.provider),
+      unavailable: unavailableProviders.map(p => ({ 
+        provider: p.provider, 
+        reason: p.reason 
+      })),
+      timestamp: new Date().toISOString(),
+    });
     
     return validationResult;
   }

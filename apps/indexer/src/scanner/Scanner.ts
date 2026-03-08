@@ -118,6 +118,34 @@ export class Scanner {
   }
 
   async scan(): Promise<FileMetadata[]> {
+    // Validate that project root exists and is accessible
+    try {
+      const stats = await fs.stat(this.projectRoot);
+      if (!stats.isDirectory()) {
+        throw new ScannerError(
+          `Project root is not a directory: ${this.projectRoot}`,
+          {
+            code: 'INVALID_PROJECT_ROOT',
+            filePath: this.projectRoot,
+            operation: 'validate',
+          }
+        );
+      }
+    } catch (error: any) {
+      if (error instanceof ScannerError) {
+        throw error;
+      }
+      throw new ScannerError(
+        `Project root does not exist or is not accessible: ${this.projectRoot}`,
+        {
+          code: 'PROJECT_ROOT_NOT_FOUND',
+          filePath: this.projectRoot,
+          operation: 'validate',
+          cause: error,
+        }
+      );
+    }
+
     const results: FileMetadata[] = [];
     await this.scanDirectory(this.projectRoot, '', results);
     return results;

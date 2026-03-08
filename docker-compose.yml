@@ -19,13 +19,18 @@
 
 services:
   # ==========================================================================
-  # Qdrant Vector Database
+  # Qdrant Vector Database (OPTIONAL - Not Currently Used)
   # ==========================================================================
-  # Stores code embeddings for semantic search functionality.
-  # Data is persisted in a named volume.
+  # NOTE: The indexer currently uses local file-based vector storage.
+  # Qdrant is included for future migration but is NOT in the critical data path.
+  # See apps/indexer/VECTOR_STORAGE_ARCHITECTURE.md for details.
+  #
+  # To enable Qdrant: docker compose --profile qdrant up
   qdrant:
     image: qdrant/qdrant:v1.7.4
     container_name: qdrant
+    profiles:
+      - qdrant  # Only starts with: docker compose --profile qdrant up
     ports:
       - "6333:6333"   # REST API
       - "6334:6334"   # gRPC API
@@ -111,7 +116,7 @@ services:
       # Embedding configuration (Requirements 9.1-9.7)
       - EMBEDDING_URL=http://embedding:80
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-local-bge-large-v1.5}
-      # Qdrant configuration
+      # Qdrant configuration (optional, not currently used)
       - QDRANT_URL=http://qdrant:6333
     volumes:
       # Persistent storage for index data
@@ -119,8 +124,6 @@ services:
       # Mount config file as read-only (Requirements 15.6)
       - ./architect.config.production.json:/app/architect.config.json:ro
     depends_on:
-      qdrant:
-        condition: service_healthy
       embedding:
         condition: service_healthy
     healthcheck:

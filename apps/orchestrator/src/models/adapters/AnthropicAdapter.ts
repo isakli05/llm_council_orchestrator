@@ -192,20 +192,11 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   /**
    * Create a new AnthropicAdapter instance.
-   * Validates that the ANTHROPIC_API_KEY environment variable is set.
-   * 
-   * @throws {Error} If ANTHROPIC_API_KEY environment variable is not set
+   * API key validation is deferred to call time to allow adapter registration
+   * without requiring all API keys to be present at construction.
    */
   constructor() {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    
-    if (!apiKey) {
-      throw new Error(
-        "ANTHROPIC_API_KEY environment variable is required for Anthropic adapter"
-      );
-    }
-
-    this.apiKey = apiKey;
+    this.apiKey = process.env.ANTHROPIC_API_KEY || "";
     this.client = axios.create({
       baseURL: ANTHROPIC_BASE_URL,
       headers: {
@@ -230,6 +221,23 @@ export class AnthropicAdapter implements ProviderAdapter {
     options?: ModelCallOptions
   ): Promise<ModelResponse> {
     const startTime = Date.now();
+
+    // Validate API key at call time
+    if (!this.apiKey) {
+      return {
+        modelId,
+        content: "",
+        success: false,
+        metadata: {
+          latencyMs: Date.now() - startTime,
+        },
+        error: {
+          code: "AUTHENTICATION_ERROR",
+          message: "ANTHROPIC_API_KEY environment variable is required for Anthropic adapter",
+          retryable: false,
+        },
+      };
+    }
 
     try {
       // Build request body

@@ -231,6 +231,21 @@ export interface IndexEnsureResponse {
     indexedChunks: number;
     processingTimeMs: number;
   };
+  metadata?: {
+    filesByExtension: Record<string, number>;
+    directoryStructure: Array<{
+      name: string;
+      path: string;
+      fileCount: number;
+    }>;
+    detectedFrameworks: string[];
+    dependencies: Array<{
+      name: string;
+      version: string;
+      source: string;
+      isDev: boolean;
+    }>;
+  };
   error?: {
     code: string;
     message: string;
@@ -239,17 +254,14 @@ export interface IndexEnsureResponse {
 }
 
 export interface SearchResultItem {
-  chunk: {
-    content: string;
-    metadata: {
-      filePath: string;
-      extension: string;
-      chunkType: string;
-      startLine?: number;
-      endLine?: number;
-    };
-  };
+  path: string;
+  content: string;
   score: number;
+  metadata?: {
+    lineStart?: number;
+    lineEnd?: number;
+    language?: string;
+  };
 }
 
 export interface SearchApiResponse {
@@ -268,11 +280,9 @@ export interface ContextApiResponse {
   path: string;
   context: Array<{
     content: string;
-    metadata: {
-      filePath: string;
-      startLine?: number;
-      endLine?: number;
-    };
+    filePath: string;
+    startLine?: number;
+    endLine?: number;
   }>;
   related?: Array<{
     path: string;
@@ -891,6 +901,11 @@ export class IndexerServer {
           filesIndexed: result.stats.indexedChunks,
           totalFiles: result.stats.totalFiles,
           processingTimeMs: result.stats.processingTimeMs,
+          metadata: {
+            extensionCount: Object.keys(result.metadata?.filesByExtension || {}).length,
+            frameworkCount: result.metadata?.detectedFrameworks?.length || 0,
+            dependencyCount: result.metadata?.dependencies?.length || 0,
+          },
         });
 
         return {
@@ -898,6 +913,7 @@ export class IndexerServer {
           filesIndexed: result.stats.indexedChunks,
           completedAt: new Date().toISOString(),
           stats: result.stats,
+          metadata: result.metadata,
         };
       } catch (error: any) {
         logger.error('Unexpected error in POST /index/ensure', error);
@@ -979,19 +995,17 @@ export class IndexerServer {
           searchTimeMs: result.stats.searchTimeMs,
         });
 
-        // Map results to API response format
-        const mappedResults: SearchResultItem[] = result.results.map(r => ({
-          chunk: {
-            content: r.chunk.content,
-            metadata: {
-              filePath: r.chunk.filePath,
-              extension: r.chunk.metadata.extension,
-              chunkType: r.chunk.metadata.chunkType,
-              startLine: r.chunk.startLine,
-              endLine: r.chunk.endLine,
-            },
-          },
+        // Map results to API response format expected by IndexClient
+        // IndexClient expects: { path, content, score, metadata }
+        const mappedResults = result.results.map(r => ({
+          path: r.chunk.filePath,
+          content: r.chunk.content,
           score: r.score,
+          metadata: {
+            lineStart: r.chunk.startLine,
+            lineEnd: r.chunk.endLine,
+            language: r.chunk.metadata.language,
+          },
         }));
 
         return {
@@ -1081,11 +1095,9 @@ export class IndexerServer {
           path: filePath,
           context: result.context.map(chunk => ({
             content: chunk.content,
-            metadata: {
-              filePath: chunk.filePath,
-              startLine: chunk.startLine,
-              endLine: chunk.endLine,
-            },
+            filePath: chunk.filePath,
+            startLine: chunk.startLine,
+            endLine: chunk.endLine,
           })),
           related: result.related?.map(r => ({
             path: r.path,

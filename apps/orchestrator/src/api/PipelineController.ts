@@ -309,7 +309,8 @@ export class PipelineController {
     try {
       const spanId = trace.startSpan(runId, "pipeline_execution");
 
-      // Requirements: 1.1, 7.1 - Pass role_configs directly to PipelineEngine
+      // Requirements: 1.1, 7.1 - Pass role_configs and runId to PipelineEngine
+      // The runId is passed to ensure the same ID is used throughout the pipeline lifecycle
       const result = await this.pipelineEngine.execute(
         mode as any,
         prompt,
@@ -317,7 +318,8 @@ export class PipelineController {
         projectRoot,
         forceReindex,
         roleConfigs,
-        domainExclusions
+        domainExclusions,
+        runId  // Pass the runId to maintain consistency
       );
 
       // Store result with completion timestamp for TTL-based cleanup

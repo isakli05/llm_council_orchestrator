@@ -220,6 +220,21 @@ export class IndexClient {
           success: boolean;
           filesIndexed: number;
           completedAt: string;
+          metadata?: {
+            filesByExtension: Record<string, number>;
+            directoryStructure: Array<{
+              name: string;
+              path: string;
+              fileCount: number;
+            }>;
+            detectedFrameworks: string[];
+            dependencies: Array<{
+              name: string;
+              version: string;
+              source: string;
+              isDev: boolean;
+            }>;
+          };
           error?: { code: string; message: string };
         }>(`${API_V1_PREFIX}/index/ensure`, {
           project_root: projectRoot,
@@ -237,6 +252,7 @@ export class IndexClient {
           status: IndexStatus.READY,
           filesIndexed: response.data.filesIndexed,
           completedAt: response.data.completedAt,
+          metadata: response.data.metadata,
         };
       }
 

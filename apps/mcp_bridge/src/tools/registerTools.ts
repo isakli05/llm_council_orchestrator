@@ -67,7 +67,7 @@ export class ToolRegistry {
   }
 
   private async handleRunPipeline(params: Record<string, unknown>): Promise<MCPToolResult> {
-    const { mode, prompt, modelsOverride, domainExclusions } = params;
+    const { mode, prompt, projectRoot, forceReindex, roleConfigs, modelsOverride, domainExclusions } = params;
 
     if (!mode || typeof mode !== "string") {
       throw new Error("Missing or invalid 'mode' parameter");
@@ -110,6 +110,9 @@ export class ToolRegistry {
     const result = await this.adapter.runPipeline({
       mode,
       prompt,
+      projectRoot: projectRoot as string | undefined,
+      forceReindex: forceReindex as boolean | undefined,
+      roleConfigs: roleConfigs as Record<string, any> | undefined,
       modelsOverride: modelsOverride as Record<string, string | string[]> | undefined,
       domainExclusions: domainExclusions as Array<{ domainId: string; justification: string }> | undefined,
     });

@@ -118,16 +118,27 @@ Copy `.env.example` to `.env` and configure the following variables:
 | `EMBEDDING_URL` | http://localhost:8000 | Embedding server URL |
 | `EMBEDDING_MODEL` | local-bge-large-v1.5 | Embedding model to use |
 
-Available embedding models (all use 1024 dimensions for Qdrant compatibility):
+Available embedding models (all use 1024 dimensions):
 - `local-bge-large-v1.5` - Default, good general performance
 - `multilingual-e5-large-instruct` - Better for multilingual codebases
 - `bge-m3` - Extended context (8192 tokens)
 
-#### Vector Database
+#### Vector Storage
+
+The indexer uses **local file-based vector storage** with in-memory cosine similarity search. This provides:
+- Simple deployment with no external database dependencies
+- Fast search for typical project sizes
+- Portable index files for easy backup/restore
+
+See `apps/indexer/VECTOR_STORAGE_ARCHITECTURE.md` for details.
+
+**Optional Qdrant Integration:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `QDRANT_URL` | http://localhost:6333 | Qdrant vector database URL |
+| `QDRANT_URL` | http://localhost:6333 | Qdrant URL (optional, not currently used) |
+
+> **Note:** Qdrant is included in docker-compose for future migration but is not in the critical data path. To start Qdrant: `docker compose --profile qdrant up`
 
 #### Runtime Environment
 
@@ -259,12 +270,12 @@ docker compose down
 
 When running in Docker, services communicate using container names:
 
-| Service | Internal URL | External URL |
-|---------|--------------|--------------|
-| Orchestrator | http://orchestrator:7001 | http://localhost:7001 |
-| Indexer | http://indexer:9001 | http://localhost:9001 |
-| Embedding | http://embedding:80 | http://localhost:8000 |
-| Qdrant | http://qdrant:6333 | http://localhost:6333 |
+| Service | Internal URL | External URL | Status |
+|---------|--------------|--------------|--------|
+| Orchestrator | http://orchestrator:7001 | http://localhost:7001 | Required |
+| Indexer | http://indexer:9001 | http://localhost:9001 | Required |
+| Embedding | http://embedding:80 | http://localhost:8000 | Required |
+| Qdrant | http://qdrant:6333 | http://localhost:6333 | Optional (not in data path) |
 
 #### Production Configuration
 
@@ -304,7 +315,12 @@ The system includes automatic memory management (not configurable via environmen
 
 2. Start infrastructure services:
    ```bash
-   docker compose up -d qdrant embedding
+   docker compose up -d embedding
+   ```
+   
+   Optional: Start Qdrant (not required for basic operation):
+   ```bash
+   docker compose --profile qdrant up -d
    ```
 
 3. Run services in development mode:

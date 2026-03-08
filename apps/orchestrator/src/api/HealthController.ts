@@ -33,16 +33,16 @@ export const HealthController = {
 
   /**
    * Readiness probe
+   * Note: Qdrant check removed - not in critical data path (see apps/indexer/VECTOR_STORAGE_ARCHITECTURE.md)
    */
   async readiness(request: FastifyRequest, reply: FastifyReply) {
     const checks = await Promise.allSettled([
       checkIndexer(),
-      checkQdrant(),
       checkEmbeddingServer(),
     ]);
 
     const results = checks.map((check, index) => {
-      const names = ['indexer', 'qdrant', 'embedding'];
+      const names = ['indexer', 'embedding'];
       if (check.status === 'fulfilled') {
         return check.value;
       } else {
@@ -75,15 +75,16 @@ export const HealthController = {
 
   /**
    * Detailed health with metrics
+   * Note: Qdrant included as optional/informational check only
    */
   async detailed(request: FastifyRequest, reply: FastifyReply) {
     const metrics = getOrchestratorMetrics();
 
     const checks = await Promise.allSettled([
       checkIndexer(),
-      checkQdrant(),
       checkEmbeddingServer(),
       checkLLMProviders(),
+      checkQdrant(), // Optional - informational only
     ]);
 
     const results = checks.map((check) =>
@@ -144,6 +145,8 @@ async function checkIndexer(): Promise<HealthCheckResult> {
 }
 
 async function checkQdrant(): Promise<HealthCheckResult> {
+  // NOTE: Qdrant is optional and not in the critical data path
+  // This check is informational only - failure does not affect readiness
   const start = Date.now();
   try {
     const response = await axios.get(`${process.env.QDRANT_URL || 'http://localhost:6333'}/readyz`, {
@@ -153,13 +156,14 @@ async function checkQdrant(): Promise<HealthCheckResult> {
       name: 'qdrant',
       status: 'healthy',
       latency: Date.now() - start,
+      message: 'Optional - not in critical path',
     };
   } catch (error: any) {
     return {
       name: 'qdrant',
-      status: 'unhealthy',
+      status: 'degraded', // Changed from 'unhealthy' since it's optional
       latency: Date.now() - start,
-      message: error.message,
+      message: 'Optional service unavailable - not in critical path',
     };
   }
 }

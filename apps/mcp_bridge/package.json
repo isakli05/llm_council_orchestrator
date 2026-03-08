@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "node --watch -r ts-node/register src/server.ts",
     "start": "node -r ts-node/register src/server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@llm/shared-types": "workspace:*",
@@ -17,6 +19,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "ts-node": "^10.9.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.0"
   }
 }

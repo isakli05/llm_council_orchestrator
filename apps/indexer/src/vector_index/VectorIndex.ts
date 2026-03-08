@@ -58,6 +58,7 @@ export class VectorIndex {
           chunkType: chunk.metadata.chunkType,
           language: chunk.metadata.language,
         },
+        content: chunk.content, // Store content for persistence
       };
 
       this.vectors.set(embedding.chunkId, storedVector);
@@ -139,18 +140,25 @@ export class VectorIndex {
     this.chunks.clear();
 
     for (const storedVector of vectors) {
+      // Handle backward compatibility: metadata might be undefined in old format
+      if (!storedVector.metadata) {
+        console.warn(`Skipping vector ${storedVector.id}: missing metadata`);
+        continue;
+      }
+      
+      // Add to vectors map
       this.vectors.set(storedVector.id, storedVector);
       
-      // Reconstruct chunk from metadata
+      // Reconstruct chunk from stored vector with content
       const chunk: Chunk = {
         id: storedVector.id,
         filePath: storedVector.metadata.filePath,
         relativePath: storedVector.metadata.relativePath,
-        content: '', // Content not stored in index
+        content: storedVector.content || '', // Restore content from storage
         startLine: storedVector.metadata.startLine,
         endLine: storedVector.metadata.endLine,
-        tokenCount: 0,
-        hash: '',
+        tokenCount: storedVector.content ? Math.ceil(storedVector.content.length / 4) : 0,
+        hash: storedVector.id.split(':')[2] || '', // Extract hash from chunk ID
         metadata: {
           extension: storedVector.metadata.extension,
           chunkType: storedVector.metadata.chunkType,
@@ -219,5 +227,27 @@ export class VectorIndex {
       this.vectors.delete(chunkId);
       this.chunks.delete(chunkId);
     }
+  }
+
+  /**
+   * Remove all chunks associated with specific file paths
+   */
+  async removeByFilePaths(relativePaths: string[]): Promise<number> {
+    const pathSet = new Set(relativePaths);
+    const chunksToRemove: string[] = [];
+
+    // Find all chunks belonging to deleted files
+    for (const [chunkId, vector] of this.vectors.entries()) {
+      if (pathSet.has(vector.metadata.relativePath)) {
+        chunksToRemove.push(chunkId);
+      }
+    }
+
+    // Remove identified chunks
+    if (chunksToRemove.length > 0) {
+      await this.removeChunks(chunksToRemove);
+    }
+    
+    return chunksToRemove.length;
   }
 }

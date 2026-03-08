@@ -227,6 +227,8 @@ export interface PipelineStepResult {
  * Requirements: 28.6, 28.7 - Include execution metadata in results
  */
 export interface ExecutionMetadata {
+  /** Pipeline run identifier - consistent across API, tracing, and state management */
+  runId: string;
   /** Total duration of pipeline execution in milliseconds */
   durationMs: number;
   /** Array of step names that completed successfully */

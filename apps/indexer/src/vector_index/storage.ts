@@ -37,6 +37,7 @@ export interface StoredVector {
   id: string;
   vector: number[];
   metadata: Record<string, any>;
+  content?: string; // Chunk content for search results
 }
 
 export interface IndexMetadata {
@@ -87,7 +88,8 @@ export class VectorStorage {
     try {
       await this.ensureDirectory();
       
-      const lines = vectors.map(v => formatJson(v)).join('\n');
+      // Save each vector as a single-line JSON (JSONL format)
+      const lines = vectors.map(v => JSON.stringify(v)).join('\n');
       await fs.writeFile(this.indexPath, lines, 'utf-8');
       
       logger.debug('Saved vectors to storage', {
@@ -121,7 +123,8 @@ export class VectorStorage {
     try {
       await this.ensureDirectory();
       
-      const lines = vectors.map(v => formatJson(v)).join('\n') + '\n';
+      // Append each vector as a single-line JSON (JSONL format)
+      const lines = vectors.map(v => JSON.stringify(v)).join('\n') + '\n';
       await fs.appendFile(this.indexPath, lines, 'utf-8');
       
       logger.debug('Appended vectors to storage', {
@@ -155,7 +158,19 @@ export class VectorStorage {
     try {
       const content = await fs.readFile(this.indexPath, 'utf-8');
       const lines = content.trim().split('\n').filter(line => line.length > 0);
-      const vectors = lines.map(line => safeJsonParse<StoredVector>(line)).filter((v): v is StoredVector => v !== undefined);
+      
+      const vectors: StoredVector[] = [];
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line) as StoredVector;
+          vectors.push(parsed);
+        } catch (parseError) {
+          logger.warn('Failed to parse vector line', {
+            line: line.substring(0, 100),
+            error: parseError,
+          });
+        }
+      }
       
       logger.debug('Loaded vectors from storage', {
         indexPath: this.indexPath,
@@ -194,6 +209,7 @@ export class VectorStorage {
   async saveMetadata(metadata: IndexMetadata): Promise<void> {
     try {
       await this.ensureDirectory();
+      // Use formatJson for metadata since it's a single object (pretty-print is fine)
       await fs.writeFile(this.metadataPath, formatJson(metadata), 'utf-8');
       
       logger.debug('Saved index metadata', {

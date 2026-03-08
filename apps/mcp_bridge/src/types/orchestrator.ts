@@ -12,6 +12,9 @@ export interface DomainExclusion {
 export interface OrchestratorRunRequest {
   mode: string;
   prompt: string;
+  projectRoot?: string;
+  forceReindex?: boolean;
+  roleConfigs?: Record<string, any>;
   modelsOverride?: Record<string, string | string[]>;
   domainExclusions?: DomainExclusion[];
 }

@@ -112,20 +112,11 @@ export class GeminiAdapter implements ProviderAdapter {
 
   /**
    * Create a new GeminiAdapter instance.
-   * Validates that the GEMINI_API_KEY environment variable is set.
-   * 
-   * @throws {Error} If GEMINI_API_KEY environment variable is not set
+   * API key validation is deferred to call time to allow adapter registration
+   * without requiring all API keys to be present at construction.
    */
   constructor() {
-    const apiKey = process.env.GEMINI_API_KEY;
-    
-    if (!apiKey) {
-      throw new Error(
-        "GEMINI_API_KEY environment variable is required for Gemini adapter"
-      );
-    }
-
-    this.apiKey = apiKey;
+    this.apiKey = process.env.GEMINI_API_KEY || "";
     this.client = axios.create({
       baseURL: GEMINI_BASE_URL,
       headers: {
@@ -148,6 +139,23 @@ export class GeminiAdapter implements ProviderAdapter {
     options?: ModelCallOptions
   ): Promise<ModelResponse> {
     const startTime = Date.now();
+
+    // Validate API key at call time
+    if (!this.apiKey) {
+      return {
+        modelId,
+        content: "",
+        success: false,
+        metadata: {
+          latencyMs: Date.now() - startTime,
+        },
+        error: {
+          code: "AUTHENTICATION_ERROR",
+          message: "GEMINI_API_KEY environment variable is required for Gemini adapter",
+          retryable: false,
+        },
+      };
+    }
 
     try {
       // Build request body

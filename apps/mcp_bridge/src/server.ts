@@ -10,7 +10,8 @@ import { logger } from "./observability/Logger";
 async function main() {
   try {
     // Get orchestrator URL from environment or use default
-    const orchestratorUrl = process.env.ORCHESTRATOR_URL || "http://localhost:3005";
+    // Default port 7001 matches orchestrator's actual default port
+    const orchestratorUrl = process.env.ORCHESTRATOR_URL || "http://localhost:7001";
 
     // Set log level from environment
     const logLevelStr = process.env.LOG_LEVEL || "info";
