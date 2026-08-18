@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L12_SCOPE_OVERLAP",
+  "message_includes": "src/auth/**"
+}

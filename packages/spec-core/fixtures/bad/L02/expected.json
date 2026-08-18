@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L02_ORPHAN_REQUIREMENT",
+  "message_includes": "REQ-0003"
+}

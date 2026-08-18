@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L10_TRACEABILITY_GAP",
+  "message_includes": "REQ-0002"
+}

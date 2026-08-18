@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L08_UNRESOLVED_LEAK",
+  "message_includes": "DEC-0002"
+}

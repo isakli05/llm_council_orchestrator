@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L04_CYCLIC_TASK_DEPS",
+  "message_includes": "TASK-0001"
+}

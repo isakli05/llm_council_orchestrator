@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L05_INTERFACE_MISMATCH",
+  "message_includes": "createUser"
+}

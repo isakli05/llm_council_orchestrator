@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L01_UNDEFINED_TERM",
+  "message_includes": "Queue System"
+}

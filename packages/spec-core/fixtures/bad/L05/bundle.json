@@ -1,0 +1,425 @@
+{
+  "manifest": {
+    "spec_schema": "lco-spec/1.0",
+    "spec_version": 1,
+    "project": {
+      "name": "todo-api",
+      "mode": "greenfield"
+    },
+    "complexity_profile": "p-standard",
+    "evidence_snapshot": {
+      "pack_hash": "sha256:459dcdbbf3f0c627dbd867c7c0e1c816eac693555d93672c42bae5da4d13fdc3",
+      "collected_at": "2026-08-18T09:00:00Z"
+    },
+    "state": "draft",
+    "council_run": {
+      "run_id": "run-todoapi-0042",
+      "config_fingerprint": "cfg-9f8e7d6c"
+    },
+    "artifact_hashes": {},
+    "unresolved_count": 0,
+    "blocking_count": 0,
+    "target_runtime": {
+      "platform": "node",
+      "stack": "typescript"
+    }
+  },
+  "intent": {
+    "statement": "Build a todo API with ordered lists, user registration, deadline notifications, and a latency budget.",
+    "normalized": "todo api: ordered lists, registration, deadline notifications, latency budget"
+  },
+  "glossary": [
+    {
+      "term": "Todo List",
+      "definition": "An ordered set of todo entries owned by one account."
+    },
+    {
+      "term": "Deadline",
+      "definition": "The timestamp after which a todo entry is overdue."
+    },
+    {
+      "term": "Notification",
+      "definition": "An outbound message telling an owner a deadline is near."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "AS-0001",
+      "statement": "Accounts hold a single user in v1; sharing is out of scope.",
+      "evidence": [
+        "E-0001"
+      ],
+      "impact_if_wrong": "An access-control layer over lists would be required."
+    },
+    {
+      "id": "AS-0002",
+      "statement": "Deadline notifications may lag by at most five minutes behind the deadline scan.",
+      "evidence": [
+        "E-0001"
+      ],
+      "impact_if_wrong": "The notification transport needs a push channel instead of the scan job."
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E-0001",
+      "kind": "user_input",
+      "source": "interviews/product-owner-2026-08-12.md",
+      "hash": "sha256:0c935673d405c688348211aa78e19eb4a20e49f66f4b8f3eddbc5b6044f0a61b"
+    },
+    {
+      "id": "E-0002",
+      "kind": "constraint",
+      "source": "slo/latency-budget.md",
+      "hash": "sha256:3fed666a3dc5b2fff92b6292b19d01d0ecb9e232dba935755920096dcb209806"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-0001",
+      "statement": "The system shall list **Todo List** entries ordered by due date.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0001"
+      ],
+      "terms_used": [
+        "Todo List"
+      ]
+    },
+    {
+      "id": "REQ-0002",
+      "statement": "The system shall register users through the create_user endpoint with e-mail validation.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0002"
+      ],
+      "terms_used": []
+    },
+    {
+      "id": "REQ-0003",
+      "statement": "The system shall send a **Notification** when a **Deadline** is within twenty-four hours.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0003"
+      ],
+      "terms_used": [
+        "Deadline",
+        "Notification"
+      ]
+    },
+    {
+      "id": "OPS-0001",
+      "statement": "NFR: p95 latency for listing todos must stay under 200 ms at 100 requests per second.",
+      "priority": "must",
+      "evidence": [
+        "E-0002"
+      ],
+      "acceptance_refs": [
+        "TST-0004"
+      ],
+      "terms_used": []
+    }
+  ],
+  "decisions": [
+    {
+      "claim_id": "DEC-0001",
+      "decision": "Expose a REST API with an OpenAPI contract as the single interface.",
+      "rationale": "The contract doubles as the executable interface registry the tasks reference.",
+      "evidence": [
+        "E-0001"
+      ],
+      "confidence": 0.9,
+      "impact": "high",
+      "assumptions": [],
+      "alternatives": [
+        {
+          "option": "gRPC",
+          "rejected_because": "The only consumer is a web client."
+        }
+      ],
+      "status": "accepted"
+    },
+    {
+      "claim_id": "DEC-0002",
+      "decision": "Run the deadline scan as a periodic background job.",
+      "rationale": "A five-minute scan tolerance is accepted by the product owner, so no push infrastructure is needed.",
+      "evidence": [
+        "E-0001"
+      ],
+      "confidence": 0.7,
+      "impact": "medium",
+      "assumptions": [],
+      "alternatives": [],
+      "status": "accepted"
+    }
+  ],
+  "contracts": [
+    {
+      "id": "CON-0001",
+      "kind": "openapi",
+      "symbol": "create_user",
+      "definition": "post /users { body: { email: string, display_name: string } } -> 201 { id, email }"
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "TASK-0001",
+      "title": "Todo list endpoint",
+      "purpose": "Serve todo entries ordered by due date.",
+      "refs": {
+        "requirements": [
+          "REQ-0001"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [],
+      "preconditions": [
+        "OpenAPI contract published"
+      ],
+      "permitted_scope": [
+        "src/todos/**"
+      ],
+      "protected": [
+        "src/db/schema.ts"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "List ordering is stable for equal due dates"
+      ],
+      "instructions": "Implement the list endpoint with due-date ordering; keep every write inside src/todos.",
+      "tests": [
+        {
+          "kind": "integration",
+          "file": "tests/todos-list.test.ts",
+          "cases": [
+            "REQ-0001: todos render ordered by due date"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/todos-list.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Lists come back ordered by due date"
+      ],
+      "rollback": "Revert the todos module commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Read-mostly endpoint"
+      },
+      "complexity": "s"
+    },
+    {
+      "task_id": "TASK-0002",
+      "title": "User registration",
+      "purpose": "Register users through the contracted create_user endpoint.",
+      "refs": {
+        "requirements": [
+          "REQ-0002"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [],
+      "preconditions": [
+        "OpenAPI contract published"
+      ],
+      "permitted_scope": [
+        "src/users/**"
+      ],
+      "protected": [
+        "src/db/schema.ts"
+      ],
+      "interface_changes": [
+        {
+          "symbol": "createUser",
+          "file": "src/users/routes.ts"
+        }
+      ],
+      "invariants": [
+        "E-mail validation rejects every address without an at-sign"
+      ],
+      "instructions": "Implement the registration route exactly as contracted; keep every write inside src/users.",
+      "tests": [
+        {
+          "kind": "integration",
+          "file": "tests/users.test.ts",
+          "cases": [
+            "REQ-0002: registering with an invalid e-mail is rejected"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/users.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Valid registrations persist, invalid e-mails are rejected"
+      ],
+      "rollback": "Revert the users module commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary",
+          "diff_scope_check"
+        ]
+      },
+      "risk": {
+        "level": "medium",
+        "note": "Touches a contracted public symbol"
+      },
+      "complexity": "m"
+    },
+    {
+      "task_id": "TASK-0003",
+      "title": "Deadline notifications",
+      "purpose": "Queue a notification for every deadline within twenty-four hours.",
+      "refs": {
+        "requirements": [
+          "REQ-0003"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0002"
+        ]
+      },
+      "depends_on": [],
+      "preconditions": [
+        "Todo list endpoint merged"
+      ],
+      "permitted_scope": [
+        "src/notifications/**"
+      ],
+      "protected": [
+        "src/db/schema.ts"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "The scan never mutates todo entries"
+      ],
+      "instructions": "Implement the periodic deadline scan and the notification queue inside src/notifications.",
+      "tests": [
+        {
+          "kind": "unit",
+          "file": "tests/notifications.test.ts",
+          "cases": [
+            "REQ-0003: a deadline within twenty-four hours queues a notification"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/notifications.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Near deadlines produce exactly one queued notification"
+      ],
+      "rollback": "Revert the notifications module commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Queued side effect only"
+      },
+      "complexity": "s"
+    },
+    {
+      "task_id": "TASK-0004",
+      "title": "Latency budget harness",
+      "purpose": "Prove the list endpoint holds the operations latency budget.",
+      "refs": {
+        "requirements": [
+          "OPS-0001"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [
+        "TASK-0001"
+      ],
+      "preconditions": [
+        "Todo list endpoint merged"
+      ],
+      "permitted_scope": [
+        "src/perf/**"
+      ],
+      "protected": [
+        "src/todos/**"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "The harness is read-only against production code"
+      ],
+      "instructions": "Add the load harness and budget assertion under src/perf; do not touch endpoint code.",
+      "tests": [
+        {
+          "kind": "integration",
+          "file": "tests/latency-budget.test.ts",
+          "cases": [
+            "OPS-0001: list endpoint stays under the 200 ms p95 budget"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/latency-budget.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Budget run green at 100 requests per second"
+      ],
+      "rollback": "Revert the perf harness commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Test-only change"
+      },
+      "complexity": "xs"
+    }
+  ],
+  "test_files": [
+    "tests/todos-list.test.ts",
+    "tests/users.test.ts",
+    "tests/notifications.test.ts",
+    "tests/latency-budget.test.ts"
+  ]
+}

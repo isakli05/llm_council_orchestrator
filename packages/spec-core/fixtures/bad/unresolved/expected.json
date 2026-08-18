@@ -1,0 +1,4 @@
+{
+  "expect": "freeze-rejected",
+  "message_includes": "UNRESOLVED"
+}

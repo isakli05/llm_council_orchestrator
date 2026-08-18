@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L06_DUPLICATE_ID",
+  "message_includes": "REQ-0001"
+}

@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L07_MISSING_NFR_BUDGET",
+  "message_includes": "NFR"
+}

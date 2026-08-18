@@ -1,0 +1,233 @@
+{
+  "manifest": {
+    "spec_schema": "lco-spec/1.0",
+    "spec_version": 1,
+    "project": {
+      "name": "embed-cli",
+      "mode": "greenfield"
+    },
+    "complexity_profile": "p-mini",
+    "evidence_snapshot": {
+      "pack_hash": "sha256:b5b7a78f7753284dd769d89e9bed51dba7eeec2bab6879ca00292b7aa681d6c1",
+      "collected_at": "2026-08-18T09:00:00Z"
+    },
+    "state": "draft",
+    "council_run": {
+      "run_id": "run-embedcli-0005",
+      "config_fingerprint": "cfg-8a9b0c1d"
+    },
+    "artifact_hashes": {},
+    "unresolved_count": 0,
+    "blocking_count": 0,
+    "target_runtime": {
+      "platform": "node",
+      "stack": "typescript"
+    }
+  },
+  "intent": {
+    "statement": "Build a single-file CLI that embeds input files with a configurable chunk size.",
+    "normalized": "embed cli: one embedding per input file, configurable chunk size"
+  },
+  "glossary": [
+    {
+      "term": "Embedding",
+      "definition": "The dense vector computed for one input file."
+    },
+    {
+      "term": "Chunk",
+      "definition": "One fixed-size slice of an input file fed to the embedder."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "AS-0001",
+      "statement": "The embedder runs locally; no network calls in v1.",
+      "evidence": [
+        "E-0001"
+      ],
+      "impact_if_wrong": "The CLI would need retry and offline handling around the embedder."
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E-0001",
+      "kind": "user_input",
+      "source": "interviews/ds-team-2026-08-14.md",
+      "hash": "sha256:ed7ca1ff5dc19f213f16114e07a72b9558e8947ec4885f4dcff28a6eba933d1c"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-0001",
+      "statement": "The CLI shall compute an **Embedding** for every input file.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0001"
+      ],
+      "terms_used": [
+        "Embedding"
+      ]
+    },
+    {
+      "id": "REQ-0002",
+      "statement": "The CLI shall split inputs with a configurable **Chunk** size flag.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0002"
+      ],
+      "terms_used": [
+        "Chunk"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "claim_id": "DEC-0001",
+      "decision": "Ship a single-file CLI with no daemon and no background queue.",
+      "rationale": "The tool is invoked from a shell by one user at a time; a daemon would only add state.",
+      "evidence": [
+        "E-0001"
+      ],
+      "confidence": 0.8,
+      "impact": "low",
+      "assumptions": [],
+      "alternatives": [],
+      "status": "accepted"
+    }
+  ],
+  "contracts": [],
+  "tasks": [
+    {
+      "task_id": "TASK-0001",
+      "title": "Embed command",
+      "purpose": "Produce one embedding row per input file.",
+      "refs": {
+        "requirements": [
+          "REQ-0001"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [
+        "TASK-0002"
+      ],
+      "preconditions": [
+        "Local embedder binary on PATH"
+      ],
+      "permitted_scope": [
+        "src/embed/**"
+      ],
+      "protected": [
+        "src/cli/main.ts"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "Exactly one embedding row is emitted per input file"
+      ],
+      "instructions": "Implement the embed pipeline inside src/embed; the CLI entry stays untouched.",
+      "tests": [
+        {
+          "kind": "unit",
+          "file": "tests/embed.test.ts",
+          "cases": [
+            "REQ-0001: every input file yields exactly one embedding row"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/embed.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Embedding rows written for all inputs"
+      ],
+      "rollback": "Revert the embed module commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Isolated module"
+      },
+      "complexity": "s"
+    },
+    {
+      "task_id": "TASK-0002",
+      "title": "Chunk size flag",
+      "purpose": "Expose the chunk size as a CLI flag consumed by the embed pipeline.",
+      "refs": {
+        "requirements": [
+          "REQ-0002"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [
+        "TASK-0001"
+      ],
+      "preconditions": [
+        "Embed command merged"
+      ],
+      "permitted_scope": [
+        "src/cli/**"
+      ],
+      "protected": [
+        "src/embed/**"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "The flag defaults to the embed module default chunk size"
+      ],
+      "instructions": "Wire the --chunk-size flag inside src/cli and pass it through to the embed pipeline.",
+      "tests": [
+        {
+          "kind": "unit",
+          "file": "tests/cli-flags.test.ts",
+          "cases": [
+            "REQ-0002: the chunk size flag changes splitter behavior"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/cli-flags.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Flag parses and reaches the splitter"
+      ],
+      "rollback": "Revert the CLI flag commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Thin wiring layer"
+      },
+      "complexity": "xs"
+    }
+  ],
+  "test_files": [
+    "tests/embed.test.ts",
+    "tests/cli-flags.test.ts"
+  ]
+}

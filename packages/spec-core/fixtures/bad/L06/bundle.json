@@ -1,0 +1,333 @@
+{
+  "manifest": {
+    "spec_schema": "lco-spec/1.0",
+    "spec_version": 1,
+    "project": {
+      "name": "pet-clinic",
+      "mode": "greenfield"
+    },
+    "complexity_profile": "p-mini",
+    "evidence_snapshot": {
+      "pack_hash": "sha256:63807748e652109db6d0437193f186abdec9dec31982b1c195eb318431bde88d",
+      "collected_at": "2026-08-18T09:00:00Z"
+    },
+    "state": "draft",
+    "council_run": {
+      "run_id": "run-petclinic-0001",
+      "config_fingerprint": "cfg-a1b2c3d4"
+    },
+    "artifact_hashes": {},
+    "unresolved_count": 0,
+    "blocking_count": 0,
+    "target_runtime": {
+      "platform": "node",
+      "stack": "typescript"
+    }
+  },
+  "intent": {
+    "statement": "Build a small pet clinic scheduler covering owners, appointments, and vaccination reminders.",
+    "normalized": "pet clinic scheduler: owners, appointments, vaccination reminders"
+  },
+  "glossary": [
+    {
+      "term": "Owner",
+      "definition": "A person registered with the clinic who holds one or more pets."
+    },
+    {
+      "term": "Appointment",
+      "definition": "A booked time slot between an Owner and the clinic."
+    },
+    {
+      "term": "Vaccination Record",
+      "definition": "A dated entry tracking one vaccine administered to a pet."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "AS-0001",
+      "statement": "The clinic runs a single location, so no multi-tenancy is required.",
+      "evidence": [
+        "E-0001"
+      ],
+      "impact_if_wrong": "Every entity would need tenant scoping and access checks."
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E-0001",
+      "kind": "user_input",
+      "source": "interviews/clinic-owner-2026-08-11.md",
+      "hash": "sha256:20ea8a4e99b0a5f12e744b35417172edb1a92e71d03f1594ae543dcc515ca28a"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-0001",
+      "statement": "The system shall let an **Owner** book, reschedule, and cancel an **Appointment**.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0001"
+      ],
+      "terms_used": [
+        "Owner",
+        "Appointment"
+      ]
+    },
+    {
+      "id": "REQ-0002",
+      "statement": "The system shall store **Owner** contact details together with a change history.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0002"
+      ],
+      "terms_used": [
+        "Owner"
+      ]
+    },
+    {
+      "id": "REQ-0003",
+      "statement": "The system shall show a reminder when a **Vaccination Record** is overdue.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0003"
+      ],
+      "terms_used": [
+        "Vaccination Record"
+      ]
+    },
+    {
+      "id": "REQ-0001",
+      "statement": "The system shall let an **Owner** book, reschedule, and cancel an **Appointment**.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0001"
+      ],
+      "terms_used": [
+        "Owner",
+        "Appointment"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "claim_id": "DEC-0001",
+      "decision": "Persist clinic data in SQLite behind a repository interface.",
+      "rationale": "A single clinic needs zero-ops storage; the repository interface keeps a later migration to Postgres open.",
+      "evidence": [
+        "E-0001"
+      ],
+      "confidence": 0.8,
+      "impact": "medium",
+      "assumptions": [],
+      "alternatives": [
+        {
+          "option": "Postgres from day one",
+          "rejected_because": "No operations staff to run a server at the clinic."
+        }
+      ],
+      "status": "accepted"
+    }
+  ],
+  "contracts": [],
+  "tasks": [
+    {
+      "task_id": "TASK-0001",
+      "title": "Appointment scheduling",
+      "purpose": "Deliver booking, rescheduling, and cancellation for appointments.",
+      "refs": {
+        "requirements": [
+          "REQ-0001"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [],
+      "preconditions": [
+        "Repository interface merged"
+      ],
+      "permitted_scope": [
+        "src/appointments/**"
+      ],
+      "protected": [
+        "src/db/schema.ts"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "No appointment may be booked outside clinic opening hours"
+      ],
+      "instructions": "Implement the appointment service on top of the repository interface; keep every write inside src/appointments.",
+      "tests": [
+        {
+          "kind": "integration",
+          "file": "tests/appointments.test.ts",
+          "cases": [
+            "REQ-0001: booking an appointment persists it",
+            "REQ-0001: cancelling frees the slot for rebooking"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/appointments.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Owners can book and cancel appointments through the service"
+      ],
+      "rollback": "Revert the appointments module commit and delete its migration.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Small, well-understood surface"
+      },
+      "complexity": "s"
+    },
+    {
+      "task_id": "TASK-0002",
+      "title": "Owner records",
+      "purpose": "Store owner contact details with a full change history.",
+      "refs": {
+        "requirements": [
+          "REQ-0002"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [
+        "TASK-0001"
+      ],
+      "preconditions": [
+        "Appointment scheduling merged"
+      ],
+      "permitted_scope": [
+        "src/owners/**"
+      ],
+      "protected": [
+        "src/db/schema.ts"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "Contact detail edits never overwrite history"
+      ],
+      "instructions": "Implement the owners module with an append-only history table; keep every write inside src/owners.",
+      "tests": [
+        {
+          "kind": "integration",
+          "file": "tests/owners.test.ts",
+          "cases": [
+            "REQ-0002: editing owner contact details records a history entry"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/owners.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Owner contact edits are versioned"
+      ],
+      "rollback": "Revert the owners module commit and delete its migration.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Follows the repository pattern already in place"
+      },
+      "complexity": "s"
+    },
+    {
+      "task_id": "TASK-0003",
+      "title": "Vaccination reminders",
+      "purpose": "Surface a reminder whenever a vaccination record is overdue.",
+      "refs": {
+        "requirements": [
+          "REQ-0003"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [
+        "TASK-0001"
+      ],
+      "preconditions": [
+        "Appointment scheduling merged"
+      ],
+      "permitted_scope": [
+        "src/vaccinations/**"
+      ],
+      "protected": [
+        "src/db/schema.ts"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "Reminder scans are read-only against appointment data"
+      ],
+      "instructions": "Implement the overdue-record scan and the reminder projection inside src/vaccinations.",
+      "tests": [
+        {
+          "kind": "unit",
+          "file": "tests/vaccinations.test.ts",
+          "cases": [
+            "REQ-0003: an overdue vaccination record surfaces a reminder"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/vaccinations.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Overdue records produce reminders"
+      ],
+      "rollback": "Revert the vaccinations module commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "low",
+        "note": "Pure read path"
+      },
+      "complexity": "xs"
+    }
+  ],
+  "test_files": [
+    "tests/appointments.test.ts",
+    "tests/owners.test.ts",
+    "tests/vaccinations.test.ts"
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "expect": "verify-drift",
+  "message_includes": "tasks"
+}

@@ -1,0 +1,283 @@
+{
+  "manifest": {
+    "spec_schema": "lco-spec/1.0",
+    "spec_version": 1,
+    "project": {
+      "name": "legacy-crm",
+      "mode": "legacy"
+    },
+    "complexity_profile": "p-legacy",
+    "evidence_snapshot": {
+      "pack_hash": "sha256:67ff486df8626d4f27527469ebf624b3054699ed5b70e92fa854b0df2641e49d",
+      "collected_at": "2026-08-18T09:00:00Z"
+    },
+    "state": "draft",
+    "council_run": {
+      "run_id": "run-legacycrm-0009",
+      "config_fingerprint": "cfg-2b3c4d5e"
+    },
+    "artifact_hashes": {},
+    "unresolved_count": 0,
+    "blocking_count": 0,
+    "target_runtime": {
+      "platform": "node",
+      "stack": "typescript"
+    }
+  },
+  "intent": {
+    "statement": "Migrate the legacy PHP CRM to TypeScript while preserving the CSV import workflow and a migration batch budget.",
+    "normalized": "legacy crm migration: preserve csv import, batch time budget"
+  },
+  "glossary": [
+    {
+      "term": "Customer Record",
+      "definition": "One row of the legacy CRM customer table including its notes."
+    },
+    {
+      "term": "CSV Import",
+      "definition": "The daily operator workflow that loads contacts from a CSV file."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "AS-0001",
+      "statement": "The legacy CRM stays online until the migration cutover completes.",
+      "evidence": [
+        "E-0001"
+      ],
+      "impact_if_wrong": "A dual-write phase would be needed before any cutover."
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E-0001",
+      "kind": "user_input",
+      "source": "interviews/crm-ops-2026-08-05.md",
+      "hash": "sha256:1f6924f9695a1c350d03af68313ef99650549c2aa1623b293927b405b2a9b3dc"
+    },
+    {
+      "id": "E-0002",
+      "kind": "code",
+      "source": "legacy-src/import/csv.php",
+      "hash": "sha256:e20cb813ff803e3bbfeb8a38711e30bc38c0600c121c4289a7fb6ada19621a91"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-0001",
+      "statement": "The system shall migrate every **Customer Record** from the legacy CRM without data loss.",
+      "priority": "must",
+      "evidence": [
+        "E-0001",
+        "E-0002"
+      ],
+      "acceptance_refs": [
+        "TST-0001"
+      ],
+      "terms_used": [
+        "Customer Record"
+      ]
+    },
+    {
+      "id": "REQ-0002",
+      "statement": "The system shall keep **CSV Import** behavior byte-compatible with the legacy importer.",
+      "priority": "must",
+      "evidence": [
+        "E-0002"
+      ],
+      "acceptance_refs": [
+        "TST-0002"
+      ],
+      "terms_used": [
+        "CSV Import"
+      ]
+    },
+    {
+      "id": "OPS-0001",
+      "statement": "NFR: a migration batch of ten thousand records must finish within five minutes.",
+      "priority": "must",
+      "evidence": [
+        "E-0001"
+      ],
+      "acceptance_refs": [
+        "TST-0002"
+      ],
+      "terms_used": []
+    }
+  ],
+  "decisions": [
+    {
+      "claim_id": "DEC-0001",
+      "decision": "Rewrite the importer in TypeScript and diff its outputs against the legacy importer.",
+      "rationale": "A byte-level differential harness is the only trustworthy oracle for the parsing quirks operators rely on.",
+      "evidence": [
+        "E-0002"
+      ],
+      "confidence": 0.9,
+      "impact": "high",
+      "assumptions": [],
+      "alternatives": [
+        {
+          "option": "Keep the PHP importer as a sidecar",
+          "rejected_because": "Two runtimes would double the ops surface."
+        }
+      ],
+      "status": "accepted"
+    }
+  ],
+  "contracts": [
+    {
+      "id": "CON-0001",
+      "kind": "ts-signature",
+      "symbol": "importCustomers",
+      "definition": "export function importCustomers(csvPath: string): ImportReport"
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "TASK-0001",
+      "title": "Customer record migration",
+      "purpose": "Move every customer record from the legacy database without loss.",
+      "refs": {
+        "requirements": [
+          "REQ-0001"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [],
+      "preconditions": [
+        "Read replica of the legacy database available"
+      ],
+      "permitted_scope": [
+        "src/migration/**"
+      ],
+      "protected": [
+        "src/import/**"
+      ],
+      "interface_changes": [],
+      "invariants": [
+        "Migration writes are idempotent per customer id"
+      ],
+      "instructions": "Implement the batch reader and writer inside src/migration; never mutate legacy rows.",
+      "tests": [
+        {
+          "kind": "integration",
+          "file": "tests/migration.test.ts",
+          "cases": [
+            "REQ-0001: migrated record counts match the legacy export"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/migration.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Row counts and checksums match the export"
+      ],
+      "rollback": "Revert the migration commit; the legacy system is untouched.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary"
+        ]
+      },
+      "risk": {
+        "level": "high",
+        "note": "Production data movement"
+      },
+      "complexity": "l"
+    },
+    {
+      "task_id": "TASK-0002",
+      "title": "CSV import port",
+      "purpose": "Port the CSV importer byte-compatibly and hold the batch budget.",
+      "refs": {
+        "requirements": [
+          "REQ-0002",
+          "OPS-0001"
+        ],
+        "architecture": [],
+        "decisions": [
+          "DEC-0001"
+        ]
+      },
+      "depends_on": [
+        "TASK-0001"
+      ],
+      "preconditions": [
+        "Migration reader merged"
+      ],
+      "permitted_scope": [
+        "src/import/**"
+      ],
+      "protected": [
+        "src/migration/**"
+      ],
+      "interface_changes": [
+        {
+          "symbol": "importCustomers",
+          "file": "src/import/customers.ts"
+        }
+      ],
+      "invariants": [
+        "Importer output stays byte-identical to the legacy importer on the reference corpus"
+      ],
+      "instructions": "Port the parser inside src/import and run the differential harness against the legacy outputs.",
+      "tests": [
+        {
+          "kind": "integration",
+          "file": "tests/import.test.ts",
+          "cases": [
+            "REQ-0002: imported rows match the legacy importer byte for byte",
+            "OPS-0001: a ten-thousand-row batch finishes within five minutes"
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm vitest run tests/import.test.ts",
+          "expect": "exit code 0, all cases pass"
+        }
+      ],
+      "acceptance": [
+        "Differential harness green and budget held"
+      ],
+      "rollback": "Revert the import port commit.",
+      "completion_evidence": {
+        "required": [
+          "verification_outputs",
+          "test_summary",
+          "diff_scope_check"
+        ]
+      },
+      "risk": {
+        "level": "medium",
+        "note": "Compatibility surface is wide"
+      },
+      "complexity": "l"
+    }
+  ],
+  "test_files": [
+    "tests/migration.test.ts",
+    "tests/import.test.ts"
+  ],
+  "legacy": {
+    "as_is_summary": "A PHP monolith CRM of roughly forty thousand lines with MySQL storage and a CSV contact importer used daily by operators.",
+    "preserve_change_drop": [
+      {
+        "behavior": "CSV contact import",
+        "decision": "preserve",
+        "rationale": "The daily operator workflow depends on the exact parsing quirks of the legacy importer.",
+        "evidence": [
+          "E-0002"
+        ]
+      }
+    ]
+  }
+}

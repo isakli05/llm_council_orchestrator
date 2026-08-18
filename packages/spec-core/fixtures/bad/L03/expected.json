@@ -1,0 +1,5 @@
+{
+  "expect": "lint-error",
+  "rule": "L03_TASK_TEST_FILE_UNKNOWN",
+  "message_includes": "tests/session-revoke-v2.test.ts"
+}
