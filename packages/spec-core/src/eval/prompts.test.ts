@@ -71,6 +71,18 @@ describe('prompt templates — individual shape', () => {
     expect(p).toContain('unresolved_count');
   });
 
+  it('proposeB puts the independence instruction BEFORE the embedded proposal A (anti-anchoring order)', () => {
+    const a = '{"sentinel":"proposal-a-7q4z"}';
+    const p = proposeB(INTENT, 'p-mini', a);
+    const instructionAt = p.indexOf('Draft your OWN independent proposal');
+    const proposalAAt = p.indexOf('PROPOSAL A');
+    expect(instructionAt).toBeGreaterThan(-1);
+    expect(proposalAAt).toBeGreaterThan(-1);
+    expect(instructionAt).toBeLessThan(proposalAAt);
+    // the instruction and the A JSON stay in the prompt at all
+    expect(p).toContain(a);
+  });
+
   it('judgeMerge embeds both proposals verbatim', () => {
     const a = '{"sentinel":"proposal-a-7q4z"}';
     const b = '{"sentinel":"proposal-b-9w1x"}';

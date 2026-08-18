@@ -95,6 +95,11 @@ export function propose(intent: string, profile: EvalTaskProfile): string {
  * into the final bundle. High-impact conflicts that evidence cannot resolve are
  * emitted as decisions with status "UNRESOLVED" and counted in
  * manifest.unresolved_count (the lint gate then blocks the run — by design).
+ *
+ * Ordering (Task 10 review amendment): the "draft your OWN independent
+ * proposal first / do not anchor on A" instruction comes BEFORE the embedded
+ * proposal A JSON — instruction first, then A — so the anti-anchoring rule is
+ * already in force when the model starts reading A.
  */
 export function proposeB(
   intent: string,
@@ -105,16 +110,16 @@ export function proposeB(
     'ROLE: You are the second council member acting as merger and judge. Another member already produced proposal A; you will draft independently, then merge.',
     intentBlock(intent, profile),
     BUNDLE_SHAPE,
-    `PROPOSAL A (verbatim, from the other council member):`,
-    '"""',
-    proposalAJson,
-    '"""',
     [
       'PROCEDURE (internal; do not narrate it):',
       '1. Draft your OWN independent proposal for the intent first. Do not anchor on A: where you disagree, your draft must reflect your own reading.',
       '2. Merge your draft with proposal A into ONE final bundle: prefer the option with better justification from the intent; adopt A\'s content only where it is right.',
       '3. Where A and your draft conflict on a high-impact point and the intent\'s evidence cannot resolve the conflict, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
     ].join('\n'),
+    `PROPOSAL A (verbatim, from the other council member):`,
+    '"""',
+    proposalAJson,
+    '"""',
     JSON_ONLY,
     'TASK: output ONLY the final merged SpecBundle as a single JSON value.',
   ].join('\n\n');
