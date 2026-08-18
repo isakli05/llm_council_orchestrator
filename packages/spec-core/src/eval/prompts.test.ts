@@ -105,3 +105,45 @@ describe('prompt templates — individual shape', () => {
     expect(proposeB(INTENT, 'p-mini', 'A')).toBe(proposeB(INTENT, 'p-mini', 'A'));
   });
 });
+
+describe('prompt templates — machine-generated schema embedding (live attempt-2 fix)', () => {
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const path = require('node:path') as typeof import('node:path');
+  const schemaText = readFileSync(
+    path.resolve(__dirname, '../../generated/spec-schema.json'),
+    'utf8',
+  );
+
+  it('spec templates embed the generated schema VERBATIM (drift-proof by construction)', () => {
+    const templates = [
+      propose(INTENT, 'p-mini'),
+      proposeB(INTENT, 'p-mini', '{"proposal":"A"}'),
+      judgeMerge(INTENT, 'p-mini', '{"a":1}', '{"b":2}'),
+      classifyAndProposeSingle(INTENT, 'p-mini'),
+    ];
+    for (const p of templates) {
+      expect(p).toContain(schemaText);
+    }
+    // classifier stays schema-free (tiny output, no bundle)
+    expect(classifySingle(INTENT, 'p-mini')).not.toContain(schemaText);
+  });
+
+  it('spec templates place the schema BEFORE the intent (stable prefix for provider caching)', () => {
+    for (const p of [
+      propose(INTENT, 'p-mini'),
+      classifyAndProposeSingle(INTENT, 'p-mini'),
+    ]) {
+      expect(p.indexOf('lco-spec/1.0')).toBeGreaterThan(-1);
+      expect(p.indexOf('lco-spec/1.0')).toBeLessThan(p.indexOf(INTENT));
+    }
+  });
+
+  it('spec templates warn against the observed object-shape pitfalls', () => {
+    for (const p of [propose(INTENT, 'p-mini'), classifyAndProposeSingle(INTENT, 'p-mini')]) {
+      expect(p).toMatch(/alternatives.*OBJECTS|alternatives\[\] items are OBJECTS/i);
+      expect(p).toContain('rejected_because');
+      expect(p).toContain('completion_evidence');
+      expect(p).toMatch(/user_input, code, runtime, doc, constraint/);
+    }
+  });
+});

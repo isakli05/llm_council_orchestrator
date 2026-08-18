@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import type { EvalTaskProfile } from './tasks';
 
 /**
@@ -30,19 +32,37 @@ const JSON_ONLY = [
   '- Never invent facts, requirements, evidence, or decisions to fill a gap. If the intent is ambiguous or self-contradictory on a point that materially affects the design, mark the affected item(s) UNRESOLVED instead: set decisions[].status to "UNRESOLVED", set manifest.unresolved_count to the number of unresolved items, and set manifest.state to "blocked".',
 ].join('\n');
 
-/** Compact map of the SpecBundle top-level shape (full JSON Schema lives in generated/spec-schema.json). */
-const BUNDLE_SHAPE = [
-  'SpecBundle top-level shape (lco-spec/1.0):',
-  '- manifest: { spec_schema:"lco-spec/1.0", spec_version:1, project:{name, mode:"greenfield"|"legacy"}, complexity_profile, evidence_snapshot:{pack_hash:"sha256:<64 hex>", collected_at}, state:"draft"|"blocked" for this pipeline, council_run:{run_id, config_fingerprint}, artifact_hashes:{}, unresolved_count, blocking_count, target_runtime:{platform, stack} }',
-  '- intent: { statement, normalized }',
-  '- glossary: [{ term, definition }] — define every domain term used in requirement statements',
-  '- assumptions: [{ id:"AS-0000", statement, evidence:["E-0000"], impact_if_wrong }]',
-  '- evidence: [{ id:"E-0000", kind, source, hash:"sha256:<64 hex>" }]',
-  '- requirements: [{ id:"REQ-0000", statement, priority:"must"|"should"|"could", evidence:["E-0000"] (min 1), acceptance_refs:["TST-0000"] (min 1), terms_used }] — ids follow the pattern PREFIX-0000',
-  '- decisions: [{ claim_id:"DEC-0000", decision, rationale, evidence, confidence:0..1, impact:"low"|"medium"|"high", assumptions, alternatives, status:"proposed"|"accepted"|"rejected"|"UNRESOLVED" }]',
-  '- contracts: [] (interface contracts if any)',
-  '- tasks: [{ task_id:"TASK-0000", title, purpose, refs:{requirements, architecture, decisions}, depends_on (task ids only), preconditions (min 1), permitted_scope (min 1), protected, interface_changes, invariants (min 1), instructions, tests (min 1: {kind:"unit"|"integration"|"property"|"e2e", file, cases}), verification (min 1: {command, expect}), acceptance (min 1), rollback, completion_evidence, risk, complexity:"xs"|"s"|"m"|"l" }] — keep depends_on acyclic',
-  '- test_files: every distinct tasks[].tests[].file path, listed here (L03 checks this)',
+/**
+ * The EXACT machine-generated JSON Schema of SpecBundle, embedded verbatim
+ * (live attempt-2 fix): the first live run's greenfield outputs failed
+ * schema validation 24/24 because the previous hand-written shape summary
+ * disagreed with the real schema in five nested-shape details
+ * (alternatives/interface_changes/completion_evidence as strings, contract
+ * field names, evidence.kind enum). Embedding the same artifact the
+ * validator uses makes prompt↔schema drift structurally impossible.
+ * Loaded fail-closed at module init; resolves identically from src/ (vitest)
+ * and dist/ (node) — both sit two levels below the package root.
+ */
+const SCHEMA_TEXT: string = readFileSync(
+  path.resolve(__dirname, '../../generated/spec-schema.json'),
+  'utf8',
+);
+
+const SCHEMA_BLOCK = [
+  'The EXACT JSON Schema of the required output (authoritative — follow it field by field, including every nested object shape; the validator enforces this schema literally):',
+  '"""',
+  SCHEMA_TEXT,
+  '"""',
+].join('\n');
+
+/** Pitfall warnings distilled from the observed live failure modes (belt + suspenders on top of the schema). */
+const PITFALLS = [
+  'SHAPE PITFALLS (all observed as real failure modes — do not repeat them):',
+  '- decisions[].alternatives items are OBJECTS {"option": string, "rejected_because": string} — never plain strings.',
+  '- tasks[].interface_changes items are OBJECTS {"symbol": string, "file": string}; tasks[].completion_evidence is an OBJECT {"required": string[]} — never plain strings.',
+  '- contracts[] items are OBJECTS with ALL of: id, kind ("openapi"|"json-schema"|"ts-signature"|"grpc"), symbol, definition.',
+  '- evidence[].kind must be exactly one of: user_input, code, runtime, doc, constraint.',
+  '- Every id is PREFIX-0000 with FOUR digits (REQ-0001, DEC-0001, TASK-0001, TST-0001, E-0001, AS-0001, GLS-0001); manifest.evidence_snapshot.pack_hash must look like "sha256:" followed by exactly 64 hex characters.',
 ].join('\n');
 
 /** Classification guidance shared by classifySingle and the merged single-variant template. */
@@ -80,11 +100,12 @@ export function classifySingle(intent: string, profile: EvalTaskProfile): string
 export function propose(intent: string, profile: EvalTaskProfile): string {
   return [
     'ROLE: You are a spec author. Turn the user intent into a complete, evidence-gated SpecBundle.',
-    intentBlock(intent, profile),
-    BUNDLE_SHAPE,
+    SCHEMA_BLOCK,
+    PITFALLS,
     CLASSIFY_RULES,
     JSON_ONLY,
     'TASK: produce the SpecBundle as a single JSON value. Every requirement must be covered by at least one task (refs.requirements), every task must carry tests and a verification command, and manifest.state must be "draft" or, if you marked anything UNRESOLVED, "blocked".',
+    intentBlock(intent, profile),
   ].join('\n\n');
 }
 
@@ -108,20 +129,21 @@ export function proposeB(
 ): string {
   return [
     'ROLE: You are the second council member acting as merger and judge. Another member already produced proposal A; you will draft independently, then merge.',
-    intentBlock(intent, profile),
-    BUNDLE_SHAPE,
+    SCHEMA_BLOCK,
+    PITFALLS,
     [
       'PROCEDURE (internal; do not narrate it):',
       '1. Draft your OWN independent proposal for the intent first. Do not anchor on A: where you disagree, your draft must reflect your own reading.',
       '2. Merge your draft with proposal A into ONE final bundle: prefer the option with better justification from the intent; adopt A\'s content only where it is right.',
       '3. Where A and your draft conflict on a high-impact point and the intent\'s evidence cannot resolve the conflict, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
     ].join('\n'),
+    JSON_ONLY,
+    'TASK: output ONLY the final merged SpecBundle as a single JSON value.',
+    intentBlock(intent, profile),
     `PROPOSAL A (verbatim, from the other council member):`,
     '"""',
     proposalAJson,
     '"""',
-    JSON_ONLY,
-    'TASK: output ONLY the final merged SpecBundle as a single JSON value.',
   ].join('\n\n');
 }
 
@@ -141,8 +163,16 @@ export function judgeMerge(
 ): string {
   return [
     'ROLE: You are the judge of a two-member council. Merge the two proposals into one final SpecBundle.',
+    SCHEMA_BLOCK,
+    PITFALLS,
+    [
+      'PROCEDURE (internal; do not narrate it):',
+      '1. Prefer the option with better justification from the intent on each contested point.',
+      '2. Where A and B conflict on a high-impact point and the intent\'s evidence cannot resolve the conflict, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
+    ].join('\n'),
+    JSON_ONLY,
+    'TASK: output ONLY the final merged SpecBundle as a single JSON value.',
     intentBlock(intent, profile),
-    BUNDLE_SHAPE,
     `PROPOSAL A (verbatim):`,
     '"""',
     proposalAJson,
@@ -151,13 +181,6 @@ export function judgeMerge(
     '"""',
     proposalBJson,
     '"""',
-    [
-      'PROCEDURE (internal; do not narrate it):',
-      '1. Prefer the option with better justification from the intent on each contested point.',
-      '2. Where A and B conflict on a high-impact point and the intent\'s evidence cannot resolve the conflict, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
-    ].join('\n'),
-    JSON_ONLY,
-    'TASK: output ONLY the final merged SpecBundle as a single JSON value.',
   ].join('\n\n');
 }
 
@@ -170,10 +193,11 @@ export function judgeMerge(
 export function classifyAndProposeSingle(intent: string, profile: EvalTaskProfile): string {
   return [
     'ROLE: You are a one-shot spec pipeline: classify the request, then turn it into a complete, evidence-gated SpecBundle.',
-    intentBlock(intent, profile),
-    BUNDLE_SHAPE,
+    SCHEMA_BLOCK,
+    PITFALLS,
     CLASSIFY_RULES,
     JSON_ONLY,
     'TASK: apply the classification silently and produce the SpecBundle as a single JSON value. If your classification would set must_be_blocked=true, mark the affected points as UNRESOLVED decisions (manifest.unresolved_count accordingly, manifest.state "blocked") instead of inventing resolutions; otherwise manifest.state is "draft". The final output is ONLY the bundle JSON — no separate classification object.',
+    intentBlock(intent, profile),
   ].join('\n\n');
 }
