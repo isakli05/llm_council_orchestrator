@@ -1,9 +1,19 @@
 import type { SpecBundle } from '../schemas';
 import type { LintFinding, LintResult, LintRuleId } from './types';
+import { rule as l01 } from './rules/l01';
+import { rule as l02 } from './rules/l02';
+import { rule as l03 } from './rules/l03';
+import { rule as l04 } from './rules/l04';
+import { rule as l05 } from './rules/l05';
+import { rule as l06 } from './rules/l06';
+import { rule as l07 } from './rules/l07';
+import { rule as l08 } from './rules/l08';
+import { rule as l10 } from './rules/l10';
+import { rule as l12 } from './rules/l12';
 
 /**
  * A lint rule: scans a compiled bundle and reports findings tagged with its
- * own rule id. Task 7 implements the rule bodies in `src/lint/rules/`.
+ * own rule id. Rule bodies live in `src/lint/rules/`.
  */
 export interface LintRule {
   id: LintRuleId;
@@ -11,13 +21,22 @@ export interface LintRule {
 }
 
 /**
- * Rule registry. Task 7 registers L01..L12 here.
- *
- * The engine is honest with an empty registry: zero registered rules produce
- * the empty result — not a fake pass — because every finding below can only
- * originate from a registered rule's `check`.
+ * Rule registry: the ten evidence-gate rules L01, L02, L03, L04, L05, L06,
+ * L07, L08, L10, L12 (L09/L11 are schema-layer checks, not lint rules).
+ * Registration order drives finding order in `lintBundle` results.
  */
-export const RULES: LintRule[] = [];
+export const RULES: LintRule[] = [
+  l01,
+  l02,
+  l03,
+  l04,
+  l05,
+  l06,
+  l07,
+  l08,
+  l10,
+  l12,
+];
 
 /**
  * Run every registered rule over the bundle and bucket the findings:

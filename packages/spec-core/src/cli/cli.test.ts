@@ -108,15 +108,21 @@ describe('runCli compile', () => {
 });
 
 describe('runCli lint', () => {
-  // NOTE (Task 7 carry-forward): the lint-engine RULES registry is empty until
-  // Task 7 registers L01..L12, so the "lint errors -> exit 1 + rule table"
-  // CLI case cannot be exercised yet. Only the clean path is asserted here;
-  // Task 7 adds the lint-failure CLI test against fixtures/bad/L02.
   it('good pet-clinic spec dir -> exit 0, zero findings reported', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
 
     await expect(runCli(['lint', root])).resolves.toBe(0);
     expect(stdout()).toContain('lint OK');
+  });
+
+  // Deferred from Task 6: the RULES registry was empty there, so the
+  // lint-failure exit path could not be exercised until the rules landed.
+  it('L02 fixture spec dir -> exit 1 with L02_ORPHAN_REQUIREMENT in the table', async () => {
+    const root = makeSpecRoot(loadBundle('bad/L02/bundle.json'));
+
+    await expect(runCli(['lint', root])).resolves.toBe(1);
+    expect(stdout()).toContain('L02_ORPHAN_REQUIREMENT');
+    expect(stdout()).toContain('REQ-0003');
   });
 
   it('compile failure short-circuits lint -> exit 2', async () => {
