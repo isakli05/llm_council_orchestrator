@@ -126,15 +126,30 @@ describe('createHttpLlm — chat/completions over stubbed fetch', () => {
     expect(url).toBe('https://llm.example.test/v1/chat/completions');
   });
 
-  it('non-2xx → throws with the status and a body excerpt', async () => {
+  it('non-retryable non-2xx → throws immediately with the status and a body excerpt', async () => {
     stubEnv();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse({ error: { message: 'boom exploded: quota gone' } }, 500)),
-    );
+    const fetchMock = vi.fn(async () => jsonResponse({ error: { message: 'boom exploded: quota gone' } }, 402));
+    vi.stubGlobal('fetch', fetchMock);
     const llm = createHttpLlm();
-    await expect(llm.complete('p')).rejects.toThrow(/500/);
+    await expect(llm.complete('p')).rejects.toThrow(/402/);
     await expect(llm.complete('p')).rejects.toThrow(/boom exploded: quota gone/);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // one per complete() — no retries on 402
+  });
+
+  it('retryable 5xx exhausted → throws with status after 4 attempts', async () => {
+    stubEnv();
+    const fetchMock = vi.fn(async () => jsonResponse({ error: { message: 'boom exploded: quota gone' } }, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    const llm = createHttpLlm();
+    const promise = llm.complete('p');
+    promise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(promise).rejects.toThrow(/500.*after 4 attempts/s);
+    await expect(promise).rejects.toThrow(/boom exploded: quota gone/);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('2xx without choices[0].message.content → throws fail-closed instead of returning garbage', async () => {
@@ -142,5 +157,83 @@ describe('createHttpLlm — chat/completions over stubbed fetch', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ choices: [] })));
     const llm = createHttpLlm();
     await expect(llm.complete('p')).rejects.toThrow(/choices\[0\]\.message\.content|message\.content/);
+  });
+});
+
+describe('createHttpLlm — transport retry policy', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Response bodies are single-use — a factory, never a shared instance.
+  const ok = () =>
+    jsonResponse({
+      choices: [{ message: { content: 'hello' } }],
+      usage: { prompt_tokens: 3, completion_tokens: 2 },
+    });
+
+  it('retries transport errors and succeeds (fetch failed x2 then 200)', async () => {
+    stubEnv();
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    const adapter = createHttpLlm();
+    const promise = adapter.complete('ping');
+    // advance through the two backoff sleeps (2s, 5s)
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const out = await promise;
+    expect(out.text).toBe('hello');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries 5xx then 429 then succeeds', async () => {
+    stubEnv();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, 500))
+      .mockResolvedValueOnce(jsonResponse({}, 429))
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    const adapter = createHttpLlm();
+    const promise = adapter.complete('ping');
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const out = await promise;
+    expect(out.text).toBe('hello');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT retry non-retryable 4xx (single attempt)', async () => {
+    stubEnv();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('{"error":"unauthorized"}', { status: 401, statusText: 'Unauthorized' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = createHttpLlm();
+    await expect(adapter.complete('ping')).rejects.toThrow('LLM HTTP 401');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after 4 attempts with the transport error preserved', async () => {
+    stubEnv();
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    const adapter = createHttpLlm();
+    const promise = adapter.complete('ping');
+    promise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(promise).rejects.toThrow(
+      /LLM HTTP request to .* failed: fetch failed \(after 4 attempts\)/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 });
