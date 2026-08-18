@@ -112,22 +112,27 @@ describe('runPipeline — single variant', () => {
     expect(out.usage).toEqual({ in: 10, out: 5, calls: 1 });
   });
 
-  it('(c) garbage text → blocked with schema-validation reason', async () => {
-    const { llm } = makeLlm(['I am sorry, I cannot produce that as JSON. Here is prose instead.']);
+  it('(c) garbage text → schema retry also garbage → blocked with schema-validation reason', async () => {
+    const { llm, calls } = makeLlm([
+      'I am sorry, I cannot produce that as JSON. Here is prose instead.',
+      'Still prose, still not JSON.',
+    ]);
     const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
 
     expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(2);
     if (out.kind === 'blocked') {
       expect(out.reasons).toHaveLength(1);
       expect(out.reasons[0]).toMatch(/LLM output failed schema validation/);
     }
   });
 
-  it('(c) valid JSON that is not a SpecBundle → blocked with schema-validation reason', async () => {
-    const { llm } = makeLlm(['{"hello":"world"}']);
+  it('(c) valid JSON that is not a SpecBundle → schema retry also wrong → blocked', async () => {
+    const { llm, calls } = makeLlm(['{"hello":"world"}', '{"still":"not a bundle"}']);
     const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
 
     expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(2);
     if (out.kind === 'blocked') {
       expect(out.reasons[0]).toMatch(/LLM output failed schema validation/);
     }
@@ -171,12 +176,17 @@ describe('runPipeline — council variant', () => {
     expect(prompts[1]).not.toContain('sentinel-proposal-a-7q4z');
   });
 
-  it('garbage FINAL output → blocked after exactly 3 calls', async () => {
-    const { llm, calls } = makeLlm([CLASSIFIER_OK, proposalAJson(), 'not json, sorry']);
+  it('garbage FINAL output → schema retry also garbage → blocked after 4 calls', async () => {
+    const { llm, calls } = makeLlm([
+      CLASSIFIER_OK,
+      proposalAJson(),
+      'not json, sorry',
+      'still not json',
+    ]);
     const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
 
     expect(out.kind).toBe('blocked');
-    expect(calls()).toBe(3);
+    expect(calls()).toBe(4);
     if (out.kind === 'blocked') {
       expect(out.reasons[0]).toMatch(/LLM output failed schema validation/);
     }
@@ -223,5 +233,47 @@ describe('stripJsonFences', () => {
 
   it('trims surrounding whitespace of unfenced text', () => {
     expect(stripJsonFences('  {"a":1}\n')).toBe('{"a":1}');
+  });
+});
+
+describe('runPipeline — validation-informed retry (live attempt-4 fix)', () => {
+  const unresolvedEt13 = () => {
+    const b = et01Bundle(); // shape-compatible base
+    b.manifest.unresolved_count = 1;
+    b.decisions[0]!.status = 'UNRESOLVED';
+    return b;
+  };
+
+  it('retries once on SCHEMA failure and accepts the corrected bundle (single, calls=2)', async () => {
+    const { llm, calls } = makeLlm(['bu geçerli json değil', JSON.stringify(et01Bundle())]);
+    const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
+    expect(out.kind).toBe('spec');
+    expect(calls()).toBe(2);
+  });
+
+  it('does NOT retry when the only lint errors are L08 (legitimate UNRESOLVED block, calls=1)', async () => {
+    const { llm, calls } = makeLlm([JSON.stringify(unresolvedEt13())]);
+    const out = await runPipeline(task('ET-13'), 'single', llm, NOW);
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(1);
+    if (out.kind === 'blocked') expect(out.reasons.join(' ')).toContain('L08');
+  });
+
+  it('retries once on non-L08 lint errors and accepts the fixed bundle (calls=2)', async () => {
+    const broken = et01Bundle();
+    broken.tasks = []; // guarantees L02 orphan requirements
+    broken.test_files = [];
+    const { llm, calls } = makeLlm([JSON.stringify(broken), JSON.stringify(et01Bundle())]);
+    const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
+    expect(out.kind).toBe('spec');
+    expect(calls()).toBe(2);
+  });
+
+  it('gives up after the schema retry (fail-closed) — blocked, calls=2', async () => {
+    const { llm, calls } = makeLlm(['{ "half": true', 'hâlə json değil']);
+    const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(2);
+    if (out.kind === 'blocked') expect(out.reasons[0]).toContain('schema validation');
   });
 });

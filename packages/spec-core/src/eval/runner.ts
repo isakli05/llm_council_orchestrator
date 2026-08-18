@@ -85,6 +85,28 @@ function lintReason(f: LintFinding): string {
 }
 
 /**
+ * Validation-informed retry (live attempt-4 fix): one deterministic
+ * feedback loop per stage. SCHEMA failures are mechanical (shape slips on
+ * ~40 nested objects — observed as 1-3 random spots per sample with
+ * thinking off), so feeding the exact validator issues back for ONE retry
+ * is safe and fair (identical policy for both variants; call counts stay
+ * honest in usage). LINT failures are retried ONLY for rules other than
+ * L08_UNRESOLVED_LEAK: L08-only errors are the DESIGN's legitimate
+ * terminal state for ambiguous intents — asking the model to "fix" them
+ * would pressure it into inventing resolutions, which is forbidden.
+ */
+export function buildValidationRetryPrompt(originalPrompt: string, issues: string[]): string {
+  return [
+    originalPrompt,
+    '',
+    'RETRY REQUEST (your previous output was rejected):',
+    'The validator reported these EXACT problems:',
+    issues.map((s) => `- ${s}`).join('\n'),
+    'Output the corrected FULL bundle again — same rules as before: only a single JSON value, no prose, no fences. Do not remove or resolve UNRESOLVED decisions; fix only what the validator listed.',
+  ].join('\n');
+}
+
+/**
  * Run the evidence-gate pipeline for one eval task.
  *
  * - 'single'  — exactly 1 complete() call with the merged
@@ -120,51 +142,79 @@ export async function runPipeline(
     return res.text;
   };
 
+  const usageSnapshot = (): PipelineUsage => ({ in: usage.in, out: usage.out, calls: usage.calls });
+
   const blocked = (reasons: string[]): PipelineOutcome => ({
     kind: 'blocked',
     variant,
     reasons,
-    usage: { in: usage.in, out: usage.out, calls: usage.calls },
+    usage: usageSnapshot(),
   });
 
   // nowIso is the run's only time source; it grounds the model, never the gate.
   const context = `[pipeline context] current time (ISO 8601): ${nowIso}\n\n`;
 
-  let finalText: string;
-  if (variant === 'single') {
-    finalText = await complete(context + classifyAndProposeSingle(task.intent, task.profile));
-  } else {
-    // Council, exactly three calls.
-    const classifierText = await complete(context + classifySingle(task.intent, task.profile));
-    const verdict = parseJsonOrBlock(
-      classifierText,
-      ClassifierOutputSchema,
-      'LLM classifier output failed schema validation',
-    );
-    if (!verdict.ok) return blocked([verdict.reason]);
-    // verdict.must_be_blocked is advisory: proposals still run (the corpus
-    // scripts all three calls); the gate is the final chain below.
-
-    const proposalA = await complete(context + propose(task.intent, task.profile));
-    finalText = await complete(context + proposeB(task.intent, task.profile, proposalA));
-  }
-
-  const parsed = parseJsonOrBlock(
-    finalText,
-    SpecBundleSchema,
-    'LLM output failed schema validation',
-  );
-  if (!parsed.ok) return blocked([parsed.reason]);
-  const bundle = parsed.value as SpecBundle;
-
-  const lint = lintBundle(bundle);
-  if (lint.errors.length > 0) {
-    return blocked(lint.errors.map(lintReason));
-  }
-  return {
-    kind: 'spec',
-    variant,
-    bundle,
-    usage: { in: usage.in, out: usage.out, calls: usage.calls },
+  const bundleFromText = (
+    text: string,
+  ): { ok: true; bundle: SpecBundle } | { ok: false; reason: string } => {
+    const parsed = parseJsonOrBlock(text, SpecBundleSchema, 'LLM output failed schema validation');
+    return parsed.ok ? { ok: true, bundle: parsed.value as SpecBundle } : { ok: false, reason: parsed.reason };
   };
+
+  /** One gated bundle attempt chain: schema → (schema retry) → lint → (non-L08 lint retry). */
+  const gatedBundle = async (prompt: string): Promise<
+    { ok: true; bundle: SpecBundle } | { ok: false; reason: string; reasons?: string[] }
+  > => {
+    let attempt = bundleFromText(await complete(prompt));
+    if (!attempt.ok) {
+      attempt = bundleFromText(await complete(buildValidationRetryPrompt(prompt, [attempt.reason])));
+      if (!attempt.ok) return attempt;
+    }
+
+    let lint = lintBundle(attempt.bundle);
+    const fixable = lint.errors.filter((f) => f.rule !== 'L08_UNRESOLVED_LEAK');
+    if (fixable.length > 0) {
+      const retried = bundleFromText(
+        await complete(buildValidationRetryPrompt(prompt, fixable.map(lintReason))),
+      );
+      if (retried.ok) {
+        lint = lintBundle(retried.bundle);
+        attempt = retried;
+      }
+    }
+
+    if (lint.errors.length > 0) {
+      return { ok: false, reason: lint.errors.map(lintReason).join('; '), reasons: lint.errors.map(lintReason) };
+    }
+    return { ok: true, bundle: attempt.bundle };
+  };
+
+  if (variant === 'single') {
+    const result = await gatedBundle(context + classifyAndProposeSingle(task.intent, task.profile));
+    if (!result.ok) return blocked(result.reasons ?? [result.reason]);
+    return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot() };
+  }
+
+  // Council: classifier, then proposal A (schema-retried once — it is feed
+  // for the judge, never itself gated), then the fused proposeB+judge call
+  // whose output goes through the full gated chain.
+  const classifierText = await complete(context + classifySingle(task.intent, task.profile));
+  const verdict = parseJsonOrBlock(
+    classifierText,
+    ClassifierOutputSchema,
+    'LLM classifier output failed schema validation',
+  );
+  if (!verdict.ok) return blocked([verdict.reason]);
+  // verdict.must_be_blocked is advisory: proposals still run; the gate is
+  // the final chain below.
+
+  let proposalA = await complete(context + propose(task.intent, task.profile));
+  const aParsed = bundleFromText(proposalA);
+  if (!aParsed.ok) {
+    proposalA = await complete(buildValidationRetryPrompt(context + propose(task.intent, task.profile), [aParsed.reason]));
+  }
+
+  const finalResult = await gatedBundle(context + proposeB(task.intent, task.profile, proposalA));
+  if (!finalResult.ok) return blocked(finalResult.reasons ?? [finalResult.reason]);
+  return { kind: 'spec', variant, bundle: finalResult.bundle, usage: usageSnapshot() };
 }
