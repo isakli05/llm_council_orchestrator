@@ -1,0 +1,738 @@
+{
+  "$ref": "#/definitions/SpecBundle",
+  "definitions": {
+    "SpecBundle": {
+      "type": "object",
+      "properties": {
+        "manifest": {
+          "type": "object",
+          "properties": {
+            "spec_schema": {
+              "type": "string",
+              "const": "lco-spec/1.0"
+            },
+            "spec_version": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "project": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "greenfield",
+                    "legacy"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "mode"
+              ],
+              "additionalProperties": false
+            },
+            "complexity_profile": {
+              "type": "string",
+              "enum": [
+                "p-mini",
+                "p-standard",
+                "p-legacy",
+                "p-critical"
+              ]
+            },
+            "evidence_snapshot": {
+              "type": "object",
+              "properties": {
+                "pack_hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "collected_at": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "pack_hash",
+                "collected_at"
+              ],
+              "additionalProperties": false
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "reviewed",
+                "frozen",
+                "superseded",
+                "blocked"
+              ]
+            },
+            "council_run": {
+              "type": "object",
+              "properties": {
+                "run_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "config_fingerprint": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "run_id",
+                "config_fingerprint"
+              ],
+              "additionalProperties": false
+            },
+            "artifact_hashes": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "unresolved_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "blocking_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "target_runtime": {
+              "type": "object",
+              "properties": {
+                "platform": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "stack": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "platform",
+                "stack"
+              ],
+              "additionalProperties": false
+            },
+            "frozen_at": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "spec_schema",
+            "spec_version",
+            "project",
+            "complexity_profile",
+            "evidence_snapshot",
+            "state",
+            "council_run",
+            "artifact_hashes",
+            "unresolved_count",
+            "blocking_count",
+            "target_runtime"
+          ],
+          "additionalProperties": false
+        },
+        "intent": {
+          "type": "object",
+          "properties": {
+            "statement": {
+              "type": "string",
+              "minLength": 1
+            },
+            "normalized": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "statement",
+            "normalized"
+          ],
+          "additionalProperties": false
+        },
+        "glossary": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "term": {
+                "type": "string",
+                "minLength": 1
+              },
+              "definition": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "term",
+              "definition"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^(REQ|DEC|CON|TASK|TST|E|AS|GLS|UX|ARC|DAT|SEC|OPS|LGC)-\\d{4}$"
+              },
+              "statement": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                }
+              },
+              "impact_if_wrong": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "statement",
+              "evidence",
+              "impact_if_wrong"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user_input",
+                  "code",
+                  "runtime",
+                  "doc",
+                  "constraint"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "hash": {
+                "$ref": "#/definitions/SpecBundle/properties/manifest/properties/evidence_snapshot/properties/pack_hash"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "source",
+              "hash"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+              },
+              "statement": {
+                "type": "string",
+                "minLength": 1
+              },
+              "priority": {
+                "type": "string",
+                "enum": [
+                  "must",
+                  "should",
+                  "could"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                },
+                "minItems": 1
+              },
+              "acceptance_refs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                },
+                "minItems": 1
+              },
+              "terms_used": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              }
+            },
+            "required": [
+              "id",
+              "statement",
+              "priority",
+              "evidence",
+              "acceptance_refs"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "claim_id": {
+                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+              },
+              "decision": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rationale": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                }
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "impact": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "assumptions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "alternatives": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "option": {
+                      "type": "string"
+                    },
+                    "rejected_because": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "option",
+                    "rejected_because"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 0
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "proposed",
+                  "accepted",
+                  "rejected",
+                  "UNRESOLVED"
+                ]
+              }
+            },
+            "required": [
+              "claim_id",
+              "decision",
+              "rationale",
+              "evidence",
+              "confidence",
+              "impact",
+              "assumptions",
+              "alternatives",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "contracts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "openapi",
+                  "json-schema",
+                  "ts-signature",
+                  "grpc"
+                ]
+              },
+              "symbol": {
+                "type": "string",
+                "minLength": 1
+              },
+              "definition": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "symbol",
+              "definition"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1
+              },
+              "refs": {
+                "type": "object",
+                "properties": {
+                  "requirements": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                    }
+                  },
+                  "architecture": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "decisions": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                    }
+                  }
+                },
+                "required": [
+                  "requirements",
+                  "architecture",
+                  "decisions"
+                ],
+                "additionalProperties": false
+              },
+              "depends_on": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                }
+              },
+              "preconditions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "permitted_scope": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "protected": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "interface_changes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "symbol": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "file": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "symbol",
+                    "file"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "invariants": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "instructions": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tests": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "unit",
+                        "integration",
+                        "property",
+                        "e2e"
+                      ]
+                    },
+                    "file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "cases": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "file",
+                    "cases"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              },
+              "verification": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "expect": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "command",
+                    "expect"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              },
+              "acceptance": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "rollback": {
+                "type": "string",
+                "minLength": 1
+              },
+              "completion_evidence": {
+                "type": "object",
+                "properties": {
+                  "required": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "verification_outputs",
+                        "test_summary",
+                        "diff_scope_check"
+                      ]
+                    },
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "required"
+                ],
+                "additionalProperties": false
+              },
+              "risk": {
+                "type": "object",
+                "properties": {
+                  "level": {
+                    "$ref": "#/definitions/SpecBundle/properties/decisions/items/properties/impact"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "level",
+                  "note"
+                ],
+                "additionalProperties": false
+              },
+              "complexity": {
+                "type": "string",
+                "enum": [
+                  "xs",
+                  "s",
+                  "m",
+                  "l"
+                ]
+              }
+            },
+            "required": [
+              "task_id",
+              "title",
+              "purpose",
+              "refs",
+              "depends_on",
+              "preconditions",
+              "permitted_scope",
+              "protected",
+              "interface_changes",
+              "invariants",
+              "instructions",
+              "tests",
+              "verification",
+              "acceptance",
+              "rollback",
+              "completion_evidence",
+              "risk",
+              "complexity"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "test_files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "legacy": {
+          "type": "object",
+          "properties": {
+            "as_is_summary": {
+              "type": "string",
+              "minLength": 1
+            },
+            "preserve_change_drop": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "behavior": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "preserve",
+                      "change",
+                      "drop"
+                    ]
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidence": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                    }
+                  }
+                },
+                "required": [
+                  "behavior",
+                  "decision",
+                  "rationale",
+                  "evidence"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "manifest",
+        "intent",
+        "glossary",
+        "assumptions",
+        "evidence",
+        "requirements",
+        "decisions",
+        "contracts",
+        "tasks",
+        "test_files"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

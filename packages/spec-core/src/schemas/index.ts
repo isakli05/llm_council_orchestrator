@@ -1,1 +1,54 @@
+import { z } from 'zod';
+import { IdSchema } from './common';
+import { ManifestSchema } from './manifest';
+import { IntentSchema } from './intent';
+import { GlossaryEntrySchema } from './glossary';
+import { EvidenceItemSchema } from './evidence';
+import { RequirementSchema } from './requirements';
+import { DecisionSchema } from './decisions';
+import { ContractSchema } from './contracts';
+import { TaskContractSchema } from './tasks';
+import { LegacyPackageSchema } from './legacy';
+
 export const SPEC_SCHEMA_VERSION = 'lco-spec/1.0' as const;
+
+export * from './common';
+export * from './manifest';
+export * from './intent';
+export * from './glossary';
+export * from './evidence';
+export * from './requirements';
+export * from './decisions';
+export * from './contracts';
+export * from './tasks';
+export * from './legacy';
+
+export const SpecBundleSchema = z.object({
+  manifest: ManifestSchema,
+  intent: IntentSchema,
+  glossary: z.array(GlossaryEntrySchema),
+  assumptions: z.array(
+    z.object({
+      id: IdSchema,
+      statement: z.string().min(1),
+      evidence: z.array(IdSchema),
+      impact_if_wrong: z.string().min(1),
+    }),
+  ),
+  evidence: z.array(EvidenceItemSchema),
+  requirements: z.array(RequirementSchema),
+  decisions: z.array(DecisionSchema),
+  contracts: z.array(ContractSchema),
+  tasks: z.array(TaskContractSchema),
+  /** L03: task.tests[].file bu kayıt defterinde olmalı */
+  test_files: z.array(z.string().min(1)),
+  legacy: LegacyPackageSchema.optional(),
+});
+export type SpecBundle = z.infer<typeof SpecBundleSchema>;
+
+export const TraceEdgeSchema = z.object({
+  from: IdSchema,
+  to: IdSchema,
+  kind: z.enum(['req-task', 'task-test', 'dec-task', 'evidence-req']),
+});
+export type TraceEdge = z.infer<typeof TraceEdgeSchema>;
