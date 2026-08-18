@@ -9,8 +9,9 @@ export interface ChangeSet {
   id: string;
   rationale: string;
   added_requirements?: unknown[];
-  /** `patch` is parsed with `TaskContractSchema.partial()`; the MERGED task is
-   * then revalidated against the full `TaskContractSchema` before acceptance. */
+  /** `patch` is parsed with `TaskContractSchema.partial().strict()` (unknown
+   * keys are rejected, never stripped); the MERGED task is then revalidated
+   * against the full `TaskContractSchema` before acceptance. */
   modified_tasks?: Array<{ task_id: string; patch: Partial<TaskContract> }>;
   removed_task_ids?: string[];
 }
@@ -29,9 +30,10 @@ export interface ApplyResult {
  *   - only a FROZEN spec can be changed;
  *   - on success: spec_version + 1, state -> 'draft', frozen_at removed;
  *   - modified_tasks: unknown task_id is an error; each patch is schema-parsed
- *     with TaskContractSchema.partial() and the merged task is revalidated
- *     against the FULL TaskContractSchema (an invalid merged task is rejected,
- *     never merged in);
+ *     with TaskContractSchema.partial().strict() (unknown keys rejected, so a
+ *     typo'd key cannot become a silent no-op) and the merged task is
+ *     revalidated against the FULL TaskContractSchema (an invalid merged task
+ *     is rejected, never merged in);
  *   - removed_task_ids: existence is checked; unknown ids are errors;
  *   - added_requirements: each entry must satisfy RequirementSchema.
  *
@@ -83,7 +85,10 @@ export function applyChangeSet(b: SpecBundle, cp: ChangeSet, nowIso: string): Ap
     }
 
     const base = mergedById.get(entry.task_id) ?? existing;
-    const patchParsed = TaskContractSchema.partial().safeParse(entry.patch ?? {});
+    // strict(): unrecognized keys (e.g. a typo like `titel`) are rejected
+    // instead of silently stripped — a stripped patch would parse to {} and
+    // "succeed" as a no-op version bump, which fail-closed forbids.
+    const patchParsed = TaskContractSchema.partial().strict().safeParse(entry.patch ?? {});
     if (!patchParsed.success) {
       errors.push(
         `modified_tasks[${i}] (${entry.task_id}): patch fails TaskContractSchema.partial(): ` +

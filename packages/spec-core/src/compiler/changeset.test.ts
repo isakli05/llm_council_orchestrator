@@ -180,6 +180,44 @@ describe('applyChangeSet: rejections (fail-closed)', () => {
     expect(JSON.stringify(result.bundle)).toBeUndefined();
   });
 
+  it('rejects a patch with an unrecognized key (typo) instead of a silent no-op bump', () => {
+    const result = applyChangeSet(
+      frozen,
+      {
+        id: 'cs-x4b',
+        rationale: 'typo key',
+        modified_tasks: [
+          { task_id: 'TASK-0001', patch: { titel: 'x' } as unknown as Partial<never> },
+        ],
+      },
+      CHANGED_AT,
+    );
+
+    // A stripped patch would parse to {} and "succeed" with zero content
+    // change — that silent no-op success is forbidden (fail-closed).
+    expect(result.ok).toBe(false);
+    expect(result.bundle).toBeUndefined();
+    expect(result.errors.some((e) => e.includes('titel'))).toBe(true);
+    expect(frozen.manifest.spec_version).toBe(1);
+    expect(frozen.manifest.state).toBe('frozen');
+  });
+
+  it('still accepts a correct-key patch after strict key checking', () => {
+    const result = applyChangeSet(
+      frozen,
+      {
+        id: 'cs-x4c',
+        rationale: 'correct key',
+        modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'Valid retitled task' } }],
+      },
+      CHANGED_AT,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.bundle!.tasks[0].title).toBe('Valid retitled task');
+    expect(result.bundle!.manifest.spec_version).toBe(2);
+  });
+
   it('rejects a patch value with an invalid enum (complexity)', () => {
     const result = applyChangeSet(
       frozen,
