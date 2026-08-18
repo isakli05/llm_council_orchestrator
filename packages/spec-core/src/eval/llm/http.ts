@@ -56,6 +56,37 @@ export function createHttpLlm(): LlmAdapter {
     );
   }
 
+  // Optional live tuning (fail-closed on garbage — never silently ignored):
+  // LCO_LLM_MAX_TOKENS caps generation (default when a call passes no opts);
+  // LCO_LLM_EXTRA_BODY (JSON object) is merged last into the request body —
+  // the generic escape hatch for provider-specific knobs, e.g. Z.AI
+  // '{"thinking":{"type":"disabled"}}' to skip hidden reasoning on
+  // non-streaming calls that would otherwise run minutes.
+  let envMaxTokens: number | undefined;
+  const rawMax = process.env.LCO_LLM_MAX_TOKENS;
+  if (rawMax) {
+    const n = Number(rawMax);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new Error('LCO_LLM_MAX_TOKENS must be a positive integer');
+    }
+    envMaxTokens = n;
+  }
+
+  let extraBody: Record<string, unknown> | undefined;
+  const rawExtra = process.env.LCO_LLM_EXTRA_BODY;
+  if (rawExtra) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawExtra);
+    } catch {
+      throw new Error('LCO_LLM_EXTRA_BODY must be a JSON object');
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('LCO_LLM_EXTRA_BODY must be a JSON object');
+    }
+    extraBody = parsed as Record<string, unknown>;
+  }
+
   // Endpoint join: accept a base that already carries /chat/completions,
   // otherwise append it to the base (trailing slashes stripped).
   const endpoint = baseUrl.endsWith('/chat/completions')
@@ -67,7 +98,12 @@ export function createHttpLlm(): LlmAdapter {
       const requestBody = JSON.stringify({
         model,
         messages: [{ role: 'user', content: prompt }],
-        ...(opts?.max_tokens !== undefined ? { max_tokens: opts.max_tokens } : {}),
+        ...(opts?.max_tokens !== undefined
+          ? { max_tokens: opts.max_tokens }
+          : envMaxTokens !== undefined
+            ? { max_tokens: envMaxTokens }
+            : {}),
+        ...(extraBody ?? {}),
       });
 
       let lastError: Error | undefined;

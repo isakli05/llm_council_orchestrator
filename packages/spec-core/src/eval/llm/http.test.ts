@@ -237,3 +237,58 @@ describe('createHttpLlm — transport retry policy', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 });
+
+describe('createHttpLlm — optional live tuning env (EXTRA_BODY, MAX_TOKENS)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function okFetch() {
+    return vi.fn(async () =>
+      jsonResponse({ choices: [{ message: { content: 'x' } }] }),
+    );
+  }
+
+  /** Typed view of a stubbed fetch mock's calls. */
+  function callsOf(mock: ReturnType<typeof vi.fn>): [string, RequestInit][] {
+    return mock.mock.calls as unknown as [string, RequestInit][];
+  }
+
+  it('merges LCO_LLM_EXTRA_BODY into the request body (e.g. disable thinking)', async () => {
+    stubEnv();
+    vi.stubEnv('LCO_LLM_EXTRA_BODY', '{"thinking":{"type":"disabled"}}');
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    await createHttpLlm().complete('p');
+    const body = JSON.parse(callsOf(fetchMock)[0][1].body as string) as Record<string, unknown>;
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body.model).toBe(FAKE_ENV.LCO_LLM_MODEL);
+  });
+
+  it('includes LCO_LLM_MAX_TOKENS when set (and drops it when blank)', async () => {
+    stubEnv();
+    vi.stubEnv('LCO_LLM_MAX_TOKENS', '8000');
+    let fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    await createHttpLlm().complete('p');
+    expect((JSON.parse(callsOf(fetchMock)[0][1].body as string) as { max_tokens?: number }).max_tokens).toBe(8000);
+
+    vi.stubEnv('LCO_LLM_MAX_TOKENS', '');
+    fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    await createHttpLlm().complete('p');
+    expect((JSON.parse(callsOf(fetchMock)[0][1].body as string) as { max_tokens?: number }).max_tokens).toBeUndefined();
+  });
+
+  it('fails closed on invalid LCO_LLM_EXTRA_BODY / MAX_TOKENS', () => {
+    stubEnv();
+    vi.stubEnv('LCO_LLM_EXTRA_BODY', '{not json');
+    expect(() => createHttpLlm()).toThrow('LCO_LLM_EXTRA_BODY must be a JSON object');
+    vi.stubEnv('LCO_LLM_EXTRA_BODY', '[1,2]');
+    expect(() => createHttpLlm()).toThrow('LCO_LLM_EXTRA_BODY must be a JSON object');
+    vi.stubEnv('LCO_LLM_EXTRA_BODY', '');
+    vi.stubEnv('LCO_LLM_MAX_TOKENS', 'abc');
+    expect(() => createHttpLlm()).toThrow('LCO_LLM_MAX_TOKENS must be a positive integer');
+  });
+});
