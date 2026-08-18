@@ -166,7 +166,7 @@ describe('applyChangeSet: rejections (fail-closed)', () => {
     expect(result.errors.some((e) => e.includes('TASK-4242'))).toBe(true);
   });
 
-  it('rejects a patch value that fails TaskContractSchema.partial() (empty title)', () => {
+  it('rejects a patch value that fails TaskContractSchema.partial().strict() (empty title)', () => {
     const result = applyChangeSet(
       frozen,
       { id: 'cs-x4', rationale: 'bad value', modified_tasks: [{ task_id: 'TASK-0001', patch: { title: '' } }] },

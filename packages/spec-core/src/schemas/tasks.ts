@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { IdSchema, ImpactLevelSchema } from './common';
 
-/** 15 alanlık sözleşme */
+/** 18 alanlık sözleşme */
 export const TaskContractSchema = z.object({
   task_id: IdSchema,
   title: z.string().min(1),

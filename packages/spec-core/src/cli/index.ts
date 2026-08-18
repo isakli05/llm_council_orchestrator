@@ -134,6 +134,10 @@ async function cmdVerify(dir: string): Promise<number> {
   if (!result.ok || !result.bundle) return 2;
 
   const verification = verifyFrozen(result.bundle);
+  if (verification.notFrozen) {
+    console.log('verify FAILED: manifest.state is not frozen');
+    return 1;
+  }
   if (verification.ok) {
     console.log('verify OK: sections match manifest.artifact_hashes');
     return 0;

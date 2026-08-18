@@ -75,4 +75,29 @@ describe('verifyFrozen', () => {
       ].sort(),
     );
   });
+
+  it('reports notFrozen: true for a draft bundle (state is not frozen)', () => {
+    const result = verifyFrozen(loadBundle('good/pet-clinic/bundle.json'));
+
+    expect(result.notFrozen).toBe(true);
+  });
+
+  it('does not set notFrozen for a bundle produced by freeze', () => {
+    const frozen = freeze(loadBundle('good/pet-clinic/bundle.json'), cleanLint, NOW);
+
+    expect(frozen.ok).toBe(true);
+    expect(verifyFrozen(frozen.bundle!).notFrozen).toBeUndefined();
+  });
+
+  it('reports notFrozen: true even when a draft manifest carries bogus pinned hashes', () => {
+    // A non-frozen manifest could still hold a full (possibly fabricated) hash
+    // set; the state flag must surface regardless of drift bookkeeping.
+    const draft = loadBundle('good/pet-clinic/bundle.json');
+    const pinned = freeze(loadBundle('good/pet-clinic/bundle.json'), cleanLint, NOW);
+    draft.manifest.artifact_hashes = pinned.bundle!.manifest.artifact_hashes;
+
+    const result = verifyFrozen(draft);
+    expect(result.notFrozen).toBe(true);
+    expect(result.ok).toBe(true); // hashes agree — drift alone would look clean
+  });
 });

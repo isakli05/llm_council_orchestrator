@@ -50,13 +50,22 @@ Kapı, `packages/spec-core` iddialarını dört ölçütle sınar. **G1–G3 det
 | ölçüt | tanım | eşik |
 | --- | --- | --- |
 | **G1** | Kötü-fixture yakalama oranı: 12 L-vektör dizisi + `schema-invalid` + `drift` + `unresolved`, her biri beklenen katmanda (lint / şema / freeze / verify) reddedilmeli | **15/15** |
-| **G2** | Drift saptama: dondurulmuş bundle'da değişiklik `verifyFrozen` tarafından yakalanmalı | **doğru** |
+| **G2** | Bölüm-içeriği drift saptama: 8 içerik bölümünün (intent…tasks) ve varsa `legacy`'nin özeti `verifyFrozen` ile yeniden hesaplanıp `manifest.artifact_hashes` ile karşılaştırılır | **doğru** |
 | **G3** | Belirsiz/çelişkili görevler: 8 `must_be_blocked` eval görevi her koşuda bloklanmış çıkmalı | **8/8** |
 | **G4** | Konsey › tek ajan: konsey toplam onaylaması tek ajandan **kesin büyük** VE konsey token maliyeti tek ajanın **≤ 3 katı** | yalnız live |
 
 Karar verme: G1–G3 sağlanırsa mock koşu **`PASS_DETERMINISTIC_ONLY`** verir (mock kanıtı
 G4'ü temellendiremez — bu bilinçli bir dürüstlük sınırdır). Live koşuda G1–G3 **ve** G4
 sağlanırsa **`PASS`**, aksi halde **`FAIL`**.
+
+**G2 kapsam notu (abartısız garanti):** G2'nin kapsamı *bölüm içeriği* drift tespitidir —
+"dondurulmuş bundle'daki herhangi bir değişiklik yakalanır" **değildir**. Yalnızca 8 içerik
+bölümü (intent, glossary, assumptions, evidence, requirements, decisions, contracts, tasks)
+ve varsa `legacy` hash'lenir; manifest alanları (hash'ler manifest'e yazıldığı için) ve
+türetilmiş `test_files` defteri **tasarımsal olarak kapsam dışıdır**. `verifyFrozen` yalnızca
+`manifest.state === 'frozen'` hedefler; dondurulmamış bundle `notFrozen: true` ile reddedilir.
+Bu bir **kazara-drift dedektörüdür, kurcalama (tamper) kanıtı değildir** — hash'lerin kendisi
+dahil tüm dosyayı yeniden yazabilen bir salırgan bu mekanizmayla yakalanamaz.
 
 ## Kapıyı Çalıştırmak: `run-eval`
 
@@ -92,6 +101,20 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 - **Live kanıt bekliyor**: G4 (konsey › tek ajan, ≤ 3× maliyet) yalnızca kullanıcı
   anahtarlarıyla yapılacak live koşuyla ölçülebilir; bu depo anahtar içermez ve
   mock koşudan G4 çıkarımı yapılmaz.
+
+## Bilinen Doğrulama Yüzeyi Farkları
+
+- **TS zod zinciri vs dışa aktarılan JSON Şema:** TS zod pipeline'ı (`SpecBundleSchema`)
+  ayrıştırmada bilinmeyen anahtarları sessizce **siler** (strip); dışa aktarılan
+  `generated/spec-schema.json` ise aynı anahtarları **reddeder**
+  (`additionalProperties: false`). Bu bilinçli bir uyumsuzluktur ve `.strict()`
+  hizalaması planlı bir takip işidir — o ana kadar aynı girdi TS katmanından geçip JSON
+  Şema katmanında reddedilebilir.
+- **L03'ün etkin kapsamı:** `test_files` defteri `compile` sırasında görevlerden
+  *türetilir*, dolayısıyla derlemeden gelen bundle'lar L03'ü asla tetikleyemez. Kural,
+  modelin kendi test defterini yankılamak zorunda olduğu **doğrudan ayrıştırma / LLM
+  yolunu** korur (runner, LLM çıktısını `compile` olmadan `SpecBundleSchema` ile
+  ayrıştırır): `tasks[].tests[].file` ile `test_files` tutarsızsa orada yakalanır.
 
 ## Ayrıca Bakınız
 

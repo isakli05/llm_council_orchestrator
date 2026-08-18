@@ -16,8 +16,10 @@ describe('export-json-schema output contract', () => {
     expect(parsed.definitions).toHaveProperty('SpecBundle');
   });
 
-  it('generated/spec-schema.json is valid JSON when the build has produced it', () => {
-    if (!existsSync(GENERATED_PATH)) return; // build artifact; existence is verified by the build step
+  it('generated/spec-schema.json exists (hard precondition) and is valid JSON', () => {
+    // The artifact is committed by the build; a missing file must FAIL loudly,
+    // not let this test pass vacuously.
+    expect(existsSync(GENERATED_PATH)).toBe(true);
     const parsed = JSON.parse(readFileSync(GENERATED_PATH, 'utf8')) as { $ref?: string };
     expect(parsed.$ref).toBe('#/definitions/SpecBundle');
   });

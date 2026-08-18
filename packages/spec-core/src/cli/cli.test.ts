@@ -180,6 +180,13 @@ describe('runCli verify', () => {
     expect(stdout()).toContain('tasks');
   });
 
+  it('draft (unfrozen) spec dir -> exit 1 with manifest.state is not frozen', async () => {
+    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+
+    await expect(runCli(['verify', root])).resolves.toBe(1);
+    expect(stdout()).toContain('manifest.state is not frozen');
+  });
+
   it('compile failure short-circuits verify -> exit 2', async () => {
     const root = makeSpecRoot(loadBundle('bad/schema-invalid/bundle.json'));
 

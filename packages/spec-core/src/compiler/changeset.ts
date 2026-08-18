@@ -91,7 +91,7 @@ export function applyChangeSet(b: SpecBundle, cp: ChangeSet, nowIso: string): Ap
     const patchParsed = TaskContractSchema.partial().strict().safeParse(entry.patch ?? {});
     if (!patchParsed.success) {
       errors.push(
-        `modified_tasks[${i}] (${entry.task_id}): patch fails TaskContractSchema.partial(): ` +
+        `modified_tasks[${i}] (${entry.task_id}): patch fails TaskContractSchema.partial().strict(): ` +
           `${formatIssues(patchParsed.error.issues)}`,
       );
       continue;
