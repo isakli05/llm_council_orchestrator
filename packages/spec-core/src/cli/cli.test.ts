@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCli } from './index';
@@ -230,5 +230,46 @@ describe('runCli change', () => {
 
     await expect(runCli(['change', root, csPath])).resolves.toBe(2);
     expect(stdout()).toContain('only a frozen spec can be changed');
+  });
+});
+
+describe('runCli init', () => {
+  it('fresh dir with --profile/--name -> exit 0, section files listed, scaffold compiles', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'spec-core-cli-init-'));
+    tmpDirs.push(root);
+
+    await expect(
+      runCli(['init', root, '--profile', 'p-standard', '--name', 'wired-app']),
+    ).resolves.toBe(0);
+    expect(stdout()).toContain('spec/manifest.json');
+    expect(stdout()).toContain('spec/tasks.json');
+
+    // The wrapper-supplied nowIso landed in the manifest; the scaffold compiles.
+    const compiled = await compileSpecDir(root);
+    expect(compiled.ok).toBe(true);
+    expect(compiled.bundle!.manifest.project.name).toBe('wired-app');
+    expect(compiled.bundle!.manifest.complexity_profile).toBe('p-standard');
+    expect(compiled.bundle!.manifest.evidence_snapshot.collected_at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    );
+  });
+
+  it('existing spec/ -> exit 2 with the refusal on stdout', async () => {
+    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+
+    await expect(runCli(['init', root])).resolves.toBe(2);
+    expect(stdout()).toContain('refusing to overwrite existing spec/');
+    // The existing spec was not touched: still the pet-clinic manifest.
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.project.name).toBe('pet-clinic');
+  });
+
+  it('invalid --profile value -> usage on stderr, nothing written', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'spec-core-cli-init-bad-'));
+    tmpDirs.push(root);
+
+    await expect(runCli(['init', root, '--profile', 'p-huge'])).resolves.toBe(2);
+    expect(stderr()).toContain('p-mini or p-standard');
+    expect(existsSync(join(root, 'spec'))).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ import { lintBundle, RULES } from '../lint/engine';
 import type { SpecBundle } from '../schemas';
 import { cmdChange } from './commands/change';
 import { cmdTrace } from './commands/trace';
+import { cmdInit } from './commands/init';
 
 const USAGE = `usage: lco <command> <dir> [args]
 
@@ -22,6 +23,11 @@ commands:
   trace <dir>                  traceability report (informational, exit 0): per-edge-kind
                                counts, per-requirement task links (TASK ✓test / ✗no-test-link),
                                orphan requirements (the L02 view), and coverage summary
+  init <dir> [--profile p-mini|p-standard] [--name <name>]
+                               scaffold a WORKING minimal EXAMPLE spec/ under <dir> (defaults:
+                               p-mini, my-project) — it compiles, lints clean, and freezes
+                               as-is; replace the EXAMPLE content with your own. Refuses
+                               (exit 2) if <dir>/spec already exists
 
 changeset template (all three lists are optional; patch keys are strict — typos are rejected):
   {
@@ -39,14 +45,16 @@ changeset template (all three lists are optional; patch keys are strict — typo
 
 exit codes: 0 success, 1 lint/freeze/drift failure, 2 usage or schema error`;
 
-const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change', 'trace'] as const;
+const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change', 'trace', 'init'] as const;
 type Command = (typeof COMMANDS)[number];
-type SingleDirCommand = Exclude<Command, 'change'>;
+type SingleDirCommand = Exclude<Command, 'change' | 'init'>;
+type InitProfile = 'p-mini' | 'p-standard';
 
 type ParseResult =
   | { error: string }
   | { command: SingleDirCommand; dir: string }
-  | { command: 'change'; dir: string; changesetPath: string };
+  | { command: 'change'; dir: string; changesetPath: string }
+  | { command: 'init'; dir: string; profile: InitProfile; name: string };
 
 function parseArgs(argv: string[]): ParseResult {
   if (argv.length === 0) {
@@ -69,6 +77,32 @@ function parseArgs(argv: string[]): ParseResult {
       };
     }
     return { command: 'change', dir: rest[0], changesetPath: rest[1] };
+  }
+  if (command === 'init') {
+    const [dir, ...flags] = rest;
+    let profile: InitProfile = 'p-mini';
+    let name = 'my-project';
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i];
+      if (flag === '--profile') {
+        const value = flags[++i];
+        if (value !== 'p-mini' && value !== 'p-standard') {
+          return {
+            error: `invalid --profile ${String(value)}: expected p-mini or p-standard`,
+          };
+        }
+        profile = value;
+      } else if (flag === '--name') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --name' };
+        }
+        name = value;
+      } else {
+        return { error: `unexpected argument for 'init': ${flag}` };
+      }
+    }
+    return { command: 'init', dir, profile, name };
   }
   if (rest.length > 1) {
     return { error: `unexpected extra arguments after <dir>: ${rest.slice(1).join(' ')}` };
@@ -220,6 +254,40 @@ export async function runCli(argv: string[]): Promise<number> {
       const result = await cmdTrace(parsed.dir);
       console.log(result.report);
       return result.code;
+    }
+    case 'init': {
+      // CLI boundary: the clock is read HERE only and injected as nowIso
+      // (same pattern as freeze/change) — the command core stays deterministic.
+      let result;
+      try {
+        result = await cmdInit(parsed.dir, {
+          profile: parsed.profile,
+          name: parsed.name,
+          nowIso: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(`lco: init failed: ${(err as Error).message}`);
+        return 2;
+      }
+      if (result.code === 2) {
+        console.log(
+          `refusing to overwrite existing spec/ at ${parsed.dir}: ` +
+            `remove it first or choose another directory`,
+        );
+        return 2;
+      }
+      console.log(
+        `initialized ${parsed.dir}/spec (profile ${parsed.profile}, ` +
+          `${parsed.name}) with ${result.files.length} section files:`,
+      );
+      for (const file of result.files) {
+        console.log(`  ${file}`);
+      }
+      console.log(
+        'the scaffold is a WORKING EXAMPLE spec: it compiles, lints clean, and freezes ' +
+          'as-is — replace every EXAMPLE entry with your own content',
+      );
+      return 0;
     }
   }
 }
