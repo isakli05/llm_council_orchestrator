@@ -9,6 +9,7 @@ import { cmdChange } from './commands/change';
 import { cmdTrace } from './commands/trace';
 import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
+import { cmdCheck } from './commands/check';
 
 const USAGE = `usage: lco <command> <dir> [args]
 
@@ -37,6 +38,16 @@ commands:
                                p-mini, my-project) — it compiles, lints clean, and freezes
                                as-is; replace the EXAMPLE content with your own. Refuses
                                (exit 2) if <dir>/spec already exists
+  check <dir> [--task TASK-0001] [--yes] [--timeout-ms 60000]
+                               run TaskContract verification commands. DRY RUN by default:
+                               without --yes NOTHING is executed (status DRY, exit 0, the
+                               table previews what --yes would run). With --yes each command
+                               executes (cwd <dir>, killed at --timeout-ms, default 60000)
+                               and its exit code is compared to the first 'exit N' in the
+                               expect description — an expect without a judgeable 'exit N'
+                               is UNPARSEABLE-EXPECT and is never executed (fail-closed).
+                               Evidence per task: spec/evidence/<TASK-ID>-check.json.
+                               Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE
 
 changeset template (all three lists are optional; patch keys are strict — typos are rejected):
   {
@@ -52,11 +63,21 @@ changeset template (all three lists are optional; patch keys are strict — typo
     ]
   }
 
-exit codes: 0 success, 1 lint/freeze/drift failure, 2 usage or schema error`;
+exit codes: 0 success, 1 lint/freeze/drift/check failure, 2 usage or schema error`;
 
-const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change', 'trace', 'plan', 'init'] as const;
+const COMMANDS = [
+  'compile',
+  'lint',
+  'freeze',
+  'verify',
+  'change',
+  'trace',
+  'plan',
+  'init',
+  'check',
+] as const;
 type Command = (typeof COMMANDS)[number];
-type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan'>;
+type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check'>;
 type InitProfile = 'p-mini' | 'p-standard';
 
 type ParseResult =
@@ -64,7 +85,8 @@ type ParseResult =
   | { command: SingleDirCommand; dir: string }
   | { command: 'change'; dir: string; changesetPath: string }
   | { command: 'plan'; dir: string; json: boolean }
-  | { command: 'init'; dir: string; profile: InitProfile; name: string };
+  | { command: 'init'; dir: string; profile: InitProfile; name: string }
+  | { command: 'check'; dir: string; task?: string; yes: boolean; timeoutMs?: number };
 
 function parseArgs(argv: string[]): ParseResult {
   if (argv.length === 0) {
@@ -125,6 +147,36 @@ function parseArgs(argv: string[]): ParseResult {
       }
     }
     return { command: 'init', dir, profile, name };
+  }
+  if (command === 'check') {
+    const [dir, ...flags] = rest;
+    let task: string | undefined;
+    let yes = false;
+    let timeoutMs: number | undefined;
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i];
+      if (flag === '--task') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --task' };
+        }
+        task = value;
+      } else if (flag === '--yes') {
+        yes = true;
+      } else if (flag === '--timeout-ms') {
+        const value = flags[++i];
+        const n = Number(value);
+        if (!Number.isInteger(n) || n <= 0) {
+          return {
+            error: `invalid --timeout-ms ${String(value)}: expected a positive integer`,
+          };
+        }
+        timeoutMs = n;
+      } else {
+        return { error: `unexpected argument for 'check': ${flag}` };
+      }
+    }
+    return { command: 'check', dir, task, yes, timeoutMs };
   }
   if (rest.length > 1) {
     return { error: `unexpected extra arguments after <dir>: ${rest.slice(1).join(' ')}` };
@@ -279,6 +331,26 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     case 'plan': {
       const result = await cmdPlan(parsed.dir, { json: parsed.json });
+      console.log(result.output);
+      return result.code;
+    }
+    case 'check': {
+      // CLI boundary: the clock is read HERE only and injected as nowIso
+      // (same pattern as freeze/change/init) — the command core stays
+      // deterministic. Evidence-write failures throw out of the core and
+      // surface here as exit 2 (environment failure, like init's writes).
+      let result;
+      try {
+        result = await cmdCheck(parsed.dir, {
+          task: parsed.task,
+          yes: parsed.yes,
+          timeoutMs: parsed.timeoutMs,
+          nowIso: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(`lco: check failed: ${(err as Error).message}`);
+        return 2;
+      }
       console.log(result.output);
       return result.code;
     }
