@@ -7,6 +7,7 @@ import { lintBundle, RULES } from '../lint/engine';
 import type { SpecBundle } from '../schemas';
 import { cmdChange } from './commands/change';
 import { cmdTrace } from './commands/trace';
+import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 
 const USAGE = `usage: lco <command> <dir> [args]
@@ -23,6 +24,14 @@ commands:
   trace <dir>                  traceability report (informational, exit 0): per-edge-kind
                                counts, per-requirement task links (TASK ✓test / ✗no-test-link),
                                orphan requirements (the L02 view), and coverage summary
+  plan <dir> [--json]          topological execution plan (level-wise Kahn; ties within a
+                               level broken lexicographically by task_id): numbered rows with
+                               complexity, depends_on, verification, permitted_scope, and a
+                               ready-now line of level-0 tasks; unknown depends_on references
+                               warn but do not block; cyclic dependencies -> exit 1 with the
+                               unresolvable tasks listed; --json emits machine-readable
+                               {"order":[...],"tasks":{id:{title,complexity,depends_on,
+                               verification,permitted_scope}}}
   init <dir> [--profile p-mini|p-standard] [--name <name>]
                                scaffold a WORKING minimal EXAMPLE spec/ under <dir> (defaults:
                                p-mini, my-project) — it compiles, lints clean, and freezes
@@ -45,15 +54,16 @@ changeset template (all three lists are optional; patch keys are strict — typo
 
 exit codes: 0 success, 1 lint/freeze/drift failure, 2 usage or schema error`;
 
-const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change', 'trace', 'init'] as const;
+const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change', 'trace', 'plan', 'init'] as const;
 type Command = (typeof COMMANDS)[number];
-type SingleDirCommand = Exclude<Command, 'change' | 'init'>;
+type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan'>;
 type InitProfile = 'p-mini' | 'p-standard';
 
 type ParseResult =
   | { error: string }
   | { command: SingleDirCommand; dir: string }
   | { command: 'change'; dir: string; changesetPath: string }
+  | { command: 'plan'; dir: string; json: boolean }
   | { command: 'init'; dir: string; profile: InitProfile; name: string };
 
 function parseArgs(argv: string[]): ParseResult {
@@ -77,6 +87,18 @@ function parseArgs(argv: string[]): ParseResult {
       };
     }
     return { command: 'change', dir: rest[0], changesetPath: rest[1] };
+  }
+  if (command === 'plan') {
+    const [dir, ...flags] = rest;
+    let json = false;
+    for (const flag of flags) {
+      if (flag === '--json') {
+        json = true;
+      } else {
+        return { error: `unexpected argument for 'plan': ${flag}` };
+      }
+    }
+    return { command: 'plan', dir, json };
   }
   if (command === 'init') {
     const [dir, ...flags] = rest;
@@ -253,6 +275,11 @@ export async function runCli(argv: string[]): Promise<number> {
     case 'trace': {
       const result = await cmdTrace(parsed.dir);
       console.log(result.report);
+      return result.code;
+    }
+    case 'plan': {
+      const result = await cmdPlan(parsed.dir, { json: parsed.json });
+      console.log(result.output);
       return result.code;
     }
     case 'init': {
