@@ -35,6 +35,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # Build MUST run before test: the MCP spawn test requires dist/.
-      - run: pnpm --filter @lco/spec-core build
-      - run: pnpm --filter @lco/spec-core lint
-      - run: pnpm --filter @lco/spec-core test
+      # Filter by package path, not name: pnpm exits 0 when a name filter
+      # matches nothing, so a package rename would silently skip CI.
+      - run: pnpm --filter ./packages/spec-core build
+      - run: pnpm --filter ./packages/spec-core lint
+      - run: pnpm --filter ./packages/spec-core test
