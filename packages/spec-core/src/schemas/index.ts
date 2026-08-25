@@ -23,32 +23,38 @@ export * from './contracts';
 export * from './tasks';
 export * from './legacy';
 
-export const SpecBundleSchema = z.object({
-  manifest: ManifestSchema,
-  intent: IntentSchema,
-  glossary: z.array(GlossaryEntrySchema),
-  assumptions: z.array(
-    z.object({
-      id: IdSchema,
-      statement: z.string().min(1),
-      evidence: z.array(IdSchema),
-      impact_if_wrong: z.string().min(1),
-    }),
-  ),
-  evidence: z.array(EvidenceItemSchema),
-  requirements: z.array(RequirementSchema),
-  decisions: z.array(DecisionSchema),
-  contracts: z.array(ContractSchema),
-  tasks: z.array(TaskContractSchema),
-  /** L03: task.tests[].file bu kayıt defterinde olmalı */
-  test_files: z.array(z.string().min(1)),
-  legacy: LegacyPackageSchema.optional(),
-});
+export const SpecBundleSchema = z
+  .object({
+    manifest: ManifestSchema,
+    intent: IntentSchema,
+    glossary: z.array(GlossaryEntrySchema),
+    assumptions: z.array(
+      z
+        .object({
+          id: IdSchema,
+          statement: z.string().min(1),
+          evidence: z.array(IdSchema),
+          impact_if_wrong: z.string().min(1),
+        })
+        .strict(),
+    ),
+    evidence: z.array(EvidenceItemSchema),
+    requirements: z.array(RequirementSchema),
+    decisions: z.array(DecisionSchema),
+    contracts: z.array(ContractSchema),
+    tasks: z.array(TaskContractSchema),
+    /** L03: task.tests[].file bu kayıt defterinde olmalı */
+    test_files: z.array(z.string().min(1)),
+    legacy: LegacyPackageSchema.optional(),
+  })
+  .strict();
 export type SpecBundle = z.infer<typeof SpecBundleSchema>;
 
-export const TraceEdgeSchema = z.object({
-  from: IdSchema,
-  to: IdSchema,
-  kind: z.enum(['req-task', 'task-test', 'dec-task', 'evidence-req']),
-});
+export const TraceEdgeSchema = z
+  .object({
+    from: IdSchema,
+    to: IdSchema,
+    kind: z.enum(['req-task', 'task-test', 'dec-task', 'evidence-req']),
+  })
+  .strict();
 export type TraceEdge = z.infer<typeof TraceEdgeSchema>;

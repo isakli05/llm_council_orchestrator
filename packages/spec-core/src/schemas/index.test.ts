@@ -120,22 +120,31 @@ const validBundle = {
     },
   ],
   test_files: ['a.test.ts'],
+  legacy: {
+    as_is_summary: 'Monolith.',
+    preserve_change_drop: [
+      { behavior: 'CSV import', decision: 'preserve', rationale: 'Load bearing.', evidence: ['E-0001'] },
+    ],
+  },
 };
 
 describe('SpecBundleSchema', () => {
-  it('accepts a valid full bundle', () => {
+  it('accepts a valid full bundle (with legacy)', () => {
     expect(SpecBundleSchema.parse(validBundle)).toBeTruthy();
   });
-  it('accepts a bundle without legacy (optional)', () => {
-    expect(SpecBundleSchema.parse(validBundle)).toBeTruthy();
+  it('accepts a bundle without legacy (optional) — genuinely distinct input', () => {
+    const withoutLegacy = structuredClone(validBundle);
+    delete (withoutLegacy as { legacy?: unknown }).legacy;
+    expect(() => SpecBundleSchema.parse(withoutLegacy)).not.toThrow();
+    expect(withoutLegacy).not.toHaveProperty('legacy');
   });
   it('accepts a bundle with a legacy package', () => {
     expect(SpecBundleSchema.parse({
       ...validBundle,
       legacy: {
-        as_is_summary: 'Monolith.',
+        as_is_summary: 'Greenfield override.',
         preserve_change_drop: [
-          { behavior: 'CSV import', decision: 'preserve', rationale: 'Load bearing.', evidence: ['E-0001'] },
+          { behavior: 'CSV import', decision: 'change', rationale: 'Replaced.', evidence: ['E-0001'] },
         ],
       },
     })).toBeTruthy();

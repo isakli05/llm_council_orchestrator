@@ -10,13 +10,16 @@ export const LegacyPackageSchema = z
     as_is_summary: z.string().min(1),
     preserve_change_drop: z
       .array(
-        z.object({
-          behavior: z.string().min(1),
-          decision: z.enum(['preserve', 'change', 'drop']),
-          rationale: z.string().min(1),
-          evidence: z.array(IdSchema),
-        }),
+        z
+          .object({
+            behavior: z.string().min(1),
+            decision: z.enum(['preserve', 'change', 'drop']),
+            rationale: z.string().min(1),
+            evidence: z.array(IdSchema),
+          })
+          .strict(),
       )
       .min(1),
   })
-  .partial();
+  .partial()
+  .strict();
