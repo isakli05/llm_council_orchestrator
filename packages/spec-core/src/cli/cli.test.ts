@@ -193,3 +193,42 @@ describe('runCli verify', () => {
     await expect(runCli(['verify', root])).resolves.toBe(2);
   });
 });
+
+describe('runCli change', () => {
+  it('missing <changeset.json> argument -> usage on stderr', async () => {
+    await expect(runCli(['change', '/tmp'])).resolves.toBe(2);
+    expect(stderr()).toContain('changeset');
+  });
+
+  it('frozen spec + valid changeset -> exit 0, summary on stdout, files rewritten', async () => {
+    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    await expect(runCli(['freeze', root])).resolves.toBe(0);
+
+    const csPath = join(root, 'changeset.json');
+    writeFileSync(
+      csPath,
+      JSON.stringify({
+        id: 'CP-0001',
+        rationale: 't',
+        modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'Updated title' } }],
+      }),
+    );
+
+    await expect(runCli(['change', root, csPath])).resolves.toBe(0);
+    expect(stdout()).toContain('spec_version 2');
+
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.state).toBe('draft');
+    expect(manifest.spec_version).toBe(2);
+    expect('frozen_at' in manifest).toBe(false);
+  });
+
+  it('changeset against a draft spec -> exit 2 with the only-frozen reason', async () => {
+    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const csPath = join(root, 'changeset.json');
+    writeFileSync(csPath, JSON.stringify({ id: 'CP-0001', rationale: 't' }));
+
+    await expect(runCli(['change', root, csPath])).resolves.toBe(2);
+    expect(stdout()).toContain('only a frozen spec can be changed');
+  });
+});

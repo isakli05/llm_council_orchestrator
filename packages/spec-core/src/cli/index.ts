@@ -5,21 +5,44 @@ import { freeze } from '../compiler/freeze';
 import { verifyFrozen } from '../compiler/verify';
 import { lintBundle, RULES } from '../lint/engine';
 import type { SpecBundle } from '../schemas';
+import { cmdChange } from './commands/change';
 
-const USAGE = `usage: lco <command> <dir>
+const USAGE = `usage: lco <command> <dir> [args]
 
 commands:
-  compile <dir>  compile and validate the spec/ tree under <dir>
-  lint <dir>     compile + lint; prints a rule/severity/path/message table
-  freeze <dir>   gate-checked freeze; rewrites spec/manifest.json on success
-  verify <dir>   re-hash frozen sections and compare with manifest.artifact_hashes
+  compile <dir>                compile and validate the spec/ tree under <dir>
+  lint <dir>                   compile + lint; prints a rule/severity/path/message table
+  freeze <dir>                 gate-checked freeze; rewrites spec/manifest.json on success
+  verify <dir>                 re-hash frozen sections and compare with manifest.artifact_hashes
+  change <dir> <changeset.json>
+                               apply a changeset to a FROZEN spec: bumps spec_version,
+                               returns the spec to state draft, rewrites the changed
+                               spec/ sections, then re-lints (new lint errors -> exit 1)
+
+changeset template (all three lists are optional; patch keys are strict — typos are rejected):
+  {
+    "id": "CP-0001",
+    "rationale": "why this change is needed",
+    "modified_tasks": [
+      { "task_id": "TASK-0001", "patch": { "title": "Updated title" } }
+    ],
+    "removed_task_ids": ["TASK-0003"],
+    "added_requirements": [
+      { "id": "REQ-0009", "statement": "The system shall ...", "priority": "must",
+        "evidence": ["E-0001"], "acceptance_refs": ["TST-0001"] }
+    ]
+  }
 
 exit codes: 0 success, 1 lint/freeze/drift failure, 2 usage or schema error`;
 
-const COMMANDS = ['compile', 'lint', 'freeze', 'verify'] as const;
+const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change'] as const;
 type Command = (typeof COMMANDS)[number];
+type SingleDirCommand = Exclude<Command, 'change'>;
 
-type ParseResult = { error: string } | { command: Command; dir: string };
+type ParseResult =
+  | { error: string }
+  | { command: SingleDirCommand; dir: string }
+  | { command: 'change'; dir: string; changesetPath: string };
 
 function parseArgs(argv: string[]): ParseResult {
   if (argv.length === 0) {
@@ -32,10 +55,21 @@ function parseArgs(argv: string[]): ParseResult {
   if (rest.length === 0) {
     return { error: `missing <dir> argument for '${command}'` };
   }
+  if (command === 'change') {
+    if (rest.length === 1) {
+      return { error: "missing <changeset.json> argument for 'change'" };
+    }
+    if (rest.length > 2) {
+      return {
+        error: `unexpected extra arguments after <changeset.json>: ${rest.slice(2).join(' ')}`,
+      };
+    }
+    return { command: 'change', dir: rest[0], changesetPath: rest[1] };
+  }
   if (rest.length > 1) {
     return { error: `unexpected extra arguments after <dir>: ${rest.slice(1).join(' ')}` };
   }
-  return { command: command as Command, dir: rest[0] };
+  return { command: command as SingleDirCommand, dir: rest[0] };
 }
 
 function printCompileErrors(errors: CompileError[]): void {
@@ -168,6 +202,16 @@ export async function runCli(argv: string[]): Promise<number> {
       return cmdFreeze(parsed.dir);
     case 'verify':
       return cmdVerify(parsed.dir);
+    case 'change': {
+      // CLI boundary: the clock is read HERE only and injected as nowIso —
+      // the command core stays deterministic (same pattern as freeze).
+      const result = await cmdChange(parsed.dir, parsed.changesetPath, new Date().toISOString());
+      console.log(result.summary);
+      for (const line of result.details) {
+        console.log(`  ${line}`);
+      }
+      return result.code;
+    }
   }
 }
 
