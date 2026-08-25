@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Root package.json has no `packageManager` field, so the version must be
+      # pinned here explicitly. pnpm must be installed BEFORE setup-node so the
+      # pnpm store path can be resolved for caching.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Build MUST run before test: the MCP spawn test requires dist/.
+      - run: pnpm --filter @lco/spec-core build
+      - run: pnpm --filter @lco/spec-core lint
+      - run: pnpm --filter @lco/spec-core test
