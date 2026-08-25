@@ -272,6 +272,74 @@ describe('applyChangeSet: rejections (fail-closed)', () => {
   });
 });
 
+describe('applyChangeSet: strict ChangeSet envelope (ChangeSetSchema)', () => {
+  it('rejects an unknown top-level key (modified_taskz) instead of a silent no-op bump', () => {
+    const result = applyChangeSet(
+      frozen,
+      {
+        id: 'cs-e1',
+        rationale: 'typo at the top level',
+        modified_taskz: [{ task_id: 'TASK-0001', patch: { title: 'never applied' } }],
+      } as unknown as ChangeSet,
+      CHANGED_AT,
+    );
+
+    // Without an envelope schema the unknown key was silently ignored: the
+    // changeset parsed as ZERO operations and "succeeded" as a no-op version
+    // bump (exit 0) — fail-closed forbids that.
+    expect(result.ok).toBe(false);
+    expect(result.bundle).toBeUndefined();
+    expect(result.errors.some((e) => e.includes('ChangeSetSchema'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('modified_taskz'))).toBe(true);
+    expect(frozen.manifest.spec_version).toBe(1);
+    expect(frozen.manifest.state).toBe('frozen');
+  });
+
+  // A changeset with ZERO operations is a VISIBLE no-op bump: the author
+  // stated a valid id + rationale and deliberately changed nothing. That is
+  // expressed intent, not a typo — so it stays allowed (and the version bump
+  // makes the no-op auditable). The envelope rejects unknown keys, not
+  // empty-operation changesets.
+  it('still accepts a valid minimal changeset with ZERO operations (visible-intent no-op bump)', () => {
+    const result = applyChangeSet(frozen, { id: 'CP-0002', rationale: 'x' }, CHANGED_AT);
+
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.bundle!.manifest.spec_version).toBe(2);
+    expect(result.bundle!.manifest.state).toBe('draft');
+  });
+
+  it('rejects a missing id or rationale', () => {
+    const noId = applyChangeSet(frozen, { rationale: 'x' } as unknown as ChangeSet, CHANGED_AT);
+    expect(noId.ok).toBe(false);
+    expect(noId.bundle).toBeUndefined();
+    expect(noId.errors.some((e) => e.includes('ChangeSetSchema') && e.includes('id'))).toBe(true);
+
+    const noRationale = applyChangeSet(frozen, { id: 'cs-e3b' } as unknown as ChangeSet, CHANGED_AT);
+    expect(noRationale.ok).toBe(false);
+    expect(noRationale.bundle).toBeUndefined();
+    expect(noRationale.errors.some((e) => e.includes('ChangeSetSchema') && e.includes('rationale'))).toBe(true);
+  });
+
+  it('rejects an added_requirements item that fails RequirementSchema', () => {
+    const result = applyChangeSet(
+      frozen,
+      {
+        id: 'cs-e4',
+        rationale: 'bad requirement',
+        added_requirements: [
+          { id: 'REQ-0097', statement: '', priority: 'must', evidence: ['E-0001'], acceptance_refs: ['TST-0001'] },
+        ],
+      },
+      CHANGED_AT,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.bundle).toBeUndefined();
+    expect(result.errors.some((e) => e.includes('added_requirements'))).toBe(true);
+  });
+});
+
 describe('applyChangeSet: determinism', () => {
   it('two identical calls produce byte-for-byte identical results', () => {
     const cs: ChangeSet = {

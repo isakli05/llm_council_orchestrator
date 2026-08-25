@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import {
+  IdSchema,
   RequirementSchema,
   TaskContractSchema,
   type SpecBundle,
@@ -16,6 +18,39 @@ export interface ChangeSet {
   removed_task_ids?: string[];
 }
 
+/**
+ * Strict runtime envelope for a change set (the TS interface above carries no
+ * runtime check). `.strict()` rejects unknown top-level keys, so a typo like
+ * `modified_taskz` fails loudly instead of being silently ignored — an
+ * ignored key would parse as a ZERO-operation changeset and "succeed" as a
+ * no-op version bump (exit 0), which fail-closed forbids.
+ *
+ * A schema-VALID changeset with zero operations is still accepted: that is a
+ * visible-intent no-op bump (the author stated id + rationale and chose to
+ * change nothing; the version bump makes the no-op auditable) — expressed
+ * intent, not a typo. `patch` is deliberately loose here (`z.record`); the
+ * authoritative strict parse of each patch against
+ * `TaskContractSchema.partial().strict()` happens in applyChangeSet below.
+ */
+export const ChangeSetSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    rationale: z.string().trim().min(1),
+    added_requirements: z.array(RequirementSchema).optional(),
+    modified_tasks: z
+      .array(
+        z
+          .object({
+            task_id: IdSchema,
+            patch: z.record(z.unknown()),
+          })
+          .strict(),
+      )
+      .optional(),
+    removed_task_ids: z.array(IdSchema).optional(),
+  })
+  .strict();
+
 export interface ApplyResult {
   ok: boolean;
   bundle?: SpecBundle;
@@ -27,6 +62,11 @@ export interface ApplyResult {
  *
  * Rules (fail-closed — every problem is reported, none is swallowed, and a
  * failed apply never returns a bundle):
+ *   - the changeset envelope itself is parsed with ChangeSetSchema (.strict()):
+ *     unknown top-level keys (e.g. a typo like `modified_taskz`) and a missing
+ *     id/rationale are rejected before anything else — never silently ignored.
+ *     A valid changeset with ZERO operations still applies as a visible-intent
+ *     no-op bump;
  *   - only a FROZEN spec can be changed;
  *   - on success: spec_version + 1, state -> 'draft', frozen_at removed;
  *   - modified_tasks: unknown task_id is an error; each patch is schema-parsed
@@ -44,6 +84,17 @@ export interface ApplyResult {
  */
 export function applyChangeSet(b: SpecBundle, cp: ChangeSet, nowIso: string): ApplyResult {
   void nowIso; // determinism-by-construction: no hidden clock, no env reads
+
+  // --- envelope: unknown/missing top-level keys are rejected, not ignored ---
+  const envelope = ChangeSetSchema.safeParse(cp);
+  if (!envelope.success) {
+    return {
+      ok: false,
+      errors: [
+        `changeset failed ChangeSetSchema: ${formatIssues(envelope.error.issues.slice(0, 1))}`,
+      ],
+    };
+  }
 
   if (b.manifest.state !== 'frozen') {
     return {
