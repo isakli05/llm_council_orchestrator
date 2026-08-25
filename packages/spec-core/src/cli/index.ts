@@ -6,6 +6,7 @@ import { verifyFrozen } from '../compiler/verify';
 import { lintBundle, RULES } from '../lint/engine';
 import type { SpecBundle } from '../schemas';
 import { cmdChange } from './commands/change';
+import { cmdTrace } from './commands/trace';
 
 const USAGE = `usage: lco <command> <dir> [args]
 
@@ -18,6 +19,9 @@ commands:
                                apply a changeset to a FROZEN spec: bumps spec_version,
                                returns the spec to state draft, rewrites the changed
                                spec/ sections, then re-lints (new lint errors -> exit 1)
+  trace <dir>                  traceability report (informational, exit 0): per-edge-kind
+                               counts, per-requirement task links (TASK ✓test / ✗no-test-link),
+                               orphan requirements (the L02 view), and coverage summary
 
 changeset template (all three lists are optional; patch keys are strict — typos are rejected):
   {
@@ -35,7 +39,7 @@ changeset template (all three lists are optional; patch keys are strict — typo
 
 exit codes: 0 success, 1 lint/freeze/drift failure, 2 usage or schema error`;
 
-const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change'] as const;
+const COMMANDS = ['compile', 'lint', 'freeze', 'verify', 'change', 'trace'] as const;
 type Command = (typeof COMMANDS)[number];
 type SingleDirCommand = Exclude<Command, 'change'>;
 
@@ -210,6 +214,11 @@ export async function runCli(argv: string[]): Promise<number> {
       for (const line of result.details) {
         console.log(`  ${line}`);
       }
+      return result.code;
+    }
+    case 'trace': {
+      const result = await cmdTrace(parsed.dir);
+      console.log(result.report);
       return result.code;
     }
   }
