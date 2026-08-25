@@ -107,6 +107,13 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: strin
 }
 
 /**
+ * The task surface the pipeline actually consumes. Structural on purpose:
+ * callers pass full EvalTasks (eval) or plain {intent, profile} objects
+ * (`lco generate`) — both satisfy this type unchanged.
+ */
+export type PipelineTask = Pick<EvalTask, 'intent' | 'profile'>;
+
+/**
  * Run the evidence-gate pipeline for one eval task.
  *
  * - 'single'  — exactly 1 complete() call with the merged
@@ -125,7 +132,7 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: strin
  * produced ('draft'/'blocked'); freezing is a later, separate stage.
  */
 export async function runPipeline(
-  task: EvalTask,
+  task: PipelineTask,
   variant: PipelineVariant,
   llm: LlmAdapter,
   nowIso: string,

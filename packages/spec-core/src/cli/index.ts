@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { cmdCompile } from './commands/compile';
 import { cmdLint } from './commands/lint';
 import { cmdFreeze } from './commands/freeze';
@@ -7,6 +8,7 @@ import { cmdTrace } from './commands/trace';
 import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 import { cmdCheck } from './commands/check';
+import { cmdGenerate } from './commands/generate';
 
 const USAGE = `usage: lco <command> <dir> [args]
 
@@ -45,6 +47,18 @@ commands:
                                is UNPARSEABLE-EXPECT and is never executed (fail-closed).
                                Evidence per task: spec/evidence/<TASK-ID>-check.json.
                                Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE
+  generate <dir> --intent <text> | --intent-file <path>
+                               [--variant single|council] [--profile p-mini|p-standard]
+                               compile a natural-language intent into a spec/ draft via
+                               a live LLM (requires LCO_LLM_BASE_URL, LCO_LLM_API_KEY and
+                               LCO_LLM_MODEL env vars; fails closed without them).
+                               Defaults: variant council, profile p-standard. COST NOTE:
+                               council = 3 LLM calls (classifier + proposal + judge),
+                               single = 1 call — council costs 3x. The evidence gate
+                               decides: blocked intent -> exit 1 with reasons, nothing
+                               written; lint-clean spec -> spec/ section files written,
+                               exit 0. Refuses (exit 2) if <dir>/spec already exists;
+                               --intent and --intent-file are mutually exclusive.
 
 changeset template (all three lists are optional; patch keys are strict — typos are rejected):
   {
@@ -60,7 +74,7 @@ changeset template (all three lists are optional; patch keys are strict — typo
     ]
   }
 
-exit codes: 0 success, 1 lint/freeze/drift/check failure, 2 usage or schema error`;
+exit codes: 0 success, 1 lint/freeze/drift/check/gate failure, 2 usage or schema error`;
 
 const COMMANDS = [
   'compile',
@@ -72,10 +86,12 @@ const COMMANDS = [
   'plan',
   'init',
   'check',
+  'generate',
 ] as const;
 type Command = (typeof COMMANDS)[number];
-type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check'>;
+type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate'>;
 type InitProfile = 'p-mini' | 'p-standard';
+type GenerateVariant = 'single' | 'council';
 
 type ParseResult =
   | { error: string }
@@ -83,7 +99,16 @@ type ParseResult =
   | { command: 'change'; dir: string; changesetPath: string }
   | { command: 'plan'; dir: string; json: boolean }
   | { command: 'init'; dir: string; profile: InitProfile; name: string }
-  | { command: 'check'; dir: string; task?: string; yes: boolean; timeoutMs?: number };
+  | { command: 'check'; dir: string; task?: string; yes: boolean; timeoutMs?: number }
+  | {
+      command: 'generate';
+      dir: string;
+      /** Exactly one of intent/intentFile is present (parseArgs enforces it). */
+      intent?: string;
+      intentFile?: string;
+      variant: GenerateVariant;
+      profile: InitProfile;
+    };
 
 function parseArgs(argv: string[]): ParseResult {
   if (argv.length === 0) {
@@ -174,6 +199,52 @@ function parseArgs(argv: string[]): ParseResult {
       }
     }
     return { command: 'check', dir, task, yes, timeoutMs };
+  }
+  if (command === 'generate') {
+    const [dir, ...flags] = rest;
+    let intent: string | undefined;
+    let intentFile: string | undefined;
+    let variant: GenerateVariant = 'council';
+    let profile: InitProfile = 'p-standard';
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i];
+      if (flag === '--intent') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --intent' };
+        }
+        intent = value;
+      } else if (flag === '--intent-file') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --intent-file' };
+        }
+        intentFile = value;
+      } else if (flag === '--variant') {
+        const value = flags[++i];
+        if (value !== 'single' && value !== 'council') {
+          return { error: `invalid --variant ${String(value)}: expected single or council` };
+        }
+        variant = value;
+      } else if (flag === '--profile') {
+        const value = flags[++i];
+        if (value !== 'p-mini' && value !== 'p-standard') {
+          return {
+            error: `invalid --profile ${String(value)}: expected p-mini or p-standard`,
+          };
+        }
+        profile = value;
+      } else {
+        return { error: `unexpected argument for 'generate': ${flag}` };
+      }
+    }
+    if (intent !== undefined && intentFile !== undefined) {
+      return { error: '--intent and --intent-file are mutually exclusive: pass exactly one' };
+    }
+    if (intent === undefined && intentFile === undefined) {
+      return { error: 'missing intent: pass --intent <text> or --intent-file <path>' };
+    }
+    return { command: 'generate', dir, intent, intentFile, variant, profile };
   }
   if (rest.length > 1) {
     return { error: `unexpected extra arguments after <dir>: ${rest.slice(1).join(' ')}` };
@@ -291,6 +362,46 @@ export async function runCli(argv: string[]): Promise<number> {
           'as-is — replace every EXAMPLE entry with your own content',
       );
       return 0;
+    }
+    case 'generate': {
+      // Wrapper edge: resolve --intent-file to the intent text HERE (IO stays
+      // at the boundary); an unreadable or empty file is a usage error (2).
+      let intent: string;
+      if (parsed.intentFile !== undefined) {
+        let raw: string;
+        try {
+          raw = await readFile(parsed.intentFile, 'utf8');
+        } catch (err) {
+          console.error(`lco: cannot read --intent-file ${parsed.intentFile}: ${(err as Error).message}`);
+          return 2;
+        }
+        intent = raw.trim();
+        if (intent === '') {
+          console.error(`lco: --intent-file ${parsed.intentFile} is empty`);
+          return 2;
+        }
+      } else {
+        intent = parsed.intent!;
+      }
+
+      // CLI boundary: the clock is read HERE only and injected as nowIso
+      // (same pattern as freeze/change/init/check). cmdGenerate resolves
+      // createHttpLlm() itself and THROWS fail-closed when LCO_LLM_* env is
+      // missing — that throw lands here as exit 2 with the env message.
+      let result;
+      try {
+        result = await cmdGenerate(parsed.dir, {
+          intent,
+          variant: parsed.variant,
+          profile: parsed.profile,
+          nowIso: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(`lco: generate failed: ${(err as Error).message}`);
+        return 2;
+      }
+      console.log(result.output);
+      return result.code;
     }
   }
 }
