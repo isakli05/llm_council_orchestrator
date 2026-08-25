@@ -186,9 +186,10 @@ export function applyChangeSet(b: SpecBundle, cp: ChangeSet, nowIso: string): Ap
   next.manifest.spec_version = b.manifest.spec_version + 1;
   next.manifest.state = 'draft';
   delete next.manifest.frozen_at;
-  // artifact_hashes stay pinned to the frozen content until the next freeze;
-  // the drift between them and the edited sections is exactly what makes
-  // post-change tampering detectable.
+  // artifact_hashes stay pinned to the frozen content until the next freeze
+  // re-pins them; until then they make NO drift claim: cmdVerify short-circuits
+  // on notFrozen BEFORE comparing hashes, so a draft cannot pass verify at
+  // all (fail-closed).
 
   return { ok: true, bundle: next, errors: [] };
 }

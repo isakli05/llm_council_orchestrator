@@ -185,8 +185,10 @@ $ node -e "const m=require('/tmp/lco-tour/spec/manifest.json');console.log(JSON.
 ```
 
 Manifest artık `spec_version 2`, `state: draft` — yeni sürüm ancak bir sonraki
-`freeze` ile yeniden dondurulur (o ana kadar `artifact_hashes` eski donmuş içeriğe
-sabitlenir; bu drift penceresi kasıtlıdır — değişiklik-sonrası kurcalamayı görünür kılar).
+`freeze` ile yeniden dondurulur. Bu arada `verify` fail-closed'dur: `cmdVerify`
+hash karşılaştırmasına gelmeden `notFrozen` üzerinde kısa-devre yapar; taslak hiçbir
+durumda verify'den geçemez ve `artifact_hashes`, bir sonraki freeze yeniden
+sabitleyene dek herhangi bir drift iddiası taşımaz.
 
 **6) plan — topolojik sıra:**
 
@@ -408,18 +410,21 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
   karar `PASS_DETERMINISTIC_ONLY` (bkz. `audit-output/spec-core-gate-report.md`).
 - **Live G4 kanıtı ölçüldü** (`audit-output/g4-live-report.md`): konsey onaylaması
   **36 > 26** tek ajan; konsey token maliyeti tek ajanın **2.13 katı** (≤ 3× eşiği)
-  → kapı **PASS**. Raporun içündeki dürüst uyarılar geçerliliğini korur: tek koşu
-  (sign-test p≈0.23, etki ~2×), p-standard ET-07..10'nun her iki varyantça da
-  çözülmemiş olması. Mock koşudan G4 çıkarımı yapılmaz ilkesi değişmez.
+  → kapı **PASS**. Şu dürüst uyarılar geçerliliğini korur (kanıt zinciriyle birlikte
+  e4f4a00 commit mesajında kayıtlı — raporun kendisi yalnız ham tablo + VERDICT
+  içerir): tek koşu (sign-test p≈0.23, etki ~2×), p-standard ET-07..10'nun her iki
+  varyantça da çözülmemiş olması. Mock koşudan G4 çıkarımı yapılmaz ilkesi değişmez.
 
 ## Bilinen Sınırlar (dürüstlük)
 
 - **`acceptance_refs` uzlaşısıdır:** `requirements[].acceptance_refs` (TST-* test
   referansları) bugün HİÇBİR lint kuralınca doğrulanmaz — bir kural bu referansların
   varlığını/çözünürlüğünü sınmaz; belge-içi uzlaşı olarak taşınır.
-- **task_id tekilliği motor-genel boşluktur:** ne şema ne lint `tasks[]` içinde
-  `task_id` tekilliğini zorlar. `plan --json` görev haritasını id ile anahtarladığı
-  için mükerrer id çıktıda tekillik kaybı yaratır.
+- **task_id tekilliği lint'e emanet:** şema dizi-seviyesinde tekillik zorlamaz
+  (array-level refine yok); lint'teki **L06_DUPLICATE_ID** aile-içi mükerrer id'yi
+  yakalar ("appears 2 times"). Kalan daralmış boşluk: `lco plan` lint koşmaz —
+  lint'i atlayan bir bundle `plan --json`'e ulaşabilir ve orada id ile anahtarlanan
+  görev haritasında mükerrer id tekillik kaybı yaratır.
 - **Eval zincirinde şema-seviyesi doğrulama iki sınırla sınırlıdır:** sınıflandırıcı
   çıktısı (`ClassifierOutputSchema` — strict DEĞİLDİR; ürün şeması değildir, bilinçli
   kapsam dışı) ve önerilen bundle (`SpecBundleSchema` — strict). Kalan konsey
@@ -434,6 +439,13 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
   modelin kendi test defterini yankılamak zorunda olduğu **doğrudan ayrıştırma / LLM
   yolunu** korur (runner, LLM çıktısını `compile` olmadan `SpecBundleSchema` ile
   ayrıştırır): `tasks[].tests[].file` ile `test_files` tutarsızsa orada yakalanır.
+
+## Değişiklik Günlüğü
+
+- **2026-08-19 — bu dal:** strictness, change/trace/init/plan/check, `lco-mcp`,
+  dokümantasyon — 552 test.
+- **2026-08-18 — evidence-gate dalı:** şemalar → eval → kapı; mock
+  `PASS_DETERMINISTIC_ONLY` + canlı G4 PASS.
 
 ## Ayrıca Bakınız
 
