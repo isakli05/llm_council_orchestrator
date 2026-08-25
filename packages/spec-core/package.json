@@ -4,7 +4,8 @@
   "type": "commonjs",
   "main": "dist/schemas/index.js",
   "bin": {
-    "lco": "dist/cli/index.js"
+    "lco": "dist/cli/index.js",
+    "lco-mcp": "dist/mcp/server.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node dist/schemas/export-json-schema.js",
