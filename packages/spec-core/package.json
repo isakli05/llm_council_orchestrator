@@ -1,17 +1,30 @@
 {
-  "name": "@lco/spec-core",
+  "name": "lco-spec",
   "version": "0.1.0",
+  "description": "Turn natural-language intent into schema-validated, lintable, freezable application specs — with an LLM council or a single model.",
+  "license": "MIT",
   "type": "commonjs",
   "main": "dist/schemas/index.js",
   "bin": {
     "lco": "dist/cli/index.js",
     "lco-mcp": "dist/mcp/server.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "generated",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node dist/schemas/export-json-schema.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm run build && pnpm run test"
   },
   "dependencies": {
     "zod": "^3.22.0"

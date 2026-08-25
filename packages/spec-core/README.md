@@ -1,4 +1,4 @@
-# @lco/spec-core — Spec IR Çekirdeği (Kanıt Kapısı Deneyi)
+# lco-spec — Spec IR Çekirdeği (Kanıt Kapısı Deneyi)
 
 Bu paket, LLM konsey mimarisinin **kanıt kapısı (evidence gate) deneyinin** çekirdeğidir:
 spekülasyonların (intent, sözlük, varsayım, kanıt, gereksinim, karar, sözleşme, görev)
@@ -13,18 +13,32 @@ kabul edilebilir mi?"* Bu paket o soruya **kanıtla** cevap vermeyi hedefler; ta
 change, trace, plan, init, check) ve **`lco-mcp`** stdio sunucusu (7 MCP aracı) — ikisi
 de aynı saf komut çekirdeklerini çağırır.
 
-## Kurulum / Derleme / Test
+## Kurulum
+
+**npm'den (publish sonrası):**
 
 ```sh
-pnpm --filter @lco/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter @lco/spec-core test    # vitest (552 test: şema, derleyici, lint, eval, CLI, check, MCP)
-pnpm --filter @lco/spec-core lint    # tsc --noEmit
+npm install lco-spec     # yayınlanınca; bin'ler: lco, lco-mcp
+npx lco --help
+```
+
+**Kaynaktan (bu monorepo içinde) — derleme/test:**
+
+```sh
+pnpm --filter lco-spec build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
+pnpm --filter lco-spec test    # vitest (576 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter lco-spec lint    # tsc --noEmit
 ```
 
 **Sıra notu (fail-closed):** testler ÖNCE `build` gerektirir — MCP spawn entegrasyon
 testi `dist/mcp/server.js`'i gerçek bir süreç olarak ayağa kaldırır; dist yoksa bu test
-sessizce atlanmaz, `run pnpm --filter @lco/spec-core build before test` mesajıyla
+sessizce atlanmaz, `run pnpm --filter lco-spec build before test` mesajıyla
 **düşer**. CI/yerel akışta sıra: `lint → build → test`.
+
+**Publishing (maintainer):** paket npm'de `lco-spec` adıyla yayımlanır:
+`packages/spec-core` içinde `npm login` sonrası `npm publish` (`prepublishOnly`
+hook'u build+test'i otomatik koşar). Yayınlama bir **kullanıcı eylemidir** — bu depodan
+otomatik publish yapılmaz.
 
 ## CLI: `lco`
 
@@ -66,7 +80,7 @@ bir yakalama vektörü vardır.
 
 Aşağıdaki tur **gerçekten koşuldu** (2026-08-25, Node v24.14.0; çıktılar kırpılmış,
 çıkış kodları olduğu gibi). Repro için: `cd packages/spec-core` ve `pnpm --filter
-@lco/spec-core build` yapılmış olmalı; komutlar `node dist/cli/index.js …` ile.
+lco-spec build` yapılmış olmalı; komutlar `node dist/cli/index.js …` ile.
 
 **1) init — çalışan EXAMPLE iskelet** (`p-standard`: NFR OPS-0001 + TASK-0002 + kontrat):
 
@@ -317,7 +331,7 @@ JSON yapılandırma alternatifi (ör. `.mcp.json` veya kendi istemciniz):
 
 Notlar:
 
-- **Önce derleyin:** sunucu `dist/`den koşar — `pnpm --filter @lco/spec-core build`
+- **Önce derleyin:** sunucu `dist/`den koşar — `pnpm --filter lco-spec build`
   (yukarıdaki test-sırası notuyla aynı gerekçe).
 - **stdout yalnız JSON-RPC** (bağlayıcı): stdout'a yalnız yanıt satırları yazılır; her
   tanılama stderr'e gider. Eski `mcp_bridge` hatasının (protokol akışına log karışması)
