@@ -9,9 +9,9 @@ iddialarını ölçen deterministik değerlendirme (eval) altyapısı.
 Deneyin sorusu: *"Konsey, tek ajandan ölçülebilir şekilde daha mı doğru — ve maliyeti
 kabul edilebilir mi?"* Bu paket o soruya **kanıtla** cevap vermeyi hedefler; tahminle değil.
 
-Çekirdek iki yüzeyden tüketilir: **`lco` CLI** (9 komut: compile, lint, freeze, verify,
-change, trace, plan, init, check) ve **`lco-mcp`** stdio sunucusu (7 MCP aracı) — ikisi
-de aynı saf komut çekirdeklerini çağırır.
+Çekirdek iki yüzeyden tüketilir: **`lco` CLI** (10 komut: compile, lint, freeze, verify,
+change, trace, plan, init, check, generate) ve **`lco-mcp`** stdio sunucusu (7 MCP
+aracı) — ikisi de aynı saf komut çekirdeklerini çağırır.
 
 ## Kurulum
 
@@ -32,18 +32,19 @@ pnpm --filter lco-spec lint    # tsc --noEmit
 
 **Sıra notu (fail-closed):** testler ÖNCE `build` gerektirir — MCP spawn entegrasyon
 testi `dist/mcp/server.js`'i gerçek bir süreç olarak ayağa kaldırır; dist yoksa bu test
-sessizce atlanmaz, `run pnpm --filter lco-spec build before test` mesajıyla
+sessizce atlanmaz, `run pnpm --filter ./packages/spec-core build before test` mesajıyla
 **düşer**. CI/yerel akışta sıra: `lint → build → test`.
 
 **Publishing (maintainer):** paket npm'de `lco-spec` adıyla yayımlanır:
-`packages/spec-core` içinde `npm login` sonrası `npm publish` (`prepublishOnly`
-hook'u build+test'i otomatik koşar). Yayınlama bir **kullanıcı eylemidir** — bu depodan
-otomatik publish yapılmaz.
+`packages/spec-core` içinde `npm login` sonrası `npm publish`. `prepublishOnly`
+`pnpm run build && pnpm run test` çağırır — PATH'te pnpm gerektirir. Yayınlama bir
+**kullanıcı eylemidir** — bu depodan otomatik publish yapılmaz.
 
 ## CLI: `lco`
 
-Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`). Dokuz
-komut, bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır:
+Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`). On komut;
+dokuzu bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır, `generate` ise o
+dizini bir niyet metninden üretir:
 
 | komut | işlev |
 | --- | --- |
@@ -56,6 +57,7 @@ komut, bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır:
 | `plan <dir> [--json]` | topolojik yürütme planı (deterministik Kahn; aynı seviyede task_id lexicographic); döngü → hata; `--json` makine-okur |
 | `init <dir> [--profile p-mini\|p-standard] [--name <ad>]` | ÇALIŞAN minimal EXAMPLE spec iskeleti yazar; `<dir>/spec` varsa reddeder |
 | `check <dir> [--task TASK-0001] [--yes] [--timeout-ms 60000]` | TaskContract verification komutlarını önizler/koşar — **varsayılan DRY-RUN** |
+| `generate <dir> --intent "<metin>" \| --intent-file <yol> [--variant council\|single] [--profile p-mini\|p-standard]` | doğal-dil niyetini canlı LLM ile derlenebilir `spec/` taslağına çevirir; kanıt kapısı bloklarsa HİÇBİR dosya yazmaz (ayrıntı: aşağıda) |
 
 Çıkış kodları (tüm CLI için tutarlı sözleşme — **0** başarı, **1** içerik/kural
 başarısızlığı, **2** kullanım/şema hatası):
@@ -71,6 +73,7 @@ başarısızlığı, **2** kullanım/şema hatası):
 | `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası |
 | `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
 | `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme, bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
+| `generate` | `spec/` yazıldı (state draft) | kanıt kapısı bloğu VEYA savunma-lint reddi — HİÇBİR dosya yazılmaz | kullanım hatası (bozuk bayrak, eksik/çakışan `--intent`), eksik `LCO_LLM_*` env, `<dir>/spec` zaten var (üzerine yazma reddi) |
 
 Lint kuralları: **L01–L08, L10, L12** (10 bağlayıcı kural; L09 ve L11 şema katmanında
 zorlanır, lint değil). Her kuralın `fixtures/bad/LXX/` altında beklenen hatayı üreten
@@ -296,6 +299,38 @@ Operasyonel notlar:
   dizgeleridir: `pnpm vitest run tests/x.test.ts`). Enjeksiyon yüzeyi tam olarak bu
   güvenlik modelinin yönettiği yüzeydir: varsayılan hiç-koşma + açık `--yes` onayı.
 
+## `generate` — Niyetten Spec'e
+
+`generate`, eval boru hattını ürünleştirir: tek bir doğal-dil niyet metnini canlı bir
+LLM ile derlenip-lintlenebilir bir `spec/` taslağına çevirir. İçerik kapısı baskısı
+yoktur — **kanıt kapısı** (evidence gate) spec üretir ya da gerekçeleriyle reddeder;
+komut bir reddin etrafına asla içerik uydurmaz.
+
+```sh
+lco generate <dir> --intent "<metin>" | --intent-file <path> \
+  [--variant council|single] [--profile p-mini|p-standard]
+```
+
+- **Varsayılanlar:** `--variant council`, `--profile p-standard`. **Maliyet notu:**
+  council = **3 LLM çağrısı** (sınıflandırıcı + önerici + yargıç), single = 1 çağrı —
+  council yaklaşık 3× token maliyeti.
+- **Env sözleşmesi (fail-closed):** `LCO_LLM_BASE_URL`, `LCO_LLM_API_KEY` ve
+  `LCO_LLM_MODEL` kullanıcı tarafından açıkça sağlanmalıdır; biri eksikse komut yarım
+  yapılandırmayla devam etmez, exit 2 verir. İsteğe bağlı: `LCO_LLM_MAX_TOKENS`
+  (pozitif tamsayı; üretimi sınırlar) ve `LCO_LLM_EXTRA_BODY` (JSON nesnesi; istek
+  gövdesine en son birleştirilir — ör. `'{"thinking":{"type":"disabled"}}'` gizli
+  reasoning'i atlar).
+- **Para-yakma sırası:** tüm kullanım/çevre/doğrulama kontrolleri ilk LLM çağrısından
+  ÖNCE koşar — bayrak çözümlemesi (`--intent`/`--intent-file` karşılıklı dışlar,
+  bozuk bayrak), `--intent-file` okuma/boş-dosya denetimi, no-clobber (`<dir>/spec`
+  varsa exit 2) ve env denetimi sırasıyla. Yanlış çağrı hiç ücret ödemez.
+- **Fail-closed yargı:** kanıt kapısı niyeti bloklarsa (belirsiz/çelişkili) exit 1 +
+  gerekçe listesi, **HİÇBİR dosya yazılmaz**. Üretilen bundle ayrıca savunma-lint
+  yeniden denetiminden geçer; kirli bundle da yazılmaz (yine exit 1, hiçbir şey
+  yazılmaz).
+- **Başarı:** `spec/` bölüm dosyaları yazılır (`state: draft`) ve çıktı sıradaki
+  adımı önerir: `run lco lint/lco freeze next`.
+
 ## `lco-mcp`: MCP Sunucusu
 
 `lco-mcp` (bin: `dist/mcp/server.js`), motoru Model Context Protocol istemcilerine
@@ -416,8 +451,8 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 
 ## Dürüst Durum Bildirimi
 
-- **Yüzey tamamlandı:** CLI 9 komut (compile, lint, freeze, verify, change, trace,
-  plan, init, check) + `lco-mcp` stdio sunucusu (7 araç). Her komut çekirdeği
+- **Yüzey tamamlandı:** CLI 10 komut (compile, lint, freeze, verify, change, trace,
+  plan, init, check, generate) + `lco-mcp` stdio sunucusu (7 araç). Her komut çekirdeği
   safdır: yazdırma yok, `process.exit` yok; saat yalnız CLI/MCP sınırında okunup
   çekirdeklere `nowIso` olarak enjekte edilir.
 - **Deterministik kapı geçiyor**: G1 15/15, G2 doğru, G3 8/8 →

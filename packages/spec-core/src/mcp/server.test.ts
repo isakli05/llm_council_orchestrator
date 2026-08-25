@@ -309,8 +309,8 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       const serverJs = join(__dirname, '../../dist/mcp/server.js');
       if (!existsSync(serverJs)) {
         throw new Error(
-          'dist/mcp/server.js not found — run `pnpm --filter @lco/spec-core build` ' +
-            'before `pnpm --filter @lco/spec-core test` (fail-closed by design: the ' +
+          'dist/mcp/server.js not found — run `pnpm --filter ./packages/spec-core build` ' +
+            'before `pnpm --filter ./packages/spec-core test` (fail-closed by design: the ' +
             'spawn test is never silently skipped)',
         );
       }
