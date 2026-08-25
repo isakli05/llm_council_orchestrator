@@ -1,0 +1,12 @@
+{
+  "id": "CP-0001",
+  "rationale": "Scaffold EXAMPLE başlığı gerçek görev tanımıyla değiştiriliyor: kimlik doğrulama katmanı ilk sürümde yanlış adlandırılmıştı, spec okunabilirliği için başlık revize ediliyor.",
+  "modified_tasks": [
+    {
+      "task_id": "TASK-0001",
+      "patch": {
+        "title": "Kimlik doğrulama katmanı — revize başlık"
+      }
+    }
+  ]
+}

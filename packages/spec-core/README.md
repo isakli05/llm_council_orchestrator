@@ -9,38 +9,342 @@ iddialarını ölçen deterministik değerlendirme (eval) altyapısı.
 Deneyin sorusu: *"Konsey, tek ajandan ölçülebilir şekilde daha mı doğru — ve maliyeti
 kabul edilebilir mi?"* Bu paket o soruya **kanıtla** cevap vermeyi hedefler; tahminle değil.
 
+Çekirdek iki yüzeyden tüketilir: **`lco` CLI** (9 komut: compile, lint, freeze, verify,
+change, trace, plan, init, check) ve **`lco-mcp`** stdio sunucusu (7 MCP aracı) — ikisi
+de aynı saf komut çekirdeklerini çağırır.
+
 ## Kurulum / Derleme / Test
 
 ```sh
 pnpm --filter @lco/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter @lco/spec-core test    # vitest (421 test: şema, derleyici, lint, eval, CLI)
+pnpm --filter @lco/spec-core test    # vitest (552 test: şema, derleyici, lint, eval, CLI, check, MCP)
 pnpm --filter @lco/spec-core lint    # tsc --noEmit
 ```
 
+**Sıra notu (fail-closed):** testler ÖNCE `build` gerektirir — MCP spawn entegrasyon
+testi `dist/mcp/server.js`'i gerçek bir süreç olarak ayağa kaldırır; dist yoksa bu test
+sessizce atlanmaz, `run pnpm --filter @lco/spec-core build before test` mesajıyla
+**düşer**. CI/yerel akışta sıra: `lint → build → test`.
+
 ## CLI: `lco`
 
-Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`).
-Dört komut, bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır:
+Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`). Dokuz
+komut, bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır:
 
-| komut | işlev | çıkış kodu (başarı / içerik hatası / kullanım-şema hatası) |
-| --- | --- | --- |
-| `compile <dir>` | spec/ ağacını derle + şemayla doğrula | 0 / – / 2 |
-| `lint <dir>` | derle + 10 lint kuralı; kural/ciddiyet/yol/mesaj tablosu | 0 / 1 / 2 |
-| `freeze <dir>` | kapı kontrollü dondurma; `spec/manifest.json`'a artifact hash yazar | 0 / 1 / 2 |
-| `verify <dir>` | bölüm hash'lerini yeniden hesapla, manifest ile karşılaştır (drift) | 0 / 1 / 2 |
+| komut | işlev |
+| --- | --- |
+| `compile <dir>` | spec/ ağacını derle + şemayla doğrula |
+| `lint <dir>` | derle + 10 lint kuralı; kural/ciddiyet/yol/mesaj tablosu |
+| `freeze <dir>` | kapı kontrollü dondurma; `spec/manifest.json`'a artifact hash yazar |
+| `verify <dir>` | bölüm hash'lerini yeniden hesapla, manifest ile karşılaştır (drift) |
+| `change <dir> <changeset.json>` | FROZEN spec'e changeset uygular: sürüm+1, state→draft, değişen bölümleri geri yazar, sonra yeniden-lint |
+| `trace <dir>` | izlenebilirlik raporu (bilgilendirici): kenar sayıları, REQ başına task bağları (✓test/✗test), yetim REQ'ler, kapsam |
+| `plan <dir> [--json]` | topolojik yürütme planı (deterministik Kahn; aynı seviyede task_id lexicographic); döngü → hata; `--json` makine-okur |
+| `init <dir> [--profile p-mini\|p-standard] [--name <ad>]` | ÇALIŞAN minimal EXAMPLE spec iskeleti yazar; `<dir>/spec` varsa reddeder |
+| `check <dir> [--task TASK-0001] [--yes] [--timeout-ms 60000]` | TaskContract verification komutlarını önizler/koşar — **varsayılan DRY-RUN** |
 
-Gerçek örnek — bir fixture'ı spec dizinine açıp lint'lemek:
+Çıkış kodları (tüm CLI için tutarlı sözleşme — **0** başarı, **1** içerik/kural
+başarısızlığı, **2** kullanım/şema hatası):
 
-```sh
-cd packages/spec-core
-node -e "const b=require('./fixtures/good/pet-clinic/bundle.json');const fs=require('fs');fs.mkdirSync('/tmp/petclinic/spec',{recursive:true});for(const k of ['manifest','intent','glossary','assumptions','evidence','requirements','decisions','contracts','tasks','legacy'])if(b[k]!==undefined)fs.writeFileSync('/tmp/petclinic/spec/'+k+'.json',JSON.stringify(b[k],null,2))"
-node dist/cli/index.js lint /tmp/petclinic
-# -> lint OK: 0 errors, 0 warnings (10 rules)
-```
+| komut | 0 | 1 | 2 |
+| --- | --- | --- | --- |
+| `compile` | derlendi | — (kullanılmaz) | derleme/şema hatası |
+| `lint` | temiz veya yalnız uyarı | lint hatası(lar)ı | derleme hatası |
+| `freeze` | donduruldu | kapı başarısız | derleme hatası |
+| `verify` | hash'ler eşleşti | drift VEYA state frozen değil | derleme hatası |
+| `change` | uygulandı + yeniden-lint temiz | yeniden-lint hataları | derleme, bozuk/bilinmeyen-anahtarlı changeset, frozen olmayan spec, yazım hatası |
+| `trace` | rapor çıktı | — (kullanılmaz) | derleme hatası |
+| `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası |
+| `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
+| `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme, bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
 
 Lint kuralları: **L01–L08, L10, L12** (10 bağlayıcı kural; L09 ve L11 şema katmanında
 zorlanır, lint değil). Her kuralın `fixtures/bad/LXX/` altında beklenen hatayı üreten
 bir yakalama vektörü vardır.
+
+## Uçtan Uca Tur — Gerçek Koşulmuş
+
+Aşağıdaki tur **gerçekten koşuldu** (2026-08-25, Node v24.14.0; çıktılar kırpılmış,
+çıkış kodları olduğu gibi). Repro için: `cd packages/spec-core` ve `pnpm --filter
+@lco/spec-core build` yapılmış olmalı; komutlar `node dist/cli/index.js …` ile.
+
+**1) init — çalışan EXAMPLE iskelet** (`p-standard`: NFR OPS-0001 + TASK-0002 + kontrat):
+
+```sh
+$ node dist/cli/index.js init /tmp/lco-tour --profile p-standard --name tour-app
+initialized /tmp/lco-tour/spec (profile p-standard, tour-app) with 9 section files:
+  spec/manifest.json
+  spec/intent.json
+  spec/glossary.json
+  spec/assumptions.json
+  spec/evidence.json
+  spec/requirements.json
+  spec/decisions.json
+  spec/contracts.json
+  spec/tasks.json
+the scaffold is a WORKING EXAMPLE spec: it compiles, lints clean, and freezes as-is — replace every EXAMPLE entry with your own content
+# exit 0
+```
+
+İskelet boş-placeholder değil: strict şemaların `min(1)`'leri boş iskeleti **geçersiz**
+kıldığı için init, derlenip-lintlenip-dondurulabilen gerçek bir minimal spec yazar —
+her `EXAMPLE …` dizgesi kendi içeriğinizle değiştirilmek içindir. Tek verification
+komutu `node --version` (her ortamda koşar).
+
+**2) compile + lint — zincir kurulumdan temiz:**
+
+```sh
+$ node dist/cli/index.js compile /tmp/lco-tour
+compiled /tmp/lco-tour/spec (lco-spec/1.0 v1, state: draft, project: tour-app)
+  intent        1
+  glossary      1
+  assumptions   0
+  evidence      1
+  requirements  2
+  decisions     1
+  contracts     1
+  tasks         2
+  test_files    2
+# exit 0
+$ node dist/cli/index.js lint /tmp/lco-tour
+lint OK: 0 errors, 0 warnings (10 rules)
+# exit 0
+```
+
+**3) freeze + kasıtlı tamper → verify.** Önce yedek alıp donduralım:
+
+```sh
+$ cp /tmp/lco-tour/spec/tasks.json /tmp/lco-tour/tasks.json.bak
+$ node dist/cli/index.js freeze /tmp/lco-tour
+frozen at 2026-08-25T17:04:56.209Z: 8 artifact hashes written to spec/manifest.json
+# exit 0
+```
+
+Tamper denemesi #1 — bir dizgenin İÇİNE sona boşluk (`"purpose": "Scaffold example"` →
+`"Scaffold example "`):
+
+```sh
+$ node -e "const fs=require('fs');const p='/tmp/lco-tour/spec/tasks.json';fs.writeFileSync(p,fs.readFileSync(p,'utf8').replace('\"purpose\": \"Scaffold example\"','\"purpose\": \"Scaffold example \"'))"
+$ node dist/cli/index.js verify /tmp/lco-tour
+verify OK: sections match manifest.artifact_hashes
+# exit 0  ← yakalanMADI (bkz. not)
+```
+
+Bu dürüst bir sonuçtur: verify **ham baytları değil, şema-normalize edilmiş bölüm
+içeriğini** hash'ler ve trim-refine'lı metin alanlarındaki baş/son boşluklar ayrıştırma
+sırasında normalize edilir (Bilinen Sınırlar). Aynı boşluk dizgenin ORTASINA girerse
+içerik gerçekten değişir:
+
+```sh
+$ command cp -f /tmp/lco-tour/tasks.json.bak /tmp/lco-tour/spec/tasks.json   # restore
+$ node -e "const fs=require('fs');const p='/tmp/lco-tour/spec/tasks.json';fs.writeFileSync(p,fs.readFileSync(p,'utf8').replace('\"title\": \"EXAMPLE task — replace with your own\"','\"title\": \"EXAMPLE  task — replace with your own\"'))"
+$ node dist/cli/index.js verify /tmp/lco-tour
+verify FAILED: drifted sections: tasks
+# exit 1  ← drift yakalandı
+$ command cp -f /tmp/lco-tour/tasks.json.bak /tmp/lco-tour/spec/tasks.json   # restore
+$ node dist/cli/index.js verify /tmp/lco-tour
+verify OK: sections match manifest.artifact_hashes
+# exit 0
+```
+
+**4) trace — izlenebilirlik** (bilgilendirici, her state'te):
+
+```sh
+$ node dist/cli/index.js trace /tmp/lco-tour
+traceability: tour-app — 2 requirement(s), 2 task(s)
+edges: req-task 3, task-test 3, dec-task 2, evidence-req 2
+REQ-0001: 2 task(s) [TASK-0001 ✓test, TASK-0002 ✓test]
+OPS-0001: 1 task(s) [TASK-0002 ✓test]
+coverage: 2/2 requirements task-linked; 2/2 test-linked
+# exit 0
+```
+
+**5) change — changeset ile revizyon** (yalnız FROZEN spec'e; örnek dosya:
+[`examples/changeset.example.json`](examples/changeset.example.json)):
+
+```json
+{
+  "id": "CP-0001",
+  "rationale": "Scaffold EXAMPLE başlığı gerçek görev tanımıyla değiştiriliyor: …",
+  "modified_tasks": [
+    { "task_id": "TASK-0001", "patch": { "title": "Kimlik doğrulama katmanı — revize başlık" } }
+  ]
+}
+```
+
+```sh
+$ node dist/cli/index.js change /tmp/lco-tour examples/changeset.example.json
+changeset CP-0001 applied: spec_version 2 (state draft), 2 task(s), 2 requirement(s); lint OK: 0 errors, 0 warnings
+# exit 0
+$ node -e "const m=require('/tmp/lco-tour/spec/manifest.json');console.log(JSON.stringify({spec_version:m.spec_version,state:m.state,project:m.project.name},null,2))"
+{
+  "spec_version": 2,
+  "state": "draft",
+  "project": "tour-app"
+}
+```
+
+Manifest artık `spec_version 2`, `state: draft` — yeni sürüm ancak bir sonraki
+`freeze` ile yeniden dondurulur (o ana kadar `artifact_hashes` eski donmuş içeriğe
+sabitlenir; bu drift penceresi kasıtlıdır — değişiklik-sonrası kurcalamayı görünür kılar).
+
+**6) plan — topolojik sıra:**
+
+```sh
+$ node dist/cli/index.js plan /tmp/lco-tour
+plan: tour-app — 2 task(s) in dependency order
+1. TASK-0001 [xs] deps: none | verify: node --version (exit 0) | scope: src/**
+2. TASK-0002 [xs] deps: TASK-0001 | verify: node --version (exit 0) | scope: src/**
+ready-now: TASK-0001
+# exit 0
+```
+
+**7) check — önce DRY (varsayılan), sonra --yes:**
+
+```sh
+$ node dist/cli/index.js check /tmp/lco-tour
+DRY RUN — no commands executed; pass --yes to execute
+check: tour-app — 2 verification command(s)
+TASK	COMMAND	EXPECT	EXPECTED→ACTUAL	STATUS
+TASK-0001	node --version	exit 0	0 → -	DRY
+TASK-0002	node --version	exit 0	0 → -	DRY
+summary: 0 pass, 0 fail, 2 dry
+(0 timeout, 0 unparseable-expect)
+# exit 0
+
+$ node dist/cli/index.js check /tmp/lco-tour --yes
+check: tour-app — 2 verification command(s)
+TASK	COMMAND	EXPECT	EXPECTED→ACTUAL	STATUS
+TASK-0001	node --version	exit 0	0 → 0	PASS
+TASK-0002	node --version	exit 0	0 → 0	PASS
+summary: 2 pass, 0 fail, 0 dry
+(0 timeout, 0 unparseable-expect)
+evidence: /tmp/lco-tour/spec/evidence/TASK-0001-check.json, /tmp/lco-tour/spec/evidence/TASK-0002-check.json
+# exit 0
+```
+
+Kanıt dosyası (görev başına biri; `--yes` altında yazılır):
+
+```sh
+$ cat /tmp/lco-tour/spec/evidence/TASK-0001-check.json
+{
+  "task_id": "TASK-0001",
+  "checkedAt": "2026-08-25T17:04:56.607Z",
+  "checks": [
+    {
+      "command": "node --version",
+      "expect": "exit 0",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "status": "PASS",
+      "durationMs": 7,
+      "outputTail": "v24.14.0\n"
+    }
+  ]
+}
+```
+
+## `lco check` Güvenlik Modeli
+
+`check`, spec'in KENDİ komutlarını (TaskContract `verification`) yürüten tek komuttur;
+modeli bağlayıcıdır:
+
+- **Varsayılan DRY-RUN.** `--yes` yoksa HİÇBİR komut koşulmaz: her satırın durumu
+  `DRY`, çıkış 0, diske hiçbir şey yazılmaz (`spec/evidence/` dizini bile oluşmaz).
+  Tablo, `--yes` altında neyin koşacağının önizlemesidir.
+- **`--yes` açık onaydır.** Komutlar yalnız operatörün açık bayrağıyla yürütülür:
+  cwd spec köküdür, komut başına `--timeout-ms` (varsayılan 60000 ms) sonunda süreç
+  öldürülür.
+- **Fail-closed yargı.** Beklenen çıkış kodu, `expect` açıklamasındaki İLK `exit N`
+  eşleşmesidir. `exit N` bulunamayan expect → `UNPARSEABLE-EXPECT`: komut **hiç
+  koşulmaz** ve başarısız sayılır (çıkış 1). Yargılanamayan bir şeyi koşmak başarı
+  tiyatrosu olurdu.
+- **Kanıt dosyaları.** `--yes` altında görev başına `spec/evidence/<TASK-ID>-check.json`
+  yazılır: `{task_id, checkedAt, checks:[…]}` — her komut için
+  command/expect/expectedExit/actualExit/status/durationMs/outputTail (birleşik
+  stdout+stderr'nin son 500 karakteri). Atlanan (`UNPARSEABLE-EXPECT`) girdiler de
+  kayda girer: dosya `--yes`'in ne yaptığının **ve** neyi atladığının denetim izidir.
+
+Operasyonel notlar:
+
+- **1 MB maxBuffer taşması TIMEOUT sayılır.** Üretim yürütücüsü `child_process.exec`
+  kullanır (Node varsayılanı maxBuffer 1 MB); sınırı aşan çıktı süreci öldürür ve
+  sonuç `TIMEOUT` ile yargılanır — fail-closed: geveze bir komut asla PASS olamaz.
+- **Sinyalle öldürme → TIMEOUT.** `killed`/`signal` ile biten bir sürece çıkış kodu
+  atanmaz (`exit: null`, `TIMEOUT`): öldürülmüş süreç, yargılanmış bir çıkış koduyla
+  karıştırılamaz.
+- **Torun süreçler zaman aşımından sonra hayatta kalabilir.** Node yalnız doğrudan
+  çocuğu (kabuğu) öldürür; komutunuzun sahnelediği arka süreçler yetim kalabilir —
+  doğrulama komutlarını kendi temizliğini yapacak şekilde yazın.
+- Komutlar kasıtlı olarak kabukta koşar (TaskContract verification komutları kabuk
+  dizgeleridir: `pnpm vitest run tests/x.test.ts`). Enjeksiyon yüzeyi tam olarak bu
+  güvenlik modelinin yönettiği yüzeydir: varsayılan hiç-koşma + açık `--yes` onayı.
+
+## `lco-mcp`: MCP Sunucusu
+
+`lco-mcp` (bin: `dist/mcp/server.js`), motoru Model Context Protocol istemcilerine
+açan minimal bir stdio sunucusudur: satır-ayrılmış JSON-RPC 2.0. CLI komutlarının saf
+çekirdeklerini (yazdırma yapmayan, yapılandırılmış sonuç döndüren) yeniden kullanır —
+davranış CLI ile birebir aynıdır. 7 araç:
+
+| araç | girdi | işlev |
+| --- | --- | --- |
+| `lco_compile` | `{dir}` | derle + şema doğrula |
+| `lco_lint` | `{dir}` | derle + lint tablosu (hata varsa `isError`) |
+| `lco_freeze` | `{dir}` | kapı kontrollü dondurma |
+| `lco_verify` | `{dir}` | drift doğrulaması |
+| `lco_trace` | `{dir}` | izlenebilirlik raporu |
+| `lco_plan` | `{dir, json?}` | topolojik plan (`--json` eşleniği) |
+| `lco_check` | `{dir, task?, yes?}` | verification önizleme/koşma — `yes` verilmedikçe DRY |
+
+Claude Code'a kaydetmek için (mutlak yol ile):
+
+```sh
+claude mcp add lco -- node /abs/yol/packages/spec-core/dist/mcp/server.js
+```
+
+JSON yapılandırma alternatifi (ör. `.mcp.json` veya kendi istemciniz):
+
+```json
+{
+  "mcpServers": {
+    "lco": { "command": "node", "args": ["/abs/yol/packages/spec-core/dist/mcp/server.js"] }
+  }
+}
+```
+
+Notlar:
+
+- **Önce derleyin:** sunucu `dist/`den koşar — `pnpm --filter @lco/spec-core build`
+  (yukarıdaki test-sırası notuyla aynı gerekçe).
+- **stdout yalnız JSON-RPC** (bağlayıcı): stdout'a yalnız yanıt satırları yazılır; her
+  tanılama stderr'e gider. Eski `mcp_bridge` hatasının (protokol akışına log karışması)
+  tekrarı yasaktır ve test-enforcelıdır: entegrasyon testi spawn edilen sürecin
+  stdout'undaki **her satırı** `JSON.parse` ile doğrular.
+- **`lco_check` aracı `yes` verilmedikçe komut koşmaz** (DRY) — MCP üzerinden yanlışlıkla
+  yürütme yok.
+- El smoke'u (gerçek stdio): `initialize` → `serverInfo {name: "lco-mcp", version:
+  "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 7 araç;
+  `tools/call lco_check {dir}` → `isError: false`, ilk satır `DRY RUN — no commands
+  executed; pass --yes to execute`. Bildirimler (`notifications/*`) yanıt almaz;
+  bozuk satır `-32700` (id `null`); bilinmeyen araç `-32602`; bilinmeyen metod `-32601`.
+
+## Strictness Politikası
+
+Bilinmeyen anahtar **her yerde reddedilir**, sessizce silinmez:
+
+- SpecBundle'ın tüm zod object yüzeyleri `.strict()` (bundle kökü, manifest, task,
+  refs, verification öğesi, karar alternatifleri…); metin alanları `trim().min(1)` —
+  boşluk-dize geçmez.
+- Changeset zarfı `ChangeSetSchema.strict()`: typo bir üst-düzey anahtar
+  (`modified_taskz`) fail-closed hatadır — sessiz no-op sürüm sıçraması değil.
+- Task patch `TaskContractSchema.partial().strict()`: typo yama anahtarı (`titel`)
+  reddedilir; MERGE sonrası tam şema yeniden doğrulanır.
+- MCP araç argümanlarında bilinmeyen anahtar → `-32602`.
+- TS zod zinciri ile dışa aktarılan `generated/spec-schema.json`
+  (`additionalProperties: false`) hizalıdır. (Bu paketin eski sürümündeki "zod siler /
+  JSON Şema reddeder" yüzey farkı, tamamlama planının şema-sıkılaştırma göreviyle
+  kapatıldı.)
 
 ## Kanıt Kapısı: G1–G4
 
@@ -65,7 +369,7 @@ ve varsa `legacy` hash'lenir; manifest alanları (hash'ler manifest'e yazıldı�
 türetilmiş `test_files` defteri **tasarımsal olarak kapsam dışıdır**. `verifyFrozen` yalnızca
 `manifest.state === 'frozen'` hedefler; dondurulmamış bundle `notFrozen: true` ile reddedilir.
 Bu bir **kazara-drift dedektörüdür, kurcalama (tamper) kanıtı değildir** — hash'lerin kendisi
-dahil tüm dosyayı yeniden yazabilen bir salırgan bu mekanizmayla yakalanamaz.
+dahil tüm dosyayı yeniden yazabilen bir saldırgan bu mekanizmayla yakalanamaz.
 
 ## Kapıyı Çalıştırmak: `run-eval`
 
@@ -96,20 +400,35 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 
 ## Dürüst Durum Bildirimi
 
+- **Yüzey tamamlandı:** CLI 9 komut (compile, lint, freeze, verify, change, trace,
+  plan, init, check) + `lco-mcp` stdio sunucusu (7 araç). Her komut çekirdeği
+  safdır: yazdırma yok, `process.exit` yok; saat yalnız CLI/MCP sınırında okunup
+  çekirdeklere `nowIso` olarak enjekte edilir.
 - **Deterministik kapı geçiyor**: G1 15/15, G2 doğru, G3 8/8 →
   karar `PASS_DETERMINISTIC_ONLY` (bkz. `audit-output/spec-core-gate-report.md`).
-- **Live kanıt bekliyor**: G4 (konsey › tek ajan, ≤ 3× maliyet) yalnızca kullanıcı
-  anahtarlarıyla yapılacak live koşuyla ölçülebilir; bu depo anahtar içermez ve
-  mock koşudan G4 çıkarımı yapılmaz.
+- **Live G4 kanıtı ölçüldü** (`audit-output/g4-live-report.md`): konsey onaylaması
+  **36 > 26** tek ajan; konsey token maliyeti tek ajanın **2.13 katı** (≤ 3× eşiği)
+  → kapı **PASS**. Raporun içündeki dürüst uyarılar geçerliliğini korur: tek koşu
+  (sign-test p≈0.23, etki ~2×), p-standard ET-07..10'nun her iki varyantça da
+  çözülmemiş olması. Mock koşudan G4 çıkarımı yapılmaz ilkesi değişmez.
 
-## Bilinen Doğrulama Yüzeyi Farkları
+## Bilinen Sınırlar (dürüstlük)
 
-- **TS zod zinciri vs dışa aktarılan JSON Şema:** TS zod pipeline'ı (`SpecBundleSchema`)
-  ayrıştırmada bilinmeyen anahtarları sessizce **siler** (strip); dışa aktarılan
-  `generated/spec-schema.json` ise aynı anahtarları **reddeder**
-  (`additionalProperties: false`). Bu bilinçli bir uyumsuzluktur ve `.strict()`
-  hizalaması planlı bir takip işidir — o ana kadar aynı girdi TS katmanından geçip JSON
-  Şema katmanında reddedilebilir.
+- **`acceptance_refs` uzlaşısıdır:** `requirements[].acceptance_refs` (TST-* test
+  referansları) bugün HİÇBİR lint kuralınca doğrulanmaz — bir kural bu referansların
+  varlığını/çözünürlüğünü sınmaz; belge-içi uzlaşı olarak taşınır.
+- **task_id tekilliği motor-genel boşluktur:** ne şema ne lint `tasks[]` içinde
+  `task_id` tekilliğini zorlar. `plan --json` görev haritasını id ile anahtarladığı
+  için mükerrer id çıktıda tekillik kaybı yaratır.
+- **Eval zincirinde şema-seviyesi doğrulama iki sınırla sınırlıdır:** sınıflandırıcı
+  çıktısı (`ClassifierOutputSchema` — strict DEĞİLDİR; ürün şeması değildir, bilinçli
+  kapsam dışı) ve önerilen bundle (`SpecBundleSchema` — strict). Kalan konsey
+  çağrıları metin düzeyindedir.
+- **verify ham bayt değil, şema-normalize edilmiş bölüm içeriğini hash'ler:** hash,
+  ayrıştırılmış bölümün kanonik JSON'udur — ham dosya biçimlendirmesi (girinti, anahtar
+  sırası) ve trim-refine'lı metin alanlarının baş/son boşluk değişiklikleri drift
+  üretmez (turdaki tamper denemesi #1'in exit 0 çıkması tam olarak budur). Kasıtlı
+  tasarım: bölüm-içeriği drift dedektörü, tamper kanıtı değildir (G2 kapsam notu).
 - **L03'ün etkin kapsamı:** `test_files` defteri `compile` sırasında görevlerden
   *türetilir*, dolayısıyla derlemeden gelen bundle'lar L03'ü asla tetikleyemez. Kural,
   modelin kendi test defterini yankılamak zorunda olduğu **doğrudan ayrıştırma / LLM
@@ -118,6 +437,9 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 
 ## Ayrıca Bakınız
 
+- Tamamlama planı: [`plans/2026-08-19-spec-core-completion.md`](../../plans/2026-08-19-spec-core-completion.md)
 - Deney planı: [`plans/2026-08-18-spec-core-evidence-gate.md`](../../plans/2026-08-18-spec-core-evidence-gate.md)
 - Kanıt raporu (denetim izi): [`audit-output/spec-core-gate-report.md`](../../audit-output/spec-core-gate-report.md)
+- Live G4 raporu: [`audit-output/g4-live-report.md`](../../audit-output/g4-live-report.md)
+- Örnek changeset: [`examples/changeset.example.json`](examples/changeset.example.json)
 - Dışa aktarılan JSON Şema: `generated/spec-schema.json`
