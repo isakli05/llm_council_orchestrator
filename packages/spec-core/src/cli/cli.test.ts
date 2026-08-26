@@ -82,6 +82,83 @@ describe('runCli: usage errors (exit 2)', () => {
   });
 });
 
+describe('runCli: help and version (UX-002)', () => {
+  it('--help with no command -> full usage on stdout, exit 0, stderr silent', async () => {
+    await expect(runCli(['--help'])).resolves.toBe(0);
+    expect(stdout()).toContain('usage:');
+    expect(stdout()).toContain('commands:');
+    expect(stderr()).toBe('');
+  });
+
+  it('-h with no command -> same overview as --help', async () => {
+    await expect(runCli(['-h'])).resolves.toBe(0);
+    expect(stdout()).toContain('usage:');
+    expect(stderr()).toBe('');
+  });
+
+  it('--version -> the REAL package.json version on stdout (bump-proof), exit 0', async () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as {
+      version: string;
+    };
+    await expect(runCli(['--version'])).resolves.toBe(0);
+    expect(stdout().trim()).toBe(pkg.version);
+    expect(stderr()).toBe('');
+  });
+
+  it("init --help -> init's own help BEFORE init validation, exit 0", async () => {
+    // No <dir>, no profile: --help must short-circuit before any validation
+    // of the command's own arguments.
+    await expect(runCli(['init', '--help'])).resolves.toBe(0);
+    expect(stdout()).toContain('init');
+    expect(stdout()).toContain('scaffold');
+    expect(stderr()).toBe('');
+  });
+
+  it('init -h -> same as init --help', async () => {
+    await expect(runCli(['init', '-h'])).resolves.toBe(0);
+    expect(stdout()).toContain('init');
+    expect(stderr()).toBe('');
+  });
+
+  it("compile --help -> help even though compile's <dir> is missing", async () => {
+    await expect(runCli(['compile', '--help'])).resolves.toBe(0);
+    expect(stdout()).toContain('compile');
+    expect(stderr()).toBe('');
+  });
+
+  it('every command has command-specific help (exit 0, mentions the command)', async () => {
+    const commands = [
+      'compile',
+      'lint',
+      'freeze',
+      'verify',
+      'change',
+      'trace',
+      'plan',
+      'init',
+      'check',
+      'generate',
+    ];
+    for (const command of commands) {
+      logSpy.mockClear();
+      const code = await runCli([command, '--help']);
+      expect(code, `lco ${command} --help`).toBe(0);
+      expect(stdout(), `lco ${command} --help`).toContain(command);
+      expect(stderr(), `lco ${command} --help`).toBe('');
+    }
+  });
+
+  it('unknown command with --help stays an error -> exit 2', async () => {
+    await expect(runCli(['bogus', '--help'])).resolves.toBe(2);
+    expect(stderr()).toContain('unknown command');
+  });
+
+  it('unknown flag on a known command stays a usage error -> exit 2', async () => {
+    await expect(runCli(['init', '/tmp/lco-never-written', '--halp'])).resolves.toBe(2);
+    expect(stderr()).toContain('unexpected argument');
+  });
+});
+
 describe('runCli compile', () => {
   it('good pet-clinic spec dir -> exit 0 with per-section summary', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));

@@ -12,12 +12,12 @@
 #   4. installed `lco init <dir>` — exit 0, scaffolded manifest exists
 #      (lco init refuses with exit 2 if <dir>/spec already exists, so the
 #      target dir is virgin by construction)
+#   4b. installed `lco --help` / `lco --version` (UX-002) — exit 0 each;
+#       --help prints usage to stdout, --version prints the INSTALLED
+#       package.json's version (never empty, never hardcoded in the bin)
 #   5. installed `lco-mcp` — one JSON-RPC initialize line on stdin, exit 0,
 #      exactly one JSON-RPC response line on stdout with serverInfo lco-mcp
 #      (envelope shape per src/mcp/server.test.ts)
-#
-# NOTE (UX-002): --help/--version do not exist yet — this smoke must not use
-# them; a later task adds the flags and extends this script.
 #
 # Usage: pnpm --filter ./packages/spec-core smoke:packed   (or: sh scripts/packed-install-smoke.sh)
 set -eu
@@ -80,6 +80,31 @@ if [ ! -f "$SPEC_PROJECT/spec/manifest.json" ]; then
   exit 1
 fi
 say "lco init exit 0, manifest scaffolded at $SPEC_PROJECT/spec/manifest.json"
+
+# --- 4b. installed `lco --help` / `lco --version` (UX-002) ----------------------------
+say "== phase 4b: lco --help / lco --version (UX-002) =="
+if ! HELP_OUT=$("$LCO" --help); then
+  say "FAIL: lco --help exited non-zero"
+  exit 1
+fi
+case "$HELP_OUT" in
+  usage:*) ;;
+  *) say "FAIL: lco --help output does not start with 'usage:'" ; exit 1 ;;
+esac
+if ! VERSION_OUT=$("$LCO" --version); then
+  say "FAIL: lco --version exited non-zero"
+  exit 1
+fi
+if [ -z "$VERSION_OUT" ]; then
+  say "FAIL: lco --version printed an empty version"
+  exit 1
+fi
+EXPECTED_VERSION=$(node -e 'console.log(require(process.argv[1] + "/node_modules/lco-spec/package.json").version)' "$PROJ")
+if [ "$VERSION_OUT" != "$EXPECTED_VERSION" ]; then
+  say "FAIL: lco --version printed '$VERSION_OUT' but installed package.json says '$EXPECTED_VERSION'"
+  exit 1
+fi
+say "lco --help ok (usage on stdout); lco --version ok: $VERSION_OUT (matches installed package.json)"
 
 # --- 5. installed `lco-mcp` initialize handshake ---------------------------------------
 say "== phase 5: lco-mcp initialize handshake over stdio =="

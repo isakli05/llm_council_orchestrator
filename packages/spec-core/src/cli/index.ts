@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { cmdCompile } from './commands/compile';
 import { cmdLint } from './commands/lint';
 import { cmdFreeze } from './commands/freeze';
@@ -12,6 +13,12 @@ import { cmdCheck } from './commands/check';
 import { cmdGenerate } from './commands/generate';
 
 const USAGE = `usage: lco <command> <dir> [args]
+       lco --help | -h | --version | <command> --help
+
+options:
+  --help, -h       print this overview (or the command's own help, with
+                   \`lco <command> --help\`) to stdout and exit 0
+  --version        print the lco-spec package version to stdout and exit 0
 
 commands:
   compile <dir>                compile and validate the spec/ tree under <dir>
@@ -96,6 +103,9 @@ type GenerateVariant = 'single' | 'council';
 
 type ParseResult =
   | { error: string }
+  | { help: true }
+  | { version: true }
+  | { commandHelp: Command }
   | { command: SingleDirCommand; dir: string }
   | { command: 'change'; dir: string; changesetPath: string }
   | { command: 'plan'; dir: string; json: boolean }
@@ -116,8 +126,24 @@ function parseArgs(argv: string[]): ParseResult {
     return { error: 'missing command' };
   }
   const [command, ...rest] = argv;
+  if (command === '--help' || command === '-h') {
+    return { help: true };
+  }
+  if (command === '--version') {
+    return { version: true };
+  }
   if (!(COMMANDS as readonly string[]).includes(command)) {
     return { error: `unknown command: ${command}` };
+  }
+  // UX-002: --help/-h after a KNOWN command wins over everything else and is
+  // checked BEFORE any validation of that command's arguments — `lco init
+  // --help` prints help and exits 0; the flag is never consumed as a <dir>
+  // name (the old behavior literally scaffolded a spec into ./--help/).
+  // An unknown command still falls through to the usage error above.
+  if (rest.includes('--help') || rest.includes('-h')) {
+    // Same cast idiom as the SingleDirCommand return below: COMMANDS.includes
+    // above guarantees the literal, but does not narrow `string` for TS.
+    return { commandHelp: command as Command };
   }
   if (rest.length === 0) {
     return { error: `missing <dir> argument for '${command}'` };
@@ -254,6 +280,45 @@ function parseArgs(argv: string[]): ParseResult {
 }
 
 /**
+ * Command-specific help (UX-002): the command's own block, extracted from
+ * USAGE at run time — USAGE stays the single hand-written source of truth,
+ * so the per-command text can never drift from the overview. A block starts
+ * at `  <command> ` and runs through its continuation lines (indented 7+
+ * spaces); the next command's line, a section header, or a blank line ends it.
+ */
+function commandHelp(command: Command): string {
+  const lines = USAGE.split('\n');
+  const start = lines.findIndex((line) => line.startsWith(`  ${command} `));
+  if (start === -1) {
+    return USAGE; // defensive: USAGE lost the entry — fall back to the overview
+  }
+  let end = start + 1;
+  while (end < lines.length && /^ {7,}\S/.test(lines[end])) {
+    end++;
+  }
+  return (
+    `usage: lco ${lines.slice(start, end).join('\n').trimStart()}\n\n` +
+    '(run `lco --help` for the full command overview)'
+  );
+}
+
+/**
+ * Reads the version from the package's own package.json at RUN TIME — never
+ * hardcoded, so a version bump needs no CLI change. src/cli and dist/cli sit
+ * at the same depth under the package root, so the relative path holds both
+ * for the repo build/test and for a packed install (npm always ships
+ * package.json next to dist/).
+ */
+async function readVersion(): Promise<string> {
+  const raw = await readFile(join(__dirname, '../../package.json'), 'utf8');
+  const version = (JSON.parse(raw) as { version?: unknown }).version;
+  if (typeof version !== 'string' || version === '') {
+    throw new Error('package.json has no usable version field');
+  }
+  return version;
+}
+
+/**
  * Functional CLI core: never calls process.exit — the exit code is returned.
  *   0 success, 1 lint/freeze/drift failure, 2 usage/schema error.
  *
@@ -267,6 +332,18 @@ export async function runCli(argv: string[]): Promise<number> {
     console.error(`lco: ${parsed.error}`);
     console.error(USAGE);
     return 2;
+  }
+  if ('help' in parsed) {
+    console.log(USAGE);
+    return 0;
+  }
+  if ('version' in parsed) {
+    console.log(await readVersion());
+    return 0;
+  }
+  if ('commandHelp' in parsed) {
+    console.log(commandHelp(parsed.commandHelp));
+    return 0;
   }
 
   switch (parsed.command) {

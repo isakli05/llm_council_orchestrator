@@ -25,9 +25,11 @@ npx lco --help
 **Kaynaktan (bu monorepo içinde) — derleme/test:**
 
 ```sh
-pnpm --filter lco-spec build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter lco-spec test    # vitest (576 test: şema, derleyici, lint, eval, CLI, check, MCP)
-pnpm --filter lco-spec lint    # tsc --noEmit
+# PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
+# değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
+pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
+pnpm --filter ./packages/spec-core test    # vitest (587 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
 **Sıra notu (fail-closed):** testler ÖNCE `build` gerektirir — MCP spawn entegrasyon
@@ -44,7 +46,13 @@ sessizce atlanmaz, `run pnpm --filter ./packages/spec-core build before test` me
 
 Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`). On komut;
 dokuzu bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır, `generate` ise o
-dizini bir niyet metninden üretir:
+dizini bir niyet metninden üretir.
+
+Yardım ve sürüm (UX-002): `lco --help` (veya `-h`) genel kullanımı, `lco <komut> --help`
+o komutun kendi yardımını stdout'a yazdırır ve **exit 0** verir — yardım, komutun kendi
+bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hata vermez).
+`lco --version` paketin `package.json` sürümünü çalışma zamanında okur ve yazdırır
+(exit 0). Bilinmeyen komut/bayrak davranışı değişmedi: exit 2 + stderr'de usage.
 
 | komut | işlev |
 | --- | --- |
