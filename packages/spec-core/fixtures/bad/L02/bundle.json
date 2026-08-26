@@ -201,6 +201,7 @@
       "instructions": "Implement the list endpoint with due-date ordering; keep every write inside src/todos.",
       "tests": [
         {
+          "id": "TST-0001",
           "kind": "integration",
           "file": "tests/todos-list.test.ts",
           "cases": [
@@ -211,7 +212,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/todos-list.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -265,6 +266,7 @@
       "instructions": "Implement the registration route exactly as contracted; keep every write inside src/users.",
       "tests": [
         {
+          "id": "TST-0002",
           "kind": "integration",
           "file": "tests/users.test.ts",
           "cases": [
@@ -275,7 +277,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/users.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -323,6 +325,7 @@
       "instructions": "Implement the periodic deadline scan and the notification queue inside src/notifications.",
       "tests": [
         {
+          "id": "TST-0003",
           "kind": "unit",
           "file": "tests/notifications.test.ts",
           "cases": [
@@ -333,7 +336,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/notifications.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -384,6 +387,7 @@
       "instructions": "Add the load harness and budget assertion under src/perf; do not touch endpoint code.",
       "tests": [
         {
+          "id": "TST-0004",
           "kind": "integration",
           "file": "tests/latency-budget.test.ts",
           "cases": [
@@ -394,7 +398,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/latency-budget.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [

@@ -133,6 +133,7 @@
       "instructions": "Implement the embed pipeline inside src/embed; the CLI entry stays untouched.",
       "tests": [
         {
+          "id": "TST-0001",
           "kind": "unit",
           "file": "tests/embed.test.ts",
           "cases": [
@@ -143,7 +144,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/embed.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -194,6 +195,7 @@
       "instructions": "Wire the --chunk-size flag inside src/cli and pass it through to the embed pipeline.",
       "tests": [
         {
+          "id": "TST-0002",
           "kind": "unit",
           "file": "tests/cli-flags.test.ts",
           "cases": [
@@ -204,7 +206,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/cli-flags.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [

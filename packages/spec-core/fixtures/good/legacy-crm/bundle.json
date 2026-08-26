@@ -164,6 +164,7 @@
       "instructions": "Implement the batch reader and writer inside src/migration; never mutate legacy rows.",
       "tests": [
         {
+          "id": "TST-0001",
           "kind": "integration",
           "file": "tests/migration.test.ts",
           "cases": [
@@ -174,7 +175,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/migration.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -231,6 +232,7 @@
       "instructions": "Port the parser inside src/import and run the differential harness against the legacy outputs.",
       "tests": [
         {
+          "id": "TST-0002",
           "kind": "integration",
           "file": "tests/import.test.ts",
           "cases": [
@@ -242,7 +244,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/import.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [

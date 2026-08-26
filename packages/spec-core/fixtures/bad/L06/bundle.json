@@ -172,6 +172,7 @@
       "instructions": "Implement the appointment service on top of the repository interface; keep every write inside src/appointments.",
       "tests": [
         {
+          "id": "TST-0001",
           "kind": "integration",
           "file": "tests/appointments.test.ts",
           "cases": [
@@ -183,7 +184,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/appointments.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -234,6 +235,7 @@
       "instructions": "Implement the owners module with an append-only history table; keep every write inside src/owners.",
       "tests": [
         {
+          "id": "TST-0002",
           "kind": "integration",
           "file": "tests/owners.test.ts",
           "cases": [
@@ -244,7 +246,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/owners.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -295,6 +297,7 @@
       "instructions": "Implement the overdue-record scan and the reminder projection inside src/vaccinations.",
       "tests": [
         {
+          "id": "TST-0003",
           "kind": "unit",
           "file": "tests/vaccinations.test.ts",
           "cases": [
@@ -305,7 +308,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/vaccinations.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [

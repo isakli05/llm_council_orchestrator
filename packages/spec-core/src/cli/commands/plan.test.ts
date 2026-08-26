@@ -169,12 +169,8 @@ function rowOrder(humanOutput: string): string[] {
 
 // -------------------------------------------------------------------------------
 
-// conform in T8: the pet-clinic-based surface tests below fail only because
-// the fixture carries prose expects and id-less tests (L13/L14) until T8
-// conforms it. The behaviors they pinned remain covered by the inline
-// conforming-bundle tests further down (T7 note).
-describe.skip('cmdPlan: good bundle (exit 0, topological table) [conform in T8]', () => {
-  it.skip('pet-clinic -> 0; header, rows in reference topo order, every dep precedes its dependent', async () => {
+describe('cmdPlan: good bundle (exit 0, topological table)', () => {
+  it('pet-clinic -> 0; header, rows in reference topo order, every dep precedes its dependent', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
 
     const result = await cmdPlan(root, { json: false });
@@ -212,7 +208,7 @@ describe.skip('cmdPlan: good bundle (exit 0, topological table) [conform in T8]'
     );
   });
 
-  it.skip('ready-now line lists exactly the level-0 task ids', async () => {
+  it('ready-now line lists exactly the level-0 task ids', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
 
     const result = await cmdPlan(root, { json: false });
@@ -228,7 +224,7 @@ describe.skip('cmdPlan: good bundle (exit 0, topological table) [conform in T8]'
     expect(result.output).toContain(`ready-now: ${level0.join(', ')}`);
   });
 
-  it.skip('deterministic: two calls produce the identical output (human and json)', async () => {
+  it('deterministic: two calls produce the identical output (human and json)', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
 
     const human1 = await cmdPlan(root, { json: false });
@@ -241,8 +237,8 @@ describe.skip('cmdPlan: good bundle (exit 0, topological table) [conform in T8]'
   });
 });
 
-describe.skip('cmdPlan: cyclic dependencies via bad/L04 (exit 1) [conform in T8]', () => {
-  it.skip('bad/L04 (TASK-0001 <-> TASK-0002) -> 1; both cycle members listed, cyclic named', async () => {
+describe('cmdPlan: cyclic dependencies via bad/L04 (exit 1)', () => {
+  it('bad/L04 (TASK-0001 <-> TASK-0002) -> 1; both cycle members listed, cyclic named', async () => {
     const root = makeSpecRoot(loadBundle('bad/L04/bundle.json'));
 
     const result = await cmdPlan(root, { json: false });
@@ -258,10 +254,7 @@ describe.skip('cmdPlan: cyclic dependencies via bad/L04 (exit 1) [conform in T8]
 });
 
 describe('cmdPlan: --json machine surface', () => {
-  // conform in T8: pet-clinic's L13/L14 findings block plan until the
-  // fixture conforms; the JSON surface shape is re-pinned below on the
-  // inline conforming bundle (T7 note).
-  it.skip('pet-clinic -> 0; output parses; order covers all tasks; 5 exact fields per task', async () => {
+  it('pet-clinic -> 0; output parses; order covers all tasks; 5 exact fields per task', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
 
     const result = await cmdPlan(root, { json: true });
@@ -451,9 +444,7 @@ describe('runCli wiring: lco plan <dir> [--json]', () => {
     expect(JSON.parse(stdout())).toHaveProperty('order');
   });
 
-  // conform in T8: cycle-through-wrapper re-pinned once bad/L04 conforms;
-  // the cycle behavior itself is pinned on an inline bundle above (T7 note).
-  it.skip('cycle surfaces as exit 1 through the wrapper', async () => {
+  it('cycle surfaces as exit 1 through the wrapper', async () => {
     const root = makeSpecRoot(loadBundle('bad/L04/bundle.json'));
     await expect(runCli(['plan', root])).resolves.toBe(1);
   });

@@ -13,27 +13,17 @@ function loadBundle(rel: string): SpecBundle {
 describe('L05_INTERFACE_MISMATCH', () => {
   it('fires exactly L05 on the L05 vector (the undeclared symbol in the message)', () => {
     const result = lintBundle(loadBundle('bad/L05/bundle.json'));
-    // T7 (BACK-003/BACK-004): the bad-vector fixtures also trip the new
-    // L13/L14 rules until T8 conforms them; scope this suite to the rule
-    // under test — vector exactness (one vector, one rule) is re-pinned by
-    // all-bad-fixtures.test.ts once T8 lands.
-    const ruleErrors = result.errors.filter((f) => f.rule === 'L05_INTERFACE_MISMATCH');
 
-    expect(ruleErrors.length).toBeGreaterThan(0);
-    expect(new Set(ruleErrors.map((f) => f.rule))).toEqual(
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(new Set(result.errors.map((f) => f.rule))).toEqual(
       new Set(['L05_INTERFACE_MISMATCH']),
     );
-    expect(ruleErrors.some((f) => f.message.includes('createUser'))).toBe(true);
+    expect(result.errors.some((f) => f.message.includes('createUser'))).toBe(true);
   });
 
   it('reports the owning task id as the finding path', () => {
     const result = lintBundle(loadBundle('bad/L05/bundle.json'));
-    // T7 (BACK-003/BACK-004): the bad-vector fixtures also trip the new
-    // L13/L14 rules until T8 conforms them; scope this suite to the rule
-    // under test — vector exactness (one vector, one rule) is re-pinned by
-    // all-bad-fixtures.test.ts once T8 lands.
-    const ruleErrors = result.errors.filter((f) => f.rule === 'L05_INTERFACE_MISMATCH');
 
-    expect(ruleErrors.map((f) => f.path)).toEqual(['TASK-0002']);
+    expect(result.errors.map((f) => f.path)).toEqual(['TASK-0002']);
   });
 });

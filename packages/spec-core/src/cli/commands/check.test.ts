@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { cmdCheck } from './check';
 import { cmdInit } from './init';
 import { runCli } from '../index';
+import { parseExpect } from '../../check/expect';
 import type { TaskContract } from '../../schemas';
 
 const FIXTURES = join(__dirname, '../../../fixtures');
@@ -96,11 +97,8 @@ describe('cmdCheck: compile failure', () => {
 
 // --- DRY (default): table, no execution, no evidence ------------------------------
 
-// conform in T8: pet-clinic's prose expects are L14 errors, so the dry table
-// test on it fails until the fixture conforms; the dry table surface stays
-// pinned below on the init scaffold and on inline bundles (T7 note).
-describe.skip('cmdCheck: DRY RUN (default) [conform in T8]', () => {
-  it.skip('pet-clinic -> code 0, loud dry-run banner, full command+expect table, no evidence', async () => {
+describe('cmdCheck: DRY RUN (default)', () => {
+  it('pet-clinic -> code 0, loud dry-run banner, full command+expect table, no evidence', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
 
     const result = await cmdCheck(root, { yes: false, nowIso: NOW });
@@ -114,9 +112,12 @@ describe.skip('cmdCheck: DRY RUN (default) [conform in T8]', () => {
     expect(result.output).toContain('TASK\tCOMMAND\tEXPECT\tEXPECTED→ACTUAL\tSTATUS');
     for (const t of tasks) {
       const v = t.verification[0];
-      expect(result.output).toContain(`${t.task_id}\t${v.command}\t${v.expect}\t? → -\tDRY`);
+      // Grammar-conformant expects parse, so the EXPECTED column shows the
+      // parsed exit code (the fixture's 'exit 0' -> 0), never '?'.
+      const expectedExit = parseExpect(v.expect);
+      expect(expectedExit, `${t.task_id} expect must be judgeable`).not.toBeNull();
+      expect(result.output).toContain(`${t.task_id}\t${v.command}\t${v.expect}\t${expectedExit} → -\tDRY`);
     }
-    // pet-clinic's 'exit code 0, ...' prose is not judgeable -> expected '?'.
     expect(result.output).toContain('0 pass, 0 fail, 3 dry');
     expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
   });

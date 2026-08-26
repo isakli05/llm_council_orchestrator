@@ -234,11 +234,7 @@ describe('buildMockScripts — per-task scripting', () => {
 });
 
 describe('runMockEval — 20 tasks x 2 variants through the real runner', () => {
-  // conform in T8: the mock corpus derives from fixtures/good at runtime
-  // (eval/report.ts loadGoodFixture); the corpus is lint-dirty (L13/L14)
-  // until the fixtures conform, so these runMockEval e2e assertions fail
-  // purely on fixture non-conformance (T7 note).
-  it.skip('produces 40 RunScores with exact call accounting: single=1, council=3 per task', async () => {
+  it('produces 40 RunScores with exact call accounting: single=1, council=3 per task', async () => {
     const evidence = await runMockEval();
     expect(evidence.runs).toHaveLength(40);
     for (const t of EVAL_TASKS) {
@@ -251,7 +247,7 @@ describe('runMockEval — 20 tasks x 2 variants through the real runner', () => 
     }
   });
 
-  it.skip('all 8 ambiguous/conflicting tasks are blocked in both variants with full assertion scores', async () => {
+  it('all 8 ambiguous/conflicting tasks are blocked in both variants with full assertion scores', async () => {
     const evidence = await runMockEval();
     for (const t of EVAL_TASKS.filter((x) => x.must_be_blocked)) {
       for (const r of evidence.runs.filter((x) => x.taskId === t.id)) {
@@ -261,7 +257,7 @@ describe('runMockEval — 20 tasks x 2 variants through the real runner', () => 
     }
   });
 
-  it.skip('greenfield tasks are never blocked; mock scripts return the same bundle either way (identical assertion scores)', async () => {
+  it('greenfield tasks are never blocked; mock scripts return the same bundle either way (identical assertion scores)', async () => {
     const evidence = await runMockEval();
     for (const t of EVAL_TASKS.filter((x) => !x.must_be_blocked)) {
       const single = evidence.runs.find((r) => r.taskId === t.id && r.variant === 'single')!;
@@ -274,7 +270,7 @@ describe('runMockEval — 20 tasks x 2 variants through the real runner', () => 
     }
   });
 
-  it.skip('captures the fixture gate: 15/15 caught, drift caught, unresolved freeze-rejected', async () => {
+  it('captures the fixture gate: 15/15 caught, drift caught, unresolved freeze-rejected', async () => {
     const evidence = await runMockEval();
     expect(evidence.badFixtureResults).toHaveLength(15);
     expect(evidence.badFixtureResults.every((r) => r.caught)).toBe(true);
@@ -284,7 +280,7 @@ describe('runMockEval — 20 tasks x 2 variants through the real runner', () => 
 });
 
 describe('runEvalAll — mock e2e', () => {
-  it.skip('returns PASS_DETERMINISTIC_ONLY and writes the markdown report when a path is given', async () => {
+  it('returns PASS_DETERMINISTIC_ONLY and writes the markdown report when a path is given', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lco-gate-report-'));
     try {
       const reportPath = join(dir, 'gate-report.md');
@@ -304,7 +300,7 @@ describe('runEvalAll — mock e2e', () => {
     }
   });
 
-  it.skip('runs without a reportPath (report optional)', async () => {
+  it('runs without a reportPath (report optional)', async () => {
     await expect(runEvalAll({ variant: 'mock' })).resolves.toBe('PASS_DETERMINISTIC_ONLY');
   });
 });

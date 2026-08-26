@@ -54,11 +54,13 @@ describe('all bad fixtures through the real lint/freeze/verify pipeline', () => 
           return;
         }
 
-        // lint-error: the expected rule fires. (T7: until T8 conforms the
-        // fixtures to L13/L14 the vectors also trip the new rules, so the
-        // exact one-vector-one-rule contract is fixme'd just below.)
+        // lint-error: the vector fires its rule AND ONLY its rule — the
+        // one-vector-one-rule exactness contract (restored by the T8 fixture
+        // conformance: expects are grammar-conformant and every cited test
+        // id exists, so L13/L14 stay silent on every bad vector).
         const result = lintBundle(bundle);
-        expect(result.errors.some((f) => f.rule === exp.rule)).toBe(true);
+        const firedRules = [...new Set(result.errors.map((f) => f.rule))];
+        expect(firedRules).toEqual([exp.rule]);
         expect(result.errors.length).toBeGreaterThan(0);
         if (exp.message_includes) {
           expect(
@@ -66,15 +68,6 @@ describe('all bad fixtures through the real lint/freeze/verify pipeline', () => 
           ).toBe(true);
         }
       });
-
-      if (exp.expect === 'lint-error') {
-        // conform in T8: exactness — the vector fires ONLY its own rule —
-        // returns when the fixtures' expects/test-ids conform (T7 note).
-        it.skip(`${d}: fires ONLY ${exp.rule} (exactness restored by T8 fixture conformance)`, () => {
-          const firedRules = [...new Set(lintBundle(bundle).errors.map((f) => f.rule))];
-          expect(firedRules).toEqual([exp.rule]);
-        });
-      }
 
       if (exp.expect === 'lint-error') {
         it('produces no warnings on a lint vector', () => {
@@ -101,10 +94,7 @@ describe('good bundles lint clean (hard requirement)', () => {
   });
 
   for (const d of dirs) {
-    // conform in T8: the good fixtures carry prose expects and id-less tests
-    // (L13/L14) until T8 conforms them; the clean-control property is pinned
-    // on an inline bundle in engine.test.ts meanwhile (T7 note).
-    it.skip(`${d}: 0 errors, 0 warnings from the registered rules`, () => {
+    it(`${d}: 0 errors, 0 warnings from the registered rules`, () => {
       const result = lintBundle(loadBundle(join(GOOD, d, 'bundle.json')));
       expect(result.errors).toEqual([]);
       expect(result.warnings).toEqual([]);

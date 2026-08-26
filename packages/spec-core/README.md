@@ -514,6 +514,18 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
   kümesine karşı kapanış denetlenir (**L13_BROKEN_REFERENCE**); referans verilmeyen
   test `id`'si isteğe bağlı kalır, ancak bir acceptance_ref ancak bir test `id`'sine
   çözünür. Test `id`'leri paket genelinde tekil olmalıdır.
+- **Göç notu — `GLS-` öneki requirement id ailesinden çıkarıldı:** requirement
+  id'leri artık yalnız `REQ-/OPS-/UX-/ARC-/DAT-/SEC-/LGC-` kabul eder (ad-uzayı
+  başına şema). Eski `GLS-NNNN` id'li saklı spec'ler **artık derlenmez** (şema
+  hatası); `lco change` ile yeniden üretin veya `GLS-` id'lerini elle `REQ-`'ye
+  çevirin.
+- **Changeset'ler TST referanslarını kendiliğinden yeniden demirlemez (bilinen
+  sınır):** `ChangeSetSchema`'da `modified_requirements` op'u yoktur. Bir
+  changeset bir görevin testlerini değiştiriyorsa/kaldırıyorsa,
+  `acceptance_refs`'in hâlâ atıf yaptığı `TST-NNNN` id'leri KALAN görevin
+  `tests[].id` yaması üzerinden açıkça yeniden demirlenmelidir (örnek:
+  `change.test.ts`'te kaldırılan `TST-0003`'ün kapsayan teste taşınması).
+  Kaldırma ergonomisi istenirse gelecekte bir changeset uzantısı eklenmelidir.
 - **task_id tekilliği compile'a taşındı (BACK-006 kapatıldı):** mükerrer `task_id`
   artık derleme hatasıdır (yapılandırılmış hata, exit 2) — `plan --json`'un id
   anahtarlı haritası ve `check --task` seçimi asla görev kaybedemez. `plan` ve
