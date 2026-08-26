@@ -1,0 +1,21 @@
+{
+  "adapter": {
+    "name": "graphify-zcode",
+    "version": "1.0.0",
+    "kind": "locally-maintained-zcode-adapter",
+    "zcode_tested": "3.7.7",
+    "zcode_docs_latest": "3.9.1"
+  },
+  "graphify": {
+    "package": "graphifyy",
+    "version": "0.9.50",
+    "upstream_repository": "https://github.com/Graphify-Labs/graphify",
+    "upstream_commit": "43d54acbfa9e731f7a592bb582c1f4b9d48ed73e",
+    "assets": {
+      "always_on/agents-md.md": "6a4a2e13159f2d89a9ab83351766e72ab94de06929d80767ac50913e4350e3a5",
+      "skill-codex.md": "3898b1042721cad27d6f87ca44f638415a7f763203aefd86b90f9358ffea3a43",
+      "skills/codex/references/query.md": "e563ddcb1e155aa230f107e5ef9380bc1249c5cd8241128de7ed8a7bd9c20cf5",
+      "skills/codex/references/update.md": "661f559b3ff4f3db7ba47bc2ba1c7e19f1c1d66a36f647e49221eecb174f2228"
+    }
+  }
+}
