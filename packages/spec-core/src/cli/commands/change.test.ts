@@ -1,11 +1,21 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdChange } from './change';
 import { compileSpecDir } from '../../compiler/compile';
 import { freeze } from '../../compiler/freeze';
 import { lintBundle } from '../../lint/engine';
+import { LOCK_FILE } from '../../storage/revision';
 
 const FIXTURES = join(__dirname, '../../../fixtures');
 const NOW = '2026-08-18T12:00:00Z';
@@ -61,6 +71,18 @@ async function frozenSpecRoot(): Promise<string> {
 function readSpecSection<T = unknown>(root: string, name: string): T {
   return JSON.parse(readFileSync(join(root, 'spec', `${name}.json`), 'utf8')) as T;
 }
+
+/** RAW BYTES of every file under spec/ (the disk-unchanged oracle). */
+function snapshotSpec(root: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of readdirSync(join(root, 'spec')).sort()) {
+    out[name] = readFileSync(join(root, 'spec', name), 'utf8');
+  }
+  return out;
+}
+
+/** chmod-based DAC blocks only non-root users; the skip is named, never silent. */
+const RUNNING_AS_ROOT = (process.getuid?.() ?? 1000) === 0;
 
 afterEach(() => {
   for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
@@ -178,10 +200,13 @@ describe('cmdChange: successful applies (exit 0)', () => {
   });
 
   // Pure removal of TASK-0003 orphans REQ-0003 (only that task referenced it),
-  // so the re-lint gate reports L02 -> exit 1. Removal alone cannot be a
-  // clean-lint exit-0 on this fixture.
-  it('bare removed_task_ids -> files written (2 tasks, v2) but the orphaned REQ re-lints to exit 1', async () => {
+  // so the change gate reports L02 -> exit 1. Under the validate-before-persist
+  // contract (BACK-005) a gate failure means NOTHING was written: the frozen
+  // v1 state stays byte-identical on disk. (This test previously asserted the
+  // defect: files written to v2 + exit 1.)
+  it('bare removed_task_ids orphans a REQ -> 1, nothing written (frozen v1 intact)', async () => {
     const root = await frozenSpecRoot();
+    const before = snapshotSpec(root);
     const csPath = writeChangeset(root, {
       id: 'CP-0004a',
       rationale: 'vaccinations out of scope',
@@ -192,9 +217,12 @@ describe('cmdChange: successful applies (exit 0)', () => {
 
     expect(result.code).toBe(1);
     expect(result.details.join('\n')).toContain('L02_ORPHAN_REQUIREMENT');
-    const tasks = readSpecSection<Array<{ task_id: string }>>(root, 'tasks');
-    expect(tasks.map((t) => t.task_id)).toEqual(['TASK-0001', 'TASK-0002']);
-    expect(readSpecSection<{ spec_version: number }>(root, 'manifest').spec_version).toBe(2);
+    expect(result.summary).toContain('nothing written');
+    // Disk untouched: still the frozen v1 with all three tasks.
+    expect(snapshotSpec(root)).toEqual(before);
+    expect(readSpecSection<{ spec_version: number; state: string }>(root, 'manifest')).toMatchObject(
+      { spec_version: 1, state: 'frozen' },
+    );
   });
 
   // The clean removal: drop TASK-0003 AND re-anchor REQ-0003 onto TASK-0001
@@ -236,8 +264,9 @@ describe('cmdChange: successful applies (exit 0)', () => {
     expect(readSpecSection<{ spec_version: number }>(root, 'manifest').spec_version).toBe(2);
   });
 
-  it('added_requirements -> appended to requirements.json on disk', async () => {
+  it('added_requirements orphaning the new REQ -> 1, nothing written (BACK-005)', async () => {
     const root = await frozenSpecRoot();
+    const before = snapshotSpec(root);
     const csPath = writeChangeset(root, {
       id: 'CP-0005',
       rationale: 'new reporting requirement',
@@ -254,15 +283,18 @@ describe('cmdChange: successful applies (exit 0)', () => {
 
     const result = await cmdChange(root, csPath, CHANGED_AT);
 
-    // Written, but the re-lint gate flags the new orphan requirement (exit 1).
+    // Gate failure (the new requirement is an orphan): exit 1 and the disk
+    // still holds the frozen v1 — REQ-0009 was never appended.
     expect(result.code).toBe(1);
+    expect(result.details.join('\n')).toContain('REQ-0009');
+    expect(snapshotSpec(root)).toEqual(before);
     const reqs = readSpecSection<Array<{ id: string }>>(root, 'requirements');
-    expect(reqs.map((r) => r.id)).toContain('REQ-0009');
-    expect(readSpecSection<{ spec_version: number }>(root, 'manifest').spec_version).toBe(2);
+    expect(reqs.map((r) => r.id)).not.toContain('REQ-0009');
+    expect(readSpecSection<{ spec_version: number }>(root, 'manifest').spec_version).toBe(1);
   });
 });
 
-describe('cmdChange: post-change re-lint gate (exit 1)', () => {
+describe('cmdChange: pre-persistence change gate (exit 1) — validate BEFORE persist (BACK-005)', () => {
   // refs.requirements has no schema min(1), so emptying it is a VALID patch
   // (partial().strict() needs the full refs object) — the single fault is the
   // orphaned REQ-0001, which only L02 reports (L10 deliberately skips orphans).
@@ -277,8 +309,9 @@ describe('cmdChange: post-change re-lint gate (exit 1)', () => {
     ],
   };
 
-  it('valid-but-orphaning patch -> 1 with the rule id and path in the table', async () => {
+  it('valid-but-orphaning patch -> 1 with the rule table; EVERY section byte-identical', async () => {
     const root = await frozenSpecRoot();
+    const before = snapshotSpec(root);
     const csPath = writeChangeset(root, ORPHANING_CHANGESET);
 
     const result = await cmdChange(root, csPath, CHANGED_AT);
@@ -287,9 +320,89 @@ describe('cmdChange: post-change re-lint gate (exit 1)', () => {
     const table = result.details.join('\n');
     expect(table).toContain('L02_ORPHAN_REQUIREMENT');
     expect(table).toContain('REQ-0001');
-    // The change itself was written before the gate fired: v2 on disk.
+    // BACK-005 contract: exit 1 means NOTHING was committed — not "committed
+    // into an invalid state". The frozen v1 is byte-identical, so the SAME
+    // changeset can be fixed and retried.
+    expect(result.summary).toContain('nothing written');
+    expect(snapshotSpec(root)).toEqual(before);
+    expect(readSpecSection<{ spec_version: number; state: string }>(root, 'manifest')).toMatchObject(
+      { spec_version: 1, state: 'frozen' },
+    );
+  });
+
+  it('gate-refused changeset leaves no lock or staging residue at the root', async () => {
+    const root = await frozenSpecRoot();
+    const csPath = writeChangeset(root, ORPHANING_CHANGESET);
+
+    await cmdChange(root, csPath, CHANGED_AT);
+
+    expect(existsSync(join(root, LOCK_FILE))).toBe(false);
+    expect(readdirSync(root).sort()).toEqual(['changeset.json', 'spec']);
+  });
+});
+
+describe('cmdChange: mid-revision write failure (DATA-001) — disk provably unchanged', () => {
+  // The audit's stranded state: a write failed midway left manifest at v2
+  // draft with old sections — neither verifiable nor retryable. The staged
+  // writer makes ANY write-phase failure atomic-noop: byte-identical frozen
+  // state, lock released, same changeset retryable.
+  it.skipIf(RUNNING_AS_ROOT)(
+    'chmod: spec/ unwritable mid-change -> 2, byte-identical, retry succeeds',
+    async () => {
+    const root = await frozenSpecRoot();
+    const before = snapshotSpec(root);
+    const csPath = writeChangeset(root, {
+      id: 'CP-0007',
+      rationale: 'mid-write failure scenario',
+      modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'Updated anyway' } }],
+    });
+
+    chmodSync(join(root, 'spec'), 0o555); // staging (temp create/rename) fails
+    let result: Awaited<ReturnType<typeof cmdChange>>;
+    try {
+      result = await cmdChange(root, csPath, CHANGED_AT);
+    } finally {
+      chmodSync(join(root, 'spec'), 0o755); // restore for assertions + cleanup
+    }
+
+    expect(result.code).toBe(2);
+    expect(result.summary).toContain('write failed');
+    // EVERY previous file is byte-identical (manifest included), no residue.
+    expect(snapshotSpec(root)).toEqual(before);
+    expect(existsSync(join(root, LOCK_FILE))).toBe(false);
+
+    // RETRY of the same changeset is still possible — the frozen v1 never
+    // left the disk, so the same changeset applies cleanly now.
+    const retry = await cmdChange(root, csPath, CHANGED_AT);
+    expect(retry.code).toBe(0);
+    expect(retry.summary).toContain('spec_version 2');
+    expect(readSpecSection<{ spec_version: number }>(root, 'manifest').spec_version).toBe(2);
+  });
+
+  // The audit's exact setup: tasks.json made unwritable (chmod 0444). The old
+  // truncate-in-place writer stranded the spec on it; the rename-based writer
+  // needs directory (not file) write permission, so the change now COMPLETES.
+  it.skipIf(RUNNING_AS_ROOT)(
+    'chmod 0444 tasks.json (audit setup) no longer strands: change completes',
+    async () => {
+    const root = await frozenSpecRoot();
+    const csPath = writeChangeset(root, {
+      id: 'CP-0008',
+      rationale: 'audit reproduction',
+      modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'Audit-proof title' } }],
+    });
+    chmodSync(join(root, 'spec', 'tasks.json'), 0o444);
+
+    let result: Awaited<ReturnType<typeof cmdChange>>;
+    try {
+      result = await cmdChange(root, csPath, CHANGED_AT);
+    } finally {
+      chmodSync(join(root, 'spec', 'tasks.json'), 0o644);
+    }
+
+    expect(result.code).toBe(0);
     expect(readSpecSection<{ spec_version: number }>(root, 'manifest').spec_version).toBe(2);
     const tasks = readSpecSection<Array<{ task_id: string; title: string }>>(root, 'tasks');
-    expect(tasks.find((t) => t.task_id === 'TASK-0001')?.title).toBeDefined();
+    expect(tasks.find((t) => t.task_id === 'TASK-0001')?.title).toBe('Audit-proof title');
   });
 });

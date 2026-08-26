@@ -55,7 +55,8 @@ export function lintRejections(bundle: SpecBundle): string[] | null {
  *   3. runPipeline({intent, profile}, variant, llm, nowIso) — blocked →
  *      reasons, {code: 1}, NOTHING written. spec → defensive lintRejections
  *      (see above) → errors → {code: 1}, NOTHING written.
- *   4. Clean → writeSpecDir (which re-refuses if spec/ appeared meanwhile)
+ *   4. Clean → writeSpecDir (which re-refuses under the per-root lock if
+ *      spec/ appeared meanwhile, and stages the whole tree + one rename)
  *      → summary with project name, complexity_profile, REQ/TASK counts,
  *      variant, LLM calls, in/out tokens, state → {code: 0}.
  *
@@ -122,7 +123,7 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
   }
 
   // --- 4. write + summary ------------------------------------------------------
-  writeSpecDir(dir, outcome.bundle);
+  writeSpecDir(dir, outcome.bundle, opts.nowIso);
 
   const m = outcome.bundle.manifest;
   return {

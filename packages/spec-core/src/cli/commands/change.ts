@@ -1,12 +1,14 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { compileSpecDir } from '../../compiler/compile';
 import { applyChangeSet, type ChangeSet } from '../../compiler/changeset';
 import { lintBundle } from '../../lint/engine';
 import type { LintFinding } from '../../lint/types';
+import { acquireSpecRootLock, swapFilesAtomically } from '../../storage/revision';
 
 export interface ChangeResult {
-  /** 0 applied + clean lint, 1 applied but re-lint failed, 2 compile/IO/schema rejection. */
+  /** 0 applied + clean lint, 1 change-gate (lint) failure — nothing written, 2 compile/IO/schema rejection. */
   code: number;
   summary: string;
   details: string[];
@@ -22,18 +24,60 @@ export interface ChangeResult {
  *   3. applyChangeSet — only a FROZEN spec is changeable; strict patch keys;
  *      success bumps spec_version, returns the bundle to state 'draft' and
  *      drops frozen_at. Rejections (code 2) write nothing;
- *   4. write the changed sections back to spec/: manifest.json ALWAYS,
- *      tasks.json when tasks were modified/removed, requirements.json when
- *      requirements were added (the new bundle's arrays already carry the
- *      merge — writing them is the append). A write failure is code 2;
- *   5. re-lint the NEW bundle — the change gate. Lint errors surface as a
- *      rule/severity/path/message table in `details` with code 1 (the change
- *      itself is already on disk; the gate reports, it does not roll back).
+ *   4. CHANGE GATE (BACK-005): the complete candidate revision is linted IN
+ *      MEMORY. Lint errors reject the changeset with code 1 and NOTHING is
+ *      written — exit 1 means "not committed", byte-identically; the same
+ *      changeset can be fixed and retried against the still-frozen spec.
+ *      (Before DATA-001/BACK-005 the sections were written first and the
+ *      gate reported after the fact, stranding an invalid draft on disk.)
+ *   5. persist the changed sections ATOMICALLY (DATA-001) under the per-root
+ *      revision lock: staged temps + rename with manifest.json LAST (the
+ *      commit point) and rollback on any failure — a write error is code 2
+ *      and leaves the previous state byte-identical, so the same changeset
+ *      stays retryable.
+ *
+ * Concurrency: steps 1-5 run under `<dir>/.lco-revision.lock` (stale-break
+ * policy inside the storage module); a live lock held by another writer is a
+ * clean code-2 refusal, never a wait. A missing spec/ short-circuits to the
+ * plain compile error BEFORE any lock or directory is created.
  *
  * `nowIso` is injected per the interface contract — this function never reads
  * the clock or the environment.
  */
 export async function cmdChange(
+  dir: string,
+  changesetPath: string,
+  nowIso: string,
+): Promise<ChangeResult> {
+  // Missing spec/: the standard compile failure, with zero fs side effects.
+  if (!existsSync(join(dir, 'spec'))) {
+    const compiled = await compileSpecDir(dir);
+    return {
+      code: 2,
+      summary: `compile FAILED with ${compiled.errors.length} error(s): nothing changed`,
+      details: compiled.errors.map((e) => `${e.path}: ${e.message}`),
+    };
+  }
+
+  let lock: ReturnType<typeof acquireSpecRootLock>;
+  try {
+    lock = acquireSpecRootLock(dir, nowIso);
+  } catch (err) {
+    return {
+      code: 2,
+      summary: `cannot acquire the spec root lock: ${(err as Error).message}`,
+      details: [],
+    };
+  }
+  try {
+    return await applyUnderLock(dir, changesetPath, nowIso);
+  } finally {
+    lock.release();
+  }
+}
+
+/** Steps 1-5 above, already serialized by the caller's per-root lock. */
+async function applyUnderLock(
   dir: string,
   changesetPath: string,
   nowIso: string,
@@ -87,19 +131,41 @@ export async function cmdChange(
   }
   const next = applied.bundle;
 
-  // --- 4. write the changed sections back --------------------------------------
-  const writes: Array<[file: string, content: unknown]> = [['manifest.json', next.manifest]];
-  if ((cp.modified_tasks?.length ?? 0) > 0 || (cp.removed_task_ids?.length ?? 0) > 0) {
-    writes.push(['tasks.json', next.tasks]);
-  }
-  if ((cp.added_requirements?.length ?? 0) > 0) {
-    writes.push(['requirements.json', next.requirements]);
+  // --- 4. CHANGE GATE: lint the complete candidate BEFORE any persistence -----
+  // (BACK-005: "gate failed" must mean "not committed", never "committed
+  // into an invalid state". Warnings still pass — mirrors `lco lint`.)
+  const lint = lintBundle(next);
+  const versionedSummary =
+    `changeset ${csId} applied: spec_version ${next.manifest.spec_version} ` +
+    `(state ${next.manifest.state}), ${next.tasks.length} task(s), ` +
+    `${next.requirements.length} requirement(s)`;
+
+  if (lint.errors.length > 0) {
+    return {
+      code: 1,
+      summary:
+        `changeset ${csId} rejected by the change gate: re-lint FAILED with ` +
+        `${lint.errors.length} error(s) — nothing written, the frozen spec is untouched`,
+      details: [
+        'RULE\tSEVERITY\tPATH\tMESSAGE',
+        ...[...lint.errors, ...lint.warnings].map(findingLine),
+        `${lint.errors.length} error(s), ${lint.warnings.length} warning(s)`,
+      ],
+    };
   }
 
+  // --- 5. staged, atomic persistence (manifest last) ---------------------------
+  const writes = new Array<{ name: string; content: unknown }>();
+  if ((cp.modified_tasks?.length ?? 0) > 0 || (cp.removed_task_ids?.length ?? 0) > 0) {
+    writes.push({ name: 'tasks.json', content: next.tasks });
+  }
+  if ((cp.added_requirements?.length ?? 0) > 0) {
+    writes.push({ name: 'requirements.json', content: next.requirements });
+  }
+  writes.push({ name: 'manifest.json', content: next.manifest }); // the commit point
+
   try {
-    for (const [file, content] of writes) {
-      await writeFile(join(dir, 'spec', file), JSON.stringify(content, null, 2), 'utf8');
-    }
+    swapFilesAtomically(join(dir, 'spec'), writes);
   } catch (err) {
     return {
       code: 2,
@@ -108,14 +174,7 @@ export async function cmdChange(
     };
   }
 
-  // --- 5. re-lint gate over the NEW bundle -------------------------------------
-  const lint = lintBundle(next);
-  const versionedSummary =
-    `changeset ${csId} applied: spec_version ${next.manifest.spec_version} ` +
-    `(state ${next.manifest.state}), ${next.tasks.length} task(s), ` +
-    `${next.requirements.length} requirement(s)`;
-
-  if (lint.errors.length === 0 && lint.warnings.length === 0) {
+  if (lint.warnings.length === 0) {
     return {
       code: 0,
       summary: `${versionedSummary}; lint OK: 0 errors, 0 warnings`,
@@ -123,25 +182,15 @@ export async function cmdChange(
     };
   }
 
-  const details = [
-    'RULE\tSEVERITY\tPATH\tMESSAGE',
-    ...[...lint.errors, ...lint.warnings].map(findingLine),
-    `${lint.errors.length} error(s), ${lint.warnings.length} warning(s)`,
-  ];
-
-  if (lint.errors.length > 0) {
-    return {
-      code: 1,
-      summary: `${versionedSummary}; re-lint FAILED with ${lint.errors.length} error(s)`,
-      details,
-    };
-  }
-
   // Warnings only — the change stands (mirrors `lco lint` exit semantics).
   return {
     code: 0,
     summary: `${versionedSummary}; lint OK with ${lint.warnings.length} warning(s)`,
-    details,
+    details: [
+      'RULE\tSEVERITY\tPATH\tMESSAGE',
+      ...lint.warnings.map(findingLine),
+      `${lint.errors.length} error(s), ${lint.warnings.length} warning(s)`,
+    ],
   };
 }
 

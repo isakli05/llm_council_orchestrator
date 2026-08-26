@@ -1,7 +1,8 @@
 import { exec } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../schemas';
+import { acquireSpecRootLock, swapFilesAtomically } from '../storage/revision';
 
 /**
  * Verification-command runner — the `lco check` core.
@@ -216,7 +217,14 @@ function tail(text: string): string {
   return text.length <= OUTPUT_TAIL_LIMIT ? text : text.slice(text.length - OUTPUT_TAIL_LIMIT);
 }
 
-/** One JSON evidence file per task: {task_id, checkedAt, checks: [...]}. */
+/**
+ * One JSON evidence file per task: {task_id, checkedAt, checks: [...]}.
+ *
+ * ATOMICITY (DATA-001): the file is staged and swapped into place with a
+ * rename under the per-root revision lock — a rerun can never truncate a
+ * live evidence file to zero bytes mid-crash, and a failed swap leaves the
+ * previous evidence byte-identical.
+ */
 async function writeEvidence(
   dir: string,
   taskId: string,
@@ -224,27 +232,28 @@ async function writeEvidence(
   outcomes: CheckOutcome[],
 ): Promise<void> {
   const evidenceDir = join(dir, 'spec', 'evidence');
-  await mkdir(evidenceDir, { recursive: true });
-  const file = join(evidenceDir, `${taskId}-check.json`);
-  await writeFile(
-    file,
-    JSON.stringify(
+  mkdirSync(evidenceDir, { recursive: true });
+  const lock = acquireSpecRootLock(dir, nowIso);
+  try {
+    swapFilesAtomically(evidenceDir, [
       {
-        task_id: taskId,
-        checkedAt: nowIso,
-        checks: outcomes.map((o) => ({
-          command: o.command,
-          expect: o.expect,
-          expectedExit: o.expectedExit,
-          actualExit: o.actualExit,
-          status: o.status,
-          durationMs: o.durationMs,
-          outputTail: o.outputTail,
-        })),
+        name: `${taskId}-check.json`,
+        content: {
+          task_id: taskId,
+          checkedAt: nowIso,
+          checks: outcomes.map((o) => ({
+            command: o.command,
+            expect: o.expect,
+            expectedExit: o.expectedExit,
+            actualExit: o.actualExit,
+            status: o.status,
+            durationMs: o.durationMs,
+            outputTail: o.outputTail,
+          })),
+        },
       },
-      null,
-      2,
-    ),
-    'utf8',
-  );
+    ]);
+  } finally {
+    lock.release();
+  }
 }

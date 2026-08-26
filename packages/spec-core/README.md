@@ -60,7 +60,7 @@ bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hat
 | `lint <dir>` | derle + 10 lint kuralı; kural/ciddiyet/yol/mesaj tablosu |
 | `freeze <dir>` | kapı kontrollü dondurma (yalnız `draft` durumundan; lint temiz + sayaç sıfır); `spec/manifest.json`'a artifact hash yazar |
 | `verify <dir>` | bölüm hash'lerini yeniden hesapla, manifest ile karşılaştır (drift) |
-| `change <dir> <changeset.json>` | FROZEN spec'e changeset uygular: sürüm+1, state→draft, değişen bölümleri geri yazar, sonra yeniden-lint |
+| `change <dir> <changeset.json>` | FROZEN spec'e changeset uygular: aday revizyonu ÖNCE tamamen doğrular (compile + lint), sonra sürüm+1, state→draft ve değişen bölümleri atomik yazar; lint-geçersiz change → exit 1 ve DİSKE HİÇBİR ŞEY YAZILMAZ |
 | `trace <dir>` | izlenebilirlik raporu (bilgilendirici): kenar sayıları, REQ başına task bağları (✓test/✗test), yetim REQ'ler, kapsam |
 | `plan <dir> [--json]` | topolojik yürütme planı (deterministik Kahn; aynı seviyede task_id lexicographic); döngü → hata; `--json` makine-okur |
 | `init <dir> [--profile p-mini\|p-standard] [--name <ad>]` | ÇALIŞAN minimal EXAMPLE spec iskeleti yazar; `<dir>/spec` varsa reddeder |
@@ -76,7 +76,7 @@ başarısızlığı, **2** kullanım/şema hatası):
 | `lint` | temiz veya yalnız uyarı | lint hatası(lar)ı | derleme hatası |
 | `freeze` | donduruldu | kapı başarısız | derleme hatası |
 | `verify` | hash'ler eşleşti | drift VEYA state frozen değil | derleme hatası |
-| `change` | uygulandı + yeniden-lint temiz | yeniden-lint hataları | derleme, bozuk/bilinmeyen-anahtarlı changeset, frozen olmayan spec, yazım hatası |
+| `change` | uygulandı + değişiklik kapısı (lint) temiz | değişiklik kapısı (lint) hataları — **HİÇBİR dosya yazılmaz**, frozen spec aynen kalır, aynı changeset düzeltilip tekrar denenebilir | derleme, bozuk/bilinmeyen-anahtarlı changeset, frozen olmayan spec, yazım/kilit hatası |
 | `trace` | rapor çıktı | — (kullanılmaz) | derleme hatası |
 | `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası |
 | `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
@@ -226,6 +226,17 @@ Manifest artık `spec_version 2`, `state: draft` — yeni sürüm ancak bir sonr
 hash karşılaştırmasına gelmeden `notFrozen` üzerinde kısa-devre yapar; taslak hiçbir
 durumda verify'den geçemez ve `artifact_hashes`, bir sonraki freeze yeniden
 sabitleyene dek herhangi bir drift iddiası taşımaz.
+
+**change sözleşmesi (DATA-001 / BACK-005):** `change` aday revizyonu TÜMÜYLE
+hafızada doğrular (compile + lint) ve YALNIZCA temizse diske yazar. Lint-geçersiz
+bir changeset exit 1 verir ve **hiçbir dosya yazılmaz** — "kapı başarısız"
+her zaman "işlenmedi" anlamına gelir, eski davranış (önce yaz, sonra bildir)
+artık yok. Yazım aşaması da atomiktir: her revizyon kök-başına kilit
+(`<dir>/.lco-revision.lock`, exclusive-create; 10 sn'den eski kilitler ölü
+sayılıp kırılır) altında, geçici dosyalar + rename ile işlenir — `manifest.json`
+en son takas edilir (commit noktası) ve herhangi bir yazım hatası tüm süreci
+bayt-bayt geri alır. Aynı atomiklik `init`, `generate`, `freeze` ve `check`
+kanıt yazımları için de geçerlidir.
 
 **6) plan — topolojik sıra:**
 

@@ -225,10 +225,17 @@ describe('handleRpcLine: tools/call', () => {
     expect(res.error.message).toContain('dir');
   });
 
-  it('BINDING throw-catch: a failing command core (read-only manifest write) becomes an isError tool result, never a crash', async () => {
+  it.skipIf((process.getuid?.() ?? 1000) === 0)(
+    'BINDING throw-catch: a failing command core becomes an isError tool result, never a crash (non-root: DAC must bite)',
+    async () => {
+    // The old variant chmod-ed manifest.json 0444 and relied on freeze's
+    // truncate-in-place write failing with EACCES — the exact defect DATA-001
+    // removed (rename replaces a read-only file). The atomic writer now
+    // stages temps in spec/, so the deterministic core failure is an
+    // unwritable spec/ DIRECTORY: temp creation throws EACCES out of
+    // cmdFreeze exactly like any environment failure.
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
-    const manifest = join(root, 'spec', 'manifest.json');
-    chmodSync(manifest, 0o444); // cmdFreeze's manifest write will throw EACCES
+    chmodSync(join(root, 'spec'), 0o555);
     try {
       const res = await rpc(
         `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
@@ -241,7 +248,7 @@ describe('handleRpcLine: tools/call', () => {
       expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
       expect(logSpy.mock.calls).toHaveLength(0);
     } finally {
-      chmodSync(manifest, 0o644); // restore so afterEach rmSync can clean up
+      chmodSync(join(root, 'spec'), 0o755); // restore so afterEach rmSync can clean up
     }
   });
 

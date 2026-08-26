@@ -26,9 +26,12 @@ commands:
   freeze <dir>                 gate-checked freeze; rewrites spec/manifest.json on success
   verify <dir>                 re-hash frozen sections and compare with manifest.artifact_hashes
   change <dir> <changeset.json>
-                               apply a changeset to a FROZEN spec: bumps spec_version,
-                               returns the spec to state draft, rewrites the changed
-                               spec/ sections, then re-lints (new lint errors -> exit 1)
+                               apply a changeset to a FROZEN spec: validates the complete
+                               candidate (compile + lint) BEFORE persisting, then bumps
+                               spec_version, returns the spec to state draft and atomically
+                               rewrites the changed spec/ sections — a lint-invalid change
+                               exits 1 with NOTHING written (the frozen spec is untouched
+                               and the same changeset stays retryable)
   trace <dir>                  traceability report (informational, exit 0): per-edge-kind
                                counts, per-requirement task links (TASK ✓test / ✗no-test-link),
                                orphan requirements (the L02 view), and coverage summary
