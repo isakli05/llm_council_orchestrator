@@ -61,6 +61,86 @@ function stderr(): string {
   return errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
 }
 
+
+const SHA =
+  'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/**
+ * Inline fully-conforming bundle (T7): pet-clinic remains the compile-level
+ * fixture, but the lint/freeze/change happy paths need a lint-clean bundle
+ * before T8 conforms the fixtures (L13/L14).
+ */
+function inlineConforming(): Record<string, unknown> {
+  return {
+    manifest: {
+      spec_schema: 'lco-spec/1.0',
+      spec_version: 1,
+      project: { name: 'mini', mode: 'greenfield' },
+      complexity_profile: 'p-mini',
+      evidence_snapshot: { pack_hash: SHA, collected_at: '2026-08-27T00:00:00Z' },
+      state: 'draft',
+      council_run: { run_id: 't', config_fingerprint: 't' },
+      artifact_hashes: {},
+      unresolved_count: 0,
+      blocking_count: 0,
+      target_runtime: { platform: 'node', stack: 'ts' },
+    },
+    intent: { statement: 's', normalized: 'n' },
+    glossary: [{ term: 'Term', definition: 'd' }],
+    assumptions: [],
+    evidence: [{ id: 'E-0001', kind: 'user_input', source: 's', hash: SHA }],
+    requirements: [
+      {
+        id: 'REQ-0001',
+        statement: 'must work',
+        priority: 'must',
+        evidence: ['E-0001'],
+        acceptance_refs: ['TST-0001'],
+        terms_used: [],
+      },
+    ],
+    decisions: [
+      {
+        claim_id: 'DEC-0001',
+        decision: 'd',
+        rationale: 'r',
+        evidence: ['E-0001'],
+        confidence: 1,
+        impact: 'low',
+        assumptions: [],
+        alternatives: [],
+        status: 'accepted',
+      },
+    ],
+    contracts: [],
+    tasks: [
+      {
+        task_id: 'TASK-0001',
+        title: 't',
+        purpose: 'p',
+        refs: { requirements: ['REQ-0001'], architecture: [], decisions: ['DEC-0001'] },
+        depends_on: [],
+        preconditions: ['c'],
+        permitted_scope: ['src/**'],
+        protected: [],
+        interface_changes: [],
+        invariants: ['i'],
+        instructions: 'do',
+        tests: [
+          { id: 'TST-0001', kind: 'unit', file: 'a.test.ts', cases: ['REQ-0001: works'] },
+        ],
+        verification: [{ command: 'node --version', expect: 'exit 0' }],
+        acceptance: ['a'],
+        rollback: 'r',
+        completion_evidence: { required: ['test_summary'] },
+        risk: { level: 'low', note: '' },
+        complexity: 'xs',
+      },
+    ],
+    test_files: ['a.test.ts'],
+  };
+}
+
 describe('runCli: usage errors (exit 2)', () => {
   it('no arguments -> usage on stderr', async () => {
     await expect(runCli([])).resolves.toBe(2);
@@ -185,8 +265,8 @@ describe('runCli compile', () => {
 });
 
 describe('runCli lint', () => {
-  it('good pet-clinic spec dir -> exit 0, zero findings reported', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+  it('good (inline conforming) spec dir -> exit 0, zero findings reported', async () => {
+    const root = makeSpecRoot(inlineConforming());
 
     await expect(runCli(['lint', root])).resolves.toBe(0);
     expect(stdout()).toContain('lint OK');
@@ -210,8 +290,8 @@ describe('runCli lint', () => {
 });
 
 describe('runCli freeze', () => {
-  it('good pet-clinic spec dir -> exit 0 and spec/manifest.json written frozen', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+  it('good (inline conforming) spec dir -> exit 0 and spec/manifest.json written frozen', async () => {
+    const root = makeSpecRoot(inlineConforming());
 
     await expect(runCli(['freeze', root])).resolves.toBe(0);
     expect(stdout()).toContain('manifest.json');
@@ -227,7 +307,7 @@ describe('runCli freeze', () => {
   });
 
   it('freeze then verify on the same dir -> verify exit 0', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
 
     await expect(runCli(['freeze', root])).resolves.toBe(0);
     await expect(runCli(['verify', root])).resolves.toBe(0);
@@ -252,7 +332,7 @@ describe('runCli freeze', () => {
   // v1 whose sections were hand-edited must NOT be re-pinnable under the same
   // version — verify keeps reporting the drift until a changeset (v2) is used.
   it('re-freezing a drifted frozen spec -> exit 1, version and hashes NOT re-pinned, verify still fails', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
 
     await expect(runCli(['freeze', root])).resolves.toBe(0);
     const manifestBefore = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
@@ -311,7 +391,7 @@ describe('runCli change', () => {
   });
 
   it('frozen spec + valid changeset -> exit 0, summary on stdout, files rewritten', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
     await expect(runCli(['freeze', root])).resolves.toBe(0);
 
     const csPath = join(root, 'changeset.json');

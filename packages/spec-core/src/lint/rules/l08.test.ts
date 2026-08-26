@@ -13,19 +13,25 @@ function loadBundle(rel: string): SpecBundle {
 describe('L08_UNRESOLVED_LEAK', () => {
   it('fires exactly L08 on the L08 vector (the UNRESOLVED decision id in the message)', () => {
     const result = lintBundle(loadBundle('bad/L08/bundle.json'));
+    // T7 (BACK-003/BACK-004): the bad-vector fixtures also trip the new
+    // L13/L14 rules until T8 conforms them; scope to L08 — exactness is
+    // re-pinned by all-bad-fixtures.test.ts once T8 lands.
+    const ruleErrors = result.errors.filter((f) => f.rule === 'L08_UNRESOLVED_LEAK');
 
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(new Set(result.errors.map((f) => f.rule))).toEqual(
+    expect(ruleErrors.length).toBeGreaterThan(0);
+    expect(new Set(ruleErrors.map((f) => f.rule))).toEqual(
       new Set(['L08_UNRESOLVED_LEAK']),
     );
-    expect(result.errors.some((f) => f.message.includes('DEC-0002'))).toBe(true);
+    expect(ruleErrors.some((f) => f.message.includes('DEC-0002'))).toBe(true);
   });
 
   it('reports one finding per trigger: the decision id and the manifest counters', () => {
     const result = lintBundle(loadBundle('bad/L08/bundle.json'));
+    // Same T7 scoping as above (fixture conformance lands in T8).
+    const ruleErrors = result.errors.filter((f) => f.rule === 'L08_UNRESOLVED_LEAK');
 
     // DEC-0002 is UNRESOLVED and manifest.unresolved_count is 1
-    expect(result.errors.map((f) => f.path).sort()).toEqual(['DEC-0002', 'manifest']);
+    expect(ruleErrors.map((f) => f.path).sort()).toEqual(['DEC-0002', 'manifest']);
   });
 });
 
@@ -74,8 +80,10 @@ describe('L08_UNRESOLVED_LEAK — lifecycle state consistency (BACK-002)', () =>
     expect(lintBundle(stale).errors.some((f) => f.rule === 'L08_UNRESOLVED_LEAK')).toBe(true);
   });
 
-  it('still returns zero errors for the clean good fixtures (no lifecycle false positives)', () => {
+  it('still contributes zero L08 findings for the clean good fixtures (no lifecycle false positives)', () => {
     const result = lintBundle(loadBundle('good/pet-clinic/bundle.json'));
-    expect(result.errors).toEqual([]);
+    // T7: pet-clinic now also trips L13/L14 (fixture conformance lands in
+    // T8); the property under test is L08's own silence on a clean bundle.
+    expect(result.errors.filter((f) => f.rule === 'L08_UNRESOLVED_LEAK')).toEqual([]);
   });
 });

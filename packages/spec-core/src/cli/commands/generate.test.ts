@@ -11,15 +11,132 @@ import { runCli } from '../index';
 
 const NOW = '2026-08-25T12:00:00Z';
 
-const PET_CLINIC = JSON.parse(
-  readFileSync(join(__dirname, '../../../fixtures/good/pet-clinic/bundle.json'), 'utf8'),
-) as SpecBundle;
+// T7: the mock-output bases were the pet-clinic/session-service fixtures;
+// fixtures conform to L13/L14 only in T8, and these pipeline tests (gates,
+// retries, BACK-008) must stay green — so the bases are inline conforming
+// bundles of the same shapes (p-mini / lint-clean p-standard with an NFR
+// budget + contract). All derived assertions reference these constants.
+const SHA =
+  'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+const task = (n: 1 | 2, refs: string[], deps: string[], scope: string, file: string, cases: string[]) => ({
+  task_id: `TASK-000${n}`,
+  title: `task ${n}`,
+  purpose: 'p',
+  refs: { requirements: refs, architecture: [], decisions: ['DEC-0001'] },
+  depends_on: deps,
+  preconditions: ['c'],
+  permitted_scope: [scope],
+  protected: [],
+  interface_changes: [],
+  invariants: ['i'],
+  instructions: 'do',
+  tests: [{ id: `TST-000${n}`, kind: 'unit' as const, file, cases }],
+  verification: [{ command: 'node --version', expect: 'exit 0' }],
+  acceptance: ['a'],
+  rollback: 'r',
+  completion_evidence: { required: ['test_summary' as const] },
+  risk: { level: 'low' as const, note: '' },
+  complexity: 'xs' as const,
+});
+
+const baseManifest = (name: string, profile: 'p-mini' | 'p-standard') => ({
+  spec_schema: 'lco-spec/1.0',
+  spec_version: 1,
+  project: { name, mode: 'greenfield' },
+  complexity_profile: profile,
+  evidence_snapshot: { pack_hash: SHA, collected_at: '2026-08-25T12:00:00Z' },
+  state: 'draft',
+  council_run: { run_id: 't', config_fingerprint: 't' },
+  artifact_hashes: {},
+  unresolved_count: 0,
+  blocking_count: 0,
+  target_runtime: { platform: 'node', stack: 'ts' },
+});
+
+const PET_CLINIC = {
+  manifest: baseManifest('pet-clinic', 'p-mini'),
+  intent: { statement: 's', normalized: 'n' },
+  glossary: [{ term: 'Term', definition: 'd' }],
+  assumptions: [],
+  evidence: [{ id: 'E-0001', kind: 'user_input' as const, source: 's', hash: SHA }],
+  requirements: [
+    {
+      id: 'REQ-0001',
+      statement: 'must work',
+      priority: 'must' as const,
+      evidence: ['E-0001'],
+      acceptance_refs: ['TST-0001'],
+      terms_used: [],
+    },
+  ],
+  decisions: [
+    {
+      claim_id: 'DEC-0001',
+      decision: 'd',
+      rationale: 'r',
+      evidence: ['E-0001'],
+      confidence: 1,
+      impact: 'low' as const,
+      assumptions: [],
+      alternatives: [],
+      status: 'accepted' as const,
+    },
+  ],
+  contracts: [],
+  tasks: [task(1, ['REQ-0001'], [], 'src/**', 'a.test.ts', ['REQ-0001: works'])],
+  test_files: ['a.test.ts'],
+} as unknown as SpecBundle;
 
 /** Lint-clean p-standard bundle — the valid output for a p-standard request
- * (pet-clinic is p-mini-shaped and fails L07's p-standard budget rule). */
-const SESSION_SERVICE = JSON.parse(
-  readFileSync(join(__dirname, '../../../fixtures/good/session-service/bundle.json'), 'utf8'),
-) as SpecBundle;
+ * (carries the OPS- NFR budget L07 requires above p-mini, a contract, and a
+ * second task chained on TASK-0001). */
+const SESSION_SERVICE = {
+  manifest: baseManifest('session-service', 'p-standard'),
+  intent: { statement: 's', normalized: 'n' },
+  glossary: [{ term: 'Term', definition: 'd' }],
+  assumptions: [],
+  evidence: [{ id: 'E-0001', kind: 'user_input' as const, source: 's', hash: SHA }],
+  requirements: [
+    {
+      id: 'REQ-0001',
+      statement: 'must work',
+      priority: 'must' as const,
+      evidence: ['E-0001'],
+      acceptance_refs: ['TST-0001'],
+      terms_used: [],
+    },
+    {
+      id: 'OPS-0001',
+      statement: 'NFR: response p95 under 300ms',
+      priority: 'must' as const,
+      evidence: ['E-0001'],
+      acceptance_refs: ['TST-0002'],
+      terms_used: [],
+    },
+  ],
+  decisions: [
+    {
+      claim_id: 'DEC-0001',
+      decision: 'd',
+      rationale: 'r',
+      evidence: ['E-0001'],
+      confidence: 1,
+      impact: 'low' as const,
+      assumptions: [],
+      alternatives: [],
+      status: 'accepted' as const,
+    },
+  ],
+  contracts: [
+    { id: 'CON-0001', kind: 'ts-signature' as const, symbol: 'api(): void', definition: 'd' },
+  ],
+  tasks: [
+    task(1, ['REQ-0001'], [], 'src/one/**', 'a.test.ts', ['REQ-0001: works']),
+    task(2, ['OPS-0001'], ['TASK-0001'], 'src/two/**', 'b.test.ts', ['OPS-0001: budget holds']),
+  ],
+  test_files: ['a.test.ts', 'b.test.ts'],
+} as unknown as SpecBundle;
 
 /** The 9 required section files (mirrors what init writes and compile reads). */
 const SECTION_FILES = [

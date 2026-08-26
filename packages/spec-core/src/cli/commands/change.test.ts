@@ -58,9 +58,97 @@ function writeChangeset(root: string, cs: unknown): string {
   return path;
 }
 
-/** pet-clinic frozen ON DISK via the real freeze() gate (clean lint, fixed clock). */
+const SHA =
+  'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/**
+ * Inline fully-conforming 3-task bundle (T7): pet-clinic served as the frozen
+ * base, but fixtures conform to L13/L14 only in T8 — the change gate needs a
+ * freezable bundle NOW. Structure mirrors pet-clinic's shape the tests rely
+ * on: REQ-000n referenced by exactly TASK-000n (removing TASK-0003 orphans
+ * REQ-0003), TASK-0001's test file 'tests/appointments.test.ts' (the
+ * re-anchoring patch reuses it), acceptance_refs anchored to tests[].id.
+ */
+function inlineBundle(): Record<string, unknown> {
+  const task = (n: 1 | 2 | 3, refs: string[], deps: string[], file: string): Record<string, unknown> => ({
+    task_id: `TASK-000${n}`,
+    title: `example task ${n}`,
+    purpose: 'p',
+    refs: { requirements: refs, architecture: [], decisions: ['DEC-0001'] },
+    depends_on: deps,
+    preconditions: ['c'],
+    permitted_scope: [`src/part${n}/**`],
+    protected: [],
+    interface_changes: [],
+    invariants: ['i'],
+    instructions: 'do',
+    tests: [
+      {
+        id: `TST-000${n}`,
+        kind: 'unit',
+        file,
+        cases: [`${refs[0]}: works`],
+      },
+    ],
+    verification: [{ command: 'node --version', expect: 'exit 0' }],
+    acceptance: ['a'],
+    rollback: 'r',
+    completion_evidence: { required: ['test_summary'] },
+    risk: { level: 'low', note: '' },
+    complexity: 'xs',
+  });
+  return {
+    manifest: {
+      spec_schema: 'lco-spec/1.0',
+      spec_version: 1,
+      project: { name: 'mini', mode: 'greenfield' },
+      complexity_profile: 'p-mini',
+      evidence_snapshot: { pack_hash: SHA, collected_at: NOW },
+      state: 'draft',
+      council_run: { run_id: 't', config_fingerprint: 't' },
+      artifact_hashes: {},
+      unresolved_count: 0,
+      blocking_count: 0,
+      target_runtime: { platform: 'node', stack: 'ts' },
+    },
+    intent: { statement: 's', normalized: 'n' },
+    glossary: [{ term: 'Term', definition: 'd' }],
+    assumptions: [],
+    evidence: [{ id: 'E-0001', kind: 'user_input', source: 's', hash: SHA }],
+    requirements: [1, 2, 3].map((n) => ({
+      id: `REQ-000${n}`,
+      statement: `requirement ${n} must work`,
+      priority: 'must',
+      evidence: ['E-0001'],
+      acceptance_refs: [`TST-000${n}`],
+      terms_used: [],
+    })),
+    decisions: [
+      {
+        claim_id: 'DEC-0001',
+        decision: 'd',
+        rationale: 'r',
+        evidence: ['E-0001'],
+        confidence: 1,
+        impact: 'low',
+        assumptions: [],
+        alternatives: [],
+        status: 'accepted',
+      },
+    ],
+    contracts: [],
+    tasks: [
+      task(1, ['REQ-0001'], [], 'tests/appointments.test.ts'),
+      task(2, ['REQ-0002'], ['TASK-0001'], 'tests/two.test.ts'),
+      task(3, ['REQ-0003'], ['TASK-0001'], 'tests/three.test.ts'),
+    ],
+    test_files: ['tests/appointments.test.ts', 'tests/two.test.ts', 'tests/three.test.ts'],
+  };
+}
+
+/** Inline conforming spec frozen ON DISK via the real freeze() gate (clean lint, fixed clock). */
 async function frozenSpecRoot(): Promise<string> {
-  const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+  const root = makeSpecRoot(inlineBundle());
   const compiled = await compileSpecDir(root);
   const frozen = freeze(compiled.bundle!, lintBundle(compiled.bundle!), NOW);
   writeFileSync(join(root, 'spec', 'manifest.json'), JSON.stringify(frozen.bundle!.manifest, null, 2));
@@ -121,7 +209,7 @@ describe('cmdChange: usage/schema-class failures (exit 2)', () => {
   });
 
   it('draft (unfrozen) spec dir -> 2 with the only-frozen reason', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineBundle());
     const csPath = writeChangeset(root, {
       id: 'CP-0001',
       rationale: 't',
@@ -133,9 +221,7 @@ describe('cmdChange: usage/schema-class failures (exit 2)', () => {
     expect(result.code).toBe(2);
     expect(result.details.join(' ')).toContain('only a frozen spec can be changed');
     // Nothing was written: the draft manifest stays untouched.
-    expect(readSpecSection(root, 'manifest')).toEqual(
-      loadBundle('good/pet-clinic/bundle.json').manifest,
-    );
+    expect(readSpecSection(root, 'manifest')).toEqual(inlineBundle().manifest);
   });
 
   it('unknown task_id in modified_tasks -> 2', async () => {
@@ -194,9 +280,7 @@ describe('cmdChange: successful applies (exit 0)', () => {
     expect(tasks.find((t) => t.task_id === 'TASK-0001')?.title).toBe('Updated title');
 
     // No added_requirements -> requirements.json is NOT rewritten.
-    expect(readSpecSection(root, 'requirements')).toEqual(
-      loadBundle('good/pet-clinic/bundle.json').requirements,
-    );
+    expect(readSpecSection(root, 'requirements')).toEqual(inlineBundle().requirements);
   });
 
   // Pure removal of TASK-0003 orphans REQ-0003 (only that task referenced it),
@@ -240,13 +324,22 @@ describe('cmdChange: successful applies (exit 0)', () => {
           patch: {
             refs: { requirements: ['REQ-0001', 'REQ-0003'], architecture: [], decisions: ['DEC-0001'] },
             tests: [
+              // T7: tests carry ids and anchor acceptance_refs — REQ-0001 keeps
+              // TST-0001, and the removed TASK-0003's TST-0003 is re-anchored
+              // here as a covering entry so REQ-0003 stays closed (L13).
               {
+                id: 'TST-0001',
+                kind: 'unit',
+                file: 'tests/appointments.test.ts',
+                cases: ['REQ-0001: booking an appointment persists it'],
+              },
+              {
+                id: 'TST-0003',
                 kind: 'integration',
                 file: 'tests/appointments.test.ts',
                 cases: [
-                  'REQ-0001: booking an appointment persists it',
-                  'REQ-0001: cancelling frees the slot for rebooking',
                   'REQ-0003: rescheduling notifies the owner',
+                  'REQ-0001: cancelling frees the slot for rebooking',
                 ],
               },
             ],

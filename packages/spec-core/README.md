@@ -509,14 +509,17 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 
 ## Bilinen Sınırlar (dürüstlük)
 
-- **`acceptance_refs` uzlaşısıdır:** `requirements[].acceptance_refs` (TST-* test
-  referansları) bugün HİÇBİR lint kuralınca doğrulanmaz — bir kural bu referansların
-  varlığını/çözünürlüğünü sınmaz; belge-içi uzlaşı olarak taşınır.
-- **task_id tekilliği lint'e emanet:** şema dizi-seviyesinde tekillik zorlamaz
-  (array-level refine yok); lint'teki **L06_DUPLICATE_ID** aile-içi mükerrer id'yi
-  yakalar ("appears 2 times"). Kalan daralmış boşluk: `lco plan` lint koşmaz —
-  lint'i atlayan bir bundle `plan --json`'e ulaşabilir ve orada id ile anahtarlanan
-  görev haritasında mükerrer id tekillik kaybı yaratır.
+- **`acceptance_refs` artık gerçek çözünürlük ister (BACK-003 kapatıldı):**
+  `requirements[].acceptance_refs` (TST-* test referansları) `tasks[].tests[].id`
+  kümesine karşı kapanış denetlenir (**L13_BROKEN_REFERENCE**); referans verilmeyen
+  test `id`'si isteğe bağlı kalır, ancak bir acceptance_ref ancak bir test `id`'sine
+  çözünür. Test `id`'leri paket genelinde tekil olmalıdır.
+- **task_id tekilliği compile'a taşındı (BACK-006 kapatıldı):** mükerrer `task_id`
+  artık derleme hatasıdır (yapılandırılmış hata, exit 2) — `plan --json`'un id
+  anahtarlı haritası ve `check --task` seçimi asla görev kaybedemez. `plan` ve
+  `check` ayrıca adlandırılmış doğrulama seviyesi olarak **lint-clean** ister
+  (kapanış + yargılanabilir `expect` dahil; `trace` bilinçli olarak compile
+  seviyesinde kalır — onarım görünümüdür).
 - **Eval zincirinde şema-seviyesi doğrulama:** önerilen bundle her aşamada
   `SpecBundleSchema` (strict) ile doğrulanır — öneri A'nın retry çıktısı dahil
   (BACK-008; iki kez geçersizse bacak DEGRADED). Yalnızca sınıflandırıcı çıktısı

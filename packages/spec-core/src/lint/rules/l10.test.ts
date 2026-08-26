@@ -13,25 +13,40 @@ function loadBundle(rel: string): SpecBundle {
 describe('L10_TRACEABILITY_GAP', () => {
   it('fires exactly L10 on the L10 vector (the untested REQ id in the message)', () => {
     const result = lintBundle(loadBundle('bad/L10/bundle.json'));
+    // T7 (BACK-003/BACK-004): the bad-vector fixtures also trip the new
+    // L13/L14 rules until T8 conforms them; scope this suite to the rule
+    // under test — vector exactness (one vector, one rule) is re-pinned by
+    // all-bad-fixtures.test.ts once T8 lands.
+    const ruleErrors = result.errors.filter((f) => f.rule === 'L10_TRACEABILITY_GAP');
 
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(new Set(result.errors.map((f) => f.rule))).toEqual(
+    expect(ruleErrors.length).toBeGreaterThan(0);
+    expect(new Set(ruleErrors.map((f) => f.rule))).toEqual(
       new Set(['L10_TRACEABILITY_GAP']),
     );
-    expect(result.errors.some((f) => f.message.includes('REQ-0002'))).toBe(true);
+    expect(ruleErrors.some((f) => f.message.includes('REQ-0002'))).toBe(true);
   });
 
   it('reports the untraced requirement id as the finding path', () => {
     const result = lintBundle(loadBundle('bad/L10/bundle.json'));
+    // T7 (BACK-003/BACK-004): the bad-vector fixtures also trip the new
+    // L13/L14 rules until T8 conforms them; scope this suite to the rule
+    // under test — vector exactness (one vector, one rule) is re-pinned by
+    // all-bad-fixtures.test.ts once T8 lands.
+    const ruleErrors = result.errors.filter((f) => f.rule === 'L10_TRACEABILITY_GAP');
 
-    expect(result.errors.map((f) => f.path)).toEqual(['REQ-0002']);
+    expect(ruleErrors.map((f) => f.path)).toEqual(['REQ-0002']);
   });
 
   it('does NOT fire for a requirement referenced by no task (that is L02, not L10)', () => {
     // bad/L02: REQ-0003 is referenced by no task at all — L10 must stay silent.
     const result = lintBundle(loadBundle('bad/L02/bundle.json'));
+    // T7 (BACK-003/BACK-004): the bad-vector fixtures also trip the new
+    // L13/L14 rules until T8 conforms them; scope this suite to the rule
+    // under test — vector exactness (one vector, one rule) is re-pinned by
+    // all-bad-fixtures.test.ts once T8 lands.
+    const ruleErrors = result.errors.filter((f) => f.rule === 'L10_TRACEABILITY_GAP');
 
     expect(result.summary['L10_TRACEABILITY_GAP']).toBe(0);
-    expect(result.errors.some((f) => f.rule === 'L10_TRACEABILITY_GAP')).toBe(false);
+    expect(ruleErrors.some((f) => f.rule === 'L10_TRACEABILITY_GAP')).toBe(false);
   });
 });

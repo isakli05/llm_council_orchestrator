@@ -96,8 +96,11 @@ describe('cmdCheck: compile failure', () => {
 
 // --- DRY (default): table, no execution, no evidence ------------------------------
 
-describe('cmdCheck: DRY RUN (default)', () => {
-  it('pet-clinic -> code 0, loud dry-run banner, full command+expect table, no evidence', async () => {
+// conform in T8: pet-clinic's prose expects are L14 errors, so the dry table
+// test on it fails until the fixture conforms; the dry table surface stays
+// pinned below on the init scaffold and on inline bundles (T7 note).
+describe.skip('cmdCheck: DRY RUN (default) [conform in T8]', () => {
+  it.skip('pet-clinic -> code 0, loud dry-run banner, full command+expect table, no evidence', async () => {
     const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
 
     const result = await cmdCheck(root, { yes: false, nowIso: NOW });
@@ -119,8 +122,96 @@ describe('cmdCheck: DRY RUN (default)', () => {
   });
 });
 
-// --- unknown task (exit 2) ---------------------------------------------------------
+// --- DRY honesty (BACK-004): dry previews EXACTLY what --yes would judge ----------
 
+describe('cmdCheck: unjudgeable expect is never hidden (BACK-004 via the BACK-006 gate)', () => {
+  // With check requiring lint-clean, an unparseable expect is refused at the
+  // gate (L14) — exit 2 naming the expect and the rule, in dry mode as much
+  // as under --yes. The runner-level honest-preview failure (dry exit 1 with
+  // UNPARSEABLE-EXPECT rows) is pinned in check/runner.test.ts for callers
+  // that bypass the command gate.
+  const patchProseExpect = (root: string): void => {
+    patchTask1Verification(root, [
+      { command: 'rm -rf /important', expect: 'exit code 0, all cases pass' },
+    ]);
+  };
+
+  it('dry + prose expect -> refused (exit 2): L14 named, expect text visible, nothing previewed', async () => {
+    const root = await initRoot('spec-core-check-dry-unparseable-');
+    patchProseExpect(root);
+
+    const result = await cmdCheck(root, { yes: false, nowIso: NOW });
+
+    expect(result.code).toBe(2);
+    expect(result.output).toContain('L14_UNPARSEABLE_EXPECT');
+    expect(result.output).toContain('exit code 0, all cases pass');
+    expect(result.output).toContain('lco lint');
+    expect(result.output).not.toContain('DRY RUN'); // no preview theater over a broken contract
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+
+  it('--yes on the same spec refuses identically — an unjudgeable command is never executed', async () => {
+    const root = await initRoot('spec-core-check-yes-unparseable-');
+    patchProseExpect(root);
+
+    const result = await cmdCheck(root, { yes: true, nowIso: NOW });
+
+    expect(result.code).toBe(2);
+    expect(result.output).toContain('L14_UNPARSEABLE_EXPECT');
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+});
+
+// --- consumer validation level (BACK-006): check requires lint-clean --------------
+
+describe('cmdCheck: lint-dirty bundle -> refusal (exit 2), never a verification run', () => {
+  /** Add a dangling dependency to TASK-0001 on disk (schema-valid, closure-broken). */
+  const patchTask1Dep = (root: string, dep: string): void => {
+    const file = join(root, 'spec', 'tasks.json');
+    const tasks = JSON.parse(readFileSync(file, 'utf8')) as TaskContract[];
+    tasks[0].depends_on = [...tasks[0].depends_on, dep];
+    writeFileSync(file, JSON.stringify(tasks, null, 2), 'utf8');
+  };
+
+  it('dangling depends_on TASK-9999 -> code 2 naming the id + the lco lint hint (dry refuses too)', async () => {
+    const root = await initRoot('spec-core-check-lintgate-');
+    patchTask1Dep(root, 'TASK-9999');
+
+    const result = await cmdCheck(root, { yes: false, nowIso: NOW });
+
+    expect(result.code).toBe(2);
+    expect(result.output).toContain('TASK-9999');
+    expect(result.output).toContain('lco lint');
+    expect(result.output).not.toContain('DRY RUN'); // no preview of an invalid bundle
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+
+  it('--yes on a lint-dirty bundle -> code 2, nothing executed, no evidence', async () => {
+    const root = await initRoot('spec-core-check-lintgate-yes-');
+    patchTask1Dep(root, 'TASK-9999');
+
+    const result = await cmdCheck(root, { yes: true, nowIso: NOW });
+
+    expect(result.code).toBe(2);
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+
+  it('duplicate task_id -> compile rejection (code 2): check --task can never run two tasks as one', async () => {
+    const root = await initRoot('spec-core-check-dupid-');
+    const file = join(root, 'spec', 'tasks.json');
+    const tasks = JSON.parse(readFileSync(file, 'utf8')) as TaskContract[];
+    tasks.push(structuredClone(tasks[0]));
+    writeFileSync(file, JSON.stringify(tasks, null, 2), 'utf8');
+
+    const result = await cmdCheck(root, { yes: true, nowIso: NOW });
+
+    expect(result.code).toBe(2);
+    expect(result.output).toContain('TASK-0001');
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+});
+
+// --- unknown task (exit 2) ---------------------------------------------------------
 describe('cmdCheck: unknown --task', () => {
   it('unknown task id -> code 2 with an explicit unknown-task message', async () => {
     const root = await initRoot('spec-core-check-unknown-');
@@ -228,11 +319,15 @@ describe('runCli wiring: lco check <dir> [--task] [--yes] [--timeout-ms]', () =>
     return logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
   }
 
-  it('DRY through the wrapper -> exit 0, banner printed, usage lists check', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+  it('DRY through the wrapper -> exit 0, banner + full dry table, usage lists check', async () => {
+    const root = await initRoot('spec-core-check-wired-dry-');
 
     await expect(runCli(['check', root])).resolves.toBe(0);
     expect(stdout()).toContain('DRY RUN — no commands executed; pass --yes to execute');
+    // The dry table IS the preview surface: every judgeable row shows DRY with
+    // its parsed expectation (the scaffold's expect 'exit 0' parses).
+    expect(stdout()).toContain('TASK-0001\tnode --version\texit 0\t0 → -\tDRY');
+    expect(stdout()).toContain('0 pass, 0 fail, 1 dry');
 
     await expect(runCli([])).resolves.toBe(2);
     expect(errorSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('check <dir>');
@@ -247,7 +342,7 @@ describe('runCli wiring: lco check <dir> [--task] [--yes] [--timeout-ms]', () =>
   });
 
   it('--task filters (unknown id -> exit 2 through the wrapper)', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = await initRoot('spec-core-check-wired-task-');
     await expect(runCli(['check', root, '--task', 'TASK-0001'])).resolves.toBe(0);
     expect(stdout()).toContain('TASK-0001');
     expect(stdout()).not.toContain('TASK-0002\t');

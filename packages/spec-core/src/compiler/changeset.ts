@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  IdSchema,
+  TaskIdSchema,
   RequirementSchema,
   TaskContractSchema,
   type SpecBundle,
@@ -42,13 +42,13 @@ export const ChangeSetSchema = z
       .array(
         z
           .object({
-            task_id: IdSchema,
+            task_id: TaskIdSchema,
             patch: z.record(z.unknown()),
           })
           .strict(),
       )
       .optional(),
-    removed_task_ids: z.array(IdSchema).optional(),
+    removed_task_ids: z.array(TaskIdSchema).optional(),
   })
   .strict();
 

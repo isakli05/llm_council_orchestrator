@@ -9,9 +9,87 @@ import type { SpecBundle } from '../schemas';
 
 const NOW = '2026-08-18T12:00:00Z';
 
-const PET_CLINIC = JSON.parse(
-  readFileSync(join(__dirname, '../../fixtures/good/pet-clinic/bundle.json'), 'utf8'),
-) as SpecBundle;
+// T7: the mock bundle base was the pet-clinic fixture; fixtures conform to
+// L13/L14 only in T8, and these pipeline tests (BACK-001 monotonicity,
+// BACK-008 retry, call accounting) must keep protecting those semantics NOW —
+// so the base is an inline fully-conforming bundle (lint-clean, judgeable
+// expects, test ids). Every mutation below applies identically.
+const PET_CLINIC = {
+  manifest: {
+    spec_schema: 'lco-spec/1.0',
+    spec_version: 1,
+    project: { name: 'url-shortener-cli', mode: 'greenfield' },
+    complexity_profile: 'p-mini',
+    evidence_snapshot: {
+      pack_hash: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      collected_at: '2026-08-18T12:00:00Z',
+    },
+    state: 'draft',
+    council_run: { run_id: 't', config_fingerprint: 't' },
+    artifact_hashes: {},
+    unresolved_count: 0,
+    blocking_count: 0,
+    target_runtime: { platform: 'node', stack: 'ts' },
+  },
+  intent: { statement: 's', normalized: 'n' },
+  glossary: [{ term: 'Term', definition: 'd' }],
+  assumptions: [],
+  evidence: [
+    {
+      id: 'E-0001',
+      kind: 'user_input',
+      source: 's',
+      hash: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    },
+  ],
+  requirements: [
+    {
+      id: 'REQ-0001',
+      statement: 'must work',
+      priority: 'must',
+      evidence: ['E-0001'],
+      acceptance_refs: ['TST-0001'],
+      terms_used: [],
+    },
+  ],
+  decisions: [
+    {
+      claim_id: 'DEC-0001',
+      decision: 'd',
+      rationale: 'r',
+      evidence: ['E-0001'],
+      confidence: 1,
+      impact: 'low',
+      assumptions: [],
+      alternatives: [],
+      status: 'accepted',
+    },
+  ],
+  contracts: [],
+  tasks: [
+    {
+      task_id: 'TASK-0001',
+      title: 't',
+      purpose: 'p',
+      refs: { requirements: ['REQ-0001'], architecture: [], decisions: ['DEC-0001'] },
+      depends_on: [],
+      preconditions: ['c'],
+      permitted_scope: ['src/**'],
+      protected: [],
+      interface_changes: [],
+      invariants: ['i'],
+      instructions: 'do',
+      tests: [{ id: 'TST-0001', kind: 'unit', file: 'a.test.ts', cases: ['REQ-0001: works'] }],
+      verification: [{ command: 'node --version', expect: 'exit 0' }],
+      acceptance: ['a'],
+      rollback: 'r',
+      completion_evidence: { required: ['test_summary'] },
+      risk: { level: 'low', note: '' },
+      complexity: 'xs',
+    },
+  ],
+  test_files: ['a.test.ts'],
+} as unknown as SpecBundle;
 
 function task(id: EvalTaskId): EvalTask {
   const t = EVAL_TASKS.find((x) => x.id === id);
@@ -91,7 +169,7 @@ describe('runPipeline — single variant', () => {
     if (out.kind === 'spec') {
       expect(out.bundle.manifest.project.name).toBe('url-shortener-cli');
       expect(out.bundle.manifest.state).toBe('draft');
-      expect(out.bundle.requirements).toHaveLength(3);
+      expect(out.bundle.requirements).toHaveLength(PET_CLINIC.requirements.length); // derived from the mock base, not hardcoded
     }
     expect(calls()).toBe(1);
     expect(out.usage).toEqual({ in: 10, out: 5, calls: 1 });

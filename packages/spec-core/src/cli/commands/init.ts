@@ -208,7 +208,14 @@ function buildSections(profile: 'p-mini' | 'p-standard', name: string, nowIso: s
     interface_changes: [],
     invariants: ['EXAMPLE invariant — replace with your own'],
     instructions: 'EXAMPLE instructions — replace with real implementation guidance',
-    tests: [{ kind: 'unit', file: 'example.test.ts', cases: ['REQ-0001: example behavior'] }],
+    tests: [
+      {
+        id: 'TST-0001',
+        kind: 'unit',
+        file: 'example.test.ts',
+        cases: ['REQ-0001: example behavior'],
+      },
+    ],
     verification: [{ command: 'node --version', expect: 'exit 0' }],
     acceptance: ['EXAMPLE acceptance criterion'],
     rollback: 'git revert the task commit',
@@ -225,6 +232,7 @@ function buildSections(profile: 'p-mini' | 'p-standard', name: string, nowIso: s
     depends_on: ['TASK-0001'],
     tests: [
       {
+        id: 'TST-0002',
         kind: 'unit',
         file: 'example2.test.ts',
         cases: ['REQ-0001: chained example behavior', 'OPS-0001: example ops behavior'],

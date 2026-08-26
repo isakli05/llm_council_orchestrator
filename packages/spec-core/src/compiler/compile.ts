@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SpecBundleSchema, type SpecBundle } from '../schemas';
+import { duplicateTaskIds } from './closure';
 
 export interface CompileError {
   path: string;
@@ -85,6 +86,20 @@ export async function compileSpecDir(root: string): Promise<CompileResult> {
         message: issue.message,
       })),
     };
+  }
+
+  // Task-id uniqueness is a COMPILE invariant (BACK-006), not a lint finding:
+  // plan --json's map, check --task selection, and evidence filenames are all
+  // id-keyed — a duplicate task_id makes every id-keyed consumer lossy, so no
+  // consumer may ever see such a bundle, including the compile-level ones.
+  const duplicateErrors = duplicateTaskIds(parsed.data.tasks).map((d) => ({
+    path: 'tasks',
+    message:
+      `duplicate task_id '${d.task_id}' appears ${d.count} times — task ids must be ` +
+      'unique (plan --json, check --task and evidence files are keyed by task_id)',
+  }));
+  if (duplicateErrors.length > 0) {
+    return { ok: false, errors: duplicateErrors };
   }
 
   return { ok: true, bundle: parsed.data, errors: [] };

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IdSchema } from './common';
+import { EvidenceIdSchema } from './common';
 
 /**
  * Şema-only; compiler v1'de pass-through.
@@ -15,7 +15,7 @@ export const LegacyPackageSchema = z
             behavior: z.string().min(1),
             decision: z.enum(['preserve', 'change', 'drop']),
             rationale: z.string().min(1),
-            evidence: z.array(IdSchema),
+            evidence: z.array(EvidenceIdSchema),
           })
           .strict(),
       )

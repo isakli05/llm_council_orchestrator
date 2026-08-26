@@ -182,3 +182,36 @@ describe('runCli wiring: lco trace <dir>', () => {
     await expect(runCli(['trace', root])).resolves.toBe(2);
   });
 });
+
+// --- BACK-006: trace intentionally stays at the COMPILE validation level ---------
+// Justification (pinned here): trace is the human diagnostic view over the
+// coverage graph — it must remain usable WHILE a spec is being repaired
+// (dangling refs, unjudgeable expects and all), it keys nothing by id, and it
+// executes nothing. Consumers that key (plan) or execute (check) require
+// lint-clean; trace deliberately does not.
+
+describe('cmdTrace: stays compile-level (BACK-006 decision pin)', () => {
+  it('a closure-broken, unjudgeable bundle still traces (exit 0) — the repair view', async () => {
+    const mutated = loadBundle('good/pet-clinic/bundle.json');
+    const tasks = mutated.tasks as import('../../schemas').TaskContract[];
+    tasks[0].depends_on = [...tasks[0].depends_on, 'TASK-9999']; // dangling dep
+    tasks[0].verification = [{ command: 'x', expect: 'exit code 0, all cases pass' }];
+    const root = makeSpecRoot(mutated);
+
+    const result = await cmdTrace(root);
+
+    expect(result.code).toBe(0);
+    expect(result.report).toContain('traceability');
+  });
+
+  it('duplicate task ids are still refused (compile-level invariant, not a lint concern)', async () => {
+    const mutated = loadBundle('good/pet-clinic/bundle.json');
+    const tasks = mutated.tasks as import('../../schemas').TaskContract[];
+    tasks.push(structuredClone(tasks[0]));
+    const root = makeSpecRoot(mutated);
+
+    const result = await cmdTrace(root);
+
+    expect(result.code).toBe(2);
+  });
+});

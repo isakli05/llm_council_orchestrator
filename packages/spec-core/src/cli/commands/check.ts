@@ -1,8 +1,8 @@
-import { compileSpecDir } from '../../compiler/compile';
+import { loadBundleAtLevel } from '../../compiler/validation';
 import { runChecks, type CheckOutcome, type Executor } from '../../check/runner';
 
 export interface CheckResult {
-  /** 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE-EXPECT, 2 compile/unknown task. */
+  /** 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE-EXPECT, 2 compile/lint rejection or unknown task. */
   code: number;
   output: string;
 }
@@ -25,9 +25,18 @@ export interface CheckOptions {
  * TaskContract verification command and report the judged outcomes.
  *
  * Pure command core — no console, no process.exit, no clock: `nowIso` is
- * injected, the wrapper prints `output` and returns `code`. Compilation
- * failures are usage-class (code 2) and short-circuit before the runner;
- * an unknown `--task` id is also code 2 (the runner reports it as such).
+ * injected, the wrapper prints `output` and returns `code`.
+ *
+ * VALIDATION LEVEL (BACK-006): check loads the bundle at 'lint-clean' — a
+ * bundle with dangling references (L13) or unjudgeable verification
+ * contracts (L14) is refused (code 2, actionable output) before anything
+ * executes or previews, in dry mode as much as under --yes. Compilation and
+ * lint rejections are usage-class (code 2); an unknown `--task` id is also
+ * code 2 (the runner reports it as such).
+ *
+ * DRY remains the default and an HONEST preview (BACK-004): nothing executes
+ * without --yes, and an unparseable expectation surfaces as
+ * UNPARSEABLE-EXPECT/exit 1 in the dry table exactly as --yes would judge it.
  *
  * Output contract:
  *   DRY RUN — no commands executed; pass --yes to execute   <- only when !yes
@@ -39,18 +48,13 @@ export interface CheckOptions {
  *   evidence: <dir>/spec/evidence/TASK-0001-check.json      <- only when --yes
  */
 export async function cmdCheck(dir: string, opts: CheckOptions): Promise<CheckResult> {
-  const compiled = await compileSpecDir(dir);
-  if (!compiled.ok || !compiled.bundle) {
-    return {
-      code: 2,
-      output: [
-        `compile FAILED with ${compiled.errors.length} error(s):`,
-        ...compiled.errors.map((e) => `  ${e.path}: ${e.message}`),
-      ].join('\n'),
-    };
+  const loaded = await loadBundleAtLevel(dir, 'lint-clean');
+  if (!loaded.ok) {
+    return { code: loaded.code, output: loaded.output };
   }
+  const compiledBundle = loaded.bundle;
 
-  const run = await runChecks(compiled.bundle, dir, opts);
+  const run = await runChecks(compiledBundle, dir, opts);
   if (run.code === 2) {
     return {
       code: 2,
@@ -60,7 +64,7 @@ export async function cmdCheck(dir: string, opts: CheckOptions): Promise<CheckRe
 
   return {
     code: run.code,
-    output: renderReport(compiled.bundle.manifest.project.name, run.outcomes, dir, opts.yes),
+    output: renderReport(compiledBundle.manifest.project.name, run.outcomes, dir, opts.yes),
   };
 }
 
