@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { cmdCompile } from './commands/compile';
 import { cmdLint } from './commands/lint';

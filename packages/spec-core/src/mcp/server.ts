@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { createInterface } from 'node:readline';
 import { cmdCompile } from '../cli/commands/compile';
 import { cmdLint } from '../cli/commands/lint';
