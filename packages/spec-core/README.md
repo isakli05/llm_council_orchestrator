@@ -10,7 +10,7 @@ Deneyin sorusu: *"Konsey, tek ajandan ölçülebilir şekilde daha mı doğru �
 kabul edilebilir mi?"* Bu paket o soruya **kanıtla** cevap vermeyi hedefler; tahminle değil.
 
 Çekirdek iki yüzeyden tüketilir: **`lco` CLI** (10 komut: compile, lint, freeze, verify,
-change, trace, plan, init, check, generate) ve **`lco-mcp`** stdio sunucusu (7 MCP
+change, trace, plan, init, check, generate) ve **`lco-mcp`** stdio sunucusu (10 MCP
 aracı) — ikisi de aynı saf komut çekirdeklerini çağırır.
 
 ## Kurulum
@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (825 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter ./packages/spec-core test    # vitest (858 test: şema, derleyici, lint, eval, CLI, check, MCP)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
@@ -379,7 +379,7 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
 `lco-mcp` (bin: `dist/mcp/server.js`), motoru Model Context Protocol istemcilerine
 açan minimal bir stdio sunucusudur: satır-ayrılmış JSON-RPC 2.0. CLI komutlarının saf
 çekirdeklerini (yazdırma yapmayan, yapılandırılmış sonuç döndüren) yeniden kullanır —
-davranış CLI ile birebir aynıdır. 7 araç:
+davranış CLI ile birebir aynıdır. 10 araç:
 
 | araç | girdi | işlev |
 | --- | --- | --- |
@@ -390,6 +390,9 @@ davranış CLI ile birebir aynıdır. 7 araç:
 | `lco_trace` | `{dir}` | izlenebilirlik raporu |
 | `lco_plan` | `{dir, json?}` | topolojik plan (`--json` eşleniği) |
 | `lco_check` | `{dir, task?, consent?}` | verification önizleme (DRY) / rızaya bağlı koşma — bkz. Yürütme Rızası |
+| `lco_init` | `{dir, profile?, name?}` | WORKING EXAMPLE spec/ iskeleti (draft/v1) — NO-CLOBBER: `dir/spec` varsa reddeder, diske dokunmaz; `lco init` çekirdeği |
+| `lco_generate` | `{dir, intent, variant?, profile?, consent?}` | intent → spec/ taslağı (ÜCRETLİ LLM çağrısı) — bkz. Ücretli Çağrı Rızası; `lco generate` çekirdeği + T4 kapıları |
+| `lco_change` | `{dir, changeset}` | changeset (CLI zarfı, satır içi nesne) uygula: önce-tam-aday-doğrula sonra-atomik-yaz; lint-invalid → reddetme, disk bayt-bayt aynı; `lco change` çekirdeği |
 
 Claude Code'a kaydetmek için (mutlak yol ile):
 
@@ -418,8 +421,14 @@ Notlar:
 - **`lco_check` aracı varsayılan olarak SADECE önizleme yapar** (DRY) — `yes` parametresi
   MCP yüzeyinden kaldırıldı (SEC-002); yürütme rızası için aşağıdaki Yürütme Rızası
   bölümüne bakın.
+- **`lco_generate` de request'in kendi başına ASLA ücretli çağrı harcamaz** (PROD-004):
+  rıza zinciri için aşağıdaki Ücretli Çağrı Rızası bölümüne bakın.
+- **Tüm araç şemaları `additionalProperties: false`** ve argüman katmanı fail-closed:
+  bilinmeyen anahtar `-32602`; `yes` İSİMLE reddedilir; `allowExec`/`allowGenerate`/`llm`/
+  `env` gibi yetenek-şekilli anahtarlar da isimle reddedilir (request kendi yetenisini
+  kendi veremez — bunlar operatörün sunucu-sınırı durumudur).
 - El smoke'u (gerçek stdio): `initialize` → `serverInfo {name: "lco-mcp", version:
-  "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 7 araç;
+  "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 10 araç;
   `tools/call lco_check {dir}` → `isError: false`, ilk satır `DRY RUN — no commands
   executed; pass --yes to execute`. Bildirimler (`notifications/*`) yanıt almaz;
   bozuk satır `-32700` (id `null`); bilinmeyen araç `-32602`; bilinmeyen metod `-32601`.
@@ -465,6 +474,47 @@ Atipik akış: dry önizleme (draft) → `lco freeze` → aynı digest ile
 `consent:{digest}` yürütme — freeze `spec_version`'ı ve task içeriğini
 değiştirmediği için digest geçerliliğini korur; frozen+verified kapısı durumu ayrıca
 denetler.
+
+### Ücretli Çağrı Rızası: `lco_generate` ve `LCO_MCP_ALLOW_GENERATE` (PROD-004)
+
+Yürütme rızasıyla aynı güven modeli, geri döndürülemez diğer kaynak için: **para**.
+Bir MCP isteği (model; prompt injection'a bir adım uzak) kendi başına sunucuyu ücretli
+LLM çağrısı harcatamaz. İki katman, ikisi birden zorunlu — biri bile eksikse
+**yapılandırılmış reddetme, SIFIR LLM çağrısı** (testler çağrı sayısını 0 olarak sabitler):
+
+1. **Server-start opt-in:** üretim yeteneği yalnız sunucu
+   `LCO_MCP_ALLOW_GENERATE=1` ile başlatıldığında vardır (tam olarak `1`; `'true'`,
+   `'0'`, boş, unset → fail-closed). Bayrak `LCO_MCP_ALLOW_EXEC`'ten BAĞIMSIZDIR:
+   hiçbiri diğerini içermez.
+2. **Etkin içeriğe bağlı rıza:** istek `consent.digest` taşır — tam olarak neyin
+   LLM'e gideceğinin özeti:
+
+   ```
+   sha256(JSON.stringify({ intent, profile, variant }, null, 2))
+   ```
+
+   (manifest artifact-hash'leriyle aynı çerçeve). Sunucu digest'i ÇÖZÜLMÜŞ değerler
+   üzerinden (varsayılanlar uygulanmış: variant=council, profile=p-standard) isteğin
+   işlenme anında yeniden hesaplar; uyuşmazlıkta her iki digest'i adlandıran reddetme.
+   `consent` içermeyen istek, reddetmenin kendisi önizlemedir: yanıtta bu isteğin
+   digest'i `consent digest:` satırında ilan edilir — actionable retry bir istek
+   ötededir. `dir` bilinçli olarak digest'e DAHİL DEĞİLDİR (operatörün rızası ücretli
+   çağrının İÇERİĞİNE, yazma hedefine değildir; yazmanın kendi no-clobber + yaşam
+   döngüsü kapıları vardır).
+
+**Adapter kuralları (CLI ile aynı):** mock adapter yalnız test/kütüphane çağıranları
+için sınırdan enjekte edilir (`HandleRpcOptions.llm`); üretim adapter'ı
+`cmdGenerate` İÇİNDE `createHttpLlm()` ile çözülür ve kullanıcı tarafından sağlanan
+`LCO_LLM_BASE_URL`/`LCO_LLM_API_KEY`/`LCO_LLM_MODEL` ortam değişkenleri eksikse
+fail-closed throw eder — sunucu ASLA anahtar, uç nokta veya model uydurmaz (mock önce,
+live yalnız gerçek env'den). Üretim çıktısı CLI ile aynı kapılardan geçer: no-clobber,
+kanıt kapısı (blocked → nedenler, hiçbir şey yazılmaz), savunma lint'i, yaşam döngüsı
+çıkış kapısı (draft/v1/profile), ve councilDegraded satırı araç yanıtında yüzeye çıkar.
+
+**CLI asimetrisi (bilinçli, Yürütme Rızası ile aynı gerekçe):** `lco generate --intent`
+yolunda harcama kararını veren insan, env'in (ve hesabın) da sahibidir. MCP yolunda
+harcamayı talep eden modeldir; onayı operatör verir (sunucuyu
+`LCO_MCP_ALLOW_GENERATE=1` ile başlatan) ve rıza içeriğe bağlı digest ile sabitlenir.
 
 ## Strictness Politikası
 
@@ -538,7 +588,7 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 ## Dürüst Durum Bildirimi
 
 - **Yüzey tamamlandı:** CLI 10 komut (compile, lint, freeze, verify, change, trace,
-  plan, init, check, generate) + `lco-mcp` stdio sunucusu (7 araç). Her komut çekirdeği
+  plan, init, check, generate) + `lco-mcp` stdio sunucusu (10 araç). Her komut çekirdeği
   safdır: yazdırma yok, `process.exit` yok; saat yalnız CLI/MCP sınırında okunup
   çekirdeklere `nowIso` olarak enjekte edilir.
 - **Deterministik kapı geçiyor**: G1 15/15, G2 doğru, G3 8/8 →

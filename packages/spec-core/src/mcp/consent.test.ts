@@ -6,13 +6,18 @@ import { join } from 'node:path';
 import {
   EXEC_OPT_IN_ENV,
   EXEC_ROOT_ENV,
+  GENERATE_OPT_IN_ENV,
   execOptInFromEnv,
   execRootFromEnv,
+  generateOptInFromEnv,
+  generateConsentDigest,
   mcpExecBoundary,
   checkPreviewDigest,
   scrubbedEnv,
   scrubbedExecutor,
   authorizeExecution,
+  refuseGenerateConsentMissing,
+  refuseGenerateNotOptedIn,
 } from './consent';
 import { loadBundleAtLevel } from '../compiler/validation';
 import { cmdFreeze } from '../cli/commands/freeze';
@@ -394,5 +399,72 @@ describe('authorizeExecution', () => {
     // A pin at the parent of the tmp root permits it.
     const inside = authorizeExecution(bundle, root, undefined, digest, join(root, '..'));
     expect(inside.ok).toBe(true);
+  });
+});
+
+// --- paid-call consent: lco_generate (PROD-004, T10) ---------------------------------
+//
+// The same operator-grade pattern SEC-002 established for execution, applied
+// to the OTHER irreversible resource: money. A request from a model must never
+// by itself spend paid LLM calls — the operator opts the server in, and the
+// request consents to a digest of exactly the effectual content {intent,
+// profile, variant}.
+
+describe('generateOptInFromEnv', () => {
+  it(`${GENERATE_OPT_IN_ENV}=1 and ONLY '1' opts in (fail-closed, the exec idiom)`, () => {
+    expect(generateOptInFromEnv({ [GENERATE_OPT_IN_ENV]: '1' })).toBe(true);
+    expect(generateOptInFromEnv({ [GENERATE_OPT_IN_ENV]: '0' })).toBe(false);
+    expect(generateOptInFromEnv({ [GENERATE_OPT_IN_ENV]: 'true' })).toBe(false);
+    expect(generateOptInFromEnv({ [GENERATE_OPT_IN_ENV]: '' })).toBe(false);
+    expect(generateOptInFromEnv({ [GENERATE_OPT_IN_ENV]: '01' })).toBe(false);
+    expect(generateOptInFromEnv({})).toBe(false);
+  });
+
+  it('the two capability flags are INDEPENDENT: neither implies the other', () => {
+    expect(generateOptInFromEnv({ [EXEC_OPT_IN_ENV]: '1' })).toBe(false);
+    expect(execOptInFromEnv({ [GENERATE_OPT_IN_ENV]: '1' })).toBe(false);
+  });
+});
+
+describe('generateConsentDigest', () => {
+  it('deterministic, repo idiom sha256(JSON.stringify({intent, profile, variant}, null, 2)) — byte-pinned', () => {
+    const digest = generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council');
+
+    // Hand-computed with the same framing the manifest artifact hashes use —
+    // pins BOTH the hash idiom and the payload shape.
+    const payload = {
+      intent: 'build a small pet clinic scheduler',
+      profile: 'p-mini',
+      variant: 'council',
+    };
+    const expected =
+      'sha256:' + createHash('sha256').update(JSON.stringify(payload, null, 2), 'utf8').digest('hex');
+    expect(digest).toBe(expected);
+    expect(generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council')).toBe(
+      digest,
+    );
+  });
+
+  it('binds EVERY effectual component: intent, profile, or variant change → different digest', () => {
+    const base = generateConsentDigest('an intent', 'p-mini', 'single');
+    expect(generateConsentDigest('an intent!', 'p-mini', 'single')).not.toBe(base);
+    expect(generateConsentDigest('an intent', 'p-standard', 'single')).not.toBe(base);
+    expect(generateConsentDigest('an intent', 'p-mini', 'council')).not.toBe(base);
+  });
+});
+
+describe('generate refusal texts', () => {
+  it('refuseGenerateConsentMissing carries the digest, the flag, and the zero-calls statement', () => {
+    const text = refuseGenerateConsentMissing(generateConsentDigest('x', 'p-mini', 'single'));
+    expect(text).toContain(GENERATE_OPT_IN_ENV);
+    expect(text).toMatch(/consent digest: sha256:[0-9a-f]{64}/);
+    expect(text).toContain('ZERO LLM calls');
+    expect(text).toContain('intent');
+  });
+
+  it('refuseGenerateNotOptedIn names the flag and stays actionable', () => {
+    const text = refuseGenerateNotOptedIn();
+    expect(text).toContain(GENERATE_OPT_IN_ENV);
+    expect(text).toContain('ZERO LLM calls');
   });
 });

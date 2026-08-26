@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -13,6 +14,8 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { handleRpcLine } from './server';
+import { generateConsentDigest } from './consent';
+import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 
 const FIXTURES = join(__dirname, '../../fixtures');
 
@@ -70,11 +73,42 @@ afterEach(() => {
 /** handleRpcLine but asserting a response came back; parses it as JSON-RPC. */
 async function rpc(
   line: string,
-  options?: { allowExec?: boolean; env?: NodeJS.ProcessEnv },
+  options?: {
+    allowExec?: boolean;
+    allowGenerate?: boolean;
+    env?: NodeJS.ProcessEnv;
+    llm?: unknown;
+  },
 ): Promise<Record<string, any>> {
   const raw = await handleRpcLine(line, options);
   expect(raw).not.toBeNull();
   return JSON.parse(raw!) as Record<string, any>;
+}
+
+/** One tools/call as a typed convenience (the PROD-004 tool tests). */
+async function callTool(
+  name: string,
+  args: Record<string, unknown>,
+  options?: { allowExec?: boolean; allowGenerate?: boolean; env?: NodeJS.ProcessEnv; llm?: unknown },
+): Promise<Record<string, any>> {
+  return rpc(
+    `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"${name}","arguments":${JSON.stringify(
+      args,
+    )}}}`,
+    options,
+  );
+}
+
+/** The tool result's text content (every tool returns exactly one text part). */
+function text(res: Record<string, any>): string {
+  return res.result.content[0].text as string;
+}
+
+/** Extract the consent digest any refusal/preview advertises. */
+function digestFrom(textValue: string): string {
+  const m = /consent digest: (sha256:[0-9a-f]{64})/.exec(textValue);
+  expect(m, `output must advertise a consent digest, got: ${textValue}`).not.toBeNull();
+  return m![1];
 }
 
 // --- initialize ----------------------------------------------------------------
@@ -184,7 +218,7 @@ describe('handleRpcLine: notifications', () => {
 // --- tools/list ----------------------------------------------------------------
 
 describe('handleRpcLine: tools/list', () => {
-  it('returns exactly the 7 engine tools, dir required on each', async () => {
+  it('returns exactly the 10 engine tools, dir required on each, additionalProperties:false everywhere', async () => {
     const res = await rpc('{"jsonrpc":"2.0","id":9,"method":"tools/list"}');
 
     const names = (res.result.tools as Array<Record<string, any>>).map((t) => t.name);
@@ -196,12 +230,28 @@ describe('handleRpcLine: tools/list', () => {
       'lco_trace',
       'lco_plan',
       'lco_check',
+      'lco_init',
+      'lco_generate',
+      'lco_change',
     ]);
+    const requiredByName: Record<string, string[]> = {
+      lco_compile: ['dir'],
+      lco_lint: ['dir'],
+      lco_freeze: ['dir'],
+      lco_verify: ['dir'],
+      lco_trace: ['dir'],
+      lco_plan: ['dir'],
+      lco_check: ['dir'],
+      lco_init: ['dir'],
+      lco_generate: ['dir', 'intent'],
+      lco_change: ['dir', 'changeset'],
+    };
     for (const tool of res.result.tools as Array<Record<string, any>>) {
       expect(typeof tool.description).toBe('string');
       expect(tool.description.length).toBeGreaterThan(10);
       expect(tool.inputSchema.type).toBe('object');
-      expect(tool.inputSchema.required).toEqual(['dir']);
+      expect(tool.inputSchema.required).toEqual(requiredByName[tool.name]);
+      expect(tool.inputSchema.additionalProperties).toBe(false);
       expect(typeof tool.inputSchema.properties.dir).toBe('object');
     }
     // The optional flags land in exactly the tools the brief assigns them to.
@@ -216,6 +266,14 @@ describe('handleRpcLine: tools/list', () => {
     expect(Object.keys(checkProps)).toEqual(['dir', 'task', 'consent']);
     expect(checkProps.consent.required).toEqual(['digest']);
     expect(JSON.stringify(checkProps)).not.toContain('"yes"');
+    // PROD-004: the three creation/evolution tools advertise their surfaces;
+    // lco_generate never advertises `yes` or any adapter/env parameter.
+    expect(Object.keys(byName.get('lco_init')!)).toEqual(['dir', 'profile', 'name']);
+    const genProps = byName.get('lco_generate')!;
+    expect(Object.keys(genProps)).toEqual(['dir', 'intent', 'variant', 'profile', 'consent']);
+    expect(genProps.consent.required).toEqual(['digest']);
+    expect(JSON.stringify(genProps)).not.toContain('"yes"');
+    expect(Object.keys(byName.get('lco_change')!)).toEqual(['dir', 'changeset']);
   });
 });
 
@@ -389,6 +447,596 @@ describe('handleRpcLine: protocol errors', () => {
   });
 });
 
+// --- tools/call lco_init (PROD-004) --------------------------------------------------
+
+describe('handleRpcLine: lco_init', () => {
+  it('scaffolds a working example spec: 9 files, draft/v1, CLI-mirroring output', async () => {
+    const root = freshRoot('spec-core-mcp-init-');
+
+    const res = await callTool('lco_init', { dir: root });
+
+    expect(res.result.isError).toBe(false);
+    expect(text(res)).toContain(`initialized ${root}/spec (profile p-mini, my-project) with 9 section files`);
+    expect(text(res)).toContain('spec/manifest.json');
+    expect(text(res)).toContain('WORKING EXAMPLE spec');
+    expect(text(res)).toContain('exit code: 0');
+
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.state).toBe('draft');
+    expect(manifest.spec_version).toBe(1);
+    // The scaffold is a real spec: it compiles + lints clean through MCP too.
+    const lint = await callTool('lco_lint', { dir: root });
+    expect(lint.result.isError).toBe(false);
+    expect(text(lint)).toContain('0 errors');
+  });
+
+  it('profile/name params flow through the CLI contract (p-standard: OPS-0001 + 2 tasks)', async () => {
+    const root = freshRoot('spec-core-mcp-init-std-');
+
+    const res = await callTool('lco_init', { dir: root, profile: 'p-standard', name: 'named-via-mcp' });
+
+    expect(res.result.isError).toBe(false);
+    expect(text(res)).toContain('profile p-standard, named-via-mcp');
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.complexity_profile).toBe('p-standard');
+    expect(manifest.project.name).toBe('named-via-mcp');
+    const tasks = JSON.parse(readFileSync(join(root, 'spec', 'tasks.json'), 'utf8'));
+    expect(tasks).toHaveLength(2);
+    const reqs = JSON.parse(readFileSync(join(root, 'spec', 'requirements.json'), 'utf8'));
+    expect(reqs.some((r: { id: string }) => r.id === 'OPS-0001')).toBe(true);
+  });
+
+  it('NO-CLOBBER: init on an existing root refuses (isError, exit 2) and disk is untouched', async () => {
+    const root = freshRoot('spec-core-mcp-init-clobber-');
+    mkdirSync(join(root, 'spec'), { recursive: true });
+    writeFileSync(join(root, 'spec', 'manifest.json'), 'sentinel-content', 'utf8');
+
+    const res = await callTool('lco_init', { dir: root });
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('refusing to overwrite existing spec/');
+    expect(text(res)).toContain('exit code: 2');
+    expect(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8')).toBe('sentinel-content');
+  });
+
+  it("invalid profile value → -32602 naming the expected values (CLI-mirroring message)", async () => {
+    const root = freshRoot('spec-core-mcp-init-bad-');
+
+    const res = await callTool('lco_init', { dir: root, profile: 'p-huge' });
+
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toContain('p-mini or p-standard');
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+
+  it('empty name → -32602, nothing written', async () => {
+    const root = freshRoot('spec-core-mcp-init-name-');
+
+    const res = await callTool('lco_init', { dir: root, name: '' });
+
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toContain('name');
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+});
+
+// --- tools/call lco_generate (PROD-004: paid-call consent) --------------------------
+
+/**
+ * Counting scripted LLM (the generate.test.ts makeLlm pattern): records every
+ * call, throws beyond the script. Paid-call discipline: tests inject ONLY
+ * this mock — no test in this suite may make a live LLM call.
+ */
+function makeLlm(responses: string[]): { llm: LlmAdapter; calls: () => number } {
+  let n = 0;
+  const llm: LlmAdapter = {
+    async complete(prompt: string): Promise<LlmResponse> {
+      n += 1;
+      void prompt;
+      const out = responses[n - 1];
+      if (out === undefined) {
+        throw new Error(`test-llm: unexpected call #${n} (script has ${responses.length})`);
+      }
+      return { text: out, usage: { in_tokens: 10 * n, out_tokens: 5 * n } };
+    },
+  };
+  return { llm, calls: () => n };
+}
+
+/** inlineConforming() with an UNRESOLVED decision leak (the blocked outcome). */
+function inlineUnresolved(): Record<string, unknown> {
+  const bundle = inlineConforming();
+  ((bundle.decisions as Array<Record<string, unknown>>)[0] as Record<string, unknown>).status =
+    'UNRESOLVED';
+  (bundle.manifest as Record<string, unknown>).unresolved_count = 1;
+  return bundle;
+}
+
+describe('handleRpcLine: lco_generate (PROD-004 paid-call consent)', () => {
+  const INTENT = 'build a small pet clinic scheduler';
+
+  it('NO consent → structured refusal carrying the request digest; ZERO adapter calls, nothing written', async () => {
+    const root = freshRoot('spec-core-mcp-gen-noconsent-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+
+    const res = await callTool('lco_generate', { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini' }, { llm });
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('generation refused');
+    expect(text(res)).toContain('LCO_MCP_ALLOW_GENERATE');
+    expect(text(res)).toContain('ZERO LLM calls');
+    expect(text(res)).toMatch(/consent digest: sha256:[0-9a-f]{64}/);
+    expect(text(res)).toContain('exit code: 2');
+    expect(calls()).toBe(0); // THE paid-call guarantee: refusal made no call
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+    // The advertised digest is exactly the digest of this request's content.
+    expect(digestFrom(text(res))).toBe(generateConsentDigest(INTENT, 'p-mini', 'single'));
+  });
+
+  it('consent WITHOUT the server opt-in → refusal naming the flag; ZERO adapter calls', async () => {
+    const root = freshRoot('spec-core-mcp-gen-nooptin-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    const digest = generateConsentDigest(INTENT, 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { llm }, // deliberately NOT allowGenerate — a plainly started server
+    );
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('generation refused');
+    expect(text(res)).toContain('LCO_MCP_ALLOW_GENERATE=1');
+    expect(calls()).toBe(0);
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+    // The env form refuses identically (per-request env read, no process.env mutation).
+    const viaEnv = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { llm, env: { LCO_MCP_ALLOW_GENERATE: 'true' } }, // 'true' fails closed
+    );
+    expect(viaEnv.result.isError).toBe(true);
+    expect(calls()).toBe(0);
+  });
+
+  it('opted-in but WRONG digest → mismatch naming both digests; ZERO adapter calls', async () => {
+    const root = freshRoot('spec-core-mcp-gen-mismatch-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    const wrong = 'sha256:' + 'f'.repeat(64);
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini', consent: { digest: wrong } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('digest mismatch');
+    expect(text(res)).toContain(wrong);
+    expect(text(res)).toContain(generateConsentDigest(INTENT, 'p-mini', 'single'));
+    expect(calls()).toBe(0);
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+
+  it('the digest binds CONTENT: a digest from a different intent never authorizes', async () => {
+    const root = freshRoot('spec-core-mcp-gen-bind-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    const otherIntentDigest = generateConsentDigest('a DIFFERENT intent', 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini', consent: { digest: otherIntentDigest } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('digest mismatch');
+    expect(calls()).toBe(0);
+  });
+
+  it('digest binds RESOLVED content: omitted defaults hash identically to explicit council/p-standard', async () => {
+    const root = freshRoot('spec-core-mcp-gen-resolved-');
+    // Omitted variant/profile resolve to council/p-standard — the refusal
+    // must advertise the digest of the RESOLVED content, so a client that
+    // then sends explicit council/p-standard with that digest is authorized.
+    const refusal = await callTool('lco_generate', { dir: root, intent: INTENT }, {
+      allowGenerate: true,
+      llm: makeLlm([]).llm,
+    });
+    expect(refusal.result.isError).toBe(true);
+    const digest = digestFrom(text(refusal));
+    expect(digest).toBe(generateConsentDigest(INTENT, 'p-standard', 'council'));
+  });
+
+  it('the full consent chain (mock adapter) → generation runs, gates inherited, draft/v1 written', async () => {
+    const root = freshRoot('spec-core-mcp-gen-full-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    const digest = generateConsentDigest(INTENT, 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(false);
+    expect(calls()).toBe(1);
+    expect(text(res)).toContain('generated spec/');
+    expect(text(res)).toContain('state: draft');
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.state).toBe('draft');
+    expect(manifest.spec_version).toBe(1);
+    expect(manifest.complexity_profile).toBe('p-mini');
+    // The generated tree is a real spec: lint-clean through the MCP surface.
+    const lint = await callTool('lco_lint', { dir: root });
+    expect(lint.result.isError).toBe(false);
+    expect(text(lint)).toContain('0 errors');
+  });
+
+  it('blocked outcome (evidence gate) surfaces through MCP: isError, reasons, NOTHING written', async () => {
+    const root = freshRoot('spec-core-mcp-gen-blocked-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineUnresolved())]);
+    const digest = generateConsentDigest('stock tool, database undecided', 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: 'stock tool, database undecided', variant: 'single', profile: 'p-mini', consent: { digest } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(true);
+    expect(calls()).toBe(1);
+    expect(text(res)).toContain('blocked by the evidence gate');
+    expect(text(res)).toContain('L08');
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+
+  it('councilDegraded surfaces in the tool response (BACK-008 line, still fully gated)', async () => {
+    const root = freshRoot('spec-core-mcp-gen-degraded-');
+    const { llm, calls } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      'proposal A prose, not json',
+      'proposal A retry, still not json',
+      JSON.stringify(inlineConforming()),
+    ]);
+    const digest = generateConsentDigest(INTENT, 'p-mini', 'council');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'council', profile: 'p-mini', consent: { digest } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(false);
+    expect(calls()).toBe(4);
+    expect(text(res)).toContain('DEGRADED');
+    expect(text(res)).toContain('proposal A');
+    expect(existsSync(join(root, 'spec', 'manifest.json'))).toBe(true);
+  });
+
+  it('no-clobber through MCP: generate onto an existing spec/ refuses with ZERO adapter calls', async () => {
+    const root = freshRoot('spec-core-mcp-gen-clobber-');
+    mkdirSync(join(root, 'spec'), { recursive: true });
+    writeFileSync(join(root, 'spec', 'manifest.json'), 'sentinel-content', 'utf8');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    const digest = generateConsentDigest(INTENT, 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('refusing to overwrite');
+    expect(calls()).toBe(0);
+    expect(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8')).toBe('sentinel-content');
+  });
+
+  it('full chain but NO live LLM env and no injected adapter → the fail-closed LCO_LLM_* refusal (never invents keys)', async () => {
+    const root = freshRoot('spec-core-mcp-gen-noenv-');
+    vi.stubEnv('LCO_LLM_BASE_URL', '');
+    vi.stubEnv('LCO_LLM_API_KEY', '');
+    vi.stubEnv('LCO_LLM_MODEL', '');
+    const digest = generateConsentDigest(INTENT, 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { allowGenerate: true },
+    );
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('live mode requires LCO_LLM_* env vars');
+    expect(text(res)).toContain('exit code: 2');
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+
+  it('argument surface: missing intent → -32602; bad variant/profile → -32602 with CLI-mirroring messages', async () => {
+    const root = freshRoot('spec-core-mcp-gen-args-');
+
+    const missing = await callTool('lco_generate', { dir: root });
+    expect(missing.error.code).toBe(-32602);
+    expect(missing.error.message).toContain('intent');
+
+    const badVariant = await callTool('lco_generate', { dir: root, intent: 'x', variant: 'committee' });
+    expect(badVariant.error.code).toBe(-32602);
+    expect(badVariant.error.message).toContain('single or council');
+
+    const badProfile = await callTool('lco_generate', { dir: root, intent: 'x', profile: 'p-huge' });
+    expect(badProfile.error.code).toBe(-32602);
+    expect(badProfile.error.message).toContain('p-mini or p-standard');
+
+    const emptyIntent = await callTool('lco_generate', { dir: root, intent: '' });
+    expect(emptyIntent.error.code).toBe(-32602);
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+});
+
+// --- tools/call lco_change (PROD-004) ------------------------------------------------
+
+/** Byte-exact snapshot of every file under spec/ (the byte-identity oracle). */
+function snapshotSpec(root: string): Map<string, Buffer> {
+  const spec = join(root, 'spec');
+  const out = new Map<string, Buffer>();
+  for (const entry of readdirSync(spec, { withFileTypes: true })) {
+    if (entry.isFile()) out.set(entry.name, readFileSync(join(spec, entry.name)));
+  }
+  return out;
+}
+
+function expectIdentical(before: Map<string, Buffer>, root: string): void {
+  const after = snapshotSpec(root);
+  expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
+  for (const [name, bytes] of before) {
+    expect(after.get(name)).toEqual(bytes); // Buffer deep equality = byte-identical
+  }
+}
+
+/** A frozen inline-conforming root, frozen through the MCP tool itself. */
+async function frozenRoot(prefix: string): Promise<string> {
+  const root = makeSpecRoot(inlineConforming());
+  const frozen = await callTool('lco_freeze', { dir: root });
+  expect(frozen.result.isError).toBe(false);
+  return root;
+}
+
+describe('handleRpcLine: lco_change', () => {
+  const TITLE_PATCH = {
+    id: 'CP-0001',
+    rationale: 'sharpen the example title',
+    modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'renamed via MCP' } }],
+  };
+
+  it('happy path: inline changeset on a frozen spec → v2 draft, tasks.json rewritten, isError false', async () => {
+    const root = await frozenRoot('spec-core-mcp-change-ok-');
+
+    const res = await callTool('lco_change', { dir: root, changeset: TITLE_PATCH });
+
+    expect(res.result.isError).toBe(false);
+    expect(text(res)).toContain('changeset CP-0001 applied: spec_version 2 (state draft)');
+    expect(text(res)).toContain('lint OK');
+    const tasks = JSON.parse(readFileSync(join(root, 'spec', 'tasks.json'), 'utf8'));
+    expect(tasks[0].title).toBe('renamed via MCP');
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.spec_version).toBe(2);
+    expect(manifest.state).toBe('draft');
+  });
+
+  it('lint-invalid changeset (L02 orphan added requirement) → gate refusal, disk BYTE-IDENTICAL', async () => {
+    const root = await frozenRoot('spec-core-mcp-change-lint-');
+    const before = snapshotSpec(root);
+    const orphan = {
+      id: 'CP-0002',
+      rationale: 'adds a requirement no task references',
+      added_requirements: [
+        {
+          id: 'REQ-0009',
+          statement: 'The system shall orphan this requirement',
+          priority: 'must',
+          evidence: ['E-0001'],
+          acceptance_refs: ['TST-0001'],
+          terms_used: [],
+        },
+      ],
+    };
+
+    const res = await callTool('lco_change', { dir: root, changeset: orphan });
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('rejected by the change gate');
+    expect(text(res)).toContain('L02');
+    expect(text(res)).toContain('nothing written');
+    expectIdentical(before, root); // byte-identical refusal (BACK-005 through MCP)
+  });
+
+  it('strict envelope: a typo top-level key → ChangeSetSchema refusal, disk unchanged', async () => {
+    const root = await frozenRoot('spec-core-mcp-change-typo-');
+    const before = snapshotSpec(root);
+
+    const res = await callTool('lco_change', {
+      dir: root,
+      changeset: { id: 'CP-0003', rationale: 'typo envelope', modified_taskz: [] },
+    });
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('ChangeSetSchema');
+    expectIdentical(before, root);
+  });
+
+  it('non-frozen (draft) spec → the shared core refuses the transition', async () => {
+    const root = makeSpecRoot(inlineConforming()); // state: draft, never frozen
+
+    const res = await callTool('lco_change', { dir: root, changeset: TITLE_PATCH });
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('cannot apply changeset');
+  });
+
+  it('changeset must be an object: array/string → -32602 at the parse layer', async () => {
+    const root = await frozenRoot('spec-core-mcp-change-shape-');
+
+    const arr = await callTool('lco_change', { dir: root, changeset: [1, 2] });
+    expect(arr.error.code).toBe(-32602);
+    const str = await callTool('lco_change', { dir: root, changeset: 'not-an-object' });
+    expect(str.error.code).toBe(-32602);
+    const missing = await callTool('lco_change', { dir: root });
+    expect(missing.error.code).toBe(-32602);
+    expect(missing.error.message).toContain('changeset');
+  });
+});
+
+// --- unspoofability: the request can never grant itself capability -------------------
+
+describe('handleRpcLine: consent chain unspoofability (PROD-004)', () => {
+  it('allowExec/allowGenerate/llm/env/yes supplied IN THE REQUEST ARGS are refused (-32602)', async () => {
+    const root = freshRoot('spec-core-mcp-spoof-');
+    const attempts: Array<{ tool: string; args: Record<string, unknown> }> = [
+      { tool: 'lco_generate', args: { dir: root, intent: 'x', allowExec: true } },
+      { tool: 'lco_generate', args: { dir: root, intent: 'x', allowGenerate: true } },
+      { tool: 'lco_generate', args: { dir: root, intent: 'x', llm: { complete: 'spoof' } } },
+      { tool: 'lco_generate', args: { dir: root, intent: 'x', env: { LCO_MCP_ALLOW_GENERATE: '1' } } },
+      { tool: 'lco_generate', args: { dir: root, intent: 'x', yes: true } },
+      { tool: 'lco_check', args: { dir: root, allowExec: true } },
+      { tool: 'lco_init', args: { dir: root, llm: 'spoof' } },
+      { tool: 'lco_change', args: { dir: root, changeset: { id: 'a', rationale: 'b' }, allowGenerate: true } },
+    ];
+    for (const { tool, args } of attempts) {
+      const res = await callTool(tool, args);
+      expect(res.error?.code, `${tool} ${JSON.stringify(args)} must be refused at the argument layer`).toBe(-32602);
+    }
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+});
+
+// --- concurrent MCP mutations serialize through the per-root lock (T6/P0-6) ----------
+
+describe('handleRpcLine: concurrent mutations serialize (per-root lock)', () => {
+  it('two concurrent lco_init on the same root → exactly ONE scaffold, the other a clean refusal, spec intact', async () => {
+    const root = freshRoot('spec-core-mcp-race-init-');
+
+    const [a, b] = await Promise.all([
+      callTool('lco_init', { dir: root }),
+      callTool('lco_init', { dir: root }),
+    ]);
+
+    const results = [a, b];
+    const winners = results.filter((r) => r.result?.isError === false);
+    expect(winners).toHaveLength(1);
+    const loser = results.find((r) => r.result?.isError === true)!;
+    // The loser refuses CLEANLY — a no-clobber refusal or a lock refusal, never a partial write.
+    expect(text(loser)).toMatch(/refusing to overwrite|locked by another writer|command failed/);
+
+    // The winner's scaffold is complete and valid — no interleaved corruption.
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.state).toBe('draft');
+    const lint = await callTool('lco_lint', { dir: root });
+    expect(lint.result.isError).toBe(false);
+  });
+
+  it('two concurrent lco_change on the same frozen root → ONE applies (v2), the other refuses cleanly', async () => {
+    const root = await frozenRoot('spec-core-mcp-race-change-');
+    const cs = (id: string, title: string) => ({
+      id,
+      rationale: 'concurrent title change',
+      modified_tasks: [{ task_id: 'TASK-0001', patch: { title } }],
+    });
+
+    const [a, b] = await Promise.all([
+      callTool('lco_change', { dir: root, changeset: cs('CP-A', 'title from A') }),
+      callTool('lco_change', { dir: root, changeset: cs('CP-B', 'title from B') }),
+    ]);
+
+    const results = [a, b];
+    const winners = results.filter((r) => r.result?.isError === false);
+    expect(winners).toHaveLength(1);
+    const loser = results.find((r) => r.result?.isError === true)!;
+    expect(text(loser)).toMatch(/cannot acquire the spec root lock|cannot apply changeset|rejected|command failed/);
+
+    // Exactly ONE version bump happened — never two, never a torn write.
+    const manifest = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifest.spec_version).toBe(2);
+    expect(manifest.state).toBe('draft');
+  });
+});
+
+// --- PROD-004 e2e: the full product journey over MCP only (mock adapter) ------------
+
+describe('PROD-004 e2e: intent → draft → frozen → change, without a shell', () => {
+  it('lco_init journey: initialize → tools/list → init → compile → lint → freeze → verify → change → lint', async () => {
+    const init = await rpc('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
+    expect(init.result.serverInfo.name).toBe('lco-mcp');
+    const listed = await rpc('{"jsonrpc":"2.0","id":2,"method":"tools/list"}');
+    expect((listed.result.tools as unknown[]).length).toBe(10);
+
+    const root = freshRoot('spec-core-mcp-e2e-init-');
+    const scaffolded = await callTool('lco_init', { dir: root, profile: 'p-mini', name: 'e2e-project' });
+    expect(scaffolded.result.isError).toBe(false);
+
+    const compiled = await callTool('lco_compile', { dir: root });
+    expect(compiled.result.isError).toBe(false);
+    const linted = await callTool('lco_lint', { dir: root });
+    expect(text(linted)).toContain('0 errors');
+
+    const frozen = await callTool('lco_freeze', { dir: root });
+    expect(text(frozen)).toContain('frozen at');
+    const verified = await callTool('lco_verify', { dir: root });
+    expect(text(verified)).toContain('verify OK');
+
+    const changed = await callTool('lco_change', {
+      dir: root,
+      changeset: {
+        id: 'CP-E2E',
+        rationale: 'e2e title change over MCP',
+        modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'e2e changed title' } }],
+      },
+    });
+    expect(text(changed)).toContain('spec_version 2');
+    const relint = await callTool('lco_lint', { dir: root });
+    expect(relint.result.isError).toBe(false);
+  });
+
+  it('lco_generate journey: refusal-digest → consent → generate → lint → freeze → change (mock adapter only)', async () => {
+    const root = freshRoot('spec-core-mcp-e2e-gen-');
+    const intent = 'build a small pet clinic scheduler';
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+
+    // 1. First attempt without consent: refusal advertises the digest, no calls.
+    const refused = await callTool(
+      'lco_generate',
+      { dir: root, intent, variant: 'single', profile: 'p-mini' },
+      { allowGenerate: true, llm },
+    );
+    expect(refused.result.isError).toBe(true);
+    expect(calls()).toBe(0);
+    const digest = digestFrom(text(refused));
+
+    // 2. Consent with exactly that digest: generation runs (mock adapter).
+    const generated = await callTool(
+      'lco_generate',
+      { dir: root, intent, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { allowGenerate: true, llm },
+    );
+    expect(generated.result.isError).toBe(false);
+    expect(calls()).toBe(1);
+
+    // 3. The generated draft is a real spec: lint clean, freezes, changes.
+    const linted = await callTool('lco_lint', { dir: root });
+    expect(text(linted)).toContain('0 errors');
+    const frozen = await callTool('lco_freeze', { dir: root });
+    expect(frozen.result.isError).toBe(false);
+    const changed = await callTool('lco_change', {
+      dir: root,
+      changeset: {
+        id: 'CP-E2E-GEN',
+        rationale: 'post-generation change over MCP',
+        modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'post-gen title' } }],
+      },
+    });
+    expect(text(changed)).toContain('spec_version 2');
+  });
+});
+
 // --- integration: the ANTI-F18 guarantee over real stdio ------------------------
 //
 // Spawn the BUILT binary (dist/mcp/server.js) and assert that EVERY stdout
@@ -415,6 +1063,10 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       // via L02).
       const good = makeSpecRoot(inlineConforming());
       const bad = makeSpecRoot(loadBundle('bad/L02/bundle.json'));
+      // PROD-004 additions: a scaffold target for lco_init (success + the
+      // no-clobber refusal on the same root) and a consent-less generate
+      // attempt (default server: refusal, ZERO LLM calls — no env needed).
+      const initTarget = freshRoot('spec-core-mcp-spawn-init-');
 
       const child = spawn(process.execPath, [serverJs], {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -436,6 +1088,10 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
         '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"lco_nope","arguments":{"dir":"/tmp"}}}',
         '{"jsonrpc":"2.0","id":6,"method":"bogus/method"}',
         '{"id":7, broken json',
+        `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"lco_init","arguments":{"dir":${JSON.stringify(initTarget)}}}}`,
+        `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"lco_init","arguments":{"dir":${JSON.stringify(initTarget)}}}}`,
+        `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"lco_generate","arguments":{"dir":"${tmpdir()}","intent":"spawn session intent"}}}`,
+        '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"lco_change","arguments":{"dir":"/tmp","changeset":[1]}}}',
       ];
       for (const line of requests) {
         child.stdin.write(`${line}\n`);
@@ -454,13 +1110,13 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       });
 
       // notifications/initialized produced nothing; exactly one response per
-      // request id (1..7), in whatever completion order they arrived.
-      expect(responses).toHaveLength(7);
+      // request id (1..11), in whatever completion order they arrived.
+      expect(responses).toHaveLength(11);
       const byId = new Map(responses.map((r) => [r.id, r]));
 
       expect(byId.get(1)!.result.serverInfo).toEqual({ name: 'lco-mcp', version: '0.1.0' });
       const toolNames = (byId.get(2)!.result.tools as Array<{ name: string }>).map((t) => t.name);
-      expect(toolNames).toHaveLength(7);
+      expect(toolNames).toHaveLength(10);
       expect(new Set(toolNames)).toEqual(
         new Set([
           'lco_compile',
@@ -470,6 +1126,9 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
           'lco_trace',
           'lco_plan',
           'lco_check',
+          'lco_init',
+          'lco_generate',
+          'lco_change',
         ]),
       );
       expect(byId.get(3)!.result.isError).toBe(false);
@@ -478,6 +1137,25 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       expect(byId.get(4)!.result.content[0].text).toContain('L02');
       expect(byId.get(5)!.error.message).toContain('lco_nope');
       expect(byId.get(6)!.error.code).toBe(-32601);
+      // PROD-004 over real stdio: init scaffolds, re-init refuses, generate
+      // without consent refuses (default server, zero LLM calls), and a
+      // non-object changeset is a -32602 argument refusal. NOTE the two
+      // pipelined init requests are processed CONCURRENTLY (the server never
+      // serializes independent requests), so either may win the race — the
+      // assertion is exactly-one-winner + one CLEAN refusal (no-clobber or
+      // lock-held), never a partial scaffold.
+      const initResults = [byId.get(8)!, byId.get(9)!];
+      const initWinners = initResults.filter((r) => r.result.isError === false);
+      expect(initWinners).toHaveLength(1);
+      expect(initWinners[0].result.content[0].text).toContain('initialized');
+      const initLoser = initResults.find((r) => r.result.isError === true)!;
+      expect(initLoser.result.content[0].text).toMatch(
+        /refusing to overwrite|locked by another writer/,
+      );
+      expect(existsSync(join(initTarget, 'spec', 'manifest.json'))).toBe(true);
+      expect(byId.get(10)!.result.isError).toBe(true);
+      expect(byId.get(10)!.result.content[0].text).toContain('generation refused');
+      expect(byId.get(11)!.error.code).toBe(-32602);
       // The malformed line's response carries id null (JSON-RPC parse error).
       const parseError = responses.find((r) => r.id === null);
       expect(parseError).toBeTruthy();
@@ -866,6 +1544,76 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () =
       expect(evidence.checks).toHaveLength(2);
       expect(evidence.checks.every((c: any) => c.status === 'PASS')).toBe(true);
       expect(JSON.stringify(evidence)).not.toContain('sk-spawn-secret');
+    },
+    30_000,
+  );
+});
+
+// --- integration: spawn with LCO_MCP_ALLOW_GENERATE=1 but NO LCO_LLM_* env ----------
+//
+// The paid-call boundary against the real bin: an OPTED-IN server (the env
+// flag in its environment) with a full consent chain must still fail closed
+// when the operator provided no live LLM credentials — createHttpLlm throws
+// and NO key is ever invented. Every stdout line stays valid JSON-RPC.
+
+describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_GENERATE=1', () => {
+  it(
+    'full consent chain + no LCO_LLM_* env → the fail-closed env refusal, zero invented keys, pure stdout',
+    async () => {
+      const serverJs = join(__dirname, '../../dist/mcp/server.js');
+      if (!existsSync(serverJs)) {
+        throw new Error(
+          'dist/mcp/server.js not found — run `pnpm --filter ./packages/spec-core build` ' +
+            'before `pnpm --filter ./packages/spec-core test` (fail-closed by design)',
+        );
+      }
+      const root = freshRoot('spec-core-mcp-spawn-gen-');
+      const intent = 'spawn generate intent';
+      // Child env: the opt-in flag, explicitly NO LCO_LLM_* credentials (even
+      // if the dev machine carries them, they are deleted from the child).
+      const childEnv: NodeJS.ProcessEnv = { ...process.env, LCO_MCP_ALLOW_GENERATE: '1' };
+      delete childEnv.LCO_LLM_BASE_URL;
+      delete childEnv.LCO_LLM_API_KEY;
+      delete childEnv.LCO_LLM_MODEL;
+
+      const roundTrip = async (args: Record<string, unknown>): Promise<Record<string, any>> => {
+        const child = spawn(process.execPath, [serverJs], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: childEnv,
+        });
+        let out = '';
+        child.stdout.on('data', (chunk: Buffer) => {
+          out += chunk.toString('utf8');
+        });
+        child.stderr.on('data', () => {});
+        child.stdin.write(
+          `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_generate","arguments":${JSON.stringify(
+            { dir: root, ...args },
+          )}}}\n`,
+        );
+        child.stdin.end();
+        const [exitCode] = await once(child, 'close');
+        expect(exitCode).toBe(0);
+        const lines = out.split('\n').filter((l) => l.trim() !== '');
+        expect(lines).toHaveLength(1); // stdout purity: exactly the one response
+        expect(() => JSON.parse(lines[0])).not.toThrow();
+        return JSON.parse(lines[0]) as Record<string, any>;
+      };
+
+      // 1. No consent yet: the refusal carries the digest (this server IS
+      //    opted in — the refusal is consent-missing, not capability-missing).
+      const refusal = await roundTrip({ intent, variant: 'single', profile: 'p-mini' });
+      expect(refusal.result.isError).toBe(true);
+      expect(refusal.result.content[0].text).toContain('generation refused');
+      const digest = digestFrom(refusal.result.content[0].text);
+      expect(digest).toBe(generateConsentDigest(intent, 'p-mini', 'single'));
+
+      // 2. Full chain: passes flag + digest, reaches the adapter boundary,
+      //    and fails closed on the missing LCO_LLM_* env (never invents keys).
+      const attempt = await roundTrip({ intent, variant: 'single', profile: 'p-mini', consent: { digest } });
+      expect(attempt.result.isError).toBe(true);
+      expect(attempt.result.content[0].text).toContain('live mode requires LCO_LLM_* env vars');
+      expect(existsSync(join(root, 'spec'))).toBe(false); // nothing written
     },
     30_000,
   );

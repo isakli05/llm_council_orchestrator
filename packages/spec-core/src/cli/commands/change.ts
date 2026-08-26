@@ -17,10 +17,19 @@ export interface ChangeResult {
 /**
  * Apply a changeset to a frozen spec directory and operationalize the result.
  *
+ * The changeset arrives as a FILE PATH (the CLI envelope: `lco change <dir>
+ * <changeset.json>` — read + JSON-parsed here) or as an already-parsed OBJECT
+ * (the MCP `lco_change` tool passes the inline request envelope straight
+ * through; its argument layer guarantees a plain object). Both callers share
+ * this one core: strictness is identical because the authoritative envelope
+ * check is ChangeSetSchema.strict() inside applyChangeSet — unknown top-level
+ * keys are rejected on either path.
+ *
  * Pipeline (fail-closed, pure core — no console, no process.exit, no clock):
  *   1. compileSpecDir — any compile error is a usage-class rejection (code 2);
- *   2. read + parse the changeset file — missing file / invalid JSON / non-object
- *      are rejected with code 2;
+ *   2. resolve the changeset — a path is read + parsed (missing file /
+ *      invalid JSON / non-object are rejected with code 2); an object is used
+ *      as-is;
  *   3. applyChangeSet — only a FROZEN spec is changeable; strict patch keys;
  *      success bumps spec_version, returns the bundle to state 'draft' and
  *      drops frozen_at. Rejections (code 2) write nothing;
@@ -46,7 +55,7 @@ export interface ChangeResult {
  */
 export async function cmdChange(
   dir: string,
-  changesetPath: string,
+  changeset: string | ChangeSet,
   nowIso: string,
 ): Promise<ChangeResult> {
   // Missing spec/: the standard compile failure, with zero fs side effects.
@@ -70,7 +79,7 @@ export async function cmdChange(
     };
   }
   try {
-    return await applyUnderLock(dir, changesetPath, nowIso);
+    return await applyUnderLock(dir, changeset, nowIso);
   } finally {
     lock.release();
   }
@@ -79,7 +88,7 @@ export async function cmdChange(
 /** Steps 1-5 above, already serialized by the caller's per-root lock. */
 async function applyUnderLock(
   dir: string,
-  changesetPath: string,
+  changeset: string | ChangeSet,
   nowIso: string,
 ): Promise<ChangeResult> {
   // --- 1. compile ------------------------------------------------------------
@@ -92,31 +101,34 @@ async function applyUnderLock(
     };
   }
 
-  // --- 2. read + parse the changeset -----------------------------------------
-  let raw: string;
-  try {
-    raw = await readFile(changesetPath, 'utf8');
-  } catch (err) {
-    return {
-      code: 2,
-      summary: `cannot read changeset: ${changesetPath}`,
-      details: [(err as Error).message],
-    };
-  }
-
+  // --- 2. resolve the changeset (file path → parsed object; object → as-is) --
   let cp: ChangeSet;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('changeset must be a JSON object');
+  if (typeof changeset === 'string') {
+    let raw: string;
+    try {
+      raw = await readFile(changeset, 'utf8');
+    } catch (err) {
+      return {
+        code: 2,
+        summary: `cannot read changeset: ${changeset}`,
+        details: [(err as Error).message],
+      };
     }
-    cp = parsed as ChangeSet;
-  } catch (err) {
-    return {
-      code: 2,
-      summary: `changeset not valid JSON: ${changesetPath}`,
-      details: [(err as Error).message],
-    };
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('changeset must be a JSON object');
+      }
+      cp = parsed as ChangeSet;
+    } catch (err) {
+      return {
+        code: 2,
+        summary: `changeset not valid JSON: ${changeset}`,
+        details: [(err as Error).message],
+      };
+    }
+  } else {
+    cp = changeset;
   }
   const csId = cp.id ?? '<unnamed>';
 

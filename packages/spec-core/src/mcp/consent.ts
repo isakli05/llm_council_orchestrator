@@ -322,3 +322,127 @@ export async function loadCheckBundle(
   if (!loaded.ok) return loaded;
   return { ok: true, bundle: loaded.bundle };
 }
+
+// =====================================================================================
+// PAID-CALL CONSENT: lco_generate (PROD-004, T10)
+// =====================================================================================
+//
+// The pattern above (T9) applied to the OTHER irreversible resource an MCP
+// client can spend: money. An injected or merely enthusiastic client must
+// never, by itself, make the server spend paid LLM calls. Two layers, BOTH
+// required for one generation (there is no content-quality layer here — the
+// generate gates live inside cmdGenerate, which never runs unless both hold):
+//
+//   1. SERVER-START OPT-IN — the operator starts the process with
+//      `LCO_MCP_ALLOW_GENERATE=1` (exactly `1`, fail-closed, independent of
+//      LCO_MCP_ALLOW_EXEC: neither flag implies the other).
+//   2. CONSENT BOUND TO THE REQUEST'S EFFECTUAL CONTENT — the request carries
+//      `consent.digest` = generateConsentDigest(intent, profile, variant),
+//      recomputed server-side over the RESOLVED values (defaults applied) at
+//      execution time. The consent-missing refusal advertises the digest, so
+//      the actionable retry is one request away.
+//
+// On refusal: ZERO LLM calls (the handler returns before any adapter is
+// constructed or invoked) — the tests pin the call count at 0.
+//
+// `dir` is deliberately NOT in the digest: the operator's consent concern is
+// the paid call's CONTENT (what is sent, how many calls), not the write
+// target — and the write has its own no-clobber + lifecycle gates. A
+// spec-target swap under the same consent writes the same gated content.
+// (Alternative rejected: hashing dir — over-binds; moving the target dir
+// would force a fresh operator-visible consent for identical paid content.)
+//
+// ADAPTER RULES (unchanged from the CLI): the mock adapter is injected at
+// the boundary for tests/library callers (HandleRpcOptions.llm); production
+// resolves createHttpLlm() INSIDE cmdGenerate, which throws fail-closed when
+// the user-provided LCO_LLM_* env is missing. The server never invents a
+// key, endpoint, or model — mock first, live only from real env.
+
+/** The env var that opts a server process into paid-generation capability. */
+export const GENERATE_OPT_IN_ENV = 'LCO_MCP_ALLOW_GENERATE';
+
+/** Exactly `'1'` opts in — the execOptInFromEnv semantics, second flag. */
+export function generateOptInFromEnv(env: NodeJS.ProcessEnv): boolean {
+  return env[GENERATE_OPT_IN_ENV] === '1';
+}
+
+/** The generate request's profile axis (mirrors the CLI --profile contract). */
+export type GenerateProfile = 'p-mini' | 'p-standard';
+/** The generate request's cost axis (mirrors the CLI --variant contract). */
+export type GenerateVariant = 'single' | 'council';
+
+/**
+ * Digest of EXACTLY what a generation request sends to the LLM:
+ *
+ *   sha256Content(JSON.stringify({ intent, profile, variant }, null, 2))
+ *
+ * - `intent` — the full prompt text; consenting to one intent is never
+ *   consenting to another.
+ * - `profile` — parameterizes every prompt (and gates the output bundle).
+ * - `variant` — the cost of the call (council = 3 calls, single = 1).
+ *
+ * Computed over the RESOLVED values (defaults applied): a request omitting
+ * `variant` and one sending `variant:'council'` carry identical effectual
+ * content and deliberately share a digest (the T9 content-binding idiom —
+ * the digest binds WHAT runs, not how it was spelled). Cross-tool replay is
+ * impossible by construction: the payload shape differs from
+ * checkPreviewDigest's, so no check digest can ever equal a generate digest.
+ */
+export function generateConsentDigest(
+  intent: string,
+  profile: GenerateProfile,
+  variant: GenerateVariant,
+): `sha256:${string}` {
+  return sha256Content(JSON.stringify({ intent, profile, variant }, null, 2));
+}
+
+/**
+ * The refusal for a generate request that carries NO consent (any server).
+ * isError, exit 2 — nothing was generated. Self-contained and actionable: it
+ * names both consent conditions AND carries this request's digest, so the
+ * retry is `consent:{digest}` on an opted-in server.
+ */
+export function refuseGenerateConsentMissing(digest: `sha256:${string}`): string {
+  return [
+    'generation refused: lco_generate spends PAID LLM calls and requires explicit consent (PROD-004).',
+    'ZERO LLM calls were made and nothing was written. To generate:',
+    `1. the operator starts the server with ${GENERATE_OPT_IN_ENV}=1 (exactly 1; everything else fails closed),`,
+    `2. re-send this request with consent.digest equal to this request's consent digest: ${digest}`,
+    'The digest binds the effectual content {intent, profile, variant} (resolved defaults included) —',
+    'changing any of them invalidates the consent. The CLI keeps `lco generate --intent ...` as the',
+    'human-consent path.',
+  ].join('\n');
+}
+
+/**
+ * The refusal for a well-formed consent on a plainly started server (the
+ * refuseServerNotOptedIn idiom, paid-call edition). The digest was fine; the
+ * capability is not there — only the operator can change that.
+ */
+export function refuseGenerateNotOptedIn(): string {
+  return [
+    `generation refused: this lco-mcp server was not started with ${GENERATE_OPT_IN_ENV}=1,`,
+    'so paid LLM generation is disabled on the MCP surface (PROD-004). The operator must restart',
+    `the server with ${GENERATE_OPT_IN_ENV}=1; the request must also carry consent.digest matching`,
+    'the advertised digest of the same {intent, profile, variant}. ZERO LLM calls were made.',
+    'The CLI keeps `lco generate` as the human-consent path.',
+  ].join('\n');
+}
+
+/**
+ * The refusal when the carried digest does not hash the request's effectual
+ * content: the client approved one content and tried to spend calls on
+ * another. Names BOTH digests (carried and expected), T9's mismatch idiom.
+ */
+export function refuseGenerateDigestMismatch(
+  carried: string,
+  expected: `sha256:${string}`,
+): string {
+  return [
+    'generation refused: consent digest mismatch — the request carries',
+    `${carried} but this request's effectual content hashes to ${expected}`,
+    '(over {intent, profile, variant}, resolved defaults included). The client cannot approve one',
+    'content and spend calls on another. Re-send with consent.digest equal to the advertised digest.',
+    'ZERO LLM calls were made.',
+  ].join('\n');
+}
