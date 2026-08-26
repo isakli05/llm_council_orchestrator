@@ -1,11 +1,21 @@
 // Real API test for Z.AI GLM-5 model
-// This test uses the actual ZAI_API_KEY from .env.test
+//
+// QUARANTINED (SEC-001 remediation, 2026-08-26): this suite makes real, paid
+// provider API calls. It is skipped unless explicitly opted in by setting
+// LCO_REAL_API=1 in the environment. The previously tracked .env.test key copy
+// has been removed from the repository; supply ZAI_API_KEY via the environment
+// when opting in.
+// See audit-output/codex-external-audit-remediation/REMEDIATION-LOG.md (SEC-001).
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ModelGateway } from '../ModelGateway';
 import { ProviderType } from '@llm/shared-types';
 
-describe('ModelGateway - Real API Tests', () => {
+// SEC-001: whole file skips unless LCO_REAL_API=1 (gates every test below,
+// including the beforeEach that constructs the ModelGateway).
+const maybeDescribe = process.env.LCO_REAL_API === '1' ? describe : describe.skip;
+
+maybeDescribe('ModelGateway - Real API Tests', () => {
   let gateway: ModelGateway;
 
   beforeEach(() => {

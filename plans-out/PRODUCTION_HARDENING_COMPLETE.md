@@ -439,7 +439,7 @@ Custom error responses
 
 ### Start Orchestrator (with ZAI API key)
 ```bash
-export ZAI_API_KEY="[REDACTED-SEC-001]"
+export ZAI_API_KEY="[REDACTED-2026-08-26: exposed provider key removed from tracked file]"
 pnpm --filter @llm/orchestrator dev
 ```
 
