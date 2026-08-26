@@ -8,7 +8,11 @@ import { cmdTrace } from '../cli/commands/trace';
 import { cmdPlan } from '../cli/commands/plan';
 import { cmdCheck } from '../cli/commands/check';
 import { cmdInit } from '../cli/commands/init';
-import { cmdGenerate } from '../cli/commands/generate';
+import {
+  cmdGenerate,
+  DEFAULT_GENERATE_VARIANT,
+  DEFAULT_GENERATE_PROFILE,
+} from '../cli/commands/generate';
 import { cmdChange } from '../cli/commands/change';
 import type { ChangeSet } from '../compiler/changeset';
 import {
@@ -83,7 +87,7 @@ interface ToolInput {
   name?: string;
   /** PROD-004 lco_generate: the natural-language intent (required there). */
   intent?: string;
-  /** PROD-004 lco_generate: the cost axis (council = 3 calls, single = 1). */
+  /** PROD-004 lco_generate: the cost axis (single default; council explicit — see generate.ts). */
   variant?: GenerateVariant;
   /** PROD-004 lco_change: the inline CLI change envelope (plain object at the
    *  parse layer; the authoritative strict check is ChangeSetSchema in the core). */
@@ -107,6 +111,12 @@ interface CoreResult {
 interface CallContext extends ExecBoundary {
   /** Paid generation may be honored at all (LCO_MCP_ALLOW_GENERATE=1). */
   allowGenerate: boolean;
+  /**
+   * Wall-clock provider (UX-001): read at the RPC boundary like nowIso, and
+   * handed to cmdGenerate so the run's wall budget can be enforced without
+   * the command core ever reading a clock itself.
+   */
+  nowMs?: () => number;
   /** Mock adapter injected by tests/library callers; production leaves it
    *  unset and cmdGenerate resolves createHttpLlm() fail-closed. */
   llm?: LlmAdapter;
@@ -347,7 +357,8 @@ const TOOLS: readonly ToolDef[] = [
         variant: {
           type: 'string',
           enum: ['single', 'council'],
-          description: 'council = 3 LLM calls, single = 1 (default council; part of the consent digest)',
+          description:
+            'single (default; up to 3 completions/12 HTTP attempts) or council (up to 6/24) — part of the consent digest',
         },
         profile: {
           type: 'string',
@@ -367,9 +378,11 @@ const TOOLS: readonly ToolDef[] = [
     requiredArgs: ['intent'],
     run: async (input, nowIso, call) => {
       // PROD-004 consent chain — every refusal happens BEFORE any adapter is
-      // constructed or invoked: zero LLM calls by construction.
-      const profile = input.profile ?? 'p-standard';
-      const variant = input.variant ?? 'council';
+      // constructed or invoked: zero LLM calls by construction. Defaults come
+      // from the ONE shared source (commands/generate.ts): single is the
+      // conservative default (UX-001 ruling); council is explicit.
+      const profile = input.profile ?? DEFAULT_GENERATE_PROFILE;
+      const variant = input.variant ?? DEFAULT_GENERATE_VARIANT;
       const expected = generateConsentDigest(input.intent!, profile, variant);
 
       // 1. No consent: the actionable refusal IS the preview — it carries
@@ -394,6 +407,7 @@ const TOOLS: readonly ToolDef[] = [
         profile,
         nowIso,
         llm: call.llm,
+        nowMs: call.nowMs,
       });
     },
   },
@@ -464,6 +478,8 @@ export interface HandleRpcOptions {
    * createHttpLlm() fail-closed from the server's own LCO_LLM_* env.
    */
   llm?: LlmAdapter;
+  /** Wall-clock provider override (UX-001); default `() => Date.now()` at the boundary. */
+  nowMs?: () => number;
 }
 
 /**
@@ -578,6 +594,9 @@ async function handleToolsCall(
     allowExec: options?.allowExec === undefined ? envBoundary.allowExec : options.allowExec,
     allowGenerate: options?.allowGenerate ?? generateOptInFromEnv(env),
     llm: options?.llm,
+    // UX-001: same boundary-clock contract as nowIso — the wall budget's
+    // time source, injected once per tool call (tests override via options).
+    nowMs: options?.nowMs ?? (() => Date.now()),
   };
   let result: CoreResult;
   try {

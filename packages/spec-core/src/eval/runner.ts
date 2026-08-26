@@ -6,6 +6,7 @@ import type { LintFinding } from '../lint/types';
 import { validateGenerationOutput } from '../compiler/lifecycle';
 import type { EvalTask } from './tasks';
 import type { LlmAdapter } from './llm/adapter';
+import type { BudgetLedger } from './budget';
 import { classifySingle, propose, proposeB, proposeBDegraded, classifyAndProposeSingle } from './prompts';
 
 /**
@@ -30,11 +31,25 @@ import { classifySingle, propose, proposeB, proposeBDegraded, classifyAndPropose
 
 export type PipelineVariant = 'single' | 'council';
 
-/** Token/call accounting accumulated across the variant's complete() calls. */
+/**
+ * Accounting accumulated across the variant's complete() calls (UX-001/T11):
+ * `calls` counts LOGICAL COMPLETIONS, `attempts` counts TRANSPORT ATTEMPTS
+ * (adapters that self-report attempts — e.g. the HTTP adapter with its
+ * transport retry — contribute their real count, timed-out/retried requests
+ * included; plain adapters count one attempt per completion). `usageKnown`
+ * is false as soon as ANY contributing response came back without provider
+ * usage — unknown is NOT zero (UX-003) and consumers must render it as
+ * `unknown`, never as 0.
+ */
 export interface PipelineUsage {
   in: number;
   out: number;
   calls: number;
+  attempts: number;
+  /** Number of completions whose response carried no provider usage. */
+  callsWithoutUsage: number;
+  /** False when at least one contributing response lacked usage (UX-003). */
+  usageKnown: boolean;
 }
 
 /**
@@ -217,20 +232,54 @@ export async function runPipeline(
   variant: PipelineVariant,
   llm: LlmAdapter,
   nowIso: string,
+  budget?: BudgetLedger,
 ): Promise<PipelineOutcome> {
-  const usage: PipelineUsage = { in: 0, out: 0, calls: 0 };
+  const usage: PipelineUsage = {
+    in: 0,
+    out: 0,
+    calls: 0,
+    attempts: 0,
+    callsWithoutUsage: 0,
+    usageKnown: true,
+  };
 
+  // UX-001: one completion = one logical call; transport attempts are the
+  // adapter's real count when it self-reports (budget-aware adapters charge
+  // the ledger per HTTP attempt themselves), otherwise the runner commits one
+  // attempt per completion. The PEEK before each completion refuses to even
+  // start a call the budget cannot pay for; a cap crossed mid-run throws
+  // BudgetExceededError out of this wrapper — the pipeline is strictly
+  // sequential, so the abort propagates cleanly with no later completion
+  // ever starting.
   const complete = async (prompt: string): Promise<string> => {
+    budget?.checkWall();
+    budget?.ensureAttemptAdmissible();
     const res = await llm.complete(prompt);
+    const attempts = res.attempts ?? 1;
+    if (res.attempts === undefined) {
+      budget?.chargeAttempts(1);
+    }
     usage.calls += 1;
+    usage.attempts += attempts;
     if (res.usage) {
       usage.in += res.usage.in_tokens;
       usage.out += res.usage.out_tokens;
+      budget?.chargeTokens(res.usage);
+    } else {
+      usage.callsWithoutUsage += 1;
+      usage.usageKnown = false;
     }
     return res.text;
   };
 
-  const usageSnapshot = (): PipelineUsage => ({ in: usage.in, out: usage.out, calls: usage.calls });
+  const usageSnapshot = (): PipelineUsage => ({
+    in: usage.in,
+    out: usage.out,
+    calls: usage.calls,
+    attempts: usage.attempts,
+    callsWithoutUsage: usage.callsWithoutUsage,
+    usageKnown: usage.usageKnown,
+  });
 
   const blocked = (reasons: string[], degraded = false): PipelineOutcome => ({
     kind: 'blocked',
@@ -350,6 +399,13 @@ export async function runPipeline(
   // bundle can never overrule an earlier must_be_blocked verdict — this
   // pipeline has no evidence-bearing resolution stage, so "the merger came
   // back clean" is exactly the invented resolution the product refuses.
+  //
+  // T11 decision (recorded): NO early exit on a blocked classifier verdict.
+  // The full chain is deliberate evidence, the monotonic semantics are
+  // protected (T5), council is now an EXPLICIT opt-in (single is the
+  // default), and run budgets cap the chain's worst-case cost at the
+  // documented envelope anyway — early exit would trade evidence for savings
+  // nobody needs on the bounded path.
   const classifierEvidence = classifierBlocked
     ? [
         'BLOCKED_EARLIER_EVIDENCE: the council classifier (call 1) returned must_be_blocked=true — ' +

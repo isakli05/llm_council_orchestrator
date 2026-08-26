@@ -1,4 +1,5 @@
 import type { LlmAdapter, LlmCompleteOptions, LlmResponse } from './adapter';
+import type { BudgetLedger } from '../budget';
 
 /**
  * OpenAI-compatible HTTP LLM adapter (chat/completions) built on the global
@@ -19,17 +20,31 @@ import type { LlmAdapter, LlmCompleteOptions, LlmResponse } from './adapter';
  *
  * TRANSPORT RETRY (live-run robustness): transport-level failures (fetch
  * 'fetch failed', timeouts) and transient statuses (429, 5xx) are retried up
- * to MAX_ATTEMPTS=4 total attempts with 2s/5s/10s backoff and a 180s
- * per-request timeout. Retrying the IDENTICAL request on infrastructure
- * errors does not alter experiment results (no partial answers are kept);
- * non-retryable 4xx fails immediately — auth/protocol errors are never
- * hammered. A 2xx with unparseable/missing payload still fails closed
+ * to HTTP_MAX_ATTEMPTS_PER_COMPLETION=4 total attempts with 2s/5s/10s backoff
+ * and a 180s per-request timeout. Retrying the IDENTICAL request on
+ * infrastructure errors does not alter experiment results (no partial answers
+ * are kept); non-retryable 4xx fails immediately — auth/protocol errors are
+ * never hammered. A 2xx with unparseable/missing payload still fails closed
  * WITHOUT retry (malformed success is a protocol bug, not a blip).
+ *
+ * RUN BUDGET (UX-001): when handed a BudgetLedger the adapter charges one
+ * attempt PER HTTP REQUEST (before it is issued — a capped run never sends
+ * the next fetch) and checks the wall deadline between attempts; successful
+ * completions report `attempts` on the response so timed-out/retried
+ * requests count in the run tally (the runner then knows not to double
+ * charge). Without a ledger the adapter behaves exactly as before.
  */
 
-const MAX_ATTEMPTS = 4;
+/** Total HTTP attempts one complete() may make (transport retry ceiling). */
+export const HTTP_MAX_ATTEMPTS_PER_COMPLETION = 4;
 const BACKOFF_MS = [2_000, 5_000, 10_000];
-const REQUEST_TIMEOUT_MS = 180_000;
+/** Per-request timeout (every attempt gets its own). */
+export const HTTP_REQUEST_TIMEOUT_MS = 180_000;
+/** Total backoff sleep between the 4 attempts of one exhausted completion. */
+export const HTTP_BACKOFF_TOTAL_MS = BACKOFF_MS.reduce((a, b) => a + b, 0);
+
+const MAX_ATTEMPTS = HTTP_MAX_ATTEMPTS_PER_COMPLETION;
+const REQUEST_TIMEOUT_MS = HTTP_REQUEST_TIMEOUT_MS;
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
@@ -45,7 +60,7 @@ interface HttpChatResponse {
   usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
 }
 
-export function createHttpLlm(): LlmAdapter {
+export function createHttpLlm(budget?: BudgetLedger): LlmAdapter {
   const baseUrl = process.env.LCO_LLM_BASE_URL;
   const apiKey = process.env.LCO_LLM_API_KEY;
   const model = process.env.LCO_LLM_MODEL;
@@ -109,6 +124,13 @@ export function createHttpLlm(): LlmAdapter {
       let lastError: Error | undefined;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        // UX-001: every HTTP request charges the run budget BEFORE it is
+        // issued (a capped run never sends the next fetch), and the wall
+        // deadline is re-checked between attempts — the abort propagates as
+        // a rejection of this complete() with no further requests.
+        budget?.chargeAttempts(1);
+        budget?.checkWall();
+
         if (attempt > 1) await sleep(BACKOFF_MS[attempt - 2]);
 
         let res: Response;
@@ -129,7 +151,7 @@ export function createHttpLlm(): LlmAdapter {
         }
 
         if (res.ok) {
-          return parseSuccess(res);
+          return parseSuccess(res, attempt);
         }
 
         const body = await res.text().catch(() => '');
@@ -146,7 +168,7 @@ export function createHttpLlm(): LlmAdapter {
     },
   };
 
-  async function parseSuccess(res: Response): Promise<LlmResponse> {
+  async function parseSuccess(res: Response, attemptsUsed: number): Promise<LlmResponse> {
     let data: HttpChatResponse;
     try {
       data = (await res.json()) as HttpChatResponse;
@@ -168,6 +190,9 @@ export function createHttpLlm(): LlmAdapter {
         ? { in_tokens: u.prompt_tokens, out_tokens: u.completion_tokens }
         : undefined;
 
-    return { text, usage };
+    // UX-001: the completion reports its true transport cost (failed and
+    // timed-out attempts included) so the run tally counts attempts, not
+    // just successful completions.
+    return { text, usage, attempts: attemptsUsed };
   }
 }

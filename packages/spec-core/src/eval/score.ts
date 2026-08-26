@@ -32,6 +32,18 @@ export interface RunScore {
   inTokens: number;
   outTokens: number;
   calls: number;
+  /**
+   * UX-001: transport attempts (including retried/timed-out ones) as opposed
+   * to logical completions (`calls`). Defaults to `calls` for usages built
+   * before the distinction existed.
+   */
+  attempts: number;
+  /**
+   * UX-003: false when any contributing response came back without provider
+   * usage — the token numbers are then PARTIAL sums and must be rendered as
+   * `unknown`; the G4 cost condition treats them as not satisfying the gate.
+   */
+  usageKnown: boolean;
 }
 
 /** Usage accounting as produced by runPipeline (sums over complete() calls). */
@@ -39,6 +51,9 @@ export interface RunUsage {
   in: number;
   out: number;
   calls: number;
+  attempts?: number;
+  callsWithoutUsage?: number;
+  usageKnown?: boolean;
 }
 
 /**
@@ -125,5 +140,7 @@ export function scoreRun(task: EvalTask, outcome: PipelineOutcome, usage: RunUsa
     inTokens: usage.in,
     outTokens: usage.out,
     calls: usage.calls,
+    attempts: usage.attempts ?? usage.calls,
+    usageKnown: usage.usageKnown !== false,
   };
 }

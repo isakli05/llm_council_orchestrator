@@ -10,7 +10,19 @@ import { cmdTrace } from './commands/trace';
 import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 import { cmdCheck } from './commands/check';
-import { cmdGenerate } from './commands/generate';
+import { cmdGenerate, DEFAULT_GENERATE_VARIANT, normalizeIntent, MAX_INTENT_CHARS } from './commands/generate';
+import {
+  MAX_COMPLETIONS,
+  worstCaseAttempts,
+  worstCaseWallMs,
+  DEFAULT_WALL_SLACK_MS,
+} from '../eval/budget';
+import {
+  HTTP_MAX_ATTEMPTS_PER_COMPLETION,
+  HTTP_REQUEST_TIMEOUT_MS,
+  HTTP_BACKOFF_TOTAL_MS,
+} from '../eval/llm/http';
+import type { RunBudgetSpec } from '../eval/budget';
 
 const USAGE = `usage: lco <command> <dir> [args]
        lco --help | -h | --version | <command> --help
@@ -62,13 +74,27 @@ commands:
                                Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE
   generate <dir> --intent <text> | --intent-file <path>
                                [--variant single|council] [--profile p-mini|p-standard]
+                               [--max-attempts N] [--max-tokens N] [--max-wall-ms N]
                                compile a natural-language intent into a spec/ draft via
                                a live LLM (requires LCO_LLM_BASE_URL, LCO_LLM_API_KEY and
                                LCO_LLM_MODEL env vars; fails closed without them).
-                               Defaults: variant council, profile p-standard. COST NOTE:
-                               council = 3 LLM calls (classifier + proposal + judge),
-                               single = 1 call — council costs 3x. The evidence gate
-                               decides: blocked intent -> exit 1 with reasons, nothing
+                               Defaults: variant ${DEFAULT_GENERATE_VARIANT}, profile
+                               p-standard — council is explicit (--variant council).
+                               COST ENVELOPE (an HTTP attempt is a request, NOT a
+                               completion): each completion may cost up to
+                               ${HTTP_MAX_ATTEMPTS_PER_COMPLETION} attempts (${HTTP_REQUEST_TIMEOUT_MS / 1000}s timeout each,
+                               ${HTTP_BACKOFF_TOTAL_MS / 1000}s total backoff). Worst case: single
+                               ${MAX_COMPLETIONS.single} completions x ${HTTP_MAX_ATTEMPTS_PER_COMPLETION} = ${worstCaseAttempts('single')} requests,
+                               council ${MAX_COMPLETIONS.council} x ${HTTP_MAX_ATTEMPTS_PER_COMPLETION} = ${worstCaseAttempts('council')}. Run budgets abort the run
+                               with BUDGET_EXCEEDED (nothing written) when total attempts,
+                               tokens (in+out, provider-reported), or wall time cross the
+                               cap; defaults are the envelope worst case (attempts +0,
+                               wall +${DEFAULT_WALL_SLACK_MS / 1000}s) — override with --max-attempts,
+                               --max-tokens, --max-wall-ms or LCO_GENERATE_MAX_ATTEMPTS,
+                               LCO_GENERATE_MAX_TOKENS, LCO_GENERATE_MAX_WALL_MS. --intent
+                               is trimmed and rejected when blank or over ${MAX_INTENT_CHARS}
+                               chars (use --intent-file) BEFORE any paid call. The evidence
+                               gate decides: blocked intent -> exit 1 with reasons, nothing
                                written; lint-clean spec -> spec/ section files written,
                                exit 0. Refuses (exit 2) if <dir>/spec already exists;
                                --intent and --intent-file are mutually exclusive.
@@ -124,6 +150,8 @@ type ParseResult =
       intentFile?: string;
       variant: GenerateVariant;
       profile: InitProfile;
+      /** Budget flag overrides (validated positive ints); env vars resolve at the runCli boundary. */
+      budget?: RunBudgetSpec;
     };
 
 function parseArgs(argv: string[]): ParseResult {
@@ -236,8 +264,20 @@ function parseArgs(argv: string[]): ParseResult {
     const [dir, ...flags] = rest;
     let intent: string | undefined;
     let intentFile: string | undefined;
-    let variant: GenerateVariant = 'council';
+    // UX-001 ruling: single is the conservative default; the constant lives
+    // in commands/generate.ts — the ONE place the default is chosen.
+    let variant: GenerateVariant = DEFAULT_GENERATE_VARIANT;
     let profile: InitProfile = 'p-standard';
+    const budget: RunBudgetSpec = {};
+    let sawBudgetFlag = false;
+    const budgetFlag = (name: 'maxAttempts' | 'maxTokens' | 'maxWallMs', raw: string | undefined, flag: string): string | null => {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        return `invalid ${flag} ${String(raw)}: expected a positive integer`;
+      }
+      budget[name] = n;
+      return null;
+    };
     for (let i = 0; i < flags.length; i++) {
       const flag = flags[i];
       if (flag === '--intent') {
@@ -245,7 +285,14 @@ function parseArgs(argv: string[]): ParseResult {
         if (value === undefined || value === '') {
           return { error: 'missing value for --intent' };
         }
-        intent = value;
+        // UX-004 preflight: normalize (trim, parity with --intent-file) and
+        // refuse blank/oversized intents at PARSE time — before any IO, env
+        // access, or adapter construction. A bad invocation costs nothing.
+        const normalized = normalizeIntent(value);
+        if (!normalized.ok) {
+          return { error: `--intent ${normalized.error}` };
+        }
+        intent = normalized.intent;
       } else if (flag === '--intent-file') {
         const value = flags[++i];
         if (value === undefined || value === '') {
@@ -266,6 +313,11 @@ function parseArgs(argv: string[]): ParseResult {
           };
         }
         profile = value;
+      } else if (flag === '--max-attempts' || flag === '--max-tokens' || flag === '--max-wall-ms') {
+        sawBudgetFlag = true;
+        const name = flag === '--max-attempts' ? 'maxAttempts' : flag === '--max-tokens' ? 'maxTokens' : 'maxWallMs';
+        const err = budgetFlag(name, flags[++i], flag);
+        if (err) return { error: err };
       } else {
         return { error: `unexpected argument for 'generate': ${flag}` };
       }
@@ -276,7 +328,15 @@ function parseArgs(argv: string[]): ParseResult {
     if (intent === undefined && intentFile === undefined) {
       return { error: 'missing intent: pass --intent <text> or --intent-file <path>' };
     }
-    return { command: 'generate', dir, intent, intentFile, variant, profile };
+    return {
+      command: 'generate',
+      dir,
+      intent,
+      intentFile,
+      variant,
+      profile,
+      ...(sawBudgetFlag ? { budget } : {}),
+    };
   }
   if (rest.length > 1) {
     return { error: `unexpected extra arguments after <dir>: ${rest.slice(1).join(' ')}` };
@@ -321,6 +381,30 @@ async function readVersion(): Promise<string> {
     throw new Error('package.json has no usable version field');
   }
   return version;
+}
+
+/**
+ * UX-001: env-var budget overrides for generate (LCO_GENERATE_MAX_ATTEMPTS /
+ * _MAX_TOKENS / _MAX_WALL_MS). Read ONCE per invocation at this CLI boundary.
+ * Unset/blank means "not overridden"; a set-but-invalid value is a usage
+ * error naming the variable — never silently ignored.
+ */
+function readBudgetEnv(): RunBudgetSpec | string {
+  const specs: { name: string; key: keyof RunBudgetSpec; raw: string | undefined }[] = [
+    { name: 'LCO_GENERATE_MAX_ATTEMPTS', key: 'maxAttempts', raw: process.env.LCO_GENERATE_MAX_ATTEMPTS },
+    { name: 'LCO_GENERATE_MAX_TOKENS', key: 'maxTokens', raw: process.env.LCO_GENERATE_MAX_TOKENS },
+    { name: 'LCO_GENERATE_MAX_WALL_MS', key: 'maxWallMs', raw: process.env.LCO_GENERATE_MAX_WALL_MS },
+  ];
+  const out: RunBudgetSpec = {};
+  for (const { name, key, raw } of specs) {
+    if (raw === undefined || raw === '') continue;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n <= 0) {
+      return `${name} must be a positive integer (got '${raw}')`;
+    }
+    out[key] = n;
+  }
+  return out;
 }
 
 /**
@@ -459,6 +543,9 @@ export async function runCli(argv: string[]): Promise<number> {
     case 'generate': {
       // Wrapper edge: resolve --intent-file to the intent text HERE (IO stays
       // at the boundary); an unreadable or empty file is a usage error (2).
+      // Parity with inline --intent: the file's content is trimmed and a
+      // blank-after-trim file is refused (UX-004) — no length cap on files,
+      // they are the documented escape hatch for long intents.
       let intent: string;
       if (parsed.intentFile !== undefined) {
         let raw: string;
@@ -468,19 +555,32 @@ export async function runCli(argv: string[]): Promise<number> {
           console.error(`lco: cannot read --intent-file ${parsed.intentFile}: ${(err as Error).message}`);
           return 2;
         }
-        intent = raw.trim();
-        if (intent === '') {
-          console.error(`lco: --intent-file ${parsed.intentFile} is empty`);
+        const normalized = normalizeIntent(raw);
+        if (!normalized.ok) {
+          console.error(`lco: --intent-file ${parsed.intentFile}: ${normalized.error}`);
           return 2;
         }
+        intent = normalized.intent;
       } else {
         intent = parsed.intent!;
       }
 
-      // CLI boundary: the clock is read HERE only and injected as nowIso
-      // (same pattern as freeze/change/init/check). cmdGenerate resolves
-      // createHttpLlm() itself and THROWS fail-closed when LCO_LLM_* env is
-      // missing — that throw lands here as exit 2 with the env message.
+      // UX-001: budget overrides — CLI flags > env vars > envelope-derived
+      // defaults (resolved inside cmdGenerate). Garbage env values are
+      // usage errors, never silently ignored.
+      const envBudget = readBudgetEnv();
+      if (typeof envBudget === 'string') {
+        console.error(`lco: ${envBudget}`);
+        return 2;
+      }
+      const budget: RunBudgetSpec = { ...envBudget, ...parsed.budget };
+
+      // CLI boundary: the clock is read HERE only and injected (nowIso for
+      // prompts, nowMs for the wall budget — the core never reads the clock
+      // itself). cmdGenerate resolves createHttpLlm() itself and THROWS
+      // fail-closed when LCO_LLM_* env is missing; a budget abort
+      // (BudgetExceededError) lands here the same way: exit 2, nothing
+      // written.
       let result;
       try {
         result = await cmdGenerate(parsed.dir, {
@@ -488,6 +588,8 @@ export async function runCli(argv: string[]): Promise<number> {
           variant: parsed.variant,
           profile: parsed.profile,
           nowIso: new Date().toISOString(),
+          budget,
+          nowMs: () => Date.now(),
         });
       } catch (err) {
         console.error(`lco: generate failed: ${(err as Error).message}`);

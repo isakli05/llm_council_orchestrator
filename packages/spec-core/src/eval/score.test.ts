@@ -53,6 +53,8 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
       inTokens: 10,
       outTokens: 5,
       calls: 1,
+      attempts: 1,
+      usageKnown: true,
     });
   });
 
@@ -68,6 +70,8 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
       inTokens: 10,
       outTokens: 5,
       calls: 1,
+      attempts: 1,
+      usageKnown: true,
     });
   });
 

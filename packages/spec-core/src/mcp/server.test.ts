@@ -634,18 +634,19 @@ describe('handleRpcLine: lco_generate (PROD-004 paid-call consent)', () => {
     expect(calls()).toBe(0);
   });
 
-  it('digest binds RESOLVED content: omitted defaults hash identically to explicit council/p-standard', async () => {
+  it('digest binds RESOLVED content: omitted defaults hash identically to explicit single/p-standard (UX-001 ruling)', async () => {
     const root = freshRoot('spec-core-mcp-gen-resolved-');
-    // Omitted variant/profile resolve to council/p-standard — the refusal
-    // must advertise the digest of the RESOLVED content, so a client that
-    // then sends explicit council/p-standard with that digest is authorized.
+    // Omitted variant/profile resolve to single/p-standard (T11: single is the
+    // conservative default; council is explicit) — the refusal must advertise
+    // the digest of the RESOLVED content, so a client that then sends explicit
+    // single/p-standard with that digest is authorized.
     const refusal = await callTool('lco_generate', { dir: root, intent: INTENT }, {
       allowGenerate: true,
       llm: makeLlm([]).llm,
     });
     expect(refusal.result.isError).toBe(true);
     const digest = digestFrom(text(refusal));
-    expect(digest).toBe(generateConsentDigest(INTENT, 'p-standard', 'council'));
+    expect(digest).toBe(generateConsentDigest(INTENT, 'p-standard', 'single'));
   });
 
   it('the full consent chain (mock adapter) → generation runs, gates inherited, draft/v1 written', async () => {
@@ -731,6 +732,43 @@ describe('handleRpcLine: lco_generate (PROD-004 paid-call consent)', () => {
     expect(text(res)).toContain('refusing to overwrite');
     expect(calls()).toBe(0);
     expect(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8')).toBe('sentinel-content');
+  });
+
+  it('omitted variant defaults to SINGLE (UX-001 ruling): full chain makes exactly 1 call', async () => {
+    const root = freshRoot('spec-core-mcp-gen-single-default-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    // profile is explicit p-mini (inlineConforming is a p-mini bundle); the
+    // VARIANT is omitted — it must resolve to single, not council.
+    const digest = generateConsentDigest(INTENT, 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT, profile: 'p-mini', consent: { digest } }, // no variant passed
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(false);
+    expect(calls()).toBe(1); // single: one paid call — council is explicit
+    expect(text(res)).toContain('single');
+  });
+
+  it('oversized intent (defense in depth): cmdGenerate preflight refuses, ZERO adapter calls, nothing written', async () => {
+    const root = freshRoot('spec-core-mcp-gen-bigintent-');
+    const bigIntent = 'y'.repeat(10_001);
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    const digest = generateConsentDigest(bigIntent, 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: bigIntent, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toContain('intent');
+    expect(text(res)).toContain('--intent-file');
+    expect(calls()).toBe(0);
+    expect(existsSync(join(root, 'spec'))).toBe(false);
   });
 
   it('full chain but NO live LLM env and no injected adapter → the fail-closed LCO_LLM_* refusal (never invents keys)', async () => {

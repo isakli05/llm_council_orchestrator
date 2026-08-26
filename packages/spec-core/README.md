@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (858 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter ./packages/spec-core test    # vitest (899 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
@@ -65,7 +65,7 @@ bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hat
 | `plan <dir> [--json]` | topolojik yürütme planı (deterministik Kahn; aynı seviyede task_id lexicographic); döngü → hata; `--json` makine-okur |
 | `init <dir> [--profile p-mini\|p-standard] [--name <ad>]` | ÇALIŞAN minimal EXAMPLE spec iskeleti yazar; `<dir>/spec` varsa reddeder |
 | `check <dir> [--task TASK-0001] [--yes] [--timeout-ms 60000]` | TaskContract verification komutlarını önizler/koşar — **varsayılan DRY-RUN** |
-| `generate <dir> --intent "<metin>" \| --intent-file <yol> [--variant council\|single] [--profile p-mini\|p-standard]` | doğal-dil niyetini canlı LLM ile derlenebilir `spec/` taslağına çevirir; kanıt kapısı bloklarsa HİÇBİR dosya yazmaz (ayrıntı: aşağıda) |
+| `generate <dir> --intent "<metin>" \| --intent-file <yol> [--variant single\|council] [--profile p-mini\|p-standard] [--max-attempts N] [--max-tokens N] [--max-wall-ms N]` | doğal-dil niyetini canlı LLM ile derlenebilir `spec/` taslağına çevirir; kanıt kapısı bloklarsa HİÇBİR dosya yazmaz (ayrıntı: aşağıda) |
 
 Çıkış kodları (tüm CLI için tutarlı sözleşme — **0** başarı, **1** içerik/kural
 başarısızlığı, **2** kullanım/şema hatası):
@@ -81,7 +81,7 @@ başarısızlığı, **2** kullanım/şema hatası):
 | `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası VEYA lint reddi (BACK-006: plan lint-clean bundle ister) |
 | `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
 | `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme VEYA lint reddi (BACK-006: check lint-clean bundle ister), bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
-| `generate` | `spec/` yazıldı (state draft) | kanıt kapısı bloğu VEYA savunma-lint reddi — HİÇBİR dosya yazılmaz | kullanım hatası (bozuk bayrak, eksik/çakışan `--intent`), eksik `LCO_LLM_*` env, `<dir>/spec` zaten var (üzerine yazma reddi) |
+| `generate` | `spec/` yazıldı (state draft) | kanıt kapısı bloğu VEYA savunma-lint reddi — HİÇBİR dosya yazılmaz | kullanım hatası (bozuk bayrak, eksik/çakışan/boş/aşırı-uzun `--intent`), eksik `LCO_LLM_*` env, `<dir>/spec` zaten var (üzerine yazma reddi), `BUDGET_EXCEEDED` (koşu bütçesi aşıldı — hiçbir şey yazılmaz) |
 
 Lint kuralları: **L01–L08, L10, L12** (10 bağlayıcı kural; L09 ve L11 şema katmanında
 zorlanır, lint değil). Her kuralın `fixtures/bad/LXX/` altında beklenen hatayı üreten
@@ -339,12 +339,44 @@ komut bir reddin etrafına asla içerik uydurmaz.
 
 ```sh
 lco generate <dir> --intent "<metin>" | --intent-file <path> \
-  [--variant council|single] [--profile p-mini|p-standard]
+  [--variant single|council] [--profile p-mini|p-standard] \
+  [--max-attempts N] [--max-tokens N] [--max-wall-ms N]
 ```
 
-- **Varsayılanlar:** `--variant council`, `--profile p-standard`. **Maliyet notu:**
-  council = **3 LLM çağrısı** (sınıflandırıcı + önerici + yargıç), single = 1 çağrı —
-  council yaklaşık 3× token maliyeti.
+- **Varsayılanlar:** `--variant single`, `--profile p-standard` (varsayılan TEK bir
+  yerde seçilir: `commands/generate.ts` içindeki `DEFAULT_GENERATE_VARIANT`; CLI,
+  MCP sunucusu ve bu doküman aynı kaynaktan beslenir). Council pahalı yoldur ve
+  faydası henüz kanıtlanmadığı için **açık tercihle** çalışır: `--variant council`.
+- **Dürüst maliyet zarfı (UX-001):** "3 çağrı" değil, gerçek en-kötü-case zarf —
+  **HTTP denemesi (attempt) ≠ tamamlama (completion)**. Doğrulama-informed
+  retry'ler tamamlama sayısını, transport retry'ler deneme sayısını büyütür. Her
+  tamamlama en fazla 4 HTTP denemesi yapabilir (her deneme 180 s zaman aşımı,
+  tükenen denemeler arası toplam 17 s backoff: 2+5+10):
+
+  | variant | tamamlama (iyi → en kötü) | HTTP denemesi (en kötü) | en-kötü duvar süresi |
+  | --- | --- | --- | --- |
+  | single | 1 → 3 | 3 × 4 = **12** istek | 3 × (4×180 s + 17 s) = 2211 saniye (~36,9 dk) |
+  | council | 3 → 6 | 6 × 4 = **24** istek | 6 × (4×180 s + 17 s) = 4422 saniye (~73,7 dk) |
+
+  (Sayılar kod sabitlerinden türetilir — `eval/budget.ts`; `budget.test.ts`
+  README'yi bu sabitlere sabitler, doküman kayarsa test düşer.)
+- **Koşu bütçesi (UX-001):** toplam HTTP denemesi, toplam token (in+out; sağlayıcı
+  usage bildirdiğinde) ve duvar süresi bütçeleri aşılırsa koşu yapılandırılmış
+  `BUDGET_EXCEEDED` hatasıyla İPTAL olur (exit 2, HİÇBİR şey yazılmaz — asla sessiz
+  kısmi başarı). Varsayılanlar zarftan türetilir: deneme limiti = belgelenmiş en
+  kötü case (+0), duvar limiti = en kötü case + 60 s pay; token limiti varsayılan
+  yoktur (model/sağlayıcıya göre büyüklük değişir — varsayılan sayı tahmin olur).
+  Geçersiz kılma: `--max-attempts` / `--max-tokens` / `--max-wall-ms` bayrakları
+  veya `LCO_GENERATE_MAX_ATTEMPTS` / `LCO_GENERATE_MAX_TOKENS` /
+  `LCO_GENERATE_MAX_WALL_MS` env değişkenleri (bayrak > env > varsayılan; bozuk
+  değer exit 2). İptal temizdir: boru hattı sıkı sıkıya sıralıdır, ödenememiş
+  promise bırakmaz; HTTP adaptörü bütçe defterini deneme BAŞINA şarj eder, cap
+  dolunca bir sonraki istek hiç gönderilmez.
+- **Kullanım muhasebesi (UX-001 + UX-003):** özetler tamamlama ve HTTP denemesini
+  ayrı ayrı gösterir (`N LLM call(s) / M HTTP attempt(s)` — zaman aşımına uğrayan
+  denemeler dahil). Sağlayıcı usage BİLDİRMEDİĞİNDE token sayıları `unknown`
+  görünür — asla `0 in / 0 out` değil; G4 maliyet koşulu da unknown'ı geçmez
+  (`0 <= 3×0` kanıt değildir).
 - **Env sözleşmesi (fail-closed):** `LCO_LLM_BASE_URL`, `LCO_LLM_API_KEY` ve
   `LCO_LLM_MODEL` kullanıcı tarafından açıkça sağlanmalıdır; biri eksikse komut yarım
   yapılandırmayla devam etmez, exit 2 verir. İsteğe bağlı: `LCO_LLM_MAX_TOKENS`
@@ -353,8 +385,15 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
   reasoning'i atlar).
 - **Para-yakma sırası:** tüm kullanım/çevre/doğrulama kontrolleri ilk LLM çağrısından
   ÖNCE koşar — bayrak çözümlemesi (`--intent`/`--intent-file` karşılıklı dışlar,
-  bozuk bayrak), `--intent-file` okuma/boş-dosya denetimi, no-clobber (`<dir>/spec`
-  varsa exit 2) ve env denetimi sırasıyla. Yanlış çağrı hiç ücret ödemez.
+  bozuk bayrak), **intent preflight (UX-004)**, `--intent-file` okuma/boş-dosya
+  denetimi, no-clobber (`<dir>/spec` varsa exit 2) ve env denetimi sırasıyla.
+  Yanlış çağrı hiç ücret ödemez.
+- **Intent preflight (UX-004):** `--intent` metni normalize edilir (trim —
+  `--intent-file` ile parite) ve boşluk-yalnızca olduğunda reddedilir; ayrıca
+  10.000 karakterle sınırlıdır (üstünde: exit 2, mesaj `--intent-file`'a yönlendirir
+  — uzun metin için tasarlanmış kaçış yolu odur). Her iki red da adaptör
+  KURULUMUNDAN önce koşar: boş/aşırı-uzun intent sıfır adaptör çağrısı anlamına
+  gelir (testlerle sabitlenmiştir).
 - **Fail-closed yargı:** kanıt kapısı niyeti bloklarsa (belirsiz/çelişkili) exit 1 +
   gerekçe listesi, **HİÇBİR dosya yazılmaz**. Üretilen bundle ayrıca savunma-lint
   yeniden denetiminden geçer; kirli bundle da yazılmaz (yine exit 1, hiçbir şey
@@ -494,7 +533,7 @@ LLM çağrısı harcatamaz. İki katman, ikisi birden zorunlu — biri bile eksi
    ```
 
    (manifest artifact-hash'leriyle aynı çerçeve). Sunucu digest'i ÇÖZÜLMÜŞ değerler
-   üzerinden (varsayılanlar uygulanmış: variant=council, profile=p-standard) isteğin
+   üzerinden (varsayılanlar uygulanmış: variant=single, profile=p-standard) isteğin
    işlenme anında yeniden hesaplar; uyuşmazlıkta her iki digest'i adlandıran reddetme.
    `consent` içermeyen istek, reddetmenin kendisi önizlemedir: yanıtta bu isteğin
    digest'i `consent digest:` satırında ilan edilir — actionable retry bir istek

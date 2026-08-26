@@ -379,10 +379,12 @@ export type GenerateVariant = 'single' | 'council';
  * - `intent` — the full prompt text; consenting to one intent is never
  *   consenting to another.
  * - `profile` — parameterizes every prompt (and gates the output bundle).
- * - `variant` — the cost of the call (council = 3 calls, single = 1).
+ * - `variant` — the cost axis of the call (single is the default and the
+ *   cheap path — up to 3 completions / 12 HTTP attempts worst case; council
+ *   is explicit and up to 6 / 24; see eval/budget.ts).
  *
  * Computed over the RESOLVED values (defaults applied): a request omitting
- * `variant` and one sending `variant:'council'` carry identical effectual
+ * `variant` and one sending `variant:'single'` carry identical effectual
  * content and deliberately share a digest (the T9 content-binding idiom —
  * the digest binds WHAT runs, not how it was spelled). Cross-tool replay is
  * impossible by construction: the payload shape differs from

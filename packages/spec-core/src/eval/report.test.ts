@@ -37,6 +37,8 @@ function passRuns(): RunScore[] {
         inTokens: variant === 'single' ? 100 : 300,
         outTokens: variant === 'single' ? 50 : 150,
         calls: variant === 'single' ? 1 : 3,
+        attempts: variant === 'single' ? 1 : 3,
+        usageKnown: true,
       });
     }
   }
@@ -302,5 +304,54 @@ describe('runEvalAll — mock e2e', () => {
 
   it('runs without a reportPath (report optional)', async () => {
     await expect(runEvalAll({ variant: 'mock' })).resolves.toBe('PASS_DETERMINISTIC_ONLY');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UX-003 (T11): unknown token usage is NOT zero — display + the G4 cost gate
+// ---------------------------------------------------------------------------
+
+describe('renderGateReport — unknown usage (UX-003)', () => {
+  it('a run with unknown usage renders "unknown" in the token cells, never 0', () => {
+    const input = passInput();
+    const unknownRun = input.runs.find((r) => r.taskId === 'ET-01' && r.variant === 'council')!;
+    unknownRun.usageKnown = false;
+
+    const text = renderGateReport(input);
+
+    const row = text.split('\n').find((l) => l.startsWith('| ET-01 | council |'))!;
+    expect(row).toContain('unknown');
+  });
+
+  it('live + any unknown-usage run → the G4 cost condition FAILS with a named reason (0 <= 3*0 is not evidence)', () => {
+    const input = passInput();
+    input.live = true;
+    input.runs[0]!.usageKnown = false; // one single run lacks provider usage
+
+    const text = renderGateReport(input);
+    expect(text).toContain('unknown usage');
+    expect(text).toContain('G4');
+    expect(text).toContain('VERDICT: FAIL');
+    // the named miss must say WHY unknown fails the cost half
+    const miss = text.split('\n').find((l) => l.startsWith('- G4: token cost not evaluable'));
+    expect(miss).toBeDefined();
+    expect(miss).toContain('not zero');
+  });
+
+  it('mock report: unknown usage does not affect the deterministic verdict (G4 is live-only)', () => {
+    const input = passInput();
+    input.runs[3]!.usageKnown = false;
+    const text = renderGateReport(input);
+    expect(text).toContain('VERDICT: PASS_DETERMINISTIC_ONLY');
+    expect(text).not.toContain('G4:');
+  });
+
+  it('the runs table carries the attempts column (UX-001: attempts ≠ completions)', () => {
+    const input = passInput();
+    input.runs[0]!.attempts = 4; // one completion, four HTTP attempts
+    const text = renderGateReport(input);
+    expect(text).toContain('| task | variant | assertions | blocked-correct | in-tokens | out-tokens | calls | attempts | council-leg |');
+    const row = text.split('\n').find((l) => l.startsWith(`| ${input.runs[0]!.taskId} |`))!;
+    expect(row).toMatch(/\| 1 \| 4 \|/); // calls 1, attempts 4
   });
 });

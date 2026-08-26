@@ -27,7 +27,9 @@ import { createHttpLlm } from './llm/http';
  *   G3: ambiguous/conflicting tasks blocked — all 8 must_be_blocked corpus
  *       tasks produced blocked outcomes in every run.
  *   G4: only when live runs are provided — council assertion total strictly
- *       greater than single AND council token cost <= 3x single.
+ *       greater than single AND council token cost <= 3x single. The cost
+ *       half requires COMPLETE provider usage: any run with unknown usage
+ *       fails it (UX-003 — unknown is not zero cost).
  *
  * Determinism: the report is a pure function of its input — no clock, no
  * randomness, no environment reads on the mock path. `runEvalAll('live')` is
@@ -242,6 +244,9 @@ interface GateCalcs {
   singleAssertions: number;
   councilCost: number;
   singleCost: number;
+  usageUnknownRuns: number;
+  costKnown: boolean;
+  g4CostOk: boolean;
   g4Pass: boolean;
   detPass: boolean;
   verdict: GateVerdict;
@@ -278,7 +283,13 @@ function calcs(r: GateReportInput): GateCalcs {
   const singleCost = r.runs
     .filter((x) => x.variant === 'single')
     .reduce((a, x) => a + x.inTokens + x.outTokens, 0);
-  const g4Pass = councilAssertions > singleAssertions && councilCost <= 3 * singleCost;
+  // UX-003: a provider that reports no usage leaves the token sums PARTIAL —
+  // "council 0 <= 3x single 0" is not cost evidence, so the cost half of G4
+  // fails with a named reason when ANY contributing run has unknown usage.
+  const usageUnknownRuns = r.runs.filter((x) => x.usageKnown === false).length;
+  const costKnown = usageUnknownRuns === 0;
+  const g4CostOk = costKnown && councilCost <= 3 * singleCost;
+  const g4Pass = councilAssertions > singleAssertions && g4CostOk;
 
   const detPass = g1Pass && g2Pass && g3Pass;
   const verdict: GateVerdict = !r.live
@@ -291,7 +302,8 @@ function calcs(r: GateReportInput): GateCalcs {
 
   return {
     g1Caught, g1Total, g1Pass, g2Pass, blockedCount, blockedTotal, g3Pass,
-    councilAssertions, singleAssertions, councilCost, singleCost, g4Pass,
+    councilAssertions, singleAssertions, councilCost, singleCost,
+    usageUnknownRuns, costKnown, g4CostOk, g4Pass,
     detPass, verdict,
   };
 }
@@ -314,9 +326,13 @@ export function renderGateReport(r: GateReportInput): string {
   lines.push(`- G2: drift caught: ${r.driftCaught}`);
   lines.push(`- G3: ambiguous/conflicting tasks blocked: ${c.blockedCount}/${c.blockedTotal}`);
   if (r.live) {
+    const costCell = c.costKnown
+      ? `council cost ${c.councilCost} <= 3x single cost ${c.singleCost}: ${yn(c.g4CostOk)}`
+      : `council cost unknown <= 3x single cost unknown: ${yn(c.g4CostOk)} ` +
+        `(${c.usageUnknownRuns} run(s) without provider usage)`;
     lines.push(
       `- G4: council assertions ${c.councilAssertions} > single ${c.singleAssertions}: ${yn(c.councilAssertions > c.singleAssertions)}; ` +
-        `council cost ${c.councilCost} <= 3x single cost ${c.singleCost}: ${yn(c.councilCost <= 3 * c.singleCost)}`,
+        costCell,
     );
   }
   lines.push('');
@@ -346,7 +362,13 @@ export function renderGateReport(r: GateReportInput): string {
     if (!(c.councilAssertions > c.singleAssertions)) {
       misses.push(`- G4: council assertions ${c.councilAssertions} not > single ${c.singleAssertions}`);
     }
-    if (!(c.councilCost <= 3 * c.singleCost)) {
+    if (!c.costKnown) {
+      // UX-003: unknown usage is NOT zero — the cost half fails with the reason named.
+      misses.push(
+        `- G4: token cost not evaluable — ${c.usageUnknownRuns} run(s) report unknown usage ` +
+          '(the provider sent no token counts; unknown is not zero cost)',
+      );
+    } else if (!(c.councilCost <= 3 * c.singleCost)) {
       misses.push(`- G4: council cost ${c.councilCost} exceeds 3x single cost ${c.singleCost}`);
     }
   }
@@ -355,15 +377,18 @@ export function renderGateReport(r: GateReportInput): string {
   }
 
   lines.push(`## Runs (${r.runs.length})`, '');
-  lines.push('| task | variant | assertions | blocked-correct | in-tokens | out-tokens | calls | council-leg |');
-  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
+  lines.push('| task | variant | assertions | blocked-correct | in-tokens | out-tokens | calls | attempts | council-leg |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const run of r.runs) {
     const blocked = run.blockedCorrectly === null ? 'n/a' : run.blockedCorrectly ? 'yes' : 'no';
+    // UX-003: token columns show unknown (never a partial sum dressed as 0).
+    const inCell = run.usageKnown ? run.inTokens : 'unknown';
+    const outCell = run.usageKnown ? run.outTokens : 'unknown';
     // BACK-008: a collapsed independent-proposal leg must be visible per run —
     // a degraded council output is not a full council result.
     const leg = run.variant === 'single' ? '-' : run.councilDegraded ? 'DEGRADED' : 'ok';
     lines.push(
-      `| ${run.taskId} | ${run.variant} | ${run.assertionsPassed}/${run.assertionsTotal} | ${blocked} | ${run.inTokens} | ${run.outTokens} | ${run.calls} | ${leg} |`,
+      `| ${run.taskId} | ${run.variant} | ${run.assertionsPassed}/${run.assertionsTotal} | ${blocked} | ${inCell} | ${outCell} | ${run.calls} | ${run.attempts} | ${leg} |`,
     );
   }
   lines.push('');
