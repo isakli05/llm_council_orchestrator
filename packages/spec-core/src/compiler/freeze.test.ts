@@ -168,3 +168,87 @@ describe('freeze: determinism', () => {
     expect(a.bundle!.manifest.artifact_hashes).toEqual(b.bundle!.manifest.artifact_hashes);
   });
 });
+
+describe('freeze: lifecycle transition gate (BACK-002)', () => {
+  /** pet-clinic with only manifest.state flipped; counters stay 0 and lint is clean. */
+  function inState(state: SpecBundle['manifest']['state']): SpecBundle {
+    const b = loadBundle('good/pet-clinic/bundle.json');
+    b.manifest.state = state;
+    return b;
+  }
+
+  function frozenPetClinic(): SpecBundle {
+    const result = freeze(loadBundle('good/pet-clinic/bundle.json'), cleanLint, NOW);
+    expect(result.ok).toBe(true);
+    return result.bundle!;
+  }
+
+  // Audit BACK-002 (b): a blocked manifest with zero counters used to pass
+  // every existing gate and freeze. The lifecycle gate must reject it.
+  it("rejects freezing a 'blocked' bundle even with clean lint and zero counters", () => {
+    const result = freeze(inState('blocked'), cleanLint, NOW);
+
+    expect(result.ok).toBe(false);
+    expect(result.bundle).toBeUndefined();
+    expect(result.reasons.some((r) => r.includes("'blocked'"))).toBe(true);
+    expect(result.reasons.some((r) => r.includes('draft'))).toBe(true);
+  });
+
+  it("rejects freezing 'superseded' and 'reviewed' bundles", () => {
+    for (const state of ['superseded', 'reviewed'] as const) {
+      const result = freeze(inState(state), cleanLint, NOW);
+      expect(result.ok).toBe(false);
+      expect(result.reasons.some((r) => r.includes(`'${state}'`))).toBe(true);
+    }
+  });
+
+  // Audit BACK-002 (c): re-freezing an already-frozen spec used to re-pin
+  // hand-edited sections under the SAME version, laundering the drift.
+  it('rejects re-freezing an already-frozen bundle and directs to lco change', () => {
+    const result = freeze(frozenPetClinic(), cleanLint, NOW);
+
+    expect(result.ok).toBe(false);
+    expect(result.bundle).toBeUndefined();
+    expect(result.reasons.length).toBeGreaterThan(0);
+    expect(result.reasons.some((r) => r.includes("'frozen'"))).toBe(true);
+    expect(result.reasons.some((r) => r.toLowerCase().includes('change'))).toBe(true);
+  });
+
+  it('rejects a draft with frozen_at residue', () => {
+    const b = inState('draft');
+    b.manifest.frozen_at = NOW;
+    const result = freeze(b, cleanLint, NOW);
+
+    expect(result.ok).toBe(false);
+    expect(result.reasons.some((r) => r.includes('frozen_at'))).toBe(true);
+  });
+
+  it('rejects impossible version provenance (v1 with pinned hashes; v2 without any)', () => {
+    const flippedBack = frozenPetClinic();
+    flippedBack.manifest.state = 'draft';
+    delete flippedBack.manifest.frozen_at;
+    const r1 = freeze(flippedBack, cleanLint, NOW);
+    expect(r1.ok).toBe(false);
+    expect(r1.reasons.some((r) => r.includes('spec_version is 1'))).toBe(true);
+
+    const orphan = loadBundle('good/pet-clinic/bundle.json');
+    orphan.manifest.spec_version = 2;
+    const r2 = freeze(orphan, cleanLint, NOW);
+    expect(r2.ok).toBe(false);
+    expect(r2.reasons.some((r) => r.includes('spec_version is 2'))).toBe(true);
+  });
+
+  it('still freezes the legitimate post-change draft (v2 with prior pinned hashes)', async () => {
+    const { applyChangeSet } = await import('./changeset');
+    const changed = applyChangeSet(
+      frozenPetClinic(),
+      { id: 'cs-f1', rationale: 'freeze gate probe', modified_tasks: [{ task_id: 'TASK-0001', patch: { title: 'Retitled' } }] },
+      NOW,
+    );
+    expect(changed.ok).toBe(true);
+
+    const reFrozen = freeze(changed.bundle!, cleanLint, NOW);
+    expect(reFrozen.ok).toBe(true);
+    expect(reFrozen.bundle!.manifest.spec_version).toBe(2); // freeze never bumps the version
+  });
+});

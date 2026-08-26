@@ -4,6 +4,7 @@ import type { SpecBundle } from '../../schemas';
 import { lintBundle } from '../../lint/engine';
 import type { LintFinding } from '../../lint/types';
 import { runPipeline } from '../../eval/runner';
+import { validateGenerationOutput } from '../../compiler/lifecycle';
 import type { LlmAdapter } from '../../eval/llm/adapter';
 import { createHttpLlm } from '../../eval/llm/http';
 import { writeSpecDir } from './write-spec';
@@ -100,6 +101,22 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
       output: [
         'generated bundle failed the defensive lint re-check — nothing written:',
         ...rejections.map((r) => `  - ${r}`),
+      ].join('\n'),
+    };
+  }
+
+  // --- 3b. lifecycle output gate (BACK-002, defense in depth) -----------------
+  // Same unreachable-today status as lintRejections: the pipeline's final
+  // bundle gate already enforces the generation contract. If a future runner
+  // change ever lets a non-draft / wrong-profile / non-v1 bundle through,
+  // generate must still refuse to write it.
+  const lifecycle = validateGenerationOutput(outcome.bundle, opts.profile);
+  if (lifecycle.length > 0) {
+    return {
+      code: 1,
+      output: [
+        'generated bundle failed the lifecycle output gate — nothing written:',
+        ...lifecycle.map((r) => `  - ${r}`),
       ].join('\n'),
     };
   }

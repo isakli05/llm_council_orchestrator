@@ -3,6 +3,7 @@ import { SpecBundleSchema, ComplexityProfileSchema } from '../schemas';
 import type { SpecBundle } from '../schemas';
 import { lintBundle } from '../lint/engine';
 import type { LintFinding } from '../lint/types';
+import { validateGenerationOutput } from '../compiler/lifecycle';
 import type { EvalTask } from './tasks';
 import type { LlmAdapter } from './llm/adapter';
 import { classifySingle, propose, proposeB, classifyAndProposeSingle } from './prompts';
@@ -128,8 +129,10 @@ export type PipelineTask = Pick<EvalTask, 'intent' | 'profile'>;
  *   decisions, which L08 turns into a blocked outcome — that is the intended
  *   blocking mechanism, not an error.
  *
- * The runner stops at spec+lint: manifest.state stays whatever the model
- * produced ('draft'/'blocked'); freezing is a later, separate stage.
+ * The runner stops at spec+lint+lifecycle: the final bundle must be a fresh
+ * DRAFT matching the task's profile at version 1 (the generation contract,
+ * enforced by the shared lifecycle validator — BACK-002); freezing is a
+ * later, separate stage.
  */
 export async function runPipeline(
   task: PipelineTask,
@@ -168,7 +171,10 @@ export async function runPipeline(
     return parsed.ok ? { ok: true, bundle: parsed.value as SpecBundle } : { ok: false, reason: parsed.reason };
   };
 
-  /** One gated bundle attempt chain: schema → (schema retry) → lint → (non-L08 lint retry). */
+  /** One gated bundle attempt chain: schema → (schema retry) → lifecycle →
+   * lint → (non-L08 lint retry). The lifecycle (generation contract) check
+   * precedes lint so an output that is not a fresh draft is refused with the
+   * transition named, not with whichever content lint happens to hit first. */
   const gatedBundle = async (prompt: string): Promise<
     { ok: true; bundle: SpecBundle } | { ok: false; reason: string; reasons?: string[] }
   > => {
@@ -177,6 +183,20 @@ export async function runPipeline(
       attempt = bundleFromText(await complete(buildValidationRetryPrompt(prompt, [attempt.reason])));
       if (!attempt.ok) return attempt;
     }
+
+    // Lifecycle gate (BACK-002): a generated bundle is ALWAYS a fresh draft —
+    // state 'draft', the task's profile, spec_version 1, no freeze residue.
+    // Terminal like L08: no retry is offered (retry policy is a separate
+    // concern), the violation is reported for the operator/model to fix.
+    const lifecycleGate = (b: SpecBundle): { ok: false; reason: string; reasons: string[] } | null => {
+      const violations = validateGenerationOutput(b, task.profile);
+      return violations.length > 0
+        ? { ok: false, reason: violations.join('; '), reasons: violations }
+        : null;
+    };
+
+    const initialLifecycle = lifecycleGate(attempt.bundle);
+    if (initialLifecycle) return initialLifecycle;
 
     let lint = lintBundle(attempt.bundle);
     const fixable = lint.errors.filter((f) => f.rule !== 'L08_UNRESOLVED_LEAK');
@@ -193,6 +213,12 @@ export async function runPipeline(
     if (lint.errors.length > 0) {
       return { ok: false, reason: lint.errors.map(lintReason).join('; '), reasons: lint.errors.map(lintReason) };
     }
+
+    // The retry above replaced the bundle — the generation contract is
+    // re-asserted on the FINAL bundle, never assumed from the first parse.
+    const finalLifecycle = lifecycleGate(attempt.bundle);
+    if (finalLifecycle) return finalLifecycle;
+
     return { ok: true, bundle: attempt.bundle };
   };
 

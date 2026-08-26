@@ -146,6 +146,53 @@ describe('runPipeline — single variant', () => {
     };
     await expect(runPipeline(task('ET-01'), 'single', boom, NOW)).rejects.toThrow('provider down');
   });
+
+  // BACK-002 (a): the final bundle gate must reject a schema-valid,
+  // lint-clean bundle whose manifest claims a non-draft lifecycle state —
+  // generation output is always a fresh draft.
+  it('lifecycle: schema-valid, lint-clean output with state "frozen" → blocked with a lifecycle reason', async () => {
+    const frozenBundle = et01Bundle();
+    frozenBundle.manifest.state = 'frozen';
+    const { llm, calls } = makeLlm([JSON.stringify(frozenBundle)]);
+
+    const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(1); // lifecycle violations are terminal, not retried (retry policy is Task 5 scope)
+    if (out.kind === 'blocked') {
+      expect(out.reasons.join(' ')).toContain('draft');
+      expect(out.reasons.join(' ')).toContain("'frozen'");
+    }
+  });
+
+  // BACK-002 (d): version advance outside the changeset envelope.
+  it('lifecycle: output claiming spec_version 7 → blocked (a new spec starts at v1)', async () => {
+    const versioned = et01Bundle();
+    versioned.manifest.spec_version = 7;
+    const { llm } = makeLlm([JSON.stringify(versioned)]);
+
+    const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    if (out.kind === 'blocked') expect(out.reasons.join(' ')).toContain('spec_version');
+  });
+
+  it('lifecycle: output with a mismatched complexity_profile → blocked', async () => {
+    // session-service is a lint-clean p-standard bundle; ET-01 requests p-mini.
+    const mismatched = JSON.parse(
+      readFileSync(join(__dirname, '../../fixtures/good/session-service/bundle.json'), 'utf8'),
+    ) as SpecBundle;
+    const { llm } = makeLlm([JSON.stringify(mismatched)]);
+
+    const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    if (out.kind === 'blocked') {
+      expect(out.reasons.join(' ')).toContain('profile');
+      expect(out.reasons.join(' ')).toContain('p-mini');
+      expect(out.reasons.join(' ')).toContain('p-standard');
+    }
+  });
 });
 
 describe('runPipeline — council variant', () => {

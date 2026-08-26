@@ -247,6 +247,39 @@ describe('runCli freeze', () => {
 
     await expect(runCli(['freeze', root])).resolves.toBe(2);
   });
+
+  // BACK-002 (c): freeze must not launder tampered frozen content. A frozen
+  // v1 whose sections were hand-edited must NOT be re-pinnable under the same
+  // version — verify keeps reporting the drift until a changeset (v2) is used.
+  it('re-freezing a drifted frozen spec -> exit 1, version and hashes NOT re-pinned, verify still fails', async () => {
+    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+
+    await expect(runCli(['freeze', root])).resolves.toBe(0);
+    const manifestBefore = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+
+    // Tamper: hand-edit a frozen section file (outside any changeset).
+    const tasks = JSON.parse(readFileSync(join(root, 'spec', 'tasks.json'), 'utf8'));
+    tasks[0].title = 'TAMPERED outside the change envelope';
+    writeFileSync(join(root, 'spec', 'tasks.json'), JSON.stringify(tasks, null, 2), 'utf8');
+
+    // Verify still catches the drift.
+    await expect(runCli(['verify', root])).resolves.toBe(1);
+    expect(stdout()).toContain('tasks');
+
+    // Freeze must refuse: the manifest is still frozen at v1 — no laundering.
+    await expect(runCli(['freeze', root])).resolves.toBe(1);
+    expect(stdout()).toContain("'frozen'");
+    expect(stdout()).toContain('change');
+
+    // The refusal wrote nothing: version unchanged, hashes not re-pinned.
+    const manifestAfter = JSON.parse(readFileSync(join(root, 'spec', 'manifest.json'), 'utf8'));
+    expect(manifestAfter).toEqual(manifestBefore);
+    expect(manifestAfter.spec_version).toBe(1);
+    expect(manifestAfter.state).toBe('frozen');
+
+    // And verify STILL fails — the drift was not blessed away.
+    await expect(runCli(['verify', root])).resolves.toBe(1);
+  });
 });
 
 describe('runCli verify', () => {

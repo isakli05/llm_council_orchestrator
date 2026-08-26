@@ -58,7 +58,7 @@ bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hat
 | --- | --- |
 | `compile <dir>` | spec/ ağacını derle + şemayla doğrula |
 | `lint <dir>` | derle + 10 lint kuralı; kural/ciddiyet/yol/mesaj tablosu |
-| `freeze <dir>` | kapı kontrollü dondurma; `spec/manifest.json`'a artifact hash yazar |
+| `freeze <dir>` | kapı kontrollü dondurma (yalnız `draft` durumundan; lint temiz + sayaç sıfır); `spec/manifest.json`'a artifact hash yazar |
 | `verify <dir>` | bölüm hash'lerini yeniden hesapla, manifest ile karşılaştır (drift) |
 | `change <dir> <changeset.json>` | FROZEN spec'e changeset uygular: sürüm+1, state→draft, değişen bölümleri geri yazar, sonra yeniden-lint |
 | `trace <dir>` | izlenebilirlik raporu (bilgilendirici): kenar sayıları, REQ başına task bağları (✓test/✗test), yetim REQ'ler, kapsam |
@@ -166,6 +166,18 @@ $ node -e "const fs=require('fs');const p='/tmp/lco-tour/spec/tasks.json';fs.wri
 $ node dist/cli/index.js verify /tmp/lco-tour
 verify FAILED: drifted sections: tasks
 # exit 1  ← drift yakalandı
+```
+
+Drift'li frozen spec'i olduğu gibi yeniden `freeze` etmeye çalışmak **reddedilir**
+(tek lifecycle doğrulayıcı, BACK-002): freeze yalnız `draft → frozen` geçişine
+izin verir; sürüm yalnızca bir changeset ile ilerler. Böylece elle düzenlenmiş
+frozen içerik aynı sürüm altında yeniden sabitleyerek aklanamaz:
+
+```sh
+$ node dist/cli/index.js freeze /tmp/lco-tour
+freeze FAILED with 1 reason(s):
+  lifecycle gate failed: freeze is legal only from 'draft' (transition: freeze — draft -> frozen); current state is 'frozen' — a frozen spec cannot be re-frozen: either restore the drifted sections … or record the edit as a changeset (lco change) …
+# exit 1  ← içerik aklanamaz; önce restore ya da lco change
 $ command cp -f /tmp/lco-tour/tasks.json.bak /tmp/lco-tour/spec/tasks.json   # restore
 $ node dist/cli/index.js verify /tmp/lco-tour
 verify OK: sections match manifest.artifact_hashes

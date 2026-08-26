@@ -6,6 +6,7 @@ import {
   type SpecBundle,
   type TaskContract,
 } from '../schemas';
+import { validateChangeSource } from './lifecycle';
 
 export interface ChangeSet {
   id: string;
@@ -67,7 +68,8 @@ export interface ApplyResult {
  *     id/rationale are rejected before anything else — never silently ignored.
  *     A valid changeset with ZERO operations still applies as a visible-intent
  *     no-op bump;
- *   - only a FROZEN spec can be changed;
+ *   - only a FROZEN spec can be changed (the change transition frozen -> draft
+ *     is owned by the lifecycle table in ./lifecycle — BACK-002);
  *   - on success: spec_version + 1, state -> 'draft', frozen_at removed;
  *   - modified_tasks: unknown task_id is an error; each patch is schema-parsed
  *     with TaskContractSchema.partial().strict() (unknown keys rejected, so a
@@ -96,13 +98,13 @@ export function applyChangeSet(b: SpecBundle, cp: ChangeSet, nowIso: string): Ap
     };
   }
 
-  if (b.manifest.state !== 'frozen') {
+  // --- transition legality: the change transition is frozen -> draft ONLY --
+  // (single source: the shared lifecycle table in ./lifecycle — BACK-002)
+  const transition = validateChangeSource(b);
+  if (transition.length > 0) {
     return {
       ok: false,
-      errors: [
-        `cannot apply changeset ${cp.id}: only a frozen spec can be changed ` +
-          `(current state is '${b.manifest.state}')`,
-      ],
+      errors: [`cannot apply changeset ${cp.id}: ${transition.join('; ')}`],
     };
   }
 

@@ -15,6 +15,12 @@ const PET_CLINIC = JSON.parse(
   readFileSync(join(__dirname, '../../../fixtures/good/pet-clinic/bundle.json'), 'utf8'),
 ) as SpecBundle;
 
+/** Lint-clean p-standard bundle — the valid output for a p-standard request
+ * (pet-clinic is p-mini-shaped and fails L07's p-standard budget rule). */
+const SESSION_SERVICE = JSON.parse(
+  readFileSync(join(__dirname, '../../../fixtures/good/session-service/bundle.json'), 'utf8'),
+) as SpecBundle;
+
 /** The 9 required section files (mirrors what init writes and compile reads). */
 const SECTION_FILES = [
   'manifest',
@@ -31,6 +37,11 @@ const SECTION_FILES = [
 /** Fixture-derived valid, lint-clean bundle (the PET_CLINIC builder pattern from runner.test.ts). */
 function validBundle(): SpecBundle {
   return structuredClone(PET_CLINIC);
+}
+
+/** Lint-clean p-standard bundle (the valid output shape for a p-standard request). */
+function pStandardBundle(): SpecBundle {
+  return structuredClone(SESSION_SERVICE);
 }
 
 /** pet-clinic fixture with an unresolved decision leak (et13UnresolvedBundle pattern). */
@@ -224,6 +235,88 @@ describe('cmdGenerate — blocked outcome', () => {
   });
 });
 
+describe('cmdGenerate — lifecycle output gate (BACK-002)', () => {
+  /** pet-clinic with a single manifest field overridden. */
+  function withManifest(override: Partial<SpecBundle['manifest']>): SpecBundle {
+    const b = validBundle();
+    Object.assign(b.manifest, override);
+    return b;
+  }
+
+  // Audit BACK-002 (a): a mock returning state:'frozen' used to be written to
+  // disk with exit 0 (and verify then failed every section). Generate must
+  // reject any non-draft generation output — freeze is a separate, later step.
+  it("state:'frozen' output → code 1, NOTHING written, message names the illegal state", async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-');
+    const { llm } = makeLlm([JSON.stringify(withManifest({ state: 'frozen' }))]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+    expect(result.output).toContain('draft');
+    expect(result.output).toContain("'frozen'");
+  });
+
+  it("state:'blocked' output → code 1 even with zero counters (the gate is the state itself)", async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-blocked-');
+    const { llm } = makeLlm([JSON.stringify(withManifest({ state: 'blocked' }))]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  // Audit BACK-002 (d): version bumps outside the change envelope.
+  it('spec_version:7 output → code 1 (a new spec starts at v1; versions advance only via lco change)', async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-v7-');
+    const { llm } = makeLlm([JSON.stringify(withManifest({ spec_version: 7 }))]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+    expect(result.output).toContain('spec_version');
+  });
+
+  it('profile mismatch (p-mini bundle, p-standard requested) → code 1, nothing written', async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-profile-');
+    const { llm } = makeLlm([JSON.stringify(validBundle())]); // p-mini bundle
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a bigger clinic platform',
+      variant: 'single',
+      profile: 'p-standard',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+    expect(result.output).toContain('p-standard');
+    expect(result.output).toContain('p-mini');
+  });
+});
+
 describe('cmdGenerate — no-clobber', () => {
   it('existing dir/spec → code 2, contents untouched, LLM never called (checked before llm resolution)', async () => {
     const dir = makeTmp('spec-core-generate-clobber-');
@@ -293,7 +386,7 @@ describe('runCli generate — argument handling', () => {
       async (_url: unknown, init?: { body?: string }): Promise<Response> => {
         bodies.push(String(init?.body));
         return jsonResponse({
-          choices: [{ message: { content: JSON.stringify(validBundle()) } }],
+          choices: [{ message: { content: JSON.stringify(pStandardBundle()) } }],
           usage: { prompt_tokens: 11, completion_tokens: 7 },
         });
       },
@@ -321,8 +414,8 @@ describe('runCli generate — argument handling', () => {
         const n = bodies.push(String(init?.body)); // 1-based call number
         const content =
           n === 1
-            ? JSON.stringify({ profile: 'p-mini', must_be_blocked: false })
-            : JSON.stringify(validBundle());
+            ? JSON.stringify({ profile: 'p-standard', must_be_blocked: false })
+            : JSON.stringify(pStandardBundle());
         return jsonResponse({
           choices: [{ message: { content } }],
           usage: { prompt_tokens: 10, completion_tokens: 5 },

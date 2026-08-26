@@ -142,6 +142,24 @@ describe('applyChangeSet: rejections (fail-closed)', () => {
     expect(result.errors.some((e) => e.toLowerCase().includes('frozen'))).toBe(true);
   });
 
+  // BACK-002: the change transition is frozen -> draft ONLY. Every other
+  // source state is rejected by the shared lifecycle validator.
+  it('rejects a changeset against blocked / superseded / reviewed bundles', () => {
+    for (const state of ['blocked', 'superseded', 'reviewed'] as const) {
+      const b = structuredClone(frozen);
+      b.manifest.state = state;
+      const result = applyChangeSet(
+        b,
+        { id: 'cs-x1b', rationale: `from ${state}` },
+        CHANGED_AT,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.bundle).toBeUndefined();
+      expect(result.errors.some((e) => e.includes('only a frozen spec can be changed'))).toBe(true);
+    }
+  });
+
   it('rejects a patch for a nonexistent task_id', () => {
     const result = applyChangeSet(
       frozen,

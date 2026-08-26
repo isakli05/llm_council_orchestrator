@@ -6,6 +6,7 @@ export type SpecState = z.infer<typeof SpecStateSchema>;
 export const ImpactLevelSchema = z.enum(['low', 'medium', 'high']);
 
 export const ComplexityProfileSchema = z.enum(['p-mini', 'p-standard', 'p-legacy', 'p-critical']);
+export type ComplexityProfile = z.infer<typeof ComplexityProfileSchema>;
 
 export const Sha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 
