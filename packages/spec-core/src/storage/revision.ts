@@ -143,6 +143,17 @@ export function acquireSpecRootLock(rootDir: string, nowIso: string, opts?: Lock
       writeSync(fd, content, 0, 'utf8');
       fsyncSync(fd);
     } catch (err) {
+      if (fd !== undefined) {
+        // The lockfile exists and is OURS (openSync succeeded this attempt;
+        // the identity write/fsync failed). A failed acquisition must not
+        // strand its own partial lock for the whole stale window.
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // best-effort: the original error is the diagnosis
+        }
+        throw err;
+      }
       const e = err as NodeJS.ErrnoException;
       if (e.code !== 'EEXIST' || attempt >= MAX_ACQUIRE_ATTEMPTS) throw err;
       if (!breakStaleLock(lockPath, nowIso, staleMs)) {
@@ -319,8 +330,13 @@ export function swapFilesAtomically(targetDir: string, files: StagedFile[]): voi
     // --- 1. stage everything (no live file is touched yet) -------------------
     for (const { name, content } of files) {
       const temp = join(targetDir, `.${name}.lco-tmp-${suffix}`);
-      writeTempFile(temp, content);
+      // Register the temp BEFORE writing it: writeTempFile opens with 'wx'
+      // and can fail AFTER the file exists (writeSync ENOSPC mid-buffer,
+      // fsyncSync EIO), and the rollback below cleans only what is in this
+      // map — an unregistered temp would survive as residue, breaking the
+      // byte-identity contract this function promises.
       temps.set(name, temp);
+      writeTempFile(temp, content);
       backups.set(name, backupPathFor(targetDir, name, suffix));
     }
 

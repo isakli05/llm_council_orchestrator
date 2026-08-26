@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   chmodSync,
   existsSync,
@@ -11,6 +11,31 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+
+/**
+ * Mid-write failure injection seam (review Important 1). A plain
+ * `vi.spyOn(fs, 'fsyncSync')` cannot work here: the ESM namespace vitest
+ * hands this file is frozen ("Cannot redefine property") and revision.ts
+ * does not call through the raw require-cache object either — but
+ * `vi.mock('node:fs')` DOES intercept revision.ts's imports (verified by
+ * probe). The mock is a full passthrough unless a test arms `failOn`, so
+ * every other test in this file sees the real filesystem.
+ */
+const fsyncCtl = vi.hoisted(() => ({ failOn: -1, calls: 0 }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const real = actual.fsyncSync;
+  return {
+    ...actual,
+    fsyncSync: (fd: number) => {
+      fsyncCtl.calls++;
+      if (fsyncCtl.calls === fsyncCtl.failOn) {
+        throw new Error('injected EIO: fsync fails after the file exists');
+      }
+      return real(fd);
+    },
+  };
+});
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -300,5 +325,53 @@ describe('swapFilesAtomically: staged per-file rename into an existing directory
 
     expect(snapshotDir(dir)).toEqual(before);
     expect(allEntries(dir)).toEqual(['a.json']);
+  });
+
+  it('MID-WRITE-SIM: a temp write failing AFTER the file exists leaves the directory byte-identical (no residue)', () => {
+    // Review Important 1: writeTempFile opens with 'wx' and can fail AFTER the
+    // temp exists (writeSync ENOSPC mid-buffer, fsyncSync EIO). The temp must
+    // be cleaned even then — the module promises byte-identity at ANY failure
+    // point. Injected deterministically (root-safe): fail the SECOND fsync
+    // from here, so temp a is fully staged while temp b EXISTS when it throws.
+    const dir = freshRoot('spec-core-swap-midwrite-');
+    writeFileSync(join(dir, 'a.json'), 'old-a', 'utf8');
+    writeFileSync(join(dir, 'b.json'), 'old-b', 'utf8');
+    const before = snapshotDir(dir);
+
+    fsyncCtl.failOn = fsyncCtl.calls + 2;
+    try {
+      expect(() =>
+        swapFilesAtomically(dir, [
+          { name: 'a.json', content: 'new-a' },
+          { name: 'b.json', content: 'new-b' },
+        ]),
+      ).toThrow('injected EIO');
+    } finally {
+      fsyncCtl.failOn = -1; // disarm: passthrough for every other test
+    }
+
+    // Live files untouched AND no temp/backup residue of ANY kind (the oracle
+    // enumerates dotfiles too).
+    expect(snapshotDir(dir)).toEqual(before);
+    expect(allEntries(dir)).toEqual(['a.json', 'b.json']);
+  });
+
+  it('MID-WRITE-SIM: a failed lock-identity write does not leave a partial lockfile behind', () => {
+    // Same defect class at the lock: openSync('wx') created the file, the
+    // identity write/fsync fails -> the holder must not strand its own lock
+    // (it would block the root for the full stale window).
+    const root = freshRoot('spec-core-lock-midwrite-');
+
+    fsyncCtl.failOn = fsyncCtl.calls + 1; // the lock identity fsync
+    try {
+      expect(() => acquireSpecRootLock(root, NOW)).toThrow('injected EIO');
+    } finally {
+      fsyncCtl.failOn = -1;
+    }
+
+    expect(existsSync(join(root, LOCK_FILE))).toBe(false);
+    // And the root recovers immediately: the next acquire succeeds.
+    const lock = acquireSpecRootLock(root, NOW);
+    lock.release();
   });
 });
