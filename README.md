@@ -1,378 +1,110 @@
-# LLM Council Orchestrator Monorepo
+# lco-spec — local-first spec compiler (LLM Council Orchestrator monorepo)
 
 [![CI](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-workspace-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![Repo Visibility](https://img.shields.io/badge/visibility-public-blue)](https://github.com/isakli05/llm_council_orchestrator)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
-A multi-model LLM orchestration system that coordinates multiple AI providers (OpenAI, Anthropic, Z.AI, Gemini) for comprehensive code analysis and architectural recommendations.
+This repository's active product is **`lco-spec`** (`packages/spec-core`): a
+local-first spec compiler that turns natural-language intent into schema-validated,
+lintable, freezable application specs. Two binaries share the same pure command
+cores:
 
-## Highlights
+- **`lco`** — a 10-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
+  `trace`, `plan`, `init`, `check`, `generate` (`lco --help` for usage,
+  `lco <command> --help` per command)
+- **`lco-mcp`** — a stdio MCP server exposing 7 tools (`lco_compile` … `lco_check`)
 
-- Multi-provider orchestration with configurable model routing and aggregation.
-- Domain-oriented pipeline architecture (discovery, indexing, role-based analysis, synthesis).
-- Monorepo structure with reusable shared packages for types, config loading, and utilities.
-- Docker Compose deployment for local or production-like environments.
+Everything except `generate` (and live eval runs) is local and deterministic — no
+API keys required.
 
-## Architecture
+The multi-model council system this repo was originally built for (orchestrator,
+indexer, MCP bridge) is **archived and known-broken** — see
+[Legacy (archived) — do not run](#legacy-archived--do-not-run).
 
-This monorepo consists of three main applications:
-- **Orchestrator** (apps/orchestrator) - Main service for LLM coordination and pipeline execution (port 7001)
-- **Indexer** (apps/indexer) - Code indexing and semantic search service (port 9001)
-- **MCP Bridge** (apps/mcp_bridge) - Model Context Protocol interface for VSCode extension
+## Quick start
 
-And three shared packages:
-- packages/shared-types
-- packages/shared-utils
-- packages/shared-config
+**Prerequisites:** Node >= 22 (`packages/spec-core` `engines`), pnpm 10.x.
 
-## Workspace Layout
+### From npm (once published)
+
+`lco-spec` is not yet on the npm registry. Once published:
+
+```bash
+npm install lco-spec
+npx lco --help
+npx lco init my-project      # scaffold a WORKING example spec/
+npx lco compile my-project   # compile + schema-validate it
+npx lco lint my-project      # 10 binding lint rules
+```
+
+### From source (this repo)
+
+```bash
+git clone https://github.com/isakli05/llm_council_orchestrator
+cd llm_council_orchestrator
+pnpm install
+
+# Target spec-core by PATH filter — the same form CI uses. (A --filter by
+# package NAME that stops matching after a rename exits 0 silently.)
+pnpm --filter ./packages/spec-core build
+pnpm --filter ./packages/spec-core lint
+pnpm --filter ./packages/spec-core test
+
+# Use the CLI from the fresh build:
+node packages/spec-core/dist/cli/index.js --help
+node packages/spec-core/dist/cli/index.js init /tmp/lco-demo
+node packages/spec-core/dist/cli/index.js compile /tmp/lco-demo
+node packages/spec-core/dist/cli/index.js lint /tmp/lco-demo
+```
+
+Full documentation — commands, exit codes, the check security model, the evidence
+gate, known limits: [packages/spec-core/README.md](packages/spec-core/README.md).
+
+### LLM environment (only for `generate` and live eval)
+
+`lco generate` and the live eval harness call a real LLM over an
+OpenAI-compatible endpoint and **fail closed** unless these are set explicitly:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `LCO_LLM_BASE_URL` | yes | OpenAI-compatible endpoint base URL |
+| `LCO_LLM_API_KEY` | yes | API key for the endpoint |
+| `LCO_LLM_MODEL` | yes | Model name |
+| `LCO_LLM_MAX_TOKENS` | no | Positive-integer generation cap |
+| `LCO_LLM_EXTRA_BODY` | no | JSON object merged last into the request body |
+
+## CI
+
+The [`ci`](.github/workflows/ci.yml) workflow builds, lints, and tests
+`packages/spec-core` on Node 22 and 24 (badge above).
+
+## Repository layout
 
 ```text
-apps/
-  docs/          # Architecture and service design references
-  orchestrator/  # Main orchestration API and pipeline engine
-  indexer/       # Indexing and semantic search service
-  mcp_bridge/    # MCP server bridge for editor integrations
 packages/
-  shared-types/  # Shared type contracts
-  shared-utils/  # Shared utilities
-  shared-config/ # Layered config loading and validation
+  spec-core/     # lco-spec — THE product (CLI, MCP server, schemas, compiler, eval)
+  shared-*/      # ARCHIVED legacy shared packages (consumed only by apps/*)
+apps/            # ARCHIVED legacy services (orchestrator, indexer, mcp_bridge, docs)
+plans/           # design and experiment plans
+audit-output/    # audit evidence and reports
 ```
 
-## Quick Start
-
-1. Clone and install dependencies:
-   ```bash
-   cd llm_council_orchestrator
-   pnpm install
-   ```
-
-2. Copy and configure environment variables:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys
-   ```
-
-3. Start services with Docker Compose:
-   ```bash
-   docker compose up -d
-   ```
-
-### Useful Commands
-
-```bash
-pnpm dev            # Run workspace dev scripts in parallel
-pnpm build          # Build all packages/apps
-pnpm test           # Run test suite
-pnpm test:coverage  # Run tests with coverage
-```
-
-## Configuration
-
-The LLM Council system uses a layered configuration approach with environment variables taking precedence over config files.
-
-### Configuration Priority
-
-Configuration values are resolved in the following order (highest to lowest priority):
-
-1. **Environment variables** - Set in `.env` file or shell
-2. **architect.config.json** - JSON configuration file
-3. **Default values** - Built-in defaults
-
-> **Important:** Configuration changes require a service restart. Hot reload is not supported.
-
-### Environment Variables
-
-Copy `.env.example` to `.env` and configure the following variables:
-
-#### LLM Provider API Keys
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | OpenAI API key for gpt-5.2, gpt-5.2-pro models |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for claude-opus-4-5, claude-sonnet-4-5 |
-| `ZAI_API_KEY` | No | Z.AI API key for glm-4.6 models |
-| `GEMINI_API_KEY` | No | Google Gemini API key for gemini-3-pro |
-| `OPENROUTER_API_KEY` | No | OpenRouter API key for alternative routing |
-
-#### Service Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ORCH_PORT` | 7001 | Orchestrator API port |
-| `ORCH_HOST` | 127.0.0.1 | Orchestrator API host |
-| `ORCH_LOG_LEVEL` | info | Log level (debug, info, warn, error) |
-| `ORCH_CONFIG_PATH` | ./architect.config.json | Path to config file |
-| `INDEXER_URL` | http://localhost:9001 | Indexer service URL |
-| `INDEXER_API_KEY` | - | **Required** - API key for indexer authentication |
-| `INDEXER_PORT` | 9001 | Indexer service port |
-| `INDEXER_HOST` | 0.0.0.0 | Indexer service host |
-
-#### Embedding Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_URL` | http://localhost:8000 | Embedding server URL |
-| `EMBEDDING_MODEL` | local-bge-large-v1.5 | Embedding model to use |
-
-Available embedding models (all use 1024 dimensions):
-- `local-bge-large-v1.5` - Default, good general performance
-- `multilingual-e5-large-instruct` - Better for multilingual codebases
-- `bge-m3` - Extended context (8192 tokens)
-
-#### Vector Storage
-
-The indexer uses **local file-based vector storage** with in-memory cosine similarity search. This provides:
-- Simple deployment with no external database dependencies
-- Fast search for typical project sizes
-- Portable index files for easy backup/restore
-
-See `apps/indexer/VECTOR_STORAGE_ARCHITECTURE.md` for details.
-
-**Optional Qdrant Integration:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QDRANT_URL` | http://localhost:6333 | Qdrant URL (optional, not currently used) |
-
-> **Note:** Qdrant is included in docker-compose for future migration but is not in the critical data path. To start Qdrant: `docker compose --profile qdrant up`
-
-#### Runtime Environment
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NODE_ENV` | development | Environment (development, production, test) |
-| `LOG_LEVEL` | info | Global log level |
-
-> **Security Note:** In production (`NODE_ENV=production`), stack traces are stripped from API error responses.
-
-### Configuration File (architect.config.json)
-
-The `architect.config.json` file defines model configurations, provider endpoints, and service settings.
-
-#### Example Configuration
-
-```json
-{
-  "models": {
-    "legacy_analysis": [
-      {
-        "model": "glm-4.6",
-        "provider": "zai",
-        "base_url": "https://api.z.ai/api/coding/paas/v4",
-        "thinking": { "type": "enabled" }
-      },
-      {
-        "model": "gpt-5.2",
-        "provider": "openai",
-        "reasoning": { "effort": "high" }
-      }
-    ],
-    "architect": [
-      {
-        "model": "gpt-5.2",
-        "provider": "openai",
-        "reasoning": { "effort": "high" }
-      },
-      {
-        "model": "claude-opus-4-5",
-        "provider": "anthropic",
-        "thinking": { "type": "enabled", "budget_tokens": 4096 }
-      }
-    ],
-    "security": [
-      {
-        "model": "claude-sonnet-4-5",
-        "provider": "anthropic",
-        "thinking": { "type": "enabled", "budget_tokens": 2048 }
-      }
-    ],
-    "aggregator": {
-      "model": "gpt-5.2-pro",
-      "provider": "openai",
-      "reasoning": { "effort": "xhigh" }
-    }
-  },
-  "providers": {
-    "openai": {
-      "endpoint": "https://api.openai.com/v1/chat/completions",
-      "envKey": "OPENAI_API_KEY"
-    },
-    "anthropic": {
-      "endpoint": "https://api.anthropic.com/v1/messages",
-      "envKey": "ANTHROPIC_API_KEY"
-    }
-  },
-  "embedding": {
-    "engine": "local-bge-large-v1.5",
-    "dimensions": 1024,
-    "endpoint": "http://localhost:8000/embeddings"
-  },
-  "services": {
-    "indexer": { "url": "http://localhost:9001", "timeout": 60000 },
-    "qdrant": { "url": "http://localhost:6333" }
-  },
-  "defaults": {
-    "modelCallTimeout": 30000,
-    "httpRequestTimeout": 120000,
-    "maxRetries": 3,
-    "backoffBase": 1000
-  }
-}
-```
-
-#### Model Configuration Options
-
-| Field | Description |
-|-------|-------------|
-| `model` | Model identifier (e.g., "gpt-5.2", "claude-opus-4-5") |
-| `provider` | Provider type: openai, anthropic, zai, gemini, or *-openrouter variants |
-| `base_url` | Custom API endpoint (optional) |
-| `thinking.type` | Enable thinking mode: "enabled" or "disabled" |
-| `thinking.budget_tokens` | Max thinking tokens (Anthropic) |
-| `reasoning.effort` | Reasoning effort: "low", "medium", "high", "xhigh" (OpenAI) |
-
-#### Using OpenRouter
-
-To use OpenRouter as an alternative provider, append `-openrouter` to the provider name:
-
-```json
-{
-  "model": "gpt-5.2",
-  "provider": "openai-openrouter"
-}
-```
-
-Set `OPENROUTER_API_KEY` and optionally `OPENROUTER_REFERER` and `OPENROUTER_TITLE` headers.
-
-### Docker Compose Deployment
-
-For containerized deployment, use `docker-compose.yml`:
-
-```bash
-# Start all services
-docker compose up -d
-
-# Start with MCP Bridge (for VSCode extension)
-docker compose --profile mcp up -d
-
-# View logs
-docker compose logs -f orchestrator
-
-# Stop services
-docker compose down
-```
-
-#### Service URLs in Docker
-
-When running in Docker, services communicate using container names:
-
-| Service | Internal URL | External URL | Status |
-|---------|--------------|--------------|--------|
-| Orchestrator | http://orchestrator:7001 | http://localhost:7001 | Required |
-| Indexer | http://indexer:9001 | http://localhost:9001 | Required |
-| Embedding | http://embedding:80 | http://localhost:8000 | Required |
-| Qdrant | http://qdrant:6333 | http://localhost:6333 | Optional (not in data path) |
-
-#### Production Configuration
-
-For production, create `architect.config.production.json` and mount it as a volume:
-
-```yaml
-volumes:
-  - ./architect.config.production.json:/app/architect.config.json:ro
-```
-
-### Configuration Validation
-
-On startup, the system validates:
-- JSON syntax of config files
-- Required API keys for active providers
-- Model names exist for configured providers
-
-If validation fails, the service will not start and will log a clear error message.
-
-### Memory Management
-
-The system includes automatic memory management (not configurable via environment):
-- Trace cleanup: every 15 minutes (keeps last 100)
-- Cache cleanup: every 15 minutes (removes expired entries)
-- Active runs cleanup: every 1 hour
-- Memory monitoring: every 5 minutes
-- Aggressive cleanup triggered at 80% heap usage
-
-## Development
-
-### Local Development Setup
-
-1. Install dependencies:
-   ```bash
-   pnpm install
-   ```
-
-2. Start infrastructure services:
-   ```bash
-   docker compose up -d embedding
-   ```
-   
-   Optional: Start Qdrant (not required for basic operation):
-   ```bash
-   docker compose --profile qdrant up -d
-   ```
-
-3. Run services in development mode:
-   ```bash
-   # Terminal 1: Indexer
-   cd apps/indexer && pnpm dev
-
-   # Terminal 2: Orchestrator
-   cd apps/orchestrator && pnpm dev
-   ```
-
-### Running Tests
-
-```bash
-# Run all tests
-pnpm test
-
-# Run tests with coverage
-pnpm test:coverage
-
-# Run specific test file
-pnpm test apps/orchestrator/src/__tests__/PipelineEngine.test.ts
-```
-
-## API Documentation
-
-### API Versioning
-
-All API endpoints are prefixed with `/api/v1/` for versioning support (Requirements: 23.1).
-
-**Orchestrator Endpoints (port 7001):**
-- `POST /api/v1/pipeline/run` - Start a new pipeline
-- `GET /api/v1/pipeline/status/:run_id` - Get pipeline status
-- `GET /api/v1/pipeline/result/:run_id` - Get pipeline result
-- `GET /api/v1/pipeline/progress/:run_id` - Get pipeline progress
-- `POST /api/v1/index/ensure` - Ensure index is ready
-- `GET /api/v1/index/status` - Get index status
-- `GET /api/v1/spec/project_context` - Get project context spec
-- `GET /api/v1/spec/modules` - Get module specs
-
-**Indexer Endpoints (port 9001):**
-- `POST /api/v1/index/ensure` - Trigger indexing
-- `POST /api/v1/search` - Semantic search
-- `GET /health` - Health check (not versioned)
-
-**Health Check Endpoints (not versioned):**
-- `GET /health` - Overall health status
-- `GET /health/live` - Liveness probe
-- `GET /health/ready` - Readiness probe
-
-See individual service documentation:
-- [Orchestrator Design](apps/docs/ORCHESTRATOR_DESIGN.md)
-- [Indexer Design](apps/docs/INDEXER_DESIGN.md)
-- [Pipeline Engine](apps/docs/PIPELINE_ENGINE.md)
-- [MCP Bridge Guide](apps/docs/MCP_BRIDGE_GUIDE.md)
+## Legacy (archived) — do not run
+
+Everything under `apps/` and `packages/shared-*` is the original multi-model LLM
+council system (discovery, indexing, role-based analysis, synthesis). It predates
+the spec-core pivot and is kept only as source history:
+
+- **Broken by design.** Not maintained, and not expected to build or pass tests.
+  The former Docker quick start and per-service startup instructions were removed
+  from this README because the images' entrypoints reference scripts that no
+  longer exist.
+- **The root `pnpm build` / `pnpm test` are intentionally broken** after the
+  pivot — do not run them; use the PATH-filtered spec-core commands above.
+- The provider variables this README used to document (`OPENAI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `INDEXER_*`, `EMBEDDING_*`, …) belonged to those archived
+  services. lco-spec's real environment contract is the `LCO_LLM_*` table above.
+- Removing or archiving these directories is a separate, pending decision;
+  historical design notes remain under `apps/docs/`.

@@ -46,6 +46,85 @@ afterEach(() => {
   tmpDirs.length = 0;
 });
 
+const SHA =
+  'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/**
+ * An inline fully-conforming bundle (closure-clean, judgeable expects, test
+ * ids) — the new-rule tests must not depend on the shared fixtures, whose
+ * conformance lands in T8.
+ */
+function inlineConforming(): Record<string, unknown> {
+  return {
+    manifest: {
+      spec_schema: 'lco-spec/1.0',
+      spec_version: 1,
+      project: { name: 'mini', mode: 'greenfield' },
+      complexity_profile: 'p-mini',
+      evidence_snapshot: { pack_hash: SHA, collected_at: '2026-08-27T00:00:00Z' },
+      state: 'draft',
+      council_run: { run_id: 't', config_fingerprint: 't' },
+      artifact_hashes: {},
+      unresolved_count: 0,
+      blocking_count: 0,
+      target_runtime: { platform: 'node', stack: 'ts' },
+    },
+    intent: { statement: 's', normalized: 'n' },
+    glossary: [{ term: 'Term', definition: 'd' }],
+    assumptions: [],
+    evidence: [{ id: 'E-0001', kind: 'user_input', source: 's', hash: SHA }],
+    requirements: [
+      {
+        id: 'REQ-0001',
+        statement: 'must work',
+        priority: 'must',
+        evidence: ['E-0001'],
+        acceptance_refs: ['TST-0001'],
+        terms_used: [],
+      },
+    ],
+    decisions: [
+      {
+        claim_id: 'DEC-0001',
+        decision: 'd',
+        rationale: 'r',
+        evidence: ['E-0001'],
+        confidence: 1,
+        impact: 'low',
+        assumptions: [],
+        alternatives: [],
+        status: 'accepted',
+      },
+    ],
+    contracts: [],
+    tasks: [
+      {
+        task_id: 'TASK-0001',
+        title: 't',
+        purpose: 'p',
+        refs: { requirements: ['REQ-0001'], architecture: [], decisions: ['DEC-0001'] },
+        depends_on: [],
+        preconditions: ['c'],
+        permitted_scope: ['src/**'],
+        protected: [],
+        interface_changes: [],
+        invariants: ['i'],
+        instructions: 'do',
+        tests: [
+          { id: 'TST-0001', kind: 'unit', file: 'a.test.ts', cases: ['REQ-0001: works'] },
+        ],
+        verification: [{ command: 'node --version', expect: 'exit 0' }],
+        acceptance: ['a'],
+        rollback: 'r',
+        completion_evidence: { required: ['test_summary'] },
+        risk: { level: 'low', note: '' },
+        complexity: 'xs',
+      },
+    ],
+    test_files: ['a.test.ts'],
+  };
+}
+
 // --- expectations derived from the REAL graph, never hardcoded ----------------
 
 async function compiledBundle(root: string): Promise<SpecBundle> {
@@ -158,7 +237,7 @@ describe('cmdPlan: good bundle (exit 0, topological table)', () => {
   });
 });
 
-describe('cmdPlan: cyclic dependencies (exit 1)', () => {
+describe('cmdPlan: cyclic dependencies via bad/L04 (exit 1)', () => {
   it('bad/L04 (TASK-0001 <-> TASK-0002) -> 1; both cycle members listed, cyclic named', async () => {
     const root = makeSpecRoot(loadBundle('bad/L04/bundle.json'));
 
@@ -215,39 +294,107 @@ describe('cmdPlan: --json machine surface', () => {
   });
 });
 
-describe('cmdPlan: unknown depends_on references warn but never block', () => {
+describe('cmdPlan: unknown depends_on references BLOCK the plan (BACK-003)', () => {
   const UNKNOWN = 'TASK-9999';
 
   function withUnknownDep(bundle: Record<string, unknown>): Record<string, unknown> {
     const mutated = structuredClone(bundle);
     const tasks = mutated.tasks as TaskContract[];
     const t1 = tasks.find((t) => t.task_id === 'TASK-0001')!;
-    t1.depends_on = [...t1.depends_on, UNKNOWN]; // TASK-0001 had no deps at all
+    t1.depends_on = [...t1.depends_on, UNKNOWN];
     return mutated;
   }
 
-  it('human: code 0 + WARNING line + the task stays level-0 (ready-now)', async () => {
-    const root = makeSpecRoot(withUnknownDep(loadBundle('good/pet-clinic/bundle.json')));
+  it('human: nonzero exit + the unknown id named + the actionable lint hint', async () => {
+    const root = makeSpecRoot(withUnknownDep(inlineConforming()));
+
+    const result = await cmdPlan(root, { json: false });
+
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain(UNKNOWN);
+    expect(result.output).toContain('TASK-0001');
+    expect(result.output).toContain('lco lint');
+    expect(result.output).not.toContain('ready-now'); // no plan is rendered at all
+  });
+
+  it('json: nonzero exit — the structured error names the unknown id; NO plan JSON is emitted', async () => {
+    const root = makeSpecRoot(withUnknownDep(inlineConforming()));
+
+    const result = await cmdPlan(root, { json: true });
+
+    expect(result.code).not.toBe(0);
+    // The failure surface carries the unknown id for machines too — the old
+    // behavior dropped the warning from JSON entirely.
+    expect(result.output).toContain(UNKNOWN);
+    expect(() => JSON.parse(result.output)).toThrow(); // no lossy half-plan
+  });
+});
+
+describe('cmdPlan: consumer validation level (BACK-006)', () => {
+  it('duplicate task_id -> compile rejection (exit 2) — the id-keyed map can never lose a task', async () => {
+    const bundle = inlineConforming();
+    (bundle.tasks as TaskContract[]).push(structuredClone((bundle.tasks as TaskContract[])[0]));
+    const root = makeSpecRoot(bundle);
+
+    const result = await cmdPlan(root, { json: true });
+
+    expect(result.code).toBe(2);
+    expect(result.output).toContain('TASK-0001');
+  });
+
+  it('unparseable expect (closure-clean otherwise) -> plan refuses: lint-clean required', async () => {
+    const bundle = inlineConforming();
+    ((bundle.tasks as TaskContract[])[0].verification as Array<{ expect: string }>)[0].expect =
+      'exit code 0, all cases pass';
+    const root = makeSpecRoot(bundle);
+
+    const result = await cmdPlan(root, { json: false });
+
+    expect(result.code).toBe(2);
+    expect(result.output).toContain('lco lint');
+    expect(result.output).toContain('L14_UNPARSEABLE_EXPECT');
+  });
+});
+
+describe('cmdPlan: inline conforming bundle (behavior pins independent of fixtures)', () => {
+  it('plan renders: exit 0, every task listed, ready-now correct', async () => {
+    const root = makeSpecRoot(inlineConforming());
 
     const result = await cmdPlan(root, { json: false });
 
     expect(result.code).toBe(0);
-    expect(result.output).toContain(`WARNING: TASK-0001 depends on unknown ${UNKNOWN}`);
-    // Unknown refs are satisfied by definition: TASK-0001 is still unblocked...
+    expect(result.output).toContain('mini — 1 task(s)');
+    expect(result.output).toContain('1. TASK-0001 [xs]');
     expect(result.output).toContain('ready-now: TASK-0001');
-    // ...and the plan still schedules every task.
-    const b = await compiledBundle(root);
-    expect(rowOrder(result.output)).toEqual(referenceOrder(b.tasks));
+
+    // Determinism (carried over from the T8-fixme'd fixture test): two calls
+    // produce identical output, human and json alike.
+    const human2 = await cmdPlan(root, { json: false });
+    const json1 = await cmdPlan(root, { json: true });
+    const json2 = await cmdPlan(root, { json: true });
+    expect(human2.output).toBe(result.output);
+    expect(json2.output).toBe(json1.output);
+    expect(JSON.parse(json1.output)).toHaveProperty('order');
   });
 
-  it('json: code 0 and the output stays pure parseable JSON (warnings are human-only)', async () => {
-    const root = makeSpecRoot(withUnknownDep(loadBundle('good/pet-clinic/bundle.json')));
+  it('cycle on a conforming bundle -> exit 1 with the cycle members (pin survives the lint gate)', async () => {
+    const bundle = inlineConforming();
+    const tasks = bundle.tasks as TaskContract[];
+    tasks.push(structuredClone(tasks[0]));
+    tasks[1].task_id = 'TASK-0002';
+    tasks[1].permitted_scope = ['src/two/**']; // no L12 overlap with TASK-0001
+    tasks[1].tests = [{ id: 'TST-0002', kind: 'unit', file: 'b.test.ts', cases: ['REQ-0001: two'] }];
+    tasks[0].depends_on = ['TASK-0002'];
+    tasks[1].depends_on = ['TASK-0001'];
+    (bundle as Record<string, unknown>).test_files = ['a.test.ts', 'b.test.ts']; // L03 ledger
+    const root = makeSpecRoot(bundle);
 
-    const result = await cmdPlan(root, { json: true });
+    const result = await cmdPlan(root, { json: false });
 
-    expect(result.code).toBe(0);
-    const parsed = JSON.parse(result.output) as { order: string[] };
-    expect(parsed.order.length).toBe(3);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('cyclic dependencies');
+    expect(result.output).toContain('TASK-0001');
+    expect(result.output).toContain('TASK-0002');
   });
 });
 
@@ -278,7 +425,7 @@ describe('runCli wiring: lco plan <dir> [--json]', () => {
   }
 
   it('prints the core output and returns its code', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
     const core = await cmdPlan(root, { json: false });
 
     const code = await runCli(['plan', root]);
@@ -288,7 +435,7 @@ describe('runCli wiring: lco plan <dir> [--json]', () => {
   });
 
   it('--json routes through and the printed stdout parses as JSON', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
 
     const code = await runCli(['plan', root, '--json']);
 

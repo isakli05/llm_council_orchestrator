@@ -22,6 +22,13 @@ export interface RunScore {
    * always a boolean.
    */
   blockedCorrectly: boolean | null;
+  /**
+   * BACK-008: the council variant's independent-proposal leg collapsed
+   * (proposal A failed schema validation on both attempts; the final bundle
+   * came from the judge alone). Always false for 'single'. Surfaced by the
+   * gate report so a degraded run cannot be read as a full council result.
+   */
+  councilDegraded: boolean;
   inTokens: number;
   outTokens: number;
   calls: number;
@@ -114,6 +121,7 @@ export function scoreRun(task: EvalTask, outcome: PipelineOutcome, usage: RunUsa
     assertionsPassed,
     assertionsTotal: task.assertions.length,
     blockedCorrectly,
+    councilDegraded: outcome.councilDegraded === true,
     inTokens: usage.in,
     outTokens: usage.out,
     calls: usage.calls,

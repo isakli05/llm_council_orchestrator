@@ -20,8 +20,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node dist/schemas/export-json-schema.js",
+    "build": "tsc -p tsconfig.json && node scripts/make-bins-executable.js && node dist/schemas/export-json-schema.js",
+    "pretest": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && pnpm run build",
     "test": "vitest run",
+    "smoke:packed": "sh scripts/packed-install-smoke.sh",
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm run build && pnpm run test"

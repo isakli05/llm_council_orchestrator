@@ -1,4 +1,5 @@
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { z } from 'zod';
 import type { Manifest, TaskContract } from '../../schemas';
@@ -10,6 +11,7 @@ import {
   IntentSchema,
   RequirementSchema,
 } from '../../schemas';
+import { acquireSpecRootLock, createDirAtomically } from '../../storage/revision';
 
 export interface InitResult {
   /** 0 scaffold written, 2 refusal (an existing spec/ was never touched). */
@@ -59,21 +61,35 @@ type Contract = z.infer<typeof ContractSchema>;
  * wrapper to report (they are environment failures, not spec decisions).
  * `nowIso` is injected per the interface contract — this function never
  * reads the clock or the environment.
+ *
+ * ATOMICITY (DATA-001): the scaffold is created through the revision storage
+ * — the per-root lock serializes concurrent inits (a second init either sees
+ * the lock held or re-checks `spec/` under it and refuses; it can never
+ * interleave its writes with the winner's), and the section files are staged
+ * and moved into place with ONE rename, so no observer ever sees a partial
+ * scaffold.
  */
 export async function cmdInit(dir: string, opts: InitOptions): Promise<InitResult> {
   const specDir = join(dir, 'spec');
   if (await pathExists(specDir)) {
-    return { code: 2, files: [] };
+    return { code: 2, files: [] }; // fast refusal: zero fs side effects
   }
 
   const sections = buildSections(opts.profile, opts.name, opts.nowIso);
-  await mkdir(specDir, { recursive: true });
-  const files: string[] = [];
-  for (const [name, content] of sections) {
-    await writeFile(join(specDir, `${name}.json`), JSON.stringify(content, null, 2), 'utf8');
-    files.push(`spec/${name}.json`);
+  mkdirSync(dir, { recursive: true }); // the lock + staging live at the root
+  const lock = acquireSpecRootLock(dir, opts.nowIso); // LockHeldError throws for the wrapper
+  try {
+    if (await pathExists(specDir)) {
+      return { code: 2, files: [] }; // re-check under the lock (TOCTOU closure)
+    }
+    createDirAtomically(
+      specDir,
+      sections.map(([name, content]) => ({ name: `${name}.json`, content })),
+    );
+  } finally {
+    lock.release();
   }
-  return { code: 0, files };
+  return { code: 0, files: sections.map(([name]) => `spec/${name}.json`) };
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -192,7 +208,14 @@ function buildSections(profile: 'p-mini' | 'p-standard', name: string, nowIso: s
     interface_changes: [],
     invariants: ['EXAMPLE invariant — replace with your own'],
     instructions: 'EXAMPLE instructions — replace with real implementation guidance',
-    tests: [{ kind: 'unit', file: 'example.test.ts', cases: ['REQ-0001: example behavior'] }],
+    tests: [
+      {
+        id: 'TST-0001',
+        kind: 'unit',
+        file: 'example.test.ts',
+        cases: ['REQ-0001: example behavior'],
+      },
+    ],
     verification: [{ command: 'node --version', expect: 'exit 0' }],
     acceptance: ['EXAMPLE acceptance criterion'],
     rollback: 'git revert the task commit',
@@ -209,6 +232,7 @@ function buildSections(profile: 'p-mini' | 'p-standard', name: string, nowIso: s
     depends_on: ['TASK-0001'],
     tests: [
       {
+        id: 'TST-0002',
         kind: 'unit',
         file: 'example2.test.ts',
         cases: ['REQ-0001: chained example behavior', 'OPS-0001: example ops behavior'],

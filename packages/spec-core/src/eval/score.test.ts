@@ -49,6 +49,7 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
       assertionsPassed: 3,
       assertionsTotal: 3,
       blockedCorrectly: true,
+      councilDegraded: false,
       inTokens: 10,
       outTokens: 5,
       calls: 1,
@@ -63,6 +64,7 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
       assertionsPassed: 2,
       assertionsTotal: 2,
       blockedCorrectly: true,
+      councilDegraded: false,
       inTokens: 10,
       outTokens: 5,
       calls: 1,
@@ -147,5 +149,21 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
     expect(s.inTokens).toBe(60);
     expect(s.outTokens).toBe(30);
     expect(s.calls).toBe(3);
+  });
+
+  // BACK-008: the degraded-council flag on the outcome must reach the score —
+  // the gate report renders it so a collapsed independent-proposal leg cannot
+  // masquerade as a full council run.
+  it('maps councilDegraded from the outcome onto the score (both kinds; false when absent)', () => {
+    const specDegraded = specOutcome(baseBundle(), 'council');
+    specDegraded.councilDegraded = true;
+    expect(scoreRun(task('ET-01'), specDegraded, U).councilDegraded).toBe(true);
+
+    const blockedDegraded = blockedOutcome('council');
+    blockedDegraded.councilDegraded = true;
+    expect(scoreRun(task('ET-13'), blockedDegraded, U).councilDegraded).toBe(true);
+
+    expect(scoreRun(task('ET-01'), specOutcome(baseBundle(), 'council'), U).councilDegraded).toBe(false);
+    expect(scoreRun(task('ET-13'), blockedOutcome('council'), U).councilDegraded).toBe(false);
   });
 });

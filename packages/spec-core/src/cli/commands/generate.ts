@@ -4,6 +4,7 @@ import type { SpecBundle } from '../../schemas';
 import { lintBundle } from '../../lint/engine';
 import type { LintFinding } from '../../lint/types';
 import { runPipeline } from '../../eval/runner';
+import { validateGenerationOutput } from '../../compiler/lifecycle';
 import type { LlmAdapter } from '../../eval/llm/adapter';
 import { createHttpLlm } from '../../eval/llm/http';
 import { writeSpecDir } from './write-spec';
@@ -54,7 +55,8 @@ export function lintRejections(bundle: SpecBundle): string[] | null {
  *   3. runPipeline({intent, profile}, variant, llm, nowIso) — blocked →
  *      reasons, {code: 1}, NOTHING written. spec → defensive lintRejections
  *      (see above) → errors → {code: 1}, NOTHING written.
- *   4. Clean → writeSpecDir (which re-refuses if spec/ appeared meanwhile)
+ *   4. Clean → writeSpecDir (which re-refuses under the per-root lock if
+ *      spec/ appeared meanwhile, and stages the whole tree + one rename)
  *      → summary with project name, complexity_profile, REQ/TASK counts,
  *      variant, LLM calls, in/out tokens, state → {code: 0}.
  *
@@ -104,8 +106,24 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
     };
   }
 
+  // --- 3b. lifecycle output gate (BACK-002, defense in depth) -----------------
+  // Same unreachable-today status as lintRejections: the pipeline's final
+  // bundle gate already enforces the generation contract. If a future runner
+  // change ever lets a non-draft / wrong-profile / non-v1 bundle through,
+  // generate must still refuse to write it.
+  const lifecycle = validateGenerationOutput(outcome.bundle, opts.profile);
+  if (lifecycle.length > 0) {
+    return {
+      code: 1,
+      output: [
+        'generated bundle failed the lifecycle output gate — nothing written:',
+        ...lifecycle.map((r) => `  - ${r}`),
+      ].join('\n'),
+    };
+  }
+
   // --- 4. write + summary ------------------------------------------------------
-  writeSpecDir(dir, outcome.bundle);
+  writeSpecDir(dir, outcome.bundle, opts.nowIso);
 
   const m = outcome.bundle.manifest;
   return {
@@ -115,6 +133,12 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
         `${outcome.bundle.requirements.length} REQ, ${outcome.bundle.tasks.length} TASK`,
       `variant ${outcome.variant}, ${outcome.usage.calls} LLM call(s), ` +
         `${outcome.usage.in} in / ${outcome.usage.out} out tokens`,
+      ...(outcome.councilDegraded
+        ? [
+            'council leg DEGRADED: proposal A failed schema validation twice — its unvalidated output was ' +
+              "withheld from the merger; the final bundle is the judge's proposal alone (still fully gated)",
+          ]
+        : []),
       `state: ${m.state} — run lco lint/lco freeze next`,
     ].join('\n'),
   };

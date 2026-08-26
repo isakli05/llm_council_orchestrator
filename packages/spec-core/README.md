@@ -25,9 +25,11 @@ npx lco --help
 **Kaynaktan (bu monorepo içinde) — derleme/test:**
 
 ```sh
-pnpm --filter lco-spec build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter lco-spec test    # vitest (576 test: şema, derleyici, lint, eval, CLI, check, MCP)
-pnpm --filter lco-spec lint    # tsc --noEmit
+# PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
+# değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
+pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
+pnpm --filter ./packages/spec-core test    # vitest (795 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
 **Sıra notu (fail-closed):** testler ÖNCE `build` gerektirir — MCP spawn entegrasyon
@@ -44,15 +46,21 @@ sessizce atlanmaz, `run pnpm --filter ./packages/spec-core build before test` me
 
 Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`). On komut;
 dokuzu bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır, `generate` ise o
-dizini bir niyet metninden üretir:
+dizini bir niyet metninden üretir.
+
+Yardım ve sürüm (UX-002): `lco --help` (veya `-h`) genel kullanımı, `lco <komut> --help`
+o komutun kendi yardımını stdout'a yazdırır ve **exit 0** verir — yardım, komutun kendi
+bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hata vermez).
+`lco --version` paketin `package.json` sürümünü çalışma zamanında okur ve yazdırır
+(exit 0). Bilinmeyen komut/bayrak davranışı değişmedi: exit 2 + stderr'de usage.
 
 | komut | işlev |
 | --- | --- |
 | `compile <dir>` | spec/ ağacını derle + şemayla doğrula |
 | `lint <dir>` | derle + 10 lint kuralı; kural/ciddiyet/yol/mesaj tablosu |
-| `freeze <dir>` | kapı kontrollü dondurma; `spec/manifest.json`'a artifact hash yazar |
+| `freeze <dir>` | kapı kontrollü dondurma (yalnız `draft` durumundan; lint temiz + sayaç sıfır); `spec/manifest.json`'a artifact hash yazar |
 | `verify <dir>` | bölüm hash'lerini yeniden hesapla, manifest ile karşılaştır (drift) |
-| `change <dir> <changeset.json>` | FROZEN spec'e changeset uygular: sürüm+1, state→draft, değişen bölümleri geri yazar, sonra yeniden-lint |
+| `change <dir> <changeset.json>` | FROZEN spec'e changeset uygular: aday revizyonu ÖNCE tamamen doğrular (compile + lint), sonra sürüm+1, state→draft ve değişen bölümleri atomik yazar; lint-geçersiz change → exit 1 ve DİSKE HİÇBİR ŞEY YAZILMAZ |
 | `trace <dir>` | izlenebilirlik raporu (bilgilendirici): kenar sayıları, REQ başına task bağları (✓test/✗test), yetim REQ'ler, kapsam |
 | `plan <dir> [--json]` | topolojik yürütme planı (deterministik Kahn; aynı seviyede task_id lexicographic); döngü → hata; `--json` makine-okur |
 | `init <dir> [--profile p-mini\|p-standard] [--name <ad>]` | ÇALIŞAN minimal EXAMPLE spec iskeleti yazar; `<dir>/spec` varsa reddeder |
@@ -68,11 +76,11 @@ başarısızlığı, **2** kullanım/şema hatası):
 | `lint` | temiz veya yalnız uyarı | lint hatası(lar)ı | derleme hatası |
 | `freeze` | donduruldu | kapı başarısız | derleme hatası |
 | `verify` | hash'ler eşleşti | drift VEYA state frozen değil | derleme hatası |
-| `change` | uygulandı + yeniden-lint temiz | yeniden-lint hataları | derleme, bozuk/bilinmeyen-anahtarlı changeset, frozen olmayan spec, yazım hatası |
+| `change` | uygulandı + değişiklik kapısı (lint) temiz | değişiklik kapısı (lint) hataları — **HİÇBİR dosya yazılmaz**, frozen spec aynen kalır, aynı changeset düzeltilip tekrar denenebilir | derleme, bozuk/bilinmeyen-anahtarlı changeset, frozen olmayan spec, yazım/kilit hatası |
 | `trace` | rapor çıktı | — (kullanılmaz) | derleme hatası |
-| `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası |
+| `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası VEYA lint reddi (BACK-006: plan lint-clean bundle ister) |
 | `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
-| `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme, bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
+| `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme VEYA lint reddi (BACK-006: check lint-clean bundle ister), bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
 | `generate` | `spec/` yazıldı (state draft) | kanıt kapısı bloğu VEYA savunma-lint reddi — HİÇBİR dosya yazılmaz | kullanım hatası (bozuk bayrak, eksik/çakışan `--intent`), eksik `LCO_LLM_*` env, `<dir>/spec` zaten var (üzerine yazma reddi) |
 
 Lint kuralları: **L01–L08, L10, L12** (10 bağlayıcı kural; L09 ve L11 şema katmanında
@@ -158,6 +166,18 @@ $ node -e "const fs=require('fs');const p='/tmp/lco-tour/spec/tasks.json';fs.wri
 $ node dist/cli/index.js verify /tmp/lco-tour
 verify FAILED: drifted sections: tasks
 # exit 1  ← drift yakalandı
+```
+
+Drift'li frozen spec'i olduğu gibi yeniden `freeze` etmeye çalışmak **reddedilir**
+(tek lifecycle doğrulayıcı, BACK-002): freeze yalnız `draft → frozen` geçişine
+izin verir; sürüm yalnızca bir changeset ile ilerler. Böylece elle düzenlenmiş
+frozen içerik aynı sürüm altında yeniden sabitleyerek aklanamaz:
+
+```sh
+$ node dist/cli/index.js freeze /tmp/lco-tour
+freeze FAILED with 1 reason(s):
+  lifecycle gate failed: freeze is legal only from 'draft' (transition: freeze — draft -> frozen); current state is 'frozen' — a frozen spec cannot be re-frozen: either restore the drifted sections … or record the edit as a changeset (lco change) …
+# exit 1  ← içerik aklanamaz; önce restore ya da lco change
 $ command cp -f /tmp/lco-tour/tasks.json.bak /tmp/lco-tour/spec/tasks.json   # restore
 $ node dist/cli/index.js verify /tmp/lco-tour
 verify OK: sections match manifest.artifact_hashes
@@ -206,6 +226,17 @@ Manifest artık `spec_version 2`, `state: draft` — yeni sürüm ancak bir sonr
 hash karşılaştırmasına gelmeden `notFrozen` üzerinde kısa-devre yapar; taslak hiçbir
 durumda verify'den geçemez ve `artifact_hashes`, bir sonraki freeze yeniden
 sabitleyene dek herhangi bir drift iddiası taşımaz.
+
+**change sözleşmesi (DATA-001 / BACK-005):** `change` aday revizyonu TÜMÜYLE
+hafızada doğrular (compile + lint) ve YALNIZCA temizse diske yazar. Lint-geçersiz
+bir changeset exit 1 verir ve **hiçbir dosya yazılmaz** — "kapı başarısız"
+her zaman "işlenmedi" anlamına gelir, eski davranış (önce yaz, sonra bildir)
+artık yok. Yazım aşaması da atomiktir: her revizyon kök-başına kilit
+(`<dir>/.lco-revision.lock`, exclusive-create; 10 sn'den eski kilitler ölü
+sayılıp kırılır) altında, geçici dosyalar + rename ile işlenir — `manifest.json`
+en son takas edilir (commit noktası) ve herhangi bir yazım hatası tüm süreci
+bayt-bayt geri alır. Aynı atomiklik `init`, `generate`, `freeze` ve `check`
+kanıt yazımları için de geçerlidir.
 
 **6) plan — topolojik sıra:**
 
@@ -328,6 +359,18 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
   gerekçe listesi, **HİÇBİR dosya yazılmaz**. Üretilen bundle ayrıca savunma-lint
   yeniden denetiminden geçer; kirli bundle da yazılmaz (yine exit 1, hiçbir şey
   yazılmaz).
+- **Monotonik blok kanıtı (BACK-001):** council sınıflandırıcısı
+  `must_be_blocked=true` döndürürse sonuç KESİN olarak blocked'dır — sonraki
+  (temiz) bir bundle bu kanıtı iptal edemez; kanıt kapıdaki kodda taşınır,
+  prompt tavsiyesi değil. Doğrulama-informed retry'ler de UNRESOLVED madde
+  düşüremez: retry çıktısı önceki unresolved kimliklerden (claim_id) veya
+  sayaçlarından herhangi birini sessizce bırakırsa sonuç
+  `RESOLUTION_MISSING` ile reddedilir (kimlikler gerekçede isimlendirilir);
+  madde eklemek veya korumak serbesttir.
+- **Council bacağının degradasyonu (BACK-008):** bağımsız öneri A iki denemede
+  de şema doğrulamasını geçemezse bacak DEGRADED işaretlenir, doğrulanmamış
+  metin yargıca verilmez (yargıç kendi önerisiyle tek başına üretir) ve özet
+  satırı bunu açıkça yazar — nihai bundle yine tam kapıdan geçer, yazılır.
 - **Başarı:** `spec/` bölüm dosyaları yazılır (`state: draft`) ve çıktı sıradaki
   adımı önerir: `run lco lint/lco freeze next`.
 
@@ -466,18 +509,35 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 
 ## Bilinen Sınırlar (dürüstlük)
 
-- **`acceptance_refs` uzlaşısıdır:** `requirements[].acceptance_refs` (TST-* test
-  referansları) bugün HİÇBİR lint kuralınca doğrulanmaz — bir kural bu referansların
-  varlığını/çözünürlüğünü sınmaz; belge-içi uzlaşı olarak taşınır.
-- **task_id tekilliği lint'e emanet:** şema dizi-seviyesinde tekillik zorlamaz
-  (array-level refine yok); lint'teki **L06_DUPLICATE_ID** aile-içi mükerrer id'yi
-  yakalar ("appears 2 times"). Kalan daralmış boşluk: `lco plan` lint koşmaz —
-  lint'i atlayan bir bundle `plan --json`'e ulaşabilir ve orada id ile anahtarlanan
-  görev haritasında mükerrer id tekillik kaybı yaratır.
-- **Eval zincirinde şema-seviyesi doğrulama iki sınırla sınırlıdır:** sınıflandırıcı
-  çıktısı (`ClassifierOutputSchema` — strict DEĞİLDİR; ürün şeması değildir, bilinçli
-  kapsam dışı) ve önerilen bundle (`SpecBundleSchema` — strict). Kalan konsey
-  çağrıları metin düzeyindedir.
+- **`acceptance_refs` artık gerçek çözünürlük ister (BACK-003 kapatıldı):**
+  `requirements[].acceptance_refs` (TST-* test referansları) `tasks[].tests[].id`
+  kümesine karşı kapanış denetlenir (**L13_BROKEN_REFERENCE**); referans verilmeyen
+  test `id`'si isteğe bağlı kalır, ancak bir acceptance_ref ancak bir test `id`'sine
+  çözünür. Test `id`'leri paket genelinde tekil olmalıdır.
+- **Göç notu — `GLS-` öneki requirement id ailesinden çıkarıldı:** requirement
+  id'leri artık yalnız `REQ-/OPS-/UX-/ARC-/DAT-/SEC-/LGC-` kabul eder (ad-uzayı
+  başına şema). Eski `GLS-NNNN` id'li saklı spec'ler **artık derlenmez** (şema
+  hatası); `lco change` ile yeniden üretin veya `GLS-` id'lerini elle `REQ-`'ye
+  çevirin.
+- **Changeset'ler TST referanslarını kendiliğinden yeniden demirlemez (bilinen
+  sınır):** `ChangeSetSchema`'da `modified_requirements` op'u yoktur. Bir
+  changeset bir görevin testlerini değiştiriyorsa/kaldırıyorsa,
+  `acceptance_refs`'in hâlâ atıf yaptığı `TST-NNNN` id'leri KALAN görevin
+  `tests[].id` yaması üzerinden açıkça yeniden demirlenmelidir (örnek:
+  `change.test.ts`'te kaldırılan `TST-0003`'ün kapsayan teste taşınması).
+  Kaldırma ergonomisi istenirse gelecekte bir changeset uzantısı eklenmelidir.
+- **task_id tekilliği compile'a taşındı (BACK-006 kapatıldı):** mükerrer `task_id`
+  artık derleme hatasıdır (yapılandırılmış hata, exit 2) — `plan --json`'un id
+  anahtarlı haritası ve `check --task` seçimi asla görev kaybedemez. `plan` ve
+  `check` ayrıca adlandırılmış doğrulama seviyesi olarak **lint-clean** ister
+  (kapanış + yargılanabilir `expect` dahil; `trace` bilinçli olarak compile
+  seviyesinde kalır — onarım görünümüdür).
+- **Eval zincirinde şema-seviyesi doğrulama:** önerilen bundle her aşamada
+  `SpecBundleSchema` (strict) ile doğrulanır — öneri A'nın retry çıktısı dahil
+  (BACK-008; iki kez geçersizse bacak DEGRADED). Yalnızca sınıflandırıcı çıktısı
+  (`ClassifierOutputSchema` — strict DEĞİLDİR; ürün şeması değildir, bilinçli
+  kapsam dışı) gevşek kalır; sınıflandırıcının `must_be_blocked=true` hükmü
+  kodda monotonik olarak uygulanır (BACK-001), prompt'a emanet edilmez.
 - **verify ham bayt değil, şema-normalize edilmiş bölüm içeriğini hash'ler:** hash,
   ayrıştırılmış bölümün kanonik JSON'udur — ham dosya biçimlendirmesi (girinti, anahtar
   sırası) ve trim-refine'lı metin alanlarının baş/son boşluk değişiklikleri drift

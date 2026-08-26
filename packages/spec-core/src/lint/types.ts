@@ -9,6 +9,8 @@ export const LINT_RULES = [
   'L08_UNRESOLVED_LEAK',
   'L10_TRACEABILITY_GAP',
   'L12_SCOPE_OVERLAP',
+  'L13_BROKEN_REFERENCE',
+  'L14_UNPARSEABLE_EXPECT',
 ] as const;
 
 export type LintRuleId = (typeof LINT_RULES)[number];

@@ -318,6 +318,39 @@ describe('runChecks DRY (yes=false): nothing executes, nothing is written', () =
 
     expect(result.outcomes[0]).toMatchObject({ expectedExit: 0, actualExit: null, status: 'DRY' });
   });
+
+  // --- BACK-004: DRY is an HONEST preview — it surfaces an unjudgeable
+  // expectation as a FAILURE (exit 1, status UNPARSEABLE-EXPECT) instead of
+  // labeling it DRY and hiding the failure until consent is supplied. The
+  // dry run previews exactly what --yes would judge; --yes itself still
+  // never EXECUTES an unjudgeable command (protected invariant).
+
+  it('DRY + unparseable expect -> UNPARSEABLE-EXPECT (NOT DRY), code 1, nothing executed', async () => {
+    const root = freshRoot('spec-core-check-dry-unparseable-');
+    const bundle = bundleWith({
+      'TASK-0001': [
+        { command: 'rm -rf /important', expect: 'exit code 0, all cases pass' },
+        { command: 'echo judgeable', expect: 'exit 0' },
+      ],
+    });
+    const { calls, exec } = fakeExec(() => {
+      throw new Error('DRY mode must never execute anything');
+    });
+
+    const result = await runChecks(bundle, root, { task: 'TASK-0001', yes: false, nowIso: NOW, exec });
+
+    expect(calls).toHaveLength(0); // still nothing executes — the invariant holds
+    expect(result.code).toBe(1); // the honest preview FAILS, not exits 0
+    expect(result.outcomes).toHaveLength(2);
+    expect(result.outcomes[0]).toMatchObject({
+      status: 'UNPARSEABLE-EXPECT',
+      expect: 'exit code 0, all cases pass',
+      expectedExit: null,
+      actualExit: null,
+    });
+    expect(result.outcomes[1].status).toBe('DRY'); // the judgeable sibling stays DRY
+    expect(existsSync(join(root, 'spec'))).toBe(false); // DRY still writes nothing
+  });
 });
 
 // --- task selection ---------------------------------------------------------------

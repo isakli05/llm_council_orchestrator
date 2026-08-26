@@ -189,7 +189,7 @@
             "properties": {
               "id": {
                 "type": "string",
-                "pattern": "^(REQ|DEC|CON|TASK|TST|E|AS|GLS|UX|ARC|DAT|SEC|OPS|LGC)-\\d{4}$"
+                "pattern": "^(AS)-\\d{4}$"
               },
               "statement": {
                 "type": "string",
@@ -198,7 +198,8 @@
               "evidence": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                  "type": "string",
+                  "pattern": "^(E)-\\d{4}$"
                 }
               },
               "impact_if_wrong": {
@@ -221,7 +222,7 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
               },
               "kind": {
                 "type": "string",
@@ -256,7 +257,8 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                "type": "string",
+                "pattern": "^(REQ|OPS|UX|ARC|DAT|SEC|LGC)-\\d{4}$"
               },
               "statement": {
                 "type": "string",
@@ -273,14 +275,15 @@
               "evidence": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
                 },
                 "minItems": 1
               },
               "acceptance_refs": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                  "type": "string",
+                  "pattern": "^(TST)-\\d{4}$"
                 },
                 "minItems": 1
               },
@@ -308,7 +311,8 @@
             "type": "object",
             "properties": {
               "claim_id": {
-                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                "type": "string",
+                "pattern": "^(DEC)-\\d{4}$"
               },
               "decision": {
                 "type": "string",
@@ -321,7 +325,7 @@
               "evidence": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
                 }
               },
               "confidence": {
@@ -393,7 +397,8 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                "type": "string",
+                "pattern": "^(CON)-\\d{4}$"
               },
               "kind": {
                 "type": "string",
@@ -428,7 +433,8 @@
             "type": "object",
             "properties": {
               "task_id": {
-                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                "type": "string",
+                "pattern": "^(TASK)-\\d{4}$"
               },
               "title": {
                 "type": "string",
@@ -444,7 +450,7 @@
                   "requirements": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                      "$ref": "#/definitions/SpecBundle/properties/requirements/items/properties/id"
                     }
                   },
                   "architecture": {
@@ -456,7 +462,7 @@
                   "decisions": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                      "$ref": "#/definitions/SpecBundle/properties/decisions/items/properties/claim_id"
                     }
                   }
                 },
@@ -470,7 +476,7 @@
               "depends_on": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                  "$ref": "#/definitions/SpecBundle/properties/tasks/items/properties/task_id"
                 }
               },
               "preconditions": {
@@ -530,6 +536,9 @@
                 "items": {
                   "type": "object",
                   "properties": {
+                    "id": {
+                      "$ref": "#/definitions/SpecBundle/properties/requirements/items/properties/acceptance_refs/items"
+                    },
                     "kind": {
                       "type": "string",
                       "enum": [
@@ -702,7 +711,7 @@
                   "evidence": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/id"
+                      "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
                     }
                   }
                 },

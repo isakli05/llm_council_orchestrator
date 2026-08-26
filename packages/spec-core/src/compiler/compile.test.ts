@@ -117,4 +117,54 @@ describe('compileSpecDir', () => {
     expect(result.errors.some((e) => e.path.endsWith(join('spec', 'tasks.json')))).toBe(true);
     expect(result.errors.some((e) => e.message.toLowerCase().includes('json'))).toBe(true);
   });
+
+  // --- BACK-006: duplicate task ids are a COMPILE error (id-keyed consumers
+  // — plan --json's map, check --task selection, evidence filenames — must
+  // never see a bundle where one task_id names two tasks). -----------------------
+
+  it('duplicate task_id -> ok:false with a structured error naming the duplicated id', async () => {
+    const fixture = loadBundle('good/pet-clinic/bundle.json');
+    const mutated = structuredClone(fixture) as Record<string, unknown>;
+    const tasks = mutated.tasks as Array<Record<string, unknown>>;
+    tasks.push(structuredClone(tasks[0])); // TASK-0001 twice
+    const root = makeSpecRoot(mutated);
+
+    const result = await compileSpecDir(root);
+
+    expect(result.ok).toBe(false);
+    expect(result.bundle).toBeUndefined();
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].path).toBe('tasks');
+    expect(result.errors[0].message).toContain('TASK-0001');
+    expect(result.errors[0].message).toContain('2');
+  });
+
+  it('a triple duplicate reports the id once (one error per duplicated id)', async () => {
+    const fixture = loadBundle('good/pet-clinic/bundle.json');
+    const mutated = structuredClone(fixture) as Record<string, unknown>;
+    const tasks = mutated.tasks as Array<Record<string, unknown>>;
+    tasks.push(structuredClone(tasks[0]), structuredClone(tasks[0]));
+    const root = makeSpecRoot(mutated);
+
+    const result = await compileSpecDir(root);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain('3');
+  });
+
+  // --- BACK-003: wrong namespace in a reference field is a schema error -----------
+
+  it('a DEC- id in requirement.evidence -> ok:false with the zod path for that ref', async () => {
+    const fixture = loadBundle('good/pet-clinic/bundle.json');
+    const mutated = structuredClone(fixture) as Record<string, unknown>;
+    const requirements = mutated.requirements as Array<Record<string, unknown>>;
+    (requirements[0].evidence as string[])[0] = 'DEC-0001';
+    const root = makeSpecRoot(mutated);
+
+    const result = await compileSpecDir(root);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.path === 'requirements.0.evidence.0')).toBe(true);
+  });
 });

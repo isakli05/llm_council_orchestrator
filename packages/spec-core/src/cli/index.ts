@@ -1,4 +1,6 @@
+#!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { cmdCompile } from './commands/compile';
 import { cmdLint } from './commands/lint';
 import { cmdFreeze } from './commands/freeze';
@@ -11,6 +13,12 @@ import { cmdCheck } from './commands/check';
 import { cmdGenerate } from './commands/generate';
 
 const USAGE = `usage: lco <command> <dir> [args]
+       lco --help | -h | --version | <command> --help
+
+options:
+  --help, -h       print this overview (or the command's own help, with
+                   \`lco <command> --help\`) to stdout and exit 0
+  --version        print the lco-spec package version to stdout and exit 0
 
 commands:
   compile <dir>                compile and validate the spec/ tree under <dir>
@@ -18,18 +26,23 @@ commands:
   freeze <dir>                 gate-checked freeze; rewrites spec/manifest.json on success
   verify <dir>                 re-hash frozen sections and compare with manifest.artifact_hashes
   change <dir> <changeset.json>
-                               apply a changeset to a FROZEN spec: bumps spec_version,
-                               returns the spec to state draft, rewrites the changed
-                               spec/ sections, then re-lints (new lint errors -> exit 1)
+                               apply a changeset to a FROZEN spec: validates the complete
+                               candidate (compile + lint) BEFORE persisting, then bumps
+                               spec_version, returns the spec to state draft and atomically
+                               rewrites the changed spec/ sections — a lint-invalid change
+                               exits 1 with NOTHING written (the frozen spec is untouched
+                               and the same changeset stays retryable)
   trace <dir>                  traceability report (informational, exit 0): per-edge-kind
                                counts, per-requirement task links (TASK ✓test / ✗no-test-link),
                                orphan requirements (the L02 view), and coverage summary
   plan <dir> [--json]          topological execution plan (level-wise Kahn; ties within a
                                level broken lexicographically by task_id): numbered rows with
                                complexity, depends_on, verification, permitted_scope, and a
-                               ready-now line of level-0 tasks; unknown depends_on references
-                               warn but do not block; cyclic dependencies -> exit 1 with the
-                               unresolvable tasks listed; --json emits machine-readable
+                               ready-now line of level-0 tasks. Requires a lint-clean
+                               bundle: cyclic dependencies -> exit 1 with the unresolvable
+                               tasks listed; any other lint error refuses (exit 2) — an
+                               unknown depends_on reference is named in the refusal (run
+                               \`lco lint\`); --json emits machine-readable
                                {"order":[...],"tasks":{id:{title,complexity,depends_on,
                                verification,permitted_scope}}}
   init <dir> [--profile p-mini|p-standard] [--name <name>]
@@ -95,6 +108,9 @@ type GenerateVariant = 'single' | 'council';
 
 type ParseResult =
   | { error: string }
+  | { help: true }
+  | { version: true }
+  | { commandHelp: Command }
   | { command: SingleDirCommand; dir: string }
   | { command: 'change'; dir: string; changesetPath: string }
   | { command: 'plan'; dir: string; json: boolean }
@@ -115,8 +131,24 @@ function parseArgs(argv: string[]): ParseResult {
     return { error: 'missing command' };
   }
   const [command, ...rest] = argv;
+  if (command === '--help' || command === '-h') {
+    return { help: true };
+  }
+  if (command === '--version') {
+    return { version: true };
+  }
   if (!(COMMANDS as readonly string[]).includes(command)) {
     return { error: `unknown command: ${command}` };
+  }
+  // UX-002: --help/-h after a KNOWN command wins over everything else and is
+  // checked BEFORE any validation of that command's arguments — `lco init
+  // --help` prints help and exits 0; the flag is never consumed as a <dir>
+  // name (the old behavior literally scaffolded a spec into ./--help/).
+  // An unknown command still falls through to the usage error above.
+  if (rest.includes('--help') || rest.includes('-h')) {
+    // Same cast idiom as the SingleDirCommand return below: COMMANDS.includes
+    // above guarantees the literal, but does not narrow `string` for TS.
+    return { commandHelp: command as Command };
   }
   if (rest.length === 0) {
     return { error: `missing <dir> argument for '${command}'` };
@@ -253,6 +285,45 @@ function parseArgs(argv: string[]): ParseResult {
 }
 
 /**
+ * Command-specific help (UX-002): the command's own block, extracted from
+ * USAGE at run time — USAGE stays the single hand-written source of truth,
+ * so the per-command text can never drift from the overview. A block starts
+ * at `  <command> ` and runs through its continuation lines (indented 7+
+ * spaces); the next command's line, a section header, or a blank line ends it.
+ */
+function commandHelp(command: Command): string {
+  const lines = USAGE.split('\n');
+  const start = lines.findIndex((line) => line.startsWith(`  ${command} `));
+  if (start === -1) {
+    return USAGE; // defensive: USAGE lost the entry — fall back to the overview
+  }
+  let end = start + 1;
+  while (end < lines.length && /^ {7,}\S/.test(lines[end])) {
+    end++;
+  }
+  return (
+    `usage: lco ${lines.slice(start, end).join('\n').trimStart()}\n\n` +
+    '(run `lco --help` for the full command overview)'
+  );
+}
+
+/**
+ * Reads the version from the package's own package.json at RUN TIME — never
+ * hardcoded, so a version bump needs no CLI change. src/cli and dist/cli sit
+ * at the same depth under the package root, so the relative path holds both
+ * for the repo build/test and for a packed install (npm always ships
+ * package.json next to dist/).
+ */
+async function readVersion(): Promise<string> {
+  const raw = await readFile(join(__dirname, '../../package.json'), 'utf8');
+  const version = (JSON.parse(raw) as { version?: unknown }).version;
+  if (typeof version !== 'string' || version === '') {
+    throw new Error('package.json has no usable version field');
+  }
+  return version;
+}
+
+/**
  * Functional CLI core: never calls process.exit — the exit code is returned.
  *   0 success, 1 lint/freeze/drift failure, 2 usage/schema error.
  *
@@ -267,6 +338,18 @@ export async function runCli(argv: string[]): Promise<number> {
     console.error(USAGE);
     return 2;
   }
+  if ('help' in parsed) {
+    console.log(USAGE);
+    return 0;
+  }
+  if ('version' in parsed) {
+    console.log(await readVersion());
+    return 0;
+  }
+  if ('commandHelp' in parsed) {
+    console.log(commandHelp(parsed.commandHelp));
+    return 0;
+  }
 
   switch (parsed.command) {
     case 'compile': {
@@ -280,7 +363,17 @@ export async function runCli(argv: string[]): Promise<number> {
       return result.code;
     }
     case 'freeze': {
-      const result = await cmdFreeze(parsed.dir, new Date().toISOString());
+      // A live revision lock (LockHeldError) or an atomic-swap IO failure
+      // THROWS out of the core (environment failure) — surface it as the
+      // one-line exit-2 handler like init/check/generate, not the top-level
+      // raw error dump.
+      let result;
+      try {
+        result = await cmdFreeze(parsed.dir, new Date().toISOString());
+      } catch (err) {
+        console.error(`lco: freeze failed: ${(err as Error).message}`);
+        return 2;
+      }
       console.log(result.output);
       return result.code;
     }

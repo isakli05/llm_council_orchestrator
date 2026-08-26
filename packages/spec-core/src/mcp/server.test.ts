@@ -76,6 +76,85 @@ async function rpc(line: string): Promise<Record<string, any>> {
 
 // --- initialize ----------------------------------------------------------------
 
+
+const SHA =
+  'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/**
+ * Inline fully-conforming bundle (T7): the MCP happy-path calls need a
+ * lint-clean spec before T8 conforms the fixtures (L13/L14).
+ */
+function inlineConforming(): Record<string, unknown> {
+  return {
+    manifest: {
+      spec_schema: 'lco-spec/1.0',
+      spec_version: 1,
+      project: { name: 'mini', mode: 'greenfield' },
+      complexity_profile: 'p-mini',
+      evidence_snapshot: { pack_hash: SHA, collected_at: '2026-08-27T00:00:00Z' },
+      state: 'draft',
+      council_run: { run_id: 't', config_fingerprint: 't' },
+      artifact_hashes: {},
+      unresolved_count: 0,
+      blocking_count: 0,
+      target_runtime: { platform: 'node', stack: 'ts' },
+    },
+    intent: { statement: 's', normalized: 'n' },
+    glossary: [{ term: 'Term', definition: 'd' }],
+    assumptions: [],
+    evidence: [{ id: 'E-0001', kind: 'user_input', source: 's', hash: SHA }],
+    requirements: [
+      {
+        id: 'REQ-0001',
+        statement: 'must work',
+        priority: 'must',
+        evidence: ['E-0001'],
+        acceptance_refs: ['TST-0001'],
+        terms_used: [],
+      },
+    ],
+    decisions: [
+      {
+        claim_id: 'DEC-0001',
+        decision: 'd',
+        rationale: 'r',
+        evidence: ['E-0001'],
+        confidence: 1,
+        impact: 'low',
+        assumptions: [],
+        alternatives: [],
+        status: 'accepted',
+      },
+    ],
+    contracts: [],
+    tasks: [
+      {
+        task_id: 'TASK-0001',
+        title: 't',
+        purpose: 'p',
+        refs: { requirements: ['REQ-0001'], architecture: [], decisions: ['DEC-0001'] },
+        depends_on: [],
+        preconditions: ['c'],
+        permitted_scope: ['src/**'],
+        protected: [],
+        interface_changes: [],
+        invariants: ['i'],
+        instructions: 'do',
+        tests: [
+          { id: 'TST-0001', kind: 'unit', file: 'a.test.ts', cases: ['REQ-0001: works'] },
+        ],
+        verification: [{ command: 'node --version', expect: 'exit 0' }],
+        acceptance: ['a'],
+        rollback: 'r',
+        completion_evidence: { required: ['test_summary'] },
+        risk: { level: 'low', note: '' },
+        complexity: 'xs',
+      },
+    ],
+    test_files: ['a.test.ts'],
+  };
+}
+
 describe('handleRpcLine: initialize', () => {
   it('returns the fixed handshake shape with the id echoed', async () => {
     const res = await rpc('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
@@ -134,8 +213,8 @@ describe('handleRpcLine: tools/list', () => {
 // --- tools/call: the engine over real tmp spec dirs -----------------------------
 
 describe('handleRpcLine: tools/call', () => {
-  it('lco_lint on good pet-clinic -> isError false, "0 errors" + exit-code line', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+  it('lco_lint on a good (inline conforming) spec -> isError false, "0 errors" + exit-code line', async () => {
+    const root = makeSpecRoot(inlineConforming());
 
     const res = await rpc(
       `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lco_lint","arguments":{"dir":${JSON.stringify(root)}}}}`,
@@ -162,7 +241,7 @@ describe('handleRpcLine: tools/call', () => {
   });
 
   it('lco_check without yes -> DRY RUN banner, isError false (nothing executes)', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
 
     const res = await rpc(
       `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"lco_check","arguments":{"dir":${JSON.stringify(root)}}}}`,
@@ -174,7 +253,7 @@ describe('handleRpcLine: tools/call', () => {
   });
 
   it('lco_freeze then lco_verify round-trip -> both isError false', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
     const call = (id: number, name: string) =>
       rpc(
         `{"jsonrpc":"2.0","id":${id},"method":"tools/call","params":{"name":"${name}","arguments":{"dir":${JSON.stringify(root)}}}}`,
@@ -190,7 +269,7 @@ describe('handleRpcLine: tools/call', () => {
   });
 
   it('lco_plan with json:true -> machine-readable plan inside the text', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+    const root = makeSpecRoot(inlineConforming());
 
     const res = await rpc(
       `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"lco_plan","arguments":{"dir":${JSON.stringify(root)},"json":true}}}`,
@@ -225,10 +304,17 @@ describe('handleRpcLine: tools/call', () => {
     expect(res.error.message).toContain('dir');
   });
 
-  it('BINDING throw-catch: a failing command core (read-only manifest write) becomes an isError tool result, never a crash', async () => {
-    const root = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
-    const manifest = join(root, 'spec', 'manifest.json');
-    chmodSync(manifest, 0o444); // cmdFreeze's manifest write will throw EACCES
+  it.skipIf((process.getuid?.() ?? 1000) === 0)(
+    'BINDING throw-catch: a failing command core becomes an isError tool result, never a crash (non-root: DAC must bite)',
+    async () => {
+    // The old variant chmod-ed manifest.json 0444 and relied on freeze's
+    // truncate-in-place write failing with EACCES — the exact defect DATA-001
+    // removed (rename replaces a read-only file). The atomic writer now
+    // stages temps in spec/, so the deterministic core failure is an
+    // unwritable spec/ DIRECTORY: temp creation throws EACCES out of
+    // cmdFreeze exactly like any environment failure.
+    const root = makeSpecRoot(inlineConforming());
+    chmodSync(join(root, 'spec'), 0o555);
     try {
       const res = await rpc(
         `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
@@ -241,7 +327,7 @@ describe('handleRpcLine: tools/call', () => {
       expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
       expect(logSpy.mock.calls).toHaveLength(0);
     } finally {
-      chmodSync(manifest, 0o644); // restore so afterEach rmSync can clean up
+      chmodSync(join(root, 'spec'), 0o755); // restore so afterEach rmSync can clean up
     }
   });
 
@@ -314,7 +400,11 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
             'spawn test is never silently skipped)',
         );
       }
-      const good = makeSpecRoot(loadBundle('good/pet-clinic/bundle.json'));
+      // T7: the built server carries the L13/L14 rules, so the lint-clean
+      // happy call uses the inline conforming bundle (the fixtures have
+      // conformed since T8); the bad root stays bad/L02 (still lint-error
+      // via L02).
+      const good = makeSpecRoot(inlineConforming());
       const bad = makeSpecRoot(loadBundle('bad/L02/bundle.json'));
 
       const child = spawn(process.execPath, [serverJs], {

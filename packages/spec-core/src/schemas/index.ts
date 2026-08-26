@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IdSchema } from './common';
+import { AssumptionIdSchema, EvidenceIdSchema, IdSchema } from './common';
 import { ManifestSchema } from './manifest';
 import { IntentSchema } from './intent';
 import { GlossaryEntrySchema } from './glossary';
@@ -31,9 +31,9 @@ export const SpecBundleSchema = z
     assumptions: z.array(
       z
         .object({
-          id: IdSchema,
+          id: AssumptionIdSchema,
           statement: z.string().min(1),
-          evidence: z.array(IdSchema),
+          evidence: z.array(EvidenceIdSchema),
           impact_if_wrong: z.string().min(1),
         })
         .strict(),

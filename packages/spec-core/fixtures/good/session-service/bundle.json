@@ -180,6 +180,7 @@
       "instructions": "Implement token signing and the sliding-expiry refresh inside src/auth.",
       "tests": [
         {
+          "id": "TST-0001",
           "kind": "unit",
           "file": "tests/auth-token.test.ts",
           "cases": [
@@ -190,7 +191,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/auth-token.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [
@@ -241,6 +242,7 @@
       "instructions": "Implement the denylist refresh and the verification fast path inside src/session.",
       "tests": [
         {
+          "id": "TST-0002",
           "kind": "integration",
           "file": "tests/session-revoke.test.ts",
           "cases": [
@@ -252,7 +254,7 @@
       "verification": [
         {
           "command": "pnpm vitest run tests/session-revoke.test.ts",
-          "expect": "exit code 0, all cases pass"
+          "expect": "exit 0"
         }
       ],
       "acceptance": [

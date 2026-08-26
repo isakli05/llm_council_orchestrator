@@ -1,20 +1,26 @@
 import { z } from 'zod';
-import { IdSchema, ImpactLevelSchema } from './common';
+import {
+  DecisionIdSchema,
+  ImpactLevelSchema,
+  RequirementIdSchema,
+  TaskIdSchema,
+  TestIdSchema,
+} from './common';
 
 /** 18 alanlık sözleşme */
 export const TaskContractSchema = z
   .object({
-    task_id: IdSchema,
+    task_id: TaskIdSchema,
     title: z.string().trim().min(1),
     purpose: z.string().trim().min(1),
     refs: z
       .object({
-        requirements: z.array(IdSchema),
+        requirements: z.array(RequirementIdSchema),
         architecture: z.array(z.string()),
-        decisions: z.array(IdSchema),
+        decisions: z.array(DecisionIdSchema),
       })
       .strict(),
-    depends_on: z.array(IdSchema),
+    depends_on: z.array(TaskIdSchema),
     preconditions: z.array(z.string()).min(1),
     /** glob path'ler */
     permitted_scope: z.array(z.string()).min(1),
@@ -30,6 +36,14 @@ export const TaskContractSchema = z
       .array(
         z
           .object({
+            /**
+             * Optional first-class test id (TST-NNNN): the anchor
+             * `requirements[].acceptance_refs` resolves against (closure/L13).
+             * Optional so pre-id stored bundles still compile; a referenced
+             * test MUST carry one — an unresolvable acceptance_ref is a lint
+             * error, which every lint-clean consumer (plan/check/freeze) gates on.
+             */
+            id: TestIdSchema.optional(),
             kind: z.enum(['unit', 'integration', 'property', 'e2e']),
             file: z.string().trim().min(1),
             cases: z.array(z.string().trim().min(1)).min(1),

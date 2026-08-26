@@ -9,6 +9,9 @@ const PET_CLINIC = JSON.parse(
   readFileSync(join(__dirname, '../../../fixtures/good/pet-clinic/bundle.json'), 'utf8'),
 ) as SpecBundle;
 
+/** Injected clock (lock holder identity in the atomic writer). */
+const NOW = '2026-08-26T12:00:00Z';
+
 /** The 9 required section files in compile.ts read order (test_files is derived, never written). */
 const SECTION_FILES = [
   'manifest',
@@ -39,7 +42,7 @@ describe('writeSpecDir', () => {
   it('writes exactly the 9 section files (2-space JSON) into a dir that does not exist yet', () => {
     // The target dir itself is missing: mkdir must create it (recursive).
     const dir = join(makeTmp('spec-core-writespec-'), 'deeply', 'nested');
-    writeSpecDir(dir, PET_CLINIC);
+    writeSpecDir(dir, PET_CLINIC, NOW);
 
     const written = readdirSync(join(dir, 'spec')).sort();
     expect(written).toEqual([...SECTION_FILES].map((n) => `${n}.json`).sort());
@@ -47,7 +50,7 @@ describe('writeSpecDir', () => {
 
   it('writes manifest.json with state draft and tasks.json as the bundle array', () => {
     const dir = makeTmp('spec-core-writespec-content-');
-    writeSpecDir(dir, PET_CLINIC);
+    writeSpecDir(dir, PET_CLINIC, NOW);
 
     const manifest = JSON.parse(readFileSync(join(dir, 'spec', 'manifest.json'), 'utf8'));
     expect(manifest.state).toBe('draft');
@@ -60,7 +63,7 @@ describe('writeSpecDir', () => {
 
   it('formats every section file as 2-space indented JSON', () => {
     const dir = makeTmp('spec-core-writespec-indent-');
-    writeSpecDir(dir, PET_CLINIC);
+    writeSpecDir(dir, PET_CLINIC, NOW);
 
     const raw = readFileSync(join(dir, 'spec', 'manifest.json'), 'utf8');
     expect(raw).toBe(JSON.stringify(PET_CLINIC.manifest, null, 2));
@@ -69,7 +72,7 @@ describe('writeSpecDir', () => {
 
   it('never writes test_files.json (compileSpecDir derives it from tasks)', () => {
     const dir = makeTmp('spec-core-writespec-noledger-');
-    writeSpecDir(dir, { ...PET_CLINIC, test_files: ['a.test.ts'] });
+    writeSpecDir(dir, { ...PET_CLINIC, test_files: ['a.test.ts'] }, NOW);
 
     expect(existsSync(join(dir, 'spec', 'test_files.json'))).toBe(false);
   });
@@ -90,7 +93,7 @@ describe('writeSpecDir', () => {
       },
     };
     const dir = makeTmp('spec-core-writespec-legacy-');
-    writeSpecDir(dir, withLegacy);
+    writeSpecDir(dir, withLegacy, NOW);
 
     const written = readdirSync(join(dir, 'spec')).sort();
     expect(written).toEqual([...SECTION_FILES, 'legacy'].map((n) => `${n}.json`).sort());
@@ -101,7 +104,7 @@ describe('writeSpecDir', () => {
 
   it('omits legacy.json when the bundle has none', () => {
     const dir = makeTmp('spec-core-writespec-nolegacy-');
-    writeSpecDir(dir, PET_CLINIC);
+    writeSpecDir(dir, PET_CLINIC, NOW);
 
     expect(existsSync(join(dir, 'spec', 'legacy.json'))).toBe(false);
   });
@@ -112,7 +115,7 @@ describe('writeSpecDir', () => {
     mkdirSync(spec);
     writeFileSync(join(spec, 'manifest.json'), 'sentinel-content', 'utf8');
 
-    expect(() => writeSpecDir(dir, PET_CLINIC)).toThrow('refusing to overwrite existing spec/');
+    expect(() => writeSpecDir(dir, PET_CLINIC, NOW)).toThrow('refusing to overwrite existing spec/');
 
     // Nothing was added or changed.
     expect(readdirSync(spec)).toEqual(['manifest.json']);
@@ -124,7 +127,7 @@ describe('writeSpecDir', () => {
     const spec = join(dir, 'spec');
     mkdirSync(spec);
 
-    expect(() => writeSpecDir(dir, PET_CLINIC)).toThrow('refusing to overwrite existing spec/');
+    expect(() => writeSpecDir(dir, PET_CLINIC, NOW)).toThrow('refusing to overwrite existing spec/');
     expect(readdirSync(spec)).toEqual([]);
   });
 });

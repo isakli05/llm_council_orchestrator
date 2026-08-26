@@ -62,7 +62,10 @@ const PITFALLS = [
   '- tasks[].interface_changes items are OBJECTS {"symbol": string, "file": string}; tasks[].completion_evidence is an OBJECT {"required": string[]} — never plain strings.',
   '- contracts[] items are OBJECTS with ALL of: id, kind ("openapi"|"json-schema"|"ts-signature"|"grpc"), symbol, definition.',
   '- evidence[].kind must be exactly one of: user_input, code, runtime, doc, constraint.',
-  '- Every id is PREFIX-0000 with FOUR digits (REQ-0001, DEC-0001, TASK-0001, TST-0001, E-0001, AS-0001, GLS-0001); manifest.evidence_snapshot.pack_hash must look like "sha256:" followed by exactly 64 hex characters.',
+  '- Every id is PREFIX-0000 with FOUR digits, and the PREFIX must match the field it sits in: E- for evidence (every evidence[] reference), DEC- for decisions, REQ- (or OPS-/UX-/ARC-/DAT-/SEC-/LGC-) for requirements and tasks[].refs.requirements, TASK- for task_id/depends_on, TST- for tests[].id and requirements[].acceptance_refs, CON- for contracts, AS- for assumptions. A right-prefix-for-the-wrong-field id (a DEC- id in an evidence list) is REJECTED by the schema.',
+  '- Give every tasks[].tests[] entry an id: "TST-0001" style, unique across the whole bundle — requirements[].acceptance_refs resolve against those test ids, and an unresolvable acceptance_ref is a lint error (L13).',
+  '- tasks[].verification[].expect MUST state the expected exit code as "exit N" (e.g. "exit 0", "exit 1") — the first "exit N" in the string is the contract the checker judges. Prose like "exit code 0, all cases pass" is unparseable: it is a lint error (L14) and it can never be judged or executed.',
+  '- manifest.evidence_snapshot.pack_hash must look like "sha256:" followed by exactly 64 hex characters.',
 ].join('\n');
 
 /** Classification guidance shared by classifySingle and the merged single-variant template. */
@@ -80,6 +83,10 @@ const intentBlock = (intent: string, profile: EvalTaskProfile): string =>
  * Council call 1 — classifier. Given the intent and the expected profile,
  * decide whether the request must be blocked. Output: ONLY
  * `{"profile":"p-mini"|"p-standard"|...,"must_be_blocked":boolean}`.
+ *
+ * BACK-001: the prompt teaches the model that must_be_blocked=true is FINAL
+ * (the runner enforces monotonicity in code — a true verdict blocks the run
+ * regardless of later outputs; this copy only keeps the model aligned with it).
  */
 export function classifySingle(intent: string, profile: EvalTaskProfile): string {
   return [
@@ -89,6 +96,7 @@ export function classifySingle(intent: string, profile: EvalTaskProfile): string
     JSON_ONLY,
     'TASK: classify the intent.',
     'Output ONLY this JSON object (nothing else): {"profile": "<complexity profile>", "must_be_blocked": <true|false>}',
+    'must_be_blocked=true is FINAL: the pipeline will block this request and no later output can overrule the verdict. Set it exactly when the classification rules require it — do not defer the decision to later council members.',
   ].join('\n\n');
 }
 
@@ -144,6 +152,30 @@ export function proposeB(
     '"""',
     proposalAJson,
     '"""',
+  ].join('\n\n');
+}
+
+/**
+ * Degraded-merger fallback (audit BACK-008): proposal A failed bundle schema
+ * validation twice, so its unvalidated text is WITHHELD from the merger —
+ * unvalidated prose must never reach the judge. The second member produces the
+ * final bundle alone from its own independent proposal; the run is marked
+ * councilDegraded downstream. Same schema, pitfalls, and invention ban as
+ * proposeB; the only structural difference is the absent PROPOSAL A block.
+ */
+export function proposeBDegraded(intent: string, profile: EvalTaskProfile): string {
+  return [
+    'ROLE: You are the second council member acting as merger and judge. The council leg is DEGRADED: the other member\'s proposal failed schema validation twice, and its unvalidated output is withheld from you. You will produce the final bundle alone, from your own independent proposal.',
+    SCHEMA_BLOCK,
+    PITFALLS,
+    [
+      'PROCEDURE (internal; do not narrate it):',
+      '1. Draft your OWN independent proposal for the intent. There is nothing to merge — your draft IS the final bundle.',
+      '2. Where the intent is ambiguous or self-conflicting on a high-impact point and its evidence cannot resolve it, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
+    ].join('\n'),
+    JSON_ONLY,
+    'TASK: output ONLY the final SpecBundle as a single JSON value.',
+    intentBlock(intent, profile),
   ].join('\n\n');
 }
 

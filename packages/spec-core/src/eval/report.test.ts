@@ -33,6 +33,7 @@ function passRuns(): RunScore[] {
         assertionsPassed: t.assertions.length,
         assertionsTotal: t.assertions.length,
         blockedCorrectly: t.must_be_blocked,
+        councilDegraded: false,
         inTokens: variant === 'single' ? 100 : 300,
         outTokens: variant === 'single' ? 50 : 150,
         calls: variant === 'single' ? 1 : 3,
@@ -67,6 +68,28 @@ describe('renderGateReport — deterministic (mock) input', () => {
     const a = renderGateReport(passInput());
     const b = renderGateReport(passInput());
     expect(a).toBe(b);
+  });
+
+  // BACK-008: a degraded council leg (proposal A invalid after retry) must be
+  // visible in the rendered report — it cannot silently count as full council.
+  it('degraded council legs are listed and flagged in the runs table', () => {
+    const input = passInput();
+    const degradedRun = input.runs.find((r) => r.taskId === 'ET-13' && r.variant === 'council')!;
+    degradedRun.councilDegraded = true;
+
+    const text = renderGateReport(input);
+
+    expect(text).toContain('degraded council legs: 1 (ET-13)');
+    // the run's own table row carries the degraded flag
+    const row = text
+      .split('\n')
+      .find((l) => l.startsWith('| ET-13 | council |'))!;
+    expect(row).toMatch(/DEGRADED/);
+    // untouched council rows are NOT flagged
+    const okRow = text
+      .split('\n')
+      .find((l) => l.startsWith('| ET-01 | council |'))!;
+    expect(okRow).not.toMatch(/DEGRADED/);
   });
 });
 

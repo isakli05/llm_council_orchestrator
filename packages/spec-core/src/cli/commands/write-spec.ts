@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../../schemas';
+import { acquireSpecRootLock, createDirAtomically } from '../../storage/revision';
 
 /**
  * Required section files in compile.ts read order. `test_files` is NOT a file
@@ -26,24 +27,38 @@ const SECTION_KEYS = [
  *
  * NO-CLOBBER, CHECK BEFORE ANY WRITE: if `<dir>/spec` already exists (even
  * empty) this THROWS 'refusing to overwrite existing spec/' before a single
- * byte is written or any directory is created.
+ * byte is written or any directory is created. The check runs twice — once
+ * up front (zero side effects on refusal) and again under the per-root
+ * revision lock, so two concurrent writers can never both pass it.
  *
- * Synchronous on purpose: the plan's interface is `void`, and a fully sync
- * check-then-write keeps the refusal atomic within the call (no await gap
- * between the existence check and the first write). IO failures (EACCES,
- * read-only fs, ...) propagate as throws for the command wrapper to report
+ * ATOMICITY (DATA-001): the whole tree is staged in a hidden sibling and
+ * moved into place with ONE rename via the revision storage, under the
+ * per-root lock — a crashed or racing generate leaves either nothing or the
+ * complete spec, never a partial scaffold.
+ *
+ * Synchronous on purpose: a fully sync critical section cannot interleave on
+ * the event loop, so concurrent callers in one process (e.g. MCP tool calls)
+ * serialize exactly like separate processes. IO failures (EACCES, read-only
+ * fs, a live lock, ...) propagate as throws for the command wrapper to report
  * as environment failures (exit 2), matching init's write-error contract.
+ * `nowIso` is injected per the interface contract (lock holder identity).
  */
-export function writeSpecDir(dir: string, bundle: SpecBundle): void {
+export function writeSpecDir(dir: string, bundle: SpecBundle, nowIso: string): void {
   const specDir = join(dir, 'spec');
   if (existsSync(specDir)) {
     throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
   }
-  mkdirSync(specDir, { recursive: true });
-  for (const key of SECTION_KEYS) {
-    writeFileSync(join(specDir, `${key}.json`), JSON.stringify(bundle[key], null, 2), 'utf8');
-  }
-  if (bundle.legacy !== undefined) {
-    writeFileSync(join(specDir, 'legacy.json'), JSON.stringify(bundle.legacy, null, 2), 'utf8');
+  mkdirSync(dir, { recursive: true });
+  const lock = acquireSpecRootLock(dir, nowIso);
+  try {
+    if (existsSync(specDir)) {
+      throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
+    }
+    createDirAtomically(specDir, [
+      ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: bundle[key] })),
+      ...(bundle.legacy !== undefined ? [{ name: 'legacy.json', content: bundle.legacy }] : []),
+    ]);
+  } finally {
+    lock.release();
   }
 }

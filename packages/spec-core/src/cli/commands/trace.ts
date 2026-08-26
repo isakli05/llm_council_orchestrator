@@ -12,9 +12,21 @@ export interface TraceResult {
  * Build the traceability report for a spec directory.
  *
  * Informational by design (exit 0): `lco lint` owns the gate; this is the
- * human-facing coverage view over the same graph. Requirements are rendered
- * in bundle order; per-requirement task lists come from the `req-task` edges
- * (already sorted by buildTrace), so the report is fully deterministic.
+ * human-facing coverage view over the same graph.
+ *
+ * VALIDATION LEVEL (BACK-006 decision): trace stays at the COMPILE level —
+ * deliberately. It is the repair view: while a spec is lint-dirty (dangling
+ * refs, unjudgeable expects) `lco trace` is what you use to SEE the coverage
+ * graph and fix it, so requiring lint-clean here would disable the tool
+ * exactly when it is needed. It keys nothing by referenced ids and executes
+ * nothing, so a semantically-invalid bundle cannot make it lossy or
+ * dangerous — unlike plan (keys + schedules) and check (executes), which load
+ * at 'lint-clean'. Compile-level invariants still hold underneath it:
+ * sections must parse, the schema must pass, task ids must be unique.
+ *
+ * Requirements are rendered in bundle order; per-requirement task lists come
+ * from the `req-task` edges (already sorted by buildTrace), so the report is
+ * fully deterministic.
  *
  * Line contract:
  *   REQ-0001: 2 task(s) [TASK-0001 ✓test, TASK-0002 ✗no-test-link]

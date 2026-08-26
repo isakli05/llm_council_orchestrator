@@ -54,8 +54,10 @@ describe('all bad fixtures through the real lint/freeze/verify pipeline', () => 
           return;
         }
 
-        // lint-error: the expected rule fires, and NO other rule contributes
-        // an error (exactness — one vector, one rule).
+        // lint-error: the vector fires its rule AND ONLY its rule — the
+        // one-vector-one-rule exactness contract (restored by the T8 fixture
+        // conformance: expects are grammar-conformant and every cited test
+        // id exists, so L13/L14 stay silent on every bad vector).
         const result = lintBundle(bundle);
         const firedRules = [...new Set(result.errors.map((f) => f.rule))];
         expect(firedRules).toEqual([exp.rule]);

@@ -1,23 +1,34 @@
 import { exec } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../schemas';
+import { acquireSpecRootLock, swapFilesAtomically } from '../storage/revision';
+import { parseExpect } from './expect';
+
+// The expect grammar is defined ONCE in ./expect (BACK-004) and shared with
+// lint L14; re-exported here for the existing import surface.
+export { parseExpect } from './expect';
 
 /**
  * Verification-command runner — the `lco check` core.
  *
  * Security model (binding):
  *   - `yes: false` (the CLI default) is a DRY RUN: NO command is ever handed
- *     to the executor, every outcome is `DRY`, nothing is written, code 0.
- *     The dry table is the preview of what `--yes` would run.
+ *     to the executor, nothing is written. The dry table is the preview of
+ *     what `--yes` would run — an HONEST preview (BACK-004): an expectation
+ *     the runner could not judge surfaces as `UNPARSEABLE-EXPECT` and fails
+ *     the run (code 1) in dry mode too, exactly as it would under `--yes`.
+ *     Only judgeable entries are labeled `DRY`; a dry exit 0 certifies that
+ *     every contract is judgeable.
  *   - `yes: true` executes each TaskContract verification command via the
  *     injected Executor (production: child_process.exec, cwd = the spec root,
  *     killed at `timeoutMs`, default 60s).
  *   - Fail-closed judgement: the expected exit code is ONLY what the first
- *     `exit N` match in the `expect` description yields. If `parseExpect`
- *     cannot produce a number, the command is NOT executed — running
- *     something whose result cannot be judged would be success theater. The
- *     outcome is `UNPARSEABLE-EXPECT` and counts as a failure.
+ *     `exit N` match in the `expect` description yields (the shared
+ *     ./expect grammar). If `parseExpect` cannot produce a number, the
+ *     command is NOT executed — running something whose result cannot be
+ *     judged would be success theater. The outcome is
+ *     `UNPARSEABLE-EXPECT` and counts as a failure.
  *   - `TIMEOUT` (executor killed the process) counts as a failure; a mismatched
  *     exit code is `FAIL`.
  *
@@ -28,8 +39,8 @@ import type { SpecBundle } from '../schemas';
  * file is the audit trail of what `--yes` did). DRY writes nothing, ever.
  *
  * Exit-code mapping: every outcome PASS or DRY -> 0; any FAIL / TIMEOUT /
- * UNPARSEABLE-EXPECT -> 1; an unknown `opts.task` id -> 2 with no outcomes
- * (the CLI prints the unknown-task message).
+ * UNPARSEABLE-EXPECT (dry included) -> 1; an unknown `opts.task` id -> 2 with
+ * no outcomes (the CLI prints the unknown-task message).
  */
 
 export interface CheckOutcome {
@@ -81,15 +92,12 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 export const OUTPUT_TAIL_LIMIT = 500;
 
 /**
- * Extract the expected exit code from an `expect` description: the FIRST
- * `/exit (\d+)/` match wins, no match -> null (unjudgeable, fail-closed).
- * Prose like 'exit code 0, all cases pass' deliberately yields null: 'exit'
- * there is not followed by digits.
+ * Extract the expected exit code from an `expect` description — the shared
+ * grammar in ./expect: the FIRST `/exit (\d+)/` match wins, no match -> null
+ * (unjudgeable, fail-closed). Prose like 'exit code 0, all cases pass'
+ * deliberately yields null: 'exit' there is not followed by digits.
+ * (parseExpect itself now lives in ./expect; see the re-export above.)
  */
-export function parseExpect(expect: string): number | null {
-  const m = /exit (\d+)/.exec(expect);
-  return m ? Number(m[1]) : null;
-}
 
 /**
  * The production Executor: child_process.exec with a hard timeout, never
@@ -153,6 +161,23 @@ export async function runChecks(
     for (const entry of task.verification) {
       const expectedExit = parseExpect(entry.expect);
 
+      if (expectedExit === null) {
+        // Fail-closed, dry included (BACK-004): an unjudgeable expectation is
+        // a FAILURE even in the dry preview — never a silent DRY row — and
+        // under --yes the command is NEVER executed.
+        taskOutcomes.push({
+          taskId: task.task_id,
+          command: entry.command,
+          expect: entry.expect,
+          expectedExit: null,
+          actualExit: null,
+          status: 'UNPARSEABLE-EXPECT',
+          durationMs: 0,
+          outputTail: '',
+        });
+        continue;
+      }
+
       if (!opts.yes) {
         taskOutcomes.push({
           taskId: task.task_id,
@@ -161,21 +186,6 @@ export async function runChecks(
           expectedExit,
           actualExit: null,
           status: 'DRY',
-          durationMs: 0,
-          outputTail: '',
-        });
-        continue;
-      }
-
-      if (expectedExit === null) {
-        // Fail-closed: unjudgeable expectations never execute the command.
-        taskOutcomes.push({
-          taskId: task.task_id,
-          command: entry.command,
-          expect: entry.expect,
-          expectedExit: null,
-          actualExit: null,
-          status: 'UNPARSEABLE-EXPECT',
           durationMs: 0,
           outputTail: '',
         });
@@ -216,7 +226,14 @@ function tail(text: string): string {
   return text.length <= OUTPUT_TAIL_LIMIT ? text : text.slice(text.length - OUTPUT_TAIL_LIMIT);
 }
 
-/** One JSON evidence file per task: {task_id, checkedAt, checks: [...]}. */
+/**
+ * One JSON evidence file per task: {task_id, checkedAt, checks: [...]}.
+ *
+ * ATOMICITY (DATA-001): the file is staged and swapped into place with a
+ * rename under the per-root revision lock — a rerun can never truncate a
+ * live evidence file to zero bytes mid-crash, and a failed swap leaves the
+ * previous evidence byte-identical.
+ */
 async function writeEvidence(
   dir: string,
   taskId: string,
@@ -224,27 +241,28 @@ async function writeEvidence(
   outcomes: CheckOutcome[],
 ): Promise<void> {
   const evidenceDir = join(dir, 'spec', 'evidence');
-  await mkdir(evidenceDir, { recursive: true });
-  const file = join(evidenceDir, `${taskId}-check.json`);
-  await writeFile(
-    file,
-    JSON.stringify(
+  mkdirSync(evidenceDir, { recursive: true });
+  const lock = acquireSpecRootLock(dir, nowIso);
+  try {
+    swapFilesAtomically(evidenceDir, [
       {
-        task_id: taskId,
-        checkedAt: nowIso,
-        checks: outcomes.map((o) => ({
-          command: o.command,
-          expect: o.expect,
-          expectedExit: o.expectedExit,
-          actualExit: o.actualExit,
-          status: o.status,
-          durationMs: o.durationMs,
-          outputTail: o.outputTail,
-        })),
+        name: `${taskId}-check.json`,
+        content: {
+          task_id: taskId,
+          checkedAt: nowIso,
+          checks: outcomes.map((o) => ({
+            command: o.command,
+            expect: o.expect,
+            expectedExit: o.expectedExit,
+            actualExit: o.actualExit,
+            status: o.status,
+            durationMs: o.durationMs,
+            outputTail: o.outputTail,
+          })),
+        },
       },
-      null,
-      2,
-    ),
-    'utf8',
-  );
+    ]);
+  } finally {
+    lock.release();
+  }
 }

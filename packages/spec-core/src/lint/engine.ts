@@ -10,6 +10,8 @@ import { rule as l07 } from './rules/l07';
 import { rule as l08 } from './rules/l08';
 import { rule as l10 } from './rules/l10';
 import { rule as l12 } from './rules/l12';
+import { rule as l13 } from './rules/l13';
+import { rule as l14 } from './rules/l14';
 
 /**
  * A lint rule: scans a compiled bundle and reports findings tagged with its
@@ -21,9 +23,10 @@ export interface LintRule {
 }
 
 /**
- * Rule registry: the ten evidence-gate rules L01, L02, L03, L04, L05, L06,
- * L07, L08, L10, L12 (L09/L11 are schema-layer checks, not lint rules).
- * Registration order drives finding order in `lintBundle` results.
+ * Rule registry: the evidence-gate rules L01..L08, L10, L12 plus the
+ * semantic-closure rules L13 (referential closure) and L14 (judgeable expect)
+ * (L09/L11 are schema-layer checks, not lint rules). Registration order
+ * drives finding order in `lintBundle` results.
  */
 export const RULES: LintRule[] = [
   l01,
@@ -36,6 +39,8 @@ export const RULES: LintRule[] = [
   l08,
   l10,
   l12,
+  l13,
+  l14,
 ];
 
 /**

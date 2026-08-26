@@ -11,9 +11,132 @@ import { runCli } from '../index';
 
 const NOW = '2026-08-25T12:00:00Z';
 
-const PET_CLINIC = JSON.parse(
-  readFileSync(join(__dirname, '../../../fixtures/good/pet-clinic/bundle.json'), 'utf8'),
-) as SpecBundle;
+// T7: the mock-output bases were the pet-clinic/session-service fixtures;
+// fixtures conform to L13/L14 only in T8, and these pipeline tests (gates,
+// retries, BACK-008) must stay green — so the bases are inline conforming
+// bundles of the same shapes (p-mini / lint-clean p-standard with an NFR
+// budget + contract). All derived assertions reference these constants.
+const SHA =
+  'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+const task = (n: 1 | 2, refs: string[], deps: string[], scope: string, file: string, cases: string[]) => ({
+  task_id: `TASK-000${n}`,
+  title: `task ${n}`,
+  purpose: 'p',
+  refs: { requirements: refs, architecture: [], decisions: ['DEC-0001'] },
+  depends_on: deps,
+  preconditions: ['c'],
+  permitted_scope: [scope],
+  protected: [],
+  interface_changes: [],
+  invariants: ['i'],
+  instructions: 'do',
+  tests: [{ id: `TST-000${n}`, kind: 'unit' as const, file, cases }],
+  verification: [{ command: 'node --version', expect: 'exit 0' }],
+  acceptance: ['a'],
+  rollback: 'r',
+  completion_evidence: { required: ['test_summary' as const] },
+  risk: { level: 'low' as const, note: '' },
+  complexity: 'xs' as const,
+});
+
+const baseManifest = (name: string, profile: 'p-mini' | 'p-standard') => ({
+  spec_schema: 'lco-spec/1.0',
+  spec_version: 1,
+  project: { name, mode: 'greenfield' },
+  complexity_profile: profile,
+  evidence_snapshot: { pack_hash: SHA, collected_at: '2026-08-25T12:00:00Z' },
+  state: 'draft',
+  council_run: { run_id: 't', config_fingerprint: 't' },
+  artifact_hashes: {},
+  unresolved_count: 0,
+  blocking_count: 0,
+  target_runtime: { platform: 'node', stack: 'ts' },
+});
+
+const PET_CLINIC = {
+  manifest: baseManifest('pet-clinic', 'p-mini'),
+  intent: { statement: 's', normalized: 'n' },
+  glossary: [{ term: 'Term', definition: 'd' }],
+  assumptions: [],
+  evidence: [{ id: 'E-0001', kind: 'user_input' as const, source: 's', hash: SHA }],
+  requirements: [
+    {
+      id: 'REQ-0001',
+      statement: 'must work',
+      priority: 'must' as const,
+      evidence: ['E-0001'],
+      acceptance_refs: ['TST-0001'],
+      terms_used: [],
+    },
+  ],
+  decisions: [
+    {
+      claim_id: 'DEC-0001',
+      decision: 'd',
+      rationale: 'r',
+      evidence: ['E-0001'],
+      confidence: 1,
+      impact: 'low' as const,
+      assumptions: [],
+      alternatives: [],
+      status: 'accepted' as const,
+    },
+  ],
+  contracts: [],
+  tasks: [task(1, ['REQ-0001'], [], 'src/**', 'a.test.ts', ['REQ-0001: works'])],
+  test_files: ['a.test.ts'],
+} as unknown as SpecBundle;
+
+/** Lint-clean p-standard bundle — the valid output for a p-standard request
+ * (carries the OPS- NFR budget L07 requires above p-mini, a contract, and a
+ * second task chained on TASK-0001). */
+const SESSION_SERVICE = {
+  manifest: baseManifest('session-service', 'p-standard'),
+  intent: { statement: 's', normalized: 'n' },
+  glossary: [{ term: 'Term', definition: 'd' }],
+  assumptions: [],
+  evidence: [{ id: 'E-0001', kind: 'user_input' as const, source: 's', hash: SHA }],
+  requirements: [
+    {
+      id: 'REQ-0001',
+      statement: 'must work',
+      priority: 'must' as const,
+      evidence: ['E-0001'],
+      acceptance_refs: ['TST-0001'],
+      terms_used: [],
+    },
+    {
+      id: 'OPS-0001',
+      statement: 'NFR: response p95 under 300ms',
+      priority: 'must' as const,
+      evidence: ['E-0001'],
+      acceptance_refs: ['TST-0002'],
+      terms_used: [],
+    },
+  ],
+  decisions: [
+    {
+      claim_id: 'DEC-0001',
+      decision: 'd',
+      rationale: 'r',
+      evidence: ['E-0001'],
+      confidence: 1,
+      impact: 'low' as const,
+      assumptions: [],
+      alternatives: [],
+      status: 'accepted' as const,
+    },
+  ],
+  contracts: [
+    { id: 'CON-0001', kind: 'ts-signature' as const, symbol: 'api(): void', definition: 'd' },
+  ],
+  tasks: [
+    task(1, ['REQ-0001'], [], 'src/one/**', 'a.test.ts', ['REQ-0001: works']),
+    task(2, ['OPS-0001'], ['TASK-0001'], 'src/two/**', 'b.test.ts', ['OPS-0001: budget holds']),
+  ],
+  test_files: ['a.test.ts', 'b.test.ts'],
+} as unknown as SpecBundle;
 
 /** The 9 required section files (mirrors what init writes and compile reads). */
 const SECTION_FILES = [
@@ -31,6 +154,11 @@ const SECTION_FILES = [
 /** Fixture-derived valid, lint-clean bundle (the PET_CLINIC builder pattern from runner.test.ts). */
 function validBundle(): SpecBundle {
   return structuredClone(PET_CLINIC);
+}
+
+/** Lint-clean p-standard bundle (the valid output shape for a p-standard request). */
+function pStandardBundle(): SpecBundle {
+  return structuredClone(SESSION_SERVICE);
 }
 
 /** pet-clinic fixture with an unresolved decision leak (et13UnresolvedBundle pattern). */
@@ -201,6 +329,35 @@ describe('cmdGenerate — spec outcome', () => {
     expect(calls()).toBe(3);
     expect(existsSync(join(dir, 'spec', 'manifest.json'))).toBe(true);
   });
+
+  // BACK-008: a twice-invalid proposal A degrades the council leg; the final
+  // bundle is still fully gated (schema+lint+lifecycle), so generate WRITES it —
+  // but the summary must say the independent-proposal leg collapsed.
+  it('degraded council (proposal A invalid twice) → code 0, spec written, summary flags DEGRADED', async () => {
+    const dir = makeTmp('spec-core-generate-degraded-');
+    const { llm, calls, prompts } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      'proposal A prose, not json',
+      'proposal A retry, still not json',
+      JSON.stringify(validBundle()),
+    ]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'build a small pet clinic scheduler',
+      variant: 'council',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(0);
+    expect(calls()).toBe(4);
+    expect(existsSync(join(dir, 'spec', 'manifest.json'))).toBe(true);
+    expect(result.output).toContain('DEGRADED');
+    expect(result.output).toContain('proposal A');
+    // the merger prompt (4th call) carried none of the unvalidated prose
+    expect(prompts[3]).not.toContain('proposal A prose, not json');
+  });
 });
 
 describe('cmdGenerate — blocked outcome', () => {
@@ -221,6 +378,88 @@ describe('cmdGenerate — blocked outcome', () => {
     expect(result.output).toContain('blocked');
     expect(result.output).toContain('L08_UNRESOLVED_LEAK');
     expect(result.output).toContain('DEC-0001');
+  });
+});
+
+describe('cmdGenerate — lifecycle output gate (BACK-002)', () => {
+  /** pet-clinic with a single manifest field overridden. */
+  function withManifest(override: Partial<SpecBundle['manifest']>): SpecBundle {
+    const b = validBundle();
+    Object.assign(b.manifest, override);
+    return b;
+  }
+
+  // Audit BACK-002 (a): a mock returning state:'frozen' used to be written to
+  // disk with exit 0 (and verify then failed every section). Generate must
+  // reject any non-draft generation output — freeze is a separate, later step.
+  it("state:'frozen' output → code 1, NOTHING written, message names the illegal state", async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-');
+    const { llm } = makeLlm([JSON.stringify(withManifest({ state: 'frozen' }))]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+    expect(result.output).toContain('draft');
+    expect(result.output).toContain("'frozen'");
+  });
+
+  it("state:'blocked' output → code 1 even with zero counters (the gate is the state itself)", async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-blocked-');
+    const { llm } = makeLlm([JSON.stringify(withManifest({ state: 'blocked' }))]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  // Audit BACK-002 (d): version bumps outside the change envelope.
+  it('spec_version:7 output → code 1 (a new spec starts at v1; versions advance only via lco change)', async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-v7-');
+    const { llm } = makeLlm([JSON.stringify(withManifest({ spec_version: 7 }))]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+    expect(result.output).toContain('spec_version');
+  });
+
+  it('profile mismatch (p-mini bundle, p-standard requested) → code 1, nothing written', async () => {
+    const dir = makeTmp('spec-core-generate-lifecycle-profile-');
+    const { llm } = makeLlm([JSON.stringify(validBundle())]); // p-mini bundle
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a bigger clinic platform',
+      variant: 'single',
+      profile: 'p-standard',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+    expect(result.output).toContain('p-standard');
+    expect(result.output).toContain('p-mini');
   });
 });
 
@@ -293,7 +532,7 @@ describe('runCli generate — argument handling', () => {
       async (_url: unknown, init?: { body?: string }): Promise<Response> => {
         bodies.push(String(init?.body));
         return jsonResponse({
-          choices: [{ message: { content: JSON.stringify(validBundle()) } }],
+          choices: [{ message: { content: JSON.stringify(pStandardBundle()) } }],
           usage: { prompt_tokens: 11, completion_tokens: 7 },
         });
       },
@@ -321,8 +560,8 @@ describe('runCli generate — argument handling', () => {
         const n = bodies.push(String(init?.body)); // 1-based call number
         const content =
           n === 1
-            ? JSON.stringify({ profile: 'p-mini', must_be_blocked: false })
-            : JSON.stringify(validBundle());
+            ? JSON.stringify({ profile: 'p-standard', must_be_blocked: false })
+            : JSON.stringify(pStandardBundle());
         return jsonResponse({
           choices: [{ message: { content } }],
           usage: { prompt_tokens: 10, completion_tokens: 5 },

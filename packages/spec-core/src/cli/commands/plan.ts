@@ -1,8 +1,8 @@
-import { compileSpecDir } from '../../compiler/compile';
+import { loadBundleAtLevel, lintRefusal } from '../../compiler/validation';
 import type { SpecBundle, TaskContract } from '../../schemas';
 
 export interface PlanResult {
-  /** 0 plan produced, 1 cyclic dependencies, 2 compile/schema rejection. */
+  /** 0 plan produced, 1 cyclic dependencies, 2 compile/schema/lint rejection. */
   code: number;
   output: string;
 }
@@ -24,7 +24,7 @@ interface PlanTask {
 interface TopoResult {
   /** Task ids in level order; within a level, lexicographic by task_id. */
   order: string[];
-  /** Level-0 ids: tasks with no known dependency — runnable immediately. */
+  /** Level-0 ids: tasks with no dependencies — runnable immediately. */
   level0: string[];
   /** Unresolvable ids after Kahn (cycle members and their dependents), sorted. */
   cycle: string[];
@@ -33,37 +33,48 @@ interface TopoResult {
 /**
  * Topological execution plan for a spec directory (Kahn's algorithm).
  *
- * Pure core — no console, no clock, no process.exit. `depends_on` entries
- * that reference no task in the bundle are NOT edges: they only produce
- * WARNING lines (lint owns hard failures; a plan must still be computable),
- * so such references are treated as satisfied and never block. Determinism:
- * each Kahn level is emitted sorted lexicographically by task_id, which
- * totally determines the output for a given bundle.
+ * Pure core — no console, no clock, no process.exit.
+ *
+ * VALIDATION LEVEL (BACK-006): plan requires a lint-clean bundle — referential
+ * closure included. Consequences (BACK-003):
+ *   - an unknown `depends_on` id (dangling dependency) is a BLOCKING error:
+ *     exit 2 with the unknown id named in the structured refusal, in human
+ *     AND json mode. The old behavior — a human-mode WARNING that JSON plans
+ *     silently dropped while scheduling the task ready-now — is gone: a
+ *     machine plan must never treat a missing prerequisite as satisfied.
+ *   - duplicate task ids never get this far (compile rejects them), so the
+ *     id-keyed `tasks` map of the JSON surface can never lose a task.
+ *
+ * Ordering of verdicts: a dependency cycle (itself an L04 lint error) is
+ * reported FIRST, in plan's own words (exit 1, members listed) — the
+ * plan-specific "cannot order" verdict — before the generic lint refusal;
+ * every other lint error refuses with exit 2 and the actionable lint hint.
+ *
+ * Determinism: each Kahn level is emitted sorted lexicographically by
+ * task_id, which totally determines the output for a given bundle.
  *
  * Human output contract (json:false):
- *   WARNING: TASK-0002 depends on unknown TASK-9999      <- only if any
  *   plan: pet-clinic — 3 task(s) in dependency order
  *   1. TASK-0001 [s] deps: none | verify: cmd (expect) | scope: src/**
  *   ...
  *   ready-now: TASK-0001
  *
  * JSON output contract (json:true): the output string is EXACTLY
- * JSON.stringify({order, tasks}) — parseable as-is; warnings are human-only
- * so the machine surface never carries non-JSON lines.
+ * JSON.stringify({order, tasks}) — parseable as-is. A refused bundle (code 2)
+ * emits the refusal text instead — machines check the exit code and never
+ * parse a lossy half-plan.
  */
 export async function cmdPlan(dir: string, opts: PlanOptions): Promise<PlanResult> {
-  const compiled = await compileSpecDir(dir);
-  if (!compiled.ok || !compiled.bundle) {
-    return {
-      code: 2,
-      output: [
-        `compile FAILED with ${compiled.errors.length} error(s):`,
-        ...compiled.errors.map((e) => `  ${e.path}: ${e.message}`),
-      ].join('\n'),
-    };
+  // Load at 'compile' (shape + unique task ids) and enforce lint-clean HERE so
+  // the cycle verdict — plan's own "cannot order" report — comes before the
+  // generic lint refusal (a cycle is also an L04 error; the specialized
+  // verdict is the more actionable one).
+  const loaded = await loadBundleAtLevel(dir, 'compile');
+  if (!loaded.ok) {
+    return { code: loaded.code, output: loaded.output };
   }
+  const bundle = loaded.bundle;
 
-  const bundle = compiled.bundle;
   const topo = topoSort(bundle.tasks);
   if (topo.cycle.length > 0) {
     return {
@@ -75,6 +86,10 @@ export async function cmdPlan(dir: string, opts: PlanOptions): Promise<PlanResul
     };
   }
 
+  if (loaded.lint.errors.length > 0) {
+    return { code: 2, output: lintRefusal(loaded.lint, dir) };
+  }
+
   return {
     code: 0,
     output: opts.json ? renderJson(bundle, topo.order) : renderHuman(bundle, topo),
@@ -82,10 +97,13 @@ export async function cmdPlan(dir: string, opts: PlanOptions): Promise<PlanResul
 }
 
 /**
- * Level-wise Kahn: every pass collects all tasks whose KNOWN dependencies are
- * resolved (unknown depends_on ids are satisfied by definition), sorts that
- * level lexicographically, and appends it. Whatever remains when no pass can
- * progress is unreachable through a cycle — exactly the unresolvable set.
+ * Level-wise Kahn: every pass collects all tasks whose dependencies are all
+ * resolved, sorts that level lexicographically, and appends it. Whatever
+ * remains when no pass can progress is unreachable through a cycle — exactly
+ * the unresolvable set. (Dependencies are guaranteed to exist by the
+ * lint-clean gate — closure L13 rejects an unknown depends_on id before this
+ * function runs; the `ids.has` filter below is pure defense for direct
+ * callers.)
  */
 function topoSort(tasks: TaskContract[]): TopoResult {
   const ids = new Set(tasks.map((t) => t.task_id));
@@ -112,22 +130,9 @@ function topoSort(tasks: TaskContract[]): TopoResult {
   return { order, level0, cycle };
 }
 
-/** One WARNING line per unknown depends_on reference, in bundle task order. */
-function unknownDepWarnings(tasks: TaskContract[]): string[] {
-  const ids = new Set(tasks.map((t) => t.task_id));
-  const warnings: string[] = [];
-  for (const t of tasks) {
-    for (const dep of t.depends_on) {
-      if (!ids.has(dep)) warnings.push(`WARNING: ${t.task_id} depends on unknown ${dep}`);
-    }
-  }
-  return warnings;
-}
-
 function renderHuman(bundle: SpecBundle, topo: TopoResult): string {
   const byId = new Map(bundle.tasks.map((t) => [t.task_id, t] as const));
   const lines: string[] = [
-    ...unknownDepWarnings(bundle.tasks),
     `plan: ${bundle.manifest.project.name} — ${bundle.tasks.length} task(s) in dependency order`,
   ];
 

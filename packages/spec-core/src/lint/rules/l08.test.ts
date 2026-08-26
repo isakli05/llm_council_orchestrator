@@ -28,3 +28,54 @@ describe('L08_UNRESOLVED_LEAK', () => {
     expect(result.errors.map((f) => f.path).sort()).toEqual(['DEC-0002', 'manifest']);
   });
 });
+
+describe('L08_UNRESOLVED_LEAK — lifecycle state consistency (BACK-002)', () => {
+  /** pet-clinic with only manifest.state flipped; counters stay 0. */
+  function inState(state: string): SpecBundle {
+    const b = loadBundle('good/pet-clinic/bundle.json');
+    b.manifest.state = state as SpecBundle['manifest']['state'];
+    return b;
+  }
+
+  // Audit BACK-002 (b): a blocked manifest with zero counters used to lint
+  // clean and then freeze. L08 must flag the unsubstantiated 'blocked' state.
+  it("fires on 'blocked' with zero counters and no UNRESOLVED decision (unsubstantiated block)", () => {
+    const result = lintBundle(inState('blocked'));
+
+    const l08 = result.errors.filter((f) => f.rule === 'L08_UNRESOLVED_LEAK');
+    expect(l08.length).toBe(1);
+    expect(l08[0]!.path).toBe('manifest');
+    expect(l08[0]!.message).toContain('blocked');
+  });
+
+  it("does not add the unsubstantiated-block finding when unresolved material exists", () => {
+    const b = inState('blocked');
+    b.manifest.unresolved_count = 1;
+
+    // The EXISTING counter-leak finding still fires (correct: counters must be
+    // zero in any state) — but not the new unsubstantiated-state finding: the
+    // blocked claim is backed by real unresolved material.
+    const result = lintBundle(b);
+    expect(result.errors.some((f) => f.message.includes('no unresolved material'))).toBe(false);
+    expect(result.errors.some((f) => f.message.includes('unresolved_count'))).toBe(true);
+  });
+
+  it("fires on the schema-vestigial state 'reviewed' (outside the lifecycle)", () => {
+    const result = lintBundle(inState('reviewed'));
+
+    const l08 = result.errors.filter((f) => f.rule === 'L08_UNRESOLVED_LEAK');
+    expect(l08.length).toBe(1);
+    expect(l08[0]!.message).toContain('reviewed');
+  });
+
+  it('fires on frozen_without_stamp / draft_with_stamp inconsistencies', () => {
+    const stale = inState('draft');
+    stale.manifest.frozen_at = '2026-08-18T12:00:00Z';
+    expect(lintBundle(stale).errors.some((f) => f.rule === 'L08_UNRESOLVED_LEAK')).toBe(true);
+  });
+
+  it('still returns zero errors for the clean good fixtures (no lifecycle false positives)', () => {
+    const result = lintBundle(loadBundle('good/pet-clinic/bundle.json'));
+    expect(result.errors).toEqual([]);
+  });
+});
