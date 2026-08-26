@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (795 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter ./packages/spec-core test    # vitest (825 test: şema, derleyici, lint, eval, CLI, check, MCP)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
@@ -389,7 +389,7 @@ davranış CLI ile birebir aynıdır. 7 araç:
 | `lco_verify` | `{dir}` | drift doğrulaması |
 | `lco_trace` | `{dir}` | izlenebilirlik raporu |
 | `lco_plan` | `{dir, json?}` | topolojik plan (`--json` eşleniği) |
-| `lco_check` | `{dir, task?, yes?}` | verification önizleme/koşma — `yes` verilmedikçe DRY |
+| `lco_check` | `{dir, task?, consent?}` | verification önizleme (DRY) / rızaya bağlı koşma — bkz. Yürütme Rızası |
 
 Claude Code'a kaydetmek için (mutlak yol ile):
 
@@ -415,13 +415,56 @@ Notlar:
   tanılama stderr'e gider. Eski `mcp_bridge` hatasının (protokol akışına log karışması)
   tekrarı yasaktır ve test-enforcelıdır: entegrasyon testi spawn edilen sürecin
   stdout'undaki **her satırı** `JSON.parse` ile doğrular.
-- **`lco_check` aracı `yes` verilmedikçe komut koşmaz** (DRY) — MCP üzerinden yanlışlıkla
-  yürütme yok.
+- **`lco_check` aracı varsayılan olarak SADECE önizleme yapar** (DRY) — `yes` parametresi
+  MCP yüzeyinden kaldırıldı (SEC-002); yürütme rızası için aşağıdaki Yürütme Rızası
+  bölümüne bakın.
 - El smoke'u (gerçek stdio): `initialize` → `serverInfo {name: "lco-mcp", version:
   "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 7 araç;
   `tools/call lco_check {dir}` → `isError: false`, ilk satır `DRY RUN — no commands
   executed; pass --yes to execute`. Bildirimler (`notifications/*`) yanıt almaz;
   bozuk satır `-32700` (id `null`); bilinmeyen araç `-32602`; bilinmeyen metod `-32601`.
+
+### Yürütme Rızası: `lco_check` ve `LCO_MCP_ALLOW_EXEC` (SEC-002)
+
+Güven sınırı (trust boundary) modeli: spec metni modelin kontrolündedir ve bir
+istem (prompt injection) MCP istemcisini `lco_check`'i yürütme için
+kullanmaya bir adım uzaktır. Bu yüzden **MCP üzerinden komut yürütme, insan
+rızasının vekili DEĞİLDİR** — dört katman, hepsi birlikte zorunlu:
+
+1. **Server-start opt-in:** yürütme yeteneği yalnız sunucu
+   `LCO_MCP_ALLOW_EXEC=1` ile başlatıldığında vardır (tam olarak `1`; başka
+   her değer fail-closed). Düz başlatılmış sunucuda hiçbir parametre kombinasyonu
+   yürütme sağlayamaz: `yes` argümanı (-32602) reddedilir, `consent` gönderen
+   istek actionable bir reddetme (isError, exit 2) alır.
+2. **İçerik kalitesi:** spec **frozen + hash-doğrulanmış + lint-clean** olmalıdır
+   (`loadBundleAtLevel('lint-clean')` + `verifyFrozen` çekirdekleri). Draft spec,
+   freeze sonrası kurcalanmış (drift) içerik veya lint-kirli bundle, neyin
+   başarısız olduğunu adlandıran bir reddetmeyle geri çevrilir.
+3. **Önizleme-hash'ine bağlı rıza:** yürütme isteği `consent.digest` taşır —
+   tam olarak neyin koşacağına ilişkin özet (`sha256(JSON.stringify({spec_version,
+   tasks:[{task_id, verification:[{command, expect}]}]}, null, 2))`; DRY yanıt bu
+   özeti `consent digest:` satırında ilan eder). Sunucu yürütme anında beklenen
+   özeti yeniden hesaplar ve uyuşmazlıkta reddeder: istemci bir içeriği onaylayıp
+   başkasını koşturamaz; task filtresi seçimin parçasıdır.
+4. **Scrub edilmiş ortam:** yürütülen komutlar sunucunun ortamını DEĞİL, açık bir
+   izin listesini miras alır: `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR` (+
+   POSIX'te bulunmayan `SystemRoot`, `PATHEXT`, `ComSpec`). Özellikle
+   `LCO_LLM_API_KEY` gibi sunucu sırları, `NODE_OPTIONS` ve `LCO_MCP_*`
+   bayrakları çocuk süreçlere ASLA geçmez.
+
+İsteğe bağlı 5. katman: `LCO_MCP_EXEC_ROOT=/abs/yol` çalışma alanını sabitler —
+ayarlandığında rıza yalnız o yol altındaki spec kökleri için geçerlidir (bu bir
+rıza-sınırı sabitlemesidir; süreç izolasyonu P2-2 kapsamındadır).
+
+**CLI asimetrisi (bilinçli):** `lco check --yes` miras alınan tam ortamla koşar —
+orada rızayı veren insan, ortamın da sahibidir. MCP yolunda rızayı veren
+operatördür (sunucuyu `LCO_MCP_ALLOW_EXEC=1` ile başlatan) ve modelin koşturduğu
+komutlar operatörün sırlarını göremez.
+
+Atipik akış: dry önizleme (draft) → `lco freeze` → aynı digest ile
+`consent:{digest}` yürütme — freeze `spec_version`'ı ve task içeriğini
+değiştirmediği için digest geçerliliğini korur; frozen+verified kapısı durumu ayrıca
+denetler.
 
 ## Strictness Politikası
 

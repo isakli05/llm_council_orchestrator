@@ -1,5 +1,6 @@
 import { loadBundleAtLevel } from '../../compiler/validation';
 import { runChecks, type CheckOutcome, type Executor } from '../../check/runner';
+import type { SpecBundle } from '../../schemas';
 
 export interface CheckResult {
   /** 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE-EXPECT, 2 compile/lint rejection or unknown task. */
@@ -18,6 +19,14 @@ export interface CheckOptions {
   nowIso: string;
   /** Executor override for tests; default: the child_process wrapper. */
   exec?: Executor;
+  /**
+   * A pre-loaded, lint-clean bundle (SEC-002): when set, the lint-clean load
+   * is SKIPPED and THIS bundle is judged — the MCP consent boundary loads
+   * once per request, authorizes against that exact object, and hands the
+   * SAME object to the runner, so no re-load (no TOCTOU window) can sit
+   * between authorization and execution. The CLI never passes this.
+   */
+  bundle?: SpecBundle;
 }
 
 /**
@@ -48,11 +57,18 @@ export interface CheckOptions {
  *   evidence: <dir>/spec/evidence/TASK-0001-check.json      <- only when --yes
  */
 export async function cmdCheck(dir: string, opts: CheckOptions): Promise<CheckResult> {
-  const loaded = await loadBundleAtLevel(dir, 'lint-clean');
-  if (!loaded.ok) {
-    return { code: loaded.code, output: loaded.output };
+  let compiledBundle: SpecBundle;
+  if (opts.bundle !== undefined) {
+    // Caller-loaded (the MCP consent path, which already enforced 'lint-clean'
+    // on this exact object — see CheckOptions.bundle). CLI callers always load.
+    compiledBundle = opts.bundle;
+  } else {
+    const loaded = await loadBundleAtLevel(dir, 'lint-clean');
+    if (!loaded.ok) {
+      return { code: loaded.code, output: loaded.output };
+    }
+    compiledBundle = loaded.bundle;
   }
-  const compiledBundle = loaded.bundle;
 
   const run = await runChecks(compiledBundle, dir, opts);
   if (run.code === 2) {

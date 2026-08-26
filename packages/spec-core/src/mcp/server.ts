@@ -7,6 +7,17 @@ import { cmdVerify } from '../cli/commands/verify';
 import { cmdTrace } from '../cli/commands/trace';
 import { cmdPlan } from '../cli/commands/plan';
 import { cmdCheck } from '../cli/commands/check';
+import {
+  authorizeExecution,
+  checkPreviewDigest,
+  consentDigestLine,
+  loadCheckBundle,
+  mcpExecBoundary,
+  refuseServerNotOptedIn,
+  scrubbedExecutor,
+  YES_REMOVED_MESSAGE,
+  type ExecBoundary,
+} from './consent';
 
 /**
  * `lco-mcp` — a minimal MCP server over line-delimited JSON-RPC 2.0 on stdio,
@@ -18,6 +29,13 @@ import { cmdCheck } from '../cli/commands/check';
  * console.error. The command cores themselves are console-free (pure,
  * structured results), so the only stdout writes in this process are the
  * response lines written by the bin wiring below.
+ *
+ * EXECUTION CONSENT (binding, SEC-002): the default server surface has NO
+ * command execution — `lco_check` previews (dry) and advertises a consent
+ * digest. Execution additionally requires the operator's server-start opt-in
+ * (`LCO_MCP_ALLOW_EXEC=1`), a frozen+hash-verified+lint-clean spec, and a
+ * `consent.digest` matching the dry-run preview — and then runs with a
+ * scrubbed environment. See ./consent for the boundary's four layers.
  *
  * Structure: `handleRpcLine` is the testable core (line in -> response line
  * out, or null for notifications); the `require.main` block is the bin wiring
@@ -35,7 +53,8 @@ interface ToolInput {
   dir: string;
   task?: string;
   json?: boolean;
-  yes?: boolean;
+  /** SEC-002 execution consent: { digest } matching the dry-run preview. */
+  consent?: { digest: string };
 }
 
 /** Every core normalizes to this — the tool result text is `output` + exit code. */
@@ -53,9 +72,9 @@ interface ToolDef {
     required: string[];
   };
   /** Optional argument names this tool accepts (beyond the required `dir`). */
-  optional: ReadonlyArray<'task' | 'json' | 'yes'>;
+  optional: ReadonlyArray<'task' | 'json' | 'consent'>;
   /** `nowIso` is the server-boundary clock, read once per tool call. */
-  run: (input: ToolInput, nowIso: string) => Promise<CoreResult>;
+  run: (input: ToolInput, nowIso: string, boundary: ExecBoundary) => Promise<CoreResult>;
 }
 
 const DIR_PROPERTY = {
@@ -125,26 +144,85 @@ const TOOLS: readonly ToolDef[] = [
   {
     name: 'lco_check',
     description:
-      'Preview/run TaskContract verification commands; DRY RUN unless yes=true — with yes each command executes and evidence lands in spec/evidence/.',
+      'Preview TaskContract verification commands (DRY RUN — nothing executes) and ' +
+      'advertise the consent digest. Execution happens ONLY when the server was ' +
+      'started with LCO_MCP_ALLOW_EXEC=1 AND the spec is frozen+hash-verified+ ' +
+      'lint-clean AND consent.digest matches the dry-run preview digest (SEC-002).',
     inputSchema: {
       type: 'object',
       properties: {
         dir: DIR_PROPERTY,
-        task: { type: 'string', description: 'restrict the run to one task id (e.g. TASK-0001)' },
-        yes: { type: 'boolean', description: 'actually execute the commands (default false: dry run, nothing executes)' },
+        task: { type: 'string', description: 'restrict the run to one task id (e.g. TASK-0001) — the consent digest is bound to the selection' },
+        consent: {
+          type: 'object',
+          description:
+            'execution consent: { digest } — the "consent digest" value from the dry-run ' +
+            'preview of the SAME task selection. Honored only on an LCO_MCP_ALLOW_EXEC=1 ' +
+            'server with a frozen, hash-verified, lint-clean spec; commands then run ' +
+            'with a scrubbed environment.',
+          properties: {
+            digest: {
+              type: 'string',
+              description: 'sha256:<64 lowercase hex> preview digest being approved',
+            },
+          },
+          required: ['digest'],
+          additionalProperties: false,
+        },
       },
       required: ['dir'],
     },
-    optional: ['task', 'yes'],
-    run: (input, nowIso) =>
-      cmdCheck(input.dir, { task: input.task, yes: input.yes ?? false, nowIso }),
+    optional: ['task', 'consent'],
+    run: async (input, nowIso, boundary) => {
+      // ONE load per request, shared by the preview, the gate, and the run —
+      // no re-load (and so no TOCTOU window) between authorization and
+      // execution. A compile/lint refusal is T7's actionable output, verbatim.
+      const loaded = await loadCheckBundle(input.dir);
+      if (!loaded.ok) return { code: loaded.code, output: loaded.output };
+      const { bundle } = loaded;
+
+      // DRY PREVIEW (the default surface): the shared check core at yes:false
+      // plus the consent digest this server would require to execute.
+      if (input.consent === undefined) {
+        const digest = checkPreviewDigest(bundle, input.task);
+        const dry = await cmdCheck(input.dir, {
+          task: input.task,
+          yes: false,
+          nowIso,
+          bundle,
+        });
+        return { code: dry.code, output: `${dry.output}\n${consentDigestLine(digest)}` };
+      }
+
+      // EXECUTION: all four SEC-002 layers must hold.
+      if (!boundary.allowExec) {
+        return { code: 2, output: refuseServerNotOptedIn() };
+      }
+      const auth = authorizeExecution(
+        bundle,
+        input.dir,
+        input.task,
+        input.consent.digest,
+        boundary.execRoot,
+      );
+      if (!auth.ok) {
+        return { code: auth.code, output: auth.output };
+      }
+      return cmdCheck(input.dir, {
+        task: input.task,
+        yes: true,
+        nowIso,
+        bundle,
+        exec: scrubbedExecutor,
+      });
+    },
   },
 ];
 
 const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t] as const));
 
 /** JSON type of each optional argument, for fail-closed validation. */
-const OPTIONAL_ARG_TYPES = { task: 'string', json: 'boolean', yes: 'boolean' } as const;
+const OPTIONAL_ARG_TYPES = { task: 'string', json: 'boolean', consent: 'object' } as const;
 
 // --- JSON-RPC plumbing -------------------------------------------------------------
 
@@ -158,6 +236,14 @@ function errorResponse(id: JsonRpcId, code: number, message: string): string {
   return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } });
 }
 
+/** Per-call server-boundary options for {@link handleRpcLine} (tests inject both). */
+export interface HandleRpcOptions {
+  /** Overrides the env-derived execution opt-in (LCO_MCP_ALLOW_EXEC). */
+  allowExec?: boolean;
+  /** The environment to derive the boundary from (default: process.env). */
+  env?: NodeJS.ProcessEnv;
+}
+
 /**
  * Handle ONE stdio line of JSON-RPC 2.0.
  *
@@ -166,8 +252,16 @@ function errorResponse(id: JsonRpcId, code: number, message: string): string {
  * requests without an `id`, and every `notifications/*` method). This core
  * never writes to stdout and never rejects — malformed input yields error
  * responses, and a thrown command core becomes an isError tool result.
+ *
+ * The execution-consent boundary (SEC-002) is derived per call from the
+ * environment (mcpExecBoundary) unless `options.allowExec` overrides the
+ * opt-in — the env read lives at this boundary, like the clock, never in a
+ * command core.
  */
-export async function handleRpcLine(line: string): Promise<string | null> {
+export async function handleRpcLine(
+  line: string,
+  options?: HandleRpcOptions,
+): Promise<string | null> {
   let msg: unknown;
   try {
     msg = JSON.parse(line);
@@ -209,7 +303,7 @@ export async function handleRpcLine(line: string): Promise<string | null> {
         })),
       });
     case 'tools/call':
-      return handleToolsCall(req as { id: JsonRpcId; params?: unknown }, id);
+      return handleToolsCall(req as { id: JsonRpcId; params?: unknown }, id, options);
     default:
       return errorResponse(id, -32601, `Method not found: ${req.method}`);
   }
@@ -218,6 +312,7 @@ export async function handleRpcLine(line: string): Promise<string | null> {
 async function handleToolsCall(
   req: { id: JsonRpcId; params?: unknown },
   id: JsonRpcId,
+  options?: HandleRpcOptions,
 ): Promise<string> {
   if (req.params !== undefined && !isPlainObject(req.params)) {
     return errorResponse(id, -32602, 'Invalid params for tools/call: expected an object');
@@ -246,11 +341,18 @@ async function handleToolsCall(
   }
 
   // Server boundary: the clock is read HERE, once per tool call — the same
-  // contract the CLI wrapper holds for freeze/change/check/init.
+  // contract the CLI wrapper holds for freeze/change/check/init. The SEC-002
+  // execution boundary (env opt-in + workspace pin) is derived HERE too; the
+  // explicit options.allowExec override exists for tests and library callers.
   const nowIso = new Date().toISOString();
+  const envBoundary = mcpExecBoundary(options?.env ?? process.env);
+  const boundary: ExecBoundary =
+    options?.allowExec === undefined
+      ? envBoundary
+      : { ...envBoundary, allowExec: options.allowExec };
   let result: CoreResult;
   try {
-    result = await tool.run(input.value, nowIso);
+    result = await tool.run(input.value, nowIso, boundary);
   } catch (err) {
     // BINDING: a command-core throw (an IO/environment failure — e.g. freeze
     // or check failing to write) must NEVER crash the server and NEVER reach
@@ -287,6 +389,10 @@ function parseToolInput(
 
   for (const key of Object.keys(args)) {
     if (key !== 'dir' && !(tool.optional as readonly string[]).includes(key)) {
+      // SEC-002: `yes` is refused by NAME with the actionable opt-in path —
+      // not a generic unknown-argument error — because it is the parameter an
+      // injected client will reach for first.
+      if (key === 'yes') return invalid(YES_REMOVED_MESSAGE);
       return invalid(`unknown argument '${key}'`);
     }
   }
@@ -294,12 +400,29 @@ function parseToolInput(
     if (!(key in args)) continue;
     const arg = args[key];
     const expected = OPTIONAL_ARG_TYPES[key];
+    if (key === 'consent') {
+      if (!isPlainObject(arg)) {
+        return invalid("'consent' must be an object: { digest: string }");
+      }
+      const keys = Object.keys(arg);
+      if (keys.length !== 1 || keys[0] !== 'digest') {
+        return invalid("'consent' must have exactly one key: digest (unknown keys are rejected)");
+      }
+      const digest = arg.digest;
+      if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) {
+        return invalid(
+          "'consent.digest' must be a sha256:<64 lowercase hex> digest — the exact " +
+            "'consent digest' value printed by the dry-run preview",
+        );
+      }
+      value.consent = { digest };
+      continue;
+    }
     if (typeof arg !== expected) {
       return invalid(`'${key}' must be ${expected === 'string' ? 'a string' : 'a boolean'}`);
     }
     if (key === 'task') value.task = arg as string;
-    else if (key === 'json') value.json = arg as boolean;
-    else value.yes = arg as boolean;
+    else value.json = arg as boolean;
   }
   return { ok: true, value };
 }

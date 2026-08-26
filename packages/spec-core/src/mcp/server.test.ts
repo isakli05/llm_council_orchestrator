@@ -68,8 +68,11 @@ afterEach(() => {
 });
 
 /** handleRpcLine but asserting a response came back; parses it as JSON-RPC. */
-async function rpc(line: string): Promise<Record<string, any>> {
-  const raw = await handleRpcLine(line);
+async function rpc(
+  line: string,
+  options?: { allowExec?: boolean; env?: NodeJS.ProcessEnv },
+): Promise<Record<string, any>> {
+  const raw = await handleRpcLine(line, options);
   expect(raw).not.toBeNull();
   return JSON.parse(raw!) as Record<string, any>;
 }
@@ -202,11 +205,17 @@ describe('handleRpcLine: tools/list', () => {
       expect(typeof tool.inputSchema.properties.dir).toBe('object');
     }
     // The optional flags land in exactly the tools the brief assigns them to.
+    // SEC-002: lco_check carries NO `yes` — execution consent is the
+    // {consent:{digest}} object, bound to the dry-run preview digest and only
+    // honored on an LCO_MCP_ALLOW_EXEC=1 server.
     const byName = new Map(
       (res.result.tools as Array<Record<string, any>>).map((t) => [t.name, t.inputSchema.properties]),
     );
     expect(Object.keys(byName.get('lco_plan')!)).toEqual(['dir', 'json']);
-    expect(Object.keys(byName.get('lco_check')!)).toEqual(['dir', 'task', 'yes']);
+    const checkProps = byName.get('lco_check')!;
+    expect(Object.keys(checkProps)).toEqual(['dir', 'task', 'consent']);
+    expect(checkProps.consent.required).toEqual(['digest']);
+    expect(JSON.stringify(checkProps)).not.toContain('"yes"');
   });
 });
 
@@ -473,6 +482,390 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       const parseError = responses.find((r) => r.id === null);
       expect(parseError).toBeTruthy();
       expect(parseError!.error.code).toBe(-32700);
+    },
+    30_000,
+  );
+});
+
+// --- tools/call lco_check: execution consent (SEC-002) ----------------------------
+//
+// The trust boundary under test: an MCP client (a model) must NEVER be able
+// to turn spec text into shell execution by itself. Execution requires the
+// OPERATOR's server-start opt-in (LCO_MCP_ALLOW_EXEC=1) AND a consent digest
+// bound to the dry-run preview AND a frozen+hash-verified+lint-clean spec.
+// Every refusal below is a layer of that boundary.
+
+/** inlineConforming() with TASK-0001's verification swapped (stays schema-valid). */
+function inlineWithVerification(entries: Array<{ command: string; expect: string }>): Record<string, unknown> {
+  const bundle = inlineConforming();
+  (bundle.tasks as Array<Record<string, unknown>>)[0].verification = entries;
+  return bundle;
+}
+
+/** The audit's prompt-injection payload as spec text (SEC-002 failure scenario). */
+const INJECTION_COMMAND =
+  "node -e \"require('fs').writeFileSync('PWNED.txt','injected')\"";
+const injectionRoot = () =>
+  makeSpecRoot(inlineWithVerification([{ command: INJECTION_COMMAND, expect: 'exit 0' }]));
+
+/** Extract the consent digest the dry-run response advertises. */
+function digestFromDry(text: string): string {
+  const m = /consent digest: (sha256:[0-9a-f]{64})/.exec(text);
+  expect(m, `dry output must advertise a consent digest, got: ${text}`).not.toBeNull();
+  return m![1];
+}
+
+describe('handleRpcLine: lco_check execution consent (SEC-002)', () => {
+  const call = (
+    id: number,
+    root: string,
+    args: Record<string, unknown>,
+    options?: { allowExec?: boolean; env?: NodeJS.ProcessEnv },
+  ) =>
+    rpc(
+      `{"jsonrpc":"2.0","id":${id},"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify(
+        { dir: root, ...args },
+      )}}}`,
+      options,
+    );
+  /** Every opted-in test goes through this — the env flag in options form. */
+  const OPTED_IN = { allowExec: true } as const;
+
+  // --- argument surface --------------------------------------------------------
+
+  it('yes:true is REFUSED (-32602) with an actionable message naming the opt-in — on every tool', async () => {
+    const root = injectionRoot();
+
+    const res = await call(1, root, { yes: true });
+
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toContain('yes');
+    expect(res.error.message).toContain('LCO_MCP_ALLOW_EXEC');
+    expect(res.error.message).toContain('consent');
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+  });
+
+  it('consent with a malformed shape is refused fail-closed at the argument layer', async () => {
+    const root = injectionRoot();
+
+    for (const bad of [
+      { consent: 'sha256:' + 'a'.repeat(64) }, // not an object
+      { consent: {} }, // missing digest
+      { consent: { digest: 42 } }, // wrong type
+      { consent: { digest: 'sha256:abc', extra: 1 } }, // unknown key
+      { consent: { digest: 'md5:zzz' } }, // not the sha256:<hex> idiom
+    ]) {
+      const res = await call(2, root, bad);
+      expect(res.error.code).toBe(-32602);
+      expect(res.error.message).toContain('consent');
+    }
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+  });
+
+  // --- default surface: execution is IMPOSSIBLE ---------------------------------
+
+  it('DEFAULT server: a well-formed consent is refused with the opt-in explanation (isError, exit 2)', async () => {
+    const root = injectionRoot();
+
+    const res = await call(3, root, { consent: { digest: 'sha256:' + 'a'.repeat(64) } });
+
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain('execution refused');
+    expect(res.result.content[0].text).toContain('LCO_MCP_ALLOW_EXEC');
+    expect(res.result.content[0].text).toContain('exit code: 2');
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+
+  it('DEFAULT server: the dry run still works and advertises the consent digest', async () => {
+    const root = makeSpecRoot(inlineConforming());
+
+    const res = await call(4, root, {});
+
+    expect(res.result.isError).toBe(false);
+    expect(res.result.content[0].text).toContain('DRY RUN');
+    expect(res.result.content[0].text).toMatch(/consent digest: sha256:[0-9a-f]{64}/);
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+
+  it('DEFAULT server: the full injection attack (yes:true AND consent, every combination) never executes', async () => {
+    const root = injectionRoot();
+
+    const attempts = [
+      { yes: true },
+      { yes: false, consent: { digest: 'sha256:' + 'b'.repeat(64) } },
+      { consent: { digest: 'sha256:' + 'b'.repeat(64) }, task: 'TASK-0001' },
+    ];
+    for (const args of attempts) {
+      const res = await call(5, root, args);
+      // Either a -32602 argument refusal (yes) or an isError consent refusal —
+      // both are refusals; neither is a successful execution.
+      const refused =
+        res.error !== undefined || res.result.isError === true;
+      expect(refused, `attempt ${JSON.stringify(args)} must be refused`).toBe(true);
+    }
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+  });
+
+  // --- opted-in server: the frozen+verified+digest chain --------------------------
+
+  it('OPTED-IN but DRAFT spec -> refusal naming not-frozen (a fresh scaffold can never execute via MCP)', async () => {
+    const root = injectionRoot();
+    const dry = await call(6, root, {}, OPTED_IN);
+    const digest = digestFromDry(dry.result.content[0].text);
+
+    const res = await call(7, root, { consent: { digest } }, OPTED_IN);
+
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain('execution refused');
+    expect(res.result.content[0].text).toContain('not frozen');
+    expect(res.result.content[0].text).toContain('exit code: 2');
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+    expect(existsSync(join(root, 'spec', 'evidence'))).toBe(false);
+  });
+
+  it('OPTED-IN but lint-dirty spec -> the lint-clean refusal names the rule (L13 dangling ref)', async () => {
+    const bundle = inlineWithVerification([{ command: INJECTION_COMMAND, expect: 'exit 0' }]);
+    ((bundle.tasks as Array<Record<string, unknown>>)[0].refs as Record<string, unknown>).requirements = ['REQ-9999'];
+    const root = makeSpecRoot(bundle);
+
+    const res = await call(8, root, {
+      consent: { digest: 'sha256:' + 'c'.repeat(64) },
+    });
+
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain('lint FAILED');
+    expect(res.result.content[0].text).toContain('L13');
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+  });
+
+  it('OPTED-IN + frozen but tampered after freeze -> refusal naming drifted sections, tampered command never runs', async () => {
+    const root = injectionRoot();
+    const frozen = await rpc(
+      `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+      { allowExec: true },
+    );
+    expect(frozen.result.isError).toBe(false);
+    // Tamper AFTER freeze: rewrite the frozen task's command on disk (the
+    // manifest still pins the pre-tamper hashes). The client re-previews
+    // (getting the TAMPERED digest) and consents to exactly the tampered
+    // commands — verifyFrozen must still refuse: pinned content is gone.
+    const tasksFile = join(root, 'spec', 'tasks.json');
+    const tasks = JSON.parse(readFileSync(tasksFile, 'utf8')) as Array<Record<string, unknown>>;
+    (tasks[0].verification as Array<{ command: string; expect: string }>)[0] = {
+      command: "node -e \"require('fs').writeFileSync('DRIFTED.txt','tampered')\"",
+      expect: 'exit 0',
+    };
+    writeFileSync(tasksFile, JSON.stringify(tasks, null, 2));
+    const dry = await call(10, root, {}, OPTED_IN);
+    const tamperedDigest = digestFromDry(dry.result.content[0].text);
+
+    const res = await call(11, root, { consent: { digest: tamperedDigest } }, OPTED_IN);
+
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain('drifted sections');
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+    expect(existsSync(join(root, 'DRIFTED.txt'))).toBe(false);
+  });
+
+  it('OPTED-IN + frozen + verified but WRONG digest -> refusal naming both digests', async () => {
+    const root = injectionRoot();
+    await rpc(
+      `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+      { allowExec: true },
+    );
+    const wrong = 'sha256:' + 'd'.repeat(64);
+
+    const res = await call(13, root, { consent: { digest: wrong } }, OPTED_IN);
+
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain('digest mismatch');
+    expect(res.result.content[0].text).toContain(wrong);
+    expect(res.result.content[0].text).toMatch(/sha256:[0-9a-f]{64}/);
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+  });
+
+  it('the full legit chain (opt-in + frozen + verified + digest from the dry preview) EXECUTES and writes evidence', async () => {
+    const root = makeSpecRoot(
+      inlineWithVerification([
+        { command: "node -e \"require('fs').writeFileSync('EXECUTED.txt','ok')\"", expect: 'exit 0' },
+      ]),
+    );
+    await rpc(
+      `{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+      { allowExec: true },
+    );
+
+    const dry = await call(15, root, {}, OPTED_IN);
+    const digest = digestFromDry(dry.result.content[0].text);
+    const res = await call(16, root, { consent: { digest } }, OPTED_IN);
+
+    expect(res.result.isError).toBe(false);
+    expect(res.result.content[0].text).toContain('PASS');
+    expect(existsSync(join(root, 'EXECUTED.txt'))).toBe(true);
+    expect(existsSync(join(root, 'spec', 'evidence', 'TASK-0001-check.json'))).toBe(true);
+  });
+
+  it('consent digest binds the task selection: an all-tasks digest does not authorize a --task run', async () => {
+    // TWO tasks: the all-tasks preview covers 2 commands, a TASK-0001 run
+    // would execute 1 — different content, so the digests differ (content
+    // binding; a single-task bundle would make the selections identical).
+    const bundle = inlineWithVerification([{ command: INJECTION_COMMAND, expect: 'exit 0' }]);
+    const t1 = (bundle.tasks as Array<Record<string, unknown>>)[0];
+    (bundle.tasks as Array<Record<string, unknown>>).push({
+      ...t1,
+      task_id: 'TASK-0002',
+      // disjoint permitted_scope: L12 rejects overlapping scopes with no
+      // dependency edge between the two tasks.
+      permitted_scope: ['lib/**'],
+      tests: [{ id: 'TST-0002', kind: 'unit', file: 'b.test.ts', cases: ['REQ-0001: works 2'] }],
+      verification: [{ command: 'node -v', expect: 'exit 0' }],
+    });
+    const root = makeSpecRoot(bundle);
+    await rpc(
+      `{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+      { allowExec: true },
+    );
+    const dry = await call(18, root, {}, OPTED_IN);
+    const allTasksDigest = digestFromDry(dry.result.content[0].text);
+
+    const res = await call(19, root, { task: 'TASK-0001', consent: { digest: allTasksDigest } }, OPTED_IN);
+
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain('digest mismatch');
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+  });
+
+  it('LCO_MCP_EXEC_ROOT pins the workspace: outside dirs are refused even with the full chain', async () => {
+    const root = injectionRoot();
+    await rpc(
+      `{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+      { allowExec: true },
+    );
+    const dry = await call(21, root, {}, OPTED_IN);
+    const digest = digestFromDry(dry.result.content[0].text);
+
+    const res = await call(22, root, { consent: { digest } }, OPTED_IN);
+
+    // env pin via the options env (no process.env mutation needed)
+    const pinned = await rpc(
+      `{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify(
+        { dir: root, consent: { digest } },
+      )}}}`,
+      { allowExec: true, env: { LCO_MCP_EXEC_ROOT: '/definitely/elsewhere' } },
+    );
+
+    expect(res.result.isError).toBe(false); // unpinned: full chain executes
+    expect(pinned.result.isError).toBe(true); // pinned elsewhere: refused
+    expect(pinned.result.content[0].text).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('every consent refusal stays off stdout (purity) and off the crash path', async () => {
+    const root = injectionRoot();
+    await call(24, root, { yes: true });
+    await call(25, root, { consent: { digest: 'sha256:' + 'e'.repeat(64) } });
+    await rpc(
+      `{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify(
+        { dir: root, consent: { digest: 'sha256:' + 'e'.repeat(64) } },
+      )}}}`,
+      { allowExec: true },
+    );
+    expect(logSpy.mock.calls).toHaveLength(0);
+    expect(existsSync(join(root, 'PWNED.txt'))).toBe(false);
+  });
+});
+
+// --- integration: opted-in server over real stdio, env-scrub proof ----------------
+//
+// Spawn the BUILT binary WITH LCO_MCP_ALLOW_EXEC=1 in its environment and
+// prove the executed child does NOT inherit the server's env: the frozen
+// verification command `printenv LCO_MCP_ALLOW_EXEC` is judged PASS exactly
+// when the variable is ABSENT from the child (printenv exits 1), while
+// `printenv PATH` (kept by the allowlist) exits 0. This is the end-to-end
+// env-scrub + consent-chain proof against the real bin.
+
+describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () => {
+  it(
+    'full chain executes with a scrubbed environment (allowExec flag invisible to children, PATH kept)',
+    async () => {
+      const serverJs = join(__dirname, '../../dist/mcp/server.js');
+      if (!existsSync(serverJs)) {
+        throw new Error(
+          'dist/mcp/server.js not found — run `pnpm --filter ./packages/spec-core build` ' +
+            'before `pnpm --filter ./packages/spec-core test` (fail-closed by design)',
+        );
+      }
+      const root = makeSpecRoot(
+        inlineWithVerification([
+          { command: 'printenv LCO_MCP_ALLOW_EXEC', expect: 'exit 1' }, // PASS iff scrubbed
+          { command: 'printenv PATH', expect: 'exit 0' }, // PASS iff PATH kept
+        ]),
+      );
+      const frozen = await rpc(
+        `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+      );
+      expect(frozen.result.isError).toBe(false);
+
+      const child = spawn(process.execPath, [serverJs], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, LCO_MCP_ALLOW_EXEC: '1', LCO_LLM_API_KEY: 'sk-spawn-secret' },
+      });
+      let stdout = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString('utf8');
+      });
+      child.stderr.on('data', () => {});
+
+      const send = (line: string) => child.stdin.write(`${line}\n`);
+      send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify({ dir: root })}}}`);
+      child.stdin.end();
+
+      const [exitCode] = await once(child, 'close');
+      expect(exitCode).toBe(0);
+
+      const lines = stdout.split('\n').filter((l) => l.trim() !== '');
+      expect(lines).toHaveLength(1); // stdout purity: only the dry response
+      const dry = JSON.parse(lines[0]) as Record<string, any>;
+      expect(dry.result.isError).toBe(false);
+      const digest = digestFromDry(dry.result.content[0].text);
+
+      // Second round-trip on a fresh spawned server: the execution consent.
+      const child2 = spawn(process.execPath, [serverJs], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, LCO_MCP_ALLOW_EXEC: '1', LCO_LLM_API_KEY: 'sk-spawn-secret' },
+      });
+      let stdout2 = '';
+      child2.stdout.on('data', (chunk: Buffer) => {
+        stdout2 += chunk.toString('utf8');
+      });
+      child2.stderr.on('data', () => {});
+      child2.stdin.write(
+        `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify(
+          { dir: root, consent: { digest } },
+        )}}}\n`,
+      );
+      child2.stdin.end();
+      const [exitCode2] = await once(child2, 'close');
+      expect(exitCode2).toBe(0);
+
+      const lines2 = stdout2.split('\n').filter((l) => l.trim() !== '');
+      expect(lines2).toHaveLength(1);
+      const exec = JSON.parse(lines2[0]) as Record<string, any>;
+      expect(exec.result.isError).toBe(false);
+      const text: string = exec.result.content[0].text;
+      // Both judged PASS: the flag was scrubbed (printenv exit 1 == expected 1)
+      // and PATH survived (exit 0 == expected 0).
+      expect(text).toContain('printenv LCO_MCP_ALLOW_EXEC');
+      expect(text).toMatch(/printenv LCO_MCP_ALLOW_EXEC\t.*\t1 → 1\tPASS/);
+      expect(text).toMatch(/printenv PATH\t.*\t0 → 0\tPASS/);
+      // The server's own secret never reached the children — and the evidence
+      // file records the judged outcome for the audit trail.
+      const evidence = JSON.parse(
+        readFileSync(join(root, 'spec', 'evidence', 'TASK-0001-check.json'), 'utf8'),
+      ) as Record<string, any>;
+      expect(evidence.checks).toHaveLength(2);
+      expect(evidence.checks.every((c: any) => c.status === 'PASS')).toBe(true);
+      expect(JSON.stringify(evidence)).not.toContain('sk-spawn-secret');
     },
     30_000,
   );
