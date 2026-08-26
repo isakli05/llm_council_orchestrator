@@ -228,6 +228,18 @@ describe('runCli: help and version (UX-002)', () => {
     }
   });
 
+  it("plan --help teaches the refusal contract (T7), not the old warn-only one", async () => {
+    // Since T7 (BACK-006 lint-clean gate) plan REFUSES a bundle with unknown
+    // depends_on references: exit 2, missing id named in the structured
+    // refusal. Pin the help to that contract so USAGE can never regress to
+    // teaching the unsafe pre-T7 "warn but do not block" behavior.
+    await expect(runCli(['plan', '--help'])).resolves.toBe(0);
+    expect(stdout()).not.toContain('warn but do not block');
+    expect(stdout()).toContain('refuses (exit 2)');
+    expect(stdout()).toContain('lco lint');
+    expect(stderr()).toBe('');
+  });
+
   it('unknown command with --help stays an error -> exit 2', async () => {
     await expect(runCli(['bogus', '--help'])).resolves.toBe(2);
     expect(stderr()).toContain('unknown command');

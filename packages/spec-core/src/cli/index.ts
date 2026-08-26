@@ -38,9 +38,11 @@ commands:
   plan <dir> [--json]          topological execution plan (level-wise Kahn; ties within a
                                level broken lexicographically by task_id): numbered rows with
                                complexity, depends_on, verification, permitted_scope, and a
-                               ready-now line of level-0 tasks; unknown depends_on references
-                               warn but do not block; cyclic dependencies -> exit 1 with the
-                               unresolvable tasks listed; --json emits machine-readable
+                               ready-now line of level-0 tasks. Requires a lint-clean
+                               bundle: cyclic dependencies -> exit 1 with the unresolvable
+                               tasks listed; any other lint error refuses (exit 2) — an
+                               unknown depends_on reference is named in the refusal (run
+                               \`lco lint\`); --json emits machine-readable
                                {"order":[...],"tasks":{id:{title,complexity,depends_on,
                                verification,permitted_scope}}}
   init <dir> [--profile p-mini|p-standard] [--name <name>]
@@ -361,7 +363,17 @@ export async function runCli(argv: string[]): Promise<number> {
       return result.code;
     }
     case 'freeze': {
-      const result = await cmdFreeze(parsed.dir, new Date().toISOString());
+      // A live revision lock (LockHeldError) or an atomic-swap IO failure
+      // THROWS out of the core (environment failure) — surface it as the
+      // one-line exit-2 handler like init/check/generate, not the top-level
+      // raw error dump.
+      let result;
+      try {
+        result = await cmdFreeze(parsed.dir, new Date().toISOString());
+      } catch (err) {
+        console.error(`lco: freeze failed: ${(err as Error).message}`);
+        return 2;
+      }
       console.log(result.output);
       return result.code;
     }

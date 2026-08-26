@@ -401,8 +401,9 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
         );
       }
       // T7: the built server carries the L13/L14 rules, so the lint-clean
-      // happy call uses the inline conforming bundle (fixtures conform in T8);
-      // the bad root stays bad/L02 (still lint-error via L02).
+      // happy call uses the inline conforming bundle (the fixtures have
+      // conformed since T8); the bad root stays bad/L02 (still lint-error
+      // via L02).
       const good = makeSpecRoot(inlineConforming());
       const bad = makeSpecRoot(loadBundle('bad/L02/bundle.json'));
 

@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (587 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter ./packages/spec-core test    # vitest (794 test: şema, derleyici, lint, eval, CLI, check, MCP)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
@@ -78,9 +78,9 @@ başarısızlığı, **2** kullanım/şema hatası):
 | `verify` | hash'ler eşleşti | drift VEYA state frozen değil | derleme hatası |
 | `change` | uygulandı + değişiklik kapısı (lint) temiz | değişiklik kapısı (lint) hataları — **HİÇBİR dosya yazılmaz**, frozen spec aynen kalır, aynı changeset düzeltilip tekrar denenebilir | derleme, bozuk/bilinmeyen-anahtarlı changeset, frozen olmayan spec, yazım/kilit hatası |
 | `trace` | rapor çıktı | — (kullanılmaz) | derleme hatası |
-| `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası |
+| `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası VEYA lint reddi (BACK-006: plan lint-clean bundle ister) |
 | `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
-| `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme, bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
+| `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme VEYA lint reddi (BACK-006: check lint-clean bundle ister), bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
 | `generate` | `spec/` yazıldı (state draft) | kanıt kapısı bloğu VEYA savunma-lint reddi — HİÇBİR dosya yazılmaz | kullanım hatası (bozuk bayrak, eksik/çakışan `--intent`), eksik `LCO_LLM_*` env, `<dir>/spec` zaten var (üzerine yazma reddi) |
 
 Lint kuralları: **L01–L08, L10, L12** (10 bağlayıcı kural; L09 ve L11 şema katmanında
