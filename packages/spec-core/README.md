@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (794 test: şema, derleyici, lint, eval, CLI, check, MCP)
+pnpm --filter ./packages/spec-core test    # vitest (795 test: şema, derleyici, lint, eval, CLI, check, MCP)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
