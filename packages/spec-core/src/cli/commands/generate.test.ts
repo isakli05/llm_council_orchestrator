@@ -212,6 +212,35 @@ describe('cmdGenerate — spec outcome', () => {
     expect(calls()).toBe(3);
     expect(existsSync(join(dir, 'spec', 'manifest.json'))).toBe(true);
   });
+
+  // BACK-008: a twice-invalid proposal A degrades the council leg; the final
+  // bundle is still fully gated (schema+lint+lifecycle), so generate WRITES it —
+  // but the summary must say the independent-proposal leg collapsed.
+  it('degraded council (proposal A invalid twice) → code 0, spec written, summary flags DEGRADED', async () => {
+    const dir = makeTmp('spec-core-generate-degraded-');
+    const { llm, calls, prompts } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      'proposal A prose, not json',
+      'proposal A retry, still not json',
+      JSON.stringify(validBundle()),
+    ]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'build a small pet clinic scheduler',
+      variant: 'council',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(0);
+    expect(calls()).toBe(4);
+    expect(existsSync(join(dir, 'spec', 'manifest.json'))).toBe(true);
+    expect(result.output).toContain('DEGRADED');
+    expect(result.output).toContain('proposal A');
+    // the merger prompt (4th call) carried none of the unvalidated prose
+    expect(prompts[3]).not.toContain('proposal A prose, not json');
+  });
 });
 
 describe('cmdGenerate — blocked outcome', () => {

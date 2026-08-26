@@ -3,9 +3,11 @@ import {
   classifySingle,
   propose,
   proposeB,
+  proposeBDegraded,
   judgeMerge,
   classifyAndProposeSingle,
 } from './prompts';
+import { buildValidationRetryPrompt } from './runner';
 
 const INTENT = 'URL kısaltma CLI istiyorum; 7 karakterli kodlar, SQLite, üç alt komut.';
 const INTENT2 = 'Stok takibi istiyoruz ama veritabanı henüz belli değil.';
@@ -103,6 +105,43 @@ describe('prompt templates — individual shape', () => {
   it('templates are pure: identical inputs give identical prompts', () => {
     expect(classifySingle(INTENT, 'p-mini')).toBe(classifySingle(INTENT, 'p-mini'));
     expect(proposeB(INTENT, 'p-mini', 'A')).toBe(proposeB(INTENT, 'p-mini', 'A'));
+  });
+});
+
+describe('prompt templates — BACK-001/BACK-008 enforcement copy (code is the enforcer, prompts teach)', () => {
+  it('classifySingle states that must_be_blocked=true is FINAL (monotonic gate)', () => {
+    const p = classifySingle(INTENT2, 'p-standard');
+    expect(p).toContain('must_be_blocked=true is FINAL');
+    expect(p).toMatch(/no later output can overrule/i);
+  });
+
+  it('buildValidationRetryPrompt forbids dropping/resolving/re-id-ing unresolved material, with the consequence named', () => {
+    const p = buildValidationRetryPrompt('ORIGINAL', ['L02_ORPHAN_REQUIREMENT [REQ-0001]: orphan']);
+    expect(p).toContain('ORIGINAL');
+    expect(p).toContain('same claim_id');
+    expect(p).toMatch(/silently resolving.*will be rejected|will be rejected/i);
+  });
+
+  it('proposeBDegraded teaches the judge to work alone — no proposal-A slot, degraded status stated', () => {
+    const p = proposeBDegraded(INTENT, 'p-mini');
+    expect(p).toContain(INTENT);
+    expect(p).toContain('p-mini');
+    expect(p).toMatch(/DEGRADED/i);
+    expect(p).toMatch(/withheld/i);
+    expect(p).toContain('UNRESOLVED'); // invention ban still in force
+    expect(p).toMatch(/output only.*json|json.*only/i);
+    expect(p).not.toContain('PROPOSAL A (verbatim'); // no A slot at all — invalid text cannot leak in
+    expect(proposeBDegraded(INTENT, 'p-mini')).toBe(proposeBDegraded(INTENT, 'p-mini')); // pure
+  });
+
+  it('proposeBDegraded embeds the generated schema verbatim (same contract as every spec template)', () => {
+    const { readFileSync } = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const schemaText = readFileSync(
+      path.resolve(__dirname, '../../generated/spec-schema.json'),
+      'utf8',
+    );
+    expect(proposeBDegraded(INTENT, 'p-mini')).toContain(schemaText);
   });
 });
 

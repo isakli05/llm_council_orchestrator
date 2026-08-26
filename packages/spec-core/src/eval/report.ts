@@ -355,15 +355,27 @@ export function renderGateReport(r: GateReportInput): string {
   }
 
   lines.push(`## Runs (${r.runs.length})`, '');
-  lines.push('| task | variant | assertions | blocked-correct | in-tokens | out-tokens | calls |');
-  lines.push('| --- | --- | --- | --- | --- | --- | --- |');
+  lines.push('| task | variant | assertions | blocked-correct | in-tokens | out-tokens | calls | council-leg |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const run of r.runs) {
     const blocked = run.blockedCorrectly === null ? 'n/a' : run.blockedCorrectly ? 'yes' : 'no';
+    // BACK-008: a collapsed independent-proposal leg must be visible per run —
+    // a degraded council output is not a full council result.
+    const leg = run.variant === 'single' ? '-' : run.councilDegraded ? 'DEGRADED' : 'ok';
     lines.push(
-      `| ${run.taskId} | ${run.variant} | ${run.assertionsPassed}/${run.assertionsTotal} | ${blocked} | ${run.inTokens} | ${run.outTokens} | ${run.calls} |`,
+      `| ${run.taskId} | ${run.variant} | ${run.assertionsPassed}/${run.assertionsTotal} | ${blocked} | ${run.inTokens} | ${run.outTokens} | ${run.calls} | ${leg} |`,
     );
   }
   lines.push('');
+
+  const degradedLegs = r.runs.filter((x) => x.councilDegraded);
+  if (degradedLegs.length > 0) {
+    lines.push(
+      `degraded council legs: ${degradedLegs.length} (${degradedLegs.map((x) => x.taskId).join(', ')}) — ` +
+        'proposal A failed schema validation after retry; the final bundle came from the judge alone (BACK-008)',
+      '',
+    );
+  }
 
   lines.push(`VERDICT: ${c.verdict}`);
   return lines.join('\n');

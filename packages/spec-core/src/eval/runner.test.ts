@@ -47,6 +47,13 @@ function et13UnresolvedBundle(): SpecBundle {
   return b;
 }
 
+/** et01Bundle stamped as an independent council proposal A (sentinel via council_run). */
+function proposalAJson(): string {
+  const b = et01Bundle();
+  b.manifest.council_run = { run_id: 'sentinel-proposal-a-7q4z', config_fingerprint: 'cfg-x' };
+  return JSON.stringify(b);
+}
+
 /**
  * Counting scripted LLM: records every prompt, counts every call, and returns
  * deterministic per-call usage (in 10*n / out 5*n) so token accounting is
@@ -197,11 +204,6 @@ describe('runPipeline — single variant', () => {
 
 describe('runPipeline — council variant', () => {
   const CLASSIFIER_OK = JSON.stringify({ profile: 'p-mini', must_be_blocked: false });
-  const proposalAJson = (): string => {
-    const b = et01Bundle();
-    b.manifest.council_run = { run_id: 'sentinel-proposal-a-7q4z', config_fingerprint: 'cfg-x' };
-    return JSON.stringify(b);
-  };
 
   it('(d) makes EXACTLY 3 calls and returns the final bundle as spec', async () => {
     const { llm, calls, prompts } = makeLlm([
@@ -261,6 +263,240 @@ describe('runPipeline — council variant', () => {
     expect(out.kind).toBe('blocked');
     if (out.kind === 'blocked') {
       expect(out.reasons.some((r) => r.includes('L08_UNRESOLVED_LEAK'))).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BACK-001 / BACK-008 (audit 11-findings-register): blocking evidence must be
+// MONOTONIC at the gate, unresolved material must survive retries, and a
+// twice-invalid proposal A must degrade — not silently feed the merger.
+// ---------------------------------------------------------------------------
+
+/** pet-clinic bundle carrying an UNRESOLVED decision AND a fixable lint error
+ * (tasks + test_files emptied → L02 orphan requirements): the audit's BACK-001
+ * scenario-B pre-retry state — L08 material plus another lint error. */
+function unresolvedPlusLintDirtyBundle(): SpecBundle {
+  const b = et01Bundle();
+  b.decisions[0]!.status = 'UNRESOLVED';
+  b.manifest.unresolved_count = 1;
+  b.tasks = [];
+  b.test_files = [];
+  return b;
+}
+
+/** Same pre-retry shape, but the unresolved material is COUNTER-ONLY (no
+ * decision carries status UNRESOLVED — manifest.unresolved_count alone). */
+function counterOnlyUnresolvedBundle(): SpecBundle {
+  const b = et01Bundle();
+  b.manifest.unresolved_count = 2;
+  b.tasks = [];
+  b.test_files = [];
+  return b;
+}
+
+/** Retry output that KEEPS DEC-0001 unresolved and ADDS DEC-0002. */
+function unresolvedAddedBundle(): SpecBundle {
+  const b = et01Bundle();
+  const added = structuredClone(b.decisions[0]!);
+  added.claim_id = 'DEC-0002';
+  added.decision = 'Second open point the retry surfaced.';
+  b.decisions.push(added);
+  b.decisions[0]!.status = 'UNRESOLVED';
+  added.status = 'UNRESOLVED';
+  b.manifest.unresolved_count = 2;
+  return b;
+}
+
+describe('runPipeline — BACK-001 (a): blocking evidence is monotonic at the gate', () => {
+  const CLASSIFIER_BLOCKED = JSON.stringify({ profile: 'p-mini', must_be_blocked: true });
+
+  // The audit's exact runtime scenario: classifier blocked, merger clean,
+  // generate used to exit 0. The clean final bundle must NOT overrule.
+  it('classifier must_be_blocked=true + CLEAN final bundle → blocked, not spec', async () => {
+    const { llm, calls } = makeLlm([
+      CLASSIFIER_BLOCKED,
+      proposalAJson(),
+      JSON.stringify(et01Bundle()),
+    ]);
+    const out = await runPipeline(task('ET-18'), 'council', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(3); // the full council chain still runs; evidence is gathered, then combined
+    if (out.kind === 'blocked') {
+      expect(out.reasons.some((r) => r.includes('must_be_blocked=true'))).toBe(true);
+      expect(out.reasons.some((r) => r.includes('monotonic'))).toBe(true);
+    }
+  });
+
+  it('classifier blocked + final bundle ALSO blocked (L08) → both pieces of evidence carried', async () => {
+    const { llm } = makeLlm([
+      CLASSIFIER_BLOCKED,
+      proposalAJson(),
+      JSON.stringify(et13UnresolvedBundle()),
+    ]);
+    const out = await runPipeline(task('ET-13'), 'council', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    if (out.kind === 'blocked') {
+      expect(out.reasons.some((r) => r.includes('must_be_blocked=true'))).toBe(true);
+      expect(out.reasons.some((r) => r.includes('L08_UNRESOLVED_LEAK'))).toBe(true);
+    }
+  });
+
+  it('classifier must_be_blocked=false + clean final → spec (monotonicity does not over-block)', async () => {
+    const { llm } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      proposalAJson(),
+      JSON.stringify(et01Bundle()),
+    ]);
+    const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
+    expect(out.kind).toBe('spec');
+  });
+});
+
+describe('runPipeline — BACK-001 (b): unresolved IDs survive validation retries', () => {
+  it('single: retry DROPS the previously-reported UNRESOLVED decision → blocked, RESOLUTION_MISSING naming DEC-0001', async () => {
+    const { llm, calls } = makeLlm([
+      JSON.stringify(unresolvedPlusLintDirtyBundle()),
+      JSON.stringify(et01Bundle()), // retry is fully clean — the erasure
+    ]);
+    const out = await runPipeline(task('ET-13'), 'single', llm, NOW);
+
+    expect(out.kind).toBe('blocked'); // was silently accepted before — the audit's scenario B
+    expect(calls()).toBe(2);
+    if (out.kind === 'blocked') {
+      const missing = out.reasons.filter((r) => r.includes('RESOLUTION_MISSING'));
+      expect(missing).toHaveLength(1);
+      expect(missing[0]).toContain('DEC-0001');
+    }
+  });
+
+  it('single: retry KEEPS the unresolved ID → still blocked via L08 (legitimate terminal), never RESOLUTION_MISSING', async () => {
+    const { llm, calls } = makeLlm([
+      JSON.stringify(unresolvedPlusLintDirtyBundle()),
+      JSON.stringify(et13UnresolvedBundle()), // DEC-0001 kept, lint fixed
+    ]);
+    const out = await runPipeline(task('ET-13'), 'single', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(2);
+    if (out.kind === 'blocked') {
+      expect(out.reasons.some((r) => r.includes('L08_UNRESOLVED_LEAK'))).toBe(true);
+      expect(out.reasons.some((r) => r.includes('RESOLUTION_MISSING'))).toBe(false);
+    }
+  });
+
+  it('single: retry ADDS a new unresolved decision while keeping the old one → allowed (only dropping is fatal)', async () => {
+    const { llm, calls } = makeLlm([
+      JSON.stringify(unresolvedPlusLintDirtyBundle()),
+      JSON.stringify(unresolvedAddedBundle()), // DEC-0001 kept, DEC-0002 added
+    ]);
+    const out = await runPipeline(task('ET-13'), 'single', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(2);
+    if (out.kind === 'blocked') {
+      expect(out.reasons.some((r) => r.includes('RESOLUTION_MISSING'))).toBe(false);
+      expect(out.reasons.some((r) => r.includes('DEC-0002'))).toBe(true);
+    }
+  });
+
+  it('single: retry clears COUNTER-ONLY unresolved material (no UNRESOLVED decision left) → RESOLUTION_MISSING on manifest', async () => {
+    const { llm, calls } = makeLlm([
+      JSON.stringify(counterOnlyUnresolvedBundle()),
+      JSON.stringify(et01Bundle()), // retry zeroes unresolved_count — unnamed material erased
+    ]);
+    const out = await runPipeline(task('ET-13'), 'single', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(2);
+    if (out.kind === 'blocked') {
+      const missing = out.reasons.filter((r) => r.includes('RESOLUTION_MISSING'));
+      expect(missing).toHaveLength(1);
+      expect(missing[0]).toContain('manifest');
+      expect(missing[0]).toContain('unresolved_count');
+    }
+  });
+
+  it('council: the final-chain retry dropping unresolved material → blocked, RESOLUTION_MISSING naming DEC-0001', async () => {
+    const { llm, calls } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      proposalAJson(),
+      JSON.stringify(unresolvedPlusLintDirtyBundle()),
+      JSON.stringify(et01Bundle()), // merger retry silently "resolves" everything
+    ]);
+    const out = await runPipeline(task('ET-13'), 'council', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    expect(calls()).toBe(4);
+    if (out.kind === 'blocked') {
+      const missing = out.reasons.filter((r) => r.includes('RESOLUTION_MISSING'));
+      expect(missing).toHaveLength(1);
+      expect(missing[0]).toContain('DEC-0001');
+    }
+  });
+});
+
+describe('runPipeline — BACK-008: proposal-A retry is revalidated', () => {
+  const A_GARBAGE = 'sorry, proposal A is prose, not JSON';
+  const A_GARBAGE_RETRY = 'still prose on the retry, still not a bundle';
+
+  it('twice-invalid proposal A → run proceeds DEGRADED: spec carries councilDegraded, merger prompt EXCLUDES the invalid text', async () => {
+    const { llm, calls, prompts } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      A_GARBAGE,
+      A_GARBAGE_RETRY,
+      JSON.stringify(et01Bundle()),
+    ]);
+    const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
+
+    expect(out.kind).toBe('spec');
+    expect(calls()).toBe(4); // classifier + A + A-retry + degraded merger
+    if (out.kind === 'spec') {
+      expect(out.councilDegraded).toBe(true);
+    }
+    // the merger call (4th: classifier, A, A-retry, merger) must NOT contain
+    // the unvalidated prose (either attempt) ...
+    expect(prompts[3]).not.toContain(A_GARBAGE);
+    expect(prompts[3]).not.toContain(A_GARBAGE_RETRY);
+    // ...and must identify itself as the degraded leg
+    expect(prompts[3]).toMatch(/DEGRADED/i);
+  });
+
+  it('A fails once, retry VALID → full council: not degraded, retry JSON fed to the merger verbatim', async () => {
+    const aRetry = et01Bundle();
+    aRetry.manifest.council_run = { run_id: 'sentinel-a-retry-valid-3d7k', config_fingerprint: 'cfg-x' };
+    const { llm, calls, prompts } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      'not json for proposal A',
+      JSON.stringify(aRetry),
+      JSON.stringify(et01Bundle()),
+    ]);
+    const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
+
+    expect(out.kind).toBe('spec');
+    expect(calls()).toBe(4);
+    if (out.kind === 'spec') {
+      expect(out.councilDegraded).not.toBe(true);
+    }
+    expect(prompts[3]).toContain('sentinel-a-retry-valid-3d7k');
+  });
+
+  it('twice-invalid proposal A whose (blocked) final output fails too → blocked carries councilDegraded', async () => {
+    const { llm } = makeLlm([
+      JSON.stringify({ profile: 'p-mini', must_be_blocked: false }),
+      A_GARBAGE,
+      A_GARBAGE_RETRY,
+      'final output is also not json',
+      'still not json',
+    ]);
+    const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
+
+    expect(out.kind).toBe('blocked');
+    if (out.kind === 'blocked') {
+      expect(out.councilDegraded).toBe(true);
+      expect(out.reasons[0]).toMatch(/LLM output failed schema validation/);
     }
   });
 });

@@ -348,6 +348,18 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
   gerekçe listesi, **HİÇBİR dosya yazılmaz**. Üretilen bundle ayrıca savunma-lint
   yeniden denetiminden geçer; kirli bundle da yazılmaz (yine exit 1, hiçbir şey
   yazılmaz).
+- **Monotonik blok kanıtı (BACK-001):** council sınıflandırıcısı
+  `must_be_blocked=true` döndürürse sonuç KESİN olarak blocked'dır — sonraki
+  (temiz) bir bundle bu kanıtı iptal edemez; kanıt kapıdaki kodda taşınır,
+  prompt tavsiyesi değil. Doğrulama-informed retry'ler de UNRESOLVED madde
+  düşüremez: retry çıktısı önceki unresolved kimliklerden (claim_id) veya
+  sayaçlarından herhangi birini sessizce bırakırsa sonuç
+  `RESOLUTION_MISSING` ile reddedilir (kimlikler gerekçede isimlendirilir);
+  madde eklemek veya korumak serbesttir.
+- **Council bacağının degradasyonu (BACK-008):** bağımsız öneri A iki denemede
+  de şema doğrulamasını geçemezse bacak DEGRADED işaretlenir, doğrulanmamış
+  metin yargıca verilmez (yargıç kendi önerisiyle tek başına üretir) ve özet
+  satırı bunu açıkça yazar — nihai bundle yine tam kapıdan geçer, yazılır.
 - **Başarı:** `spec/` bölüm dosyaları yazılır (`state: draft`) ve çıktı sıradaki
   adımı önerir: `run lco lint/lco freeze next`.
 
@@ -494,10 +506,12 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
   yakalar ("appears 2 times"). Kalan daralmış boşluk: `lco plan` lint koşmaz —
   lint'i atlayan bir bundle `plan --json`'e ulaşabilir ve orada id ile anahtarlanan
   görev haritasında mükerrer id tekillik kaybı yaratır.
-- **Eval zincirinde şema-seviyesi doğrulama iki sınırla sınırlıdır:** sınıflandırıcı
-  çıktısı (`ClassifierOutputSchema` — strict DEĞİLDİR; ürün şeması değildir, bilinçli
-  kapsam dışı) ve önerilen bundle (`SpecBundleSchema` — strict). Kalan konsey
-  çağrıları metin düzeyindedir.
+- **Eval zincirinde şema-seviyesi doğrulama:** önerilen bundle her aşamada
+  `SpecBundleSchema` (strict) ile doğrulanır — öneri A'nın retry çıktısı dahil
+  (BACK-008; iki kez geçersizse bacak DEGRADED). Yalnızca sınıflandırıcı çıktısı
+  (`ClassifierOutputSchema` — strict DEĞİLDİR; ürün şeması değildir, bilinçli
+  kapsam dışı) gevşek kalır; sınıflandırıcının `must_be_blocked=true` hükmü
+  kodda monotonik olarak uygulanır (BACK-001), prompt'a emanet edilmez.
 - **verify ham bayt değil, şema-normalize edilmiş bölüm içeriğini hash'ler:** hash,
   ayrıştırılmış bölümün kanonik JSON'udur — ham dosya biçimlendirmesi (girinti, anahtar
   sırası) ve trim-refine'lı metin alanlarının baş/son boşluk değişiklikleri drift

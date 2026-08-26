@@ -6,7 +6,7 @@ import type { LintFinding } from '../lint/types';
 import { validateGenerationOutput } from '../compiler/lifecycle';
 import type { EvalTask } from './tasks';
 import type { LlmAdapter } from './llm/adapter';
-import { classifySingle, propose, proposeB, classifyAndProposeSingle } from './prompts';
+import { classifySingle, propose, proposeB, proposeBDegraded, classifyAndProposeSingle } from './prompts';
 
 /**
  * Evidence-gate pipeline runner (Task 10 binding).
@@ -41,10 +41,17 @@ export interface PipelineUsage {
  * Result of one pipeline run. Carries `variant` (how it was produced —
  * RunScore needs it) and `usage` (the accounting scoreRun consumes) alongside
  * the brief's `kind`/`bundle`/`reasons` payload.
+ *
+ * `councilDegraded` (BACK-008): set to true when the council variant's
+ * independent proposal A failed bundle schema validation on BOTH attempts —
+ * the leg collapsed, the unvalidated text was withheld from the merger, and
+ * the final bundle came from the judge alone. The outcome is still fully
+ * gated (schema + lint + lifecycle); the flag exists so scores/reports/CLI
+ * output cannot present a single-model-shaped run as a full council.
  */
 export type PipelineOutcome =
-  | { kind: 'spec'; variant: PipelineVariant; bundle: SpecBundle; usage: PipelineUsage }
-  | { kind: 'blocked'; variant: PipelineVariant; reasons: string[]; usage: PipelineUsage };
+  | { kind: 'spec'; variant: PipelineVariant; bundle: SpecBundle; usage: PipelineUsage; councilDegraded?: true }
+  | { kind: 'blocked'; variant: PipelineVariant; reasons: string[]; usage: PipelineUsage; councilDegraded?: true };
 
 /** Classifier verdict shape (council call 1). */
 const ClassifierOutputSchema = z.object({
@@ -95,6 +102,12 @@ function lintReason(f: LintFinding): string {
  * L08_UNRESOLVED_LEAK: L08-only errors are the DESIGN's legitimate
  * terminal state for ambiguous intents — asking the model to "fix" them
  * would pressure it into inventing resolutions, which is forbidden.
+ *
+ * BACK-001 (b): the retry contract now names the unresolved-material rule
+ * explicitly — every item that was UNRESOLVED must come back UNRESOLVED
+ * under the same claim_id. The runner enforces this in code
+ * (resolutionErasure below); this copy teaches the model the same rule so
+ * honest retries are not rejected by surprise.
  */
 export function buildValidationRetryPrompt(originalPrompt: string, issues: string[]): string {
   return [
@@ -103,8 +116,67 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: strin
     'RETRY REQUEST (your previous output was rejected):',
     'The validator reported these EXACT problems:',
     issues.map((s) => `- ${s}`).join('\n'),
-    'Output the corrected FULL bundle again — same rules as before: only a single JSON value, no prose, no fences. Do not remove or resolve UNRESOLVED decisions; fix only what the validator listed.',
+    'Output the corrected FULL bundle again — same rules as before: only a single JSON value, no prose, no fences. Fix ONLY the validator-listed problems.',
+    'Unresolved material is out of bounds for this retry: every item that was UNRESOLVED must remain UNRESOLVED with the same claim_id, and the manifest counters must not be cleared — silently resolving, renaming, re-id-ing, or dropping unresolved material will be rejected.',
   ].join('\n');
+}
+
+/** The set of claim_ids a bundle carries as UNRESOLVED decisions (L08 material). */
+function unresolvedDecisionIds(b: SpecBundle): Set<string> {
+  return new Set(b.decisions.filter((d) => d.status === 'UNRESOLVED').map((d) => d.claim_id));
+}
+
+/**
+ * BACK-001 (b): compare the pre-retry bundle's unresolved evidence against the
+ * retried one. A retry may fix validator-listed lint problems and may even ADD
+ * unresolved material — but it may not silently drop or resolve what the
+ * pre-retry output already reported. Two checks, both fatal:
+ *
+ *  1. per-ID: a pre-retry UNRESOLVED claim_id that is no longer UNRESOLVED in
+ *     the retried bundle (dropped, resolved, or re-id-ed);
+ *  2. counters: pre-retry unresolved/blocking counters that fell to zero while
+ *     NO unresolved decision remains — unnamed unresolved material erased
+ *     wholesale (when named decisions remain, L08 still fires on them and the
+ *     mixed case is handled by the ordinary lint gate).
+ *
+ * Returns one RESOLUTION_MISSING reason per violation, naming the evidence
+ * that vanished; empty array when the retry preserved everything.
+ */
+export function resolutionErasure(preRetry: SpecBundle, retried: SpecBundle): string[] {
+  const reasons: string[] = [];
+
+  const preIds = unresolvedDecisionIds(preRetry);
+  const postIds = unresolvedDecisionIds(retried);
+  for (const id of preIds) {
+    if (!postIds.has(id)) {
+      reasons.push(
+        `RESOLUTION_MISSING [${id}]: validation retry dropped the UNRESOLVED decision ` +
+          `'${id}' reported before the retry — retries may fix validator-listed problems ` +
+          'but must not silently resolve or remove unresolved material; regenerate with ' +
+          'explicit resolution evidence instead',
+      );
+    }
+  }
+
+  const preCounters = [
+    preRetry.manifest.unresolved_count > 0 && `unresolved_count=${preRetry.manifest.unresolved_count}`,
+    preRetry.manifest.blocking_count > 0 && `blocking_count=${preRetry.manifest.blocking_count}`,
+  ].filter((s): s is string => s !== false);
+  const postHasNamedMaterial = postIds.size > 0;
+  const postCountersCleared =
+    retried.manifest.unresolved_count === 0 && retried.manifest.blocking_count === 0;
+  // Only the catch-all for UNNAMED counter material: when named ids were
+  // already caught above, the counters vanishing is the same erasure — one
+  // structured rejection, not two.
+  if (reasons.length === 0 && preCounters.length > 0 && !postHasNamedMaterial && postCountersCleared) {
+    reasons.push(
+      `RESOLUTION_MISSING [manifest]: validation retry cleared the unresolved material the ` +
+        `pre-retry output reported (${preCounters.join(', ')}) while leaving no UNRESOLVED ` +
+        'decision behind — silent resolution is forbidden; keep the counters and let the gate block instead',
+    );
+  }
+
+  return reasons;
 }
 
 /**
@@ -119,20 +191,26 @@ export type PipelineTask = Pick<EvalTask, 'intent' | 'profile'>;
  *
  * - 'single'  — exactly 1 complete() call with the merged
  *   classify+propose template; that output is the gated bundle.
- * - 'council' — exactly 3 complete() calls: (1) classifier (JSON
- *   {profile, must_be_blocked}; a malformed verdict blocks the run — the
- *   verdict is advisory, the gate decision always comes from the final
- *   bundle's schema+lint chain), (2) independent proposal A (intermediate
- *   artifact: passed verbatim into call 3, never itself the gated output),
- *   (3) proposeB+judge: sees A, drafts B independently, merges; its output is
- *   the gated bundle. Unmergeable high-impact conflicts surface as UNRESOLVED
- *   decisions, which L08 turns into a blocked outcome — that is the intended
- *   blocking mechanism, not an error.
+ * - 'council' — classifier + independent proposal A + fused proposeB/judge.
+ *   A malformed classifier verdict blocks the run immediately. A
+ *   must_be_blocked=true verdict is MONOTONIC evidence (BACK-001 (a)): the
+ *   rest of the chain still runs, but the final outcome is blocked no matter
+ *   what the merger produces — a later clean bundle is not an
+ *   evidence-bearing resolution of the blocking classification. Proposal A
+ *   is schema-validated on EVERY attempt (BACK-008): after a second
+ *   validation failure the council leg is marked DEGRADED and the
+ *   unvalidated text is withheld from the merger prompt entirely.
+ *   Unmergeable high-impact conflicts surface as UNRESOLVED decisions, which
+ *   L08 turns into a blocked outcome — that is the intended blocking
+ *   mechanism, not an error.
  *
  * The runner stops at spec+lint+lifecycle: the final bundle must be a fresh
  * DRAFT matching the task's profile at version 1 (the generation contract,
  * enforced by the shared lifecycle validator — BACK-002); freezing is a
- * later, separate stage.
+ * later, separate stage. Validation retries may not erase unresolved
+ * material: every UNRESOLVED id and counter present before a retry must
+ * survive it, else the run is rejected with RESOLUTION_MISSING reasons
+ * (BACK-001 (b)).
  */
 export async function runPipeline(
   task: PipelineTask,
@@ -154,11 +232,12 @@ export async function runPipeline(
 
   const usageSnapshot = (): PipelineUsage => ({ in: usage.in, out: usage.out, calls: usage.calls });
 
-  const blocked = (reasons: string[]): PipelineOutcome => ({
+  const blocked = (reasons: string[], degraded = false): PipelineOutcome => ({
     kind: 'blocked',
     variant,
     reasons,
     usage: usageSnapshot(),
+    ...(degraded ? { councilDegraded: true as const } : {}),
   });
 
   // nowIso is the run's only time source; it grounds the model, never the gate.
@@ -201,10 +280,18 @@ export async function runPipeline(
     let lint = lintBundle(attempt.bundle);
     const fixable = lint.errors.filter((f) => f.rule !== 'L08_UNRESOLVED_LEAK');
     if (fixable.length > 0) {
+      const preRetryBundle = attempt.bundle; // BACK-001 (b): unresolved evidence snapshot
       const retried = bundleFromText(
         await complete(buildValidationRetryPrompt(prompt, fixable.map(lintReason))),
       );
       if (retried.ok) {
+        // BACK-001 (b): the retry is accepted ONLY if it preserved every piece
+        // of unresolved material the pre-retry output carried. A retry that
+        // "fixes" the run by silently resolving/dropping L08 evidence is an
+        // invented resolution — fatal, named, never accepted.
+        const erasure = resolutionErasure(preRetryBundle, retried.bundle);
+        if (erasure.length > 0) return { ok: false, reason: erasure.join('; '), reasons: erasure };
+
         lint = lintBundle(retried.bundle);
         attempt = retried;
       }
@@ -228,9 +315,9 @@ export async function runPipeline(
     return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot() };
   }
 
-  // Council: classifier, then proposal A (schema-retried once — it is feed
-  // for the judge, never itself gated), then the fused proposeB+judge call
-  // whose output goes through the full gated chain.
+  // Council: classifier, then proposal A (schema-validated on EVERY attempt —
+  // BACK-008), then the fused proposeB+judge call whose output goes through
+  // the full gated chain.
   const classifierText = await complete(context + classifySingle(task.intent, task.profile));
   const verdict = parseJsonOrBlock(
     classifierText,
@@ -238,16 +325,49 @@ export async function runPipeline(
     'LLM classifier output failed schema validation',
   );
   if (!verdict.ok) return blocked([verdict.reason]);
-  // verdict.must_be_blocked is advisory: proposals still run; the gate is
-  // the final chain below.
+  const classifierBlocked = (verdict.value as { must_be_blocked: boolean }).must_be_blocked;
 
-  let proposalA = await complete(context + propose(task.intent, task.profile));
-  const aParsed = bundleFromText(proposalA);
+  // BACK-008: proposal A is schema-validated on both attempts. A retry that
+  // still fails schema validation DEGRADES the council leg: the unvalidated
+  // text never reaches the merger — the judge drafts the final bundle alone.
+  const aPrompt = context + propose(task.intent, task.profile);
+  let proposalAText = await complete(aPrompt);
+  let aParsed = bundleFromText(proposalAText);
   if (!aParsed.ok) {
-    proposalA = await complete(buildValidationRetryPrompt(context + propose(task.intent, task.profile), [aParsed.reason]));
+    proposalAText = await complete(buildValidationRetryPrompt(aPrompt, [aParsed.reason]));
+    aParsed = bundleFromText(proposalAText); // revalidated — never passed through on trust
   }
+  const councilDegraded = !aParsed.ok;
 
-  const finalResult = await gatedBundle(context + proposeB(task.intent, task.profile, proposalA));
-  if (!finalResult.ok) return blocked(finalResult.reasons ?? [finalResult.reason]);
-  return { kind: 'spec', variant, bundle: finalResult.bundle, usage: usageSnapshot() };
+  const finalResult = await gatedBundle(
+    councilDegraded
+      ? context + proposeBDegraded(task.intent, task.profile)
+      : context + proposeB(task.intent, task.profile, proposalAText),
+  );
+
+  // BACK-001 (a): blocking evidence is MONOTONIC at the gate. The chain above
+  // still runs in full (its own failures add evidence), but a clean final
+  // bundle can never overrule an earlier must_be_blocked verdict — this
+  // pipeline has no evidence-bearing resolution stage, so "the merger came
+  // back clean" is exactly the invented resolution the product refuses.
+  const classifierEvidence = classifierBlocked
+    ? [
+        'BLOCKED_EARLIER_EVIDENCE: the council classifier (call 1) returned must_be_blocked=true — ' +
+          'blocking verdicts are monotonic; a later bundle cannot erase blocking evidence (BACK-001)',
+      ]
+    : [];
+
+  if (!finalResult.ok) {
+    return blocked([...classifierEvidence, ...(finalResult.reasons ?? [finalResult.reason])], councilDegraded);
+  }
+  if (classifierEvidence.length > 0) {
+    return blocked(classifierEvidence, councilDegraded);
+  }
+  return {
+    kind: 'spec',
+    variant,
+    bundle: finalResult.bundle,
+    usage: usageSnapshot(),
+    ...(councilDegraded ? { councilDegraded: true as const } : {}),
+  };
 }

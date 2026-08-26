@@ -132,6 +132,12 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
         `${outcome.bundle.requirements.length} REQ, ${outcome.bundle.tasks.length} TASK`,
       `variant ${outcome.variant}, ${outcome.usage.calls} LLM call(s), ` +
         `${outcome.usage.in} in / ${outcome.usage.out} out tokens`,
+      ...(outcome.councilDegraded
+        ? [
+            'council leg DEGRADED: proposal A failed schema validation twice — its unvalidated output was ' +
+              "withheld from the merger; the final bundle is the judge's proposal alone (still fully gated)",
+          ]
+        : []),
       `state: ${m.state} — run lco lint/lco freeze next`,
     ].join('\n'),
   };
