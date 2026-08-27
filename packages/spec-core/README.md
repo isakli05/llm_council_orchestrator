@@ -388,12 +388,16 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
   bozuk bayrak), **intent preflight (UX-004)**, `--intent-file` okuma/boş-dosya
   denetimi, no-clobber (`<dir>/spec` varsa exit 2) ve env denetimi sırasıyla.
   Yanlış çağrı hiç ücret ödemez.
-- **Intent preflight (UX-004):** `--intent` metni normalize edilir (trim —
-  `--intent-file` ile parite) ve boşluk-yalnızca olduğunda reddedilir; ayrıca
-  10.000 karakterle sınırlıdır (üstünde: exit 2, mesaj `--intent-file`'a yönlendirir
-  — uzun metin için tasarlanmış kaçış yolu odur). Her iki red da adaptör
-  KURULUMUNDAN önce koşar: boş/aşırı-uzun intent sıfır adaptör çağrısı anlamına
-  gelir (testlerle sabitlenmiştir).
+- **Intent preflight (UX-004):** `--intent` metni normalize edilir (trim) ve
+  boşluk-yalnızca olduğunda reddedilir; ayrıca **satır-içi kanal olarak**
+  10.000 karakterle sınırlıdır (üstünde: exit 2, mesaj `--intent-file`'a
+  yönlendirir). Uzunluk tasarımı kanala göredir: `--intent-file` uzun metin için
+  tasarlanmış **kaçış yoludur** — inline 10k sınırı YOK; yalnızca trim + boş-red +
+  1.000.000 karakterlik bir **akıl tavanı** (o kadar büyük bir dosya neredeyse kesin
+  yanlış-dosya hatasıdır; mesaj tavayı adlandırır). MCP `intent` argümanı da
+  satır-içi kanaldır: aynı 10k sınırı argüman katmanında uygulanır (-32602).
+  Her red adaptör KURULUMUNDAN önce koşar: boş/aşırı-uzun intent sıfır adaptör
+  çağrısı anlamına gelir (testlerle sabitlenmiştir).
 - **Fail-closed yargı:** kanıt kapısı niyeti bloklarsa (belirsiz/çelişkili) exit 1 +
   gerekçe listesi, **HİÇBİR dosya yazılmaz**. Üretilen bundle ayrıca savunma-lint
   yeniden denetiminden geçer; kirli bundle da yazılmaz (yine exit 1, hiçbir şey

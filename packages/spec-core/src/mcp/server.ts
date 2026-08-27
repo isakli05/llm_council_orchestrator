@@ -12,6 +12,7 @@ import {
   cmdGenerate,
   DEFAULT_GENERATE_VARIANT,
   DEFAULT_GENERATE_PROFILE,
+  MAX_INTENT_CHARS,
 } from '../cli/commands/generate';
 import { cmdChange } from '../cli/commands/change';
 import type { ChangeSet } from '../compiler/changeset';
@@ -682,10 +683,20 @@ const ARG_SPECS: Record<ArgName, ArgValidator> = {
     typeof arg === 'string' && arg.trim() !== ''
       ? { ok: true, value: arg }
       : { ok: false, message: "'name' must be a non-empty string" },
-  intent: (arg) =>
-    typeof arg === 'string' && arg.trim() !== ''
-      ? { ok: true, value: arg }
-      : { ok: false, message: "'intent' must be a non-empty string" },
+  intent: (arg) => {
+    if (typeof arg !== 'string' || arg.trim() === '') {
+      return { ok: false, message: "'intent' must be a non-empty string" };
+    }
+    // UX-004: MCP's intent arg is an INLINE channel (there is no file channel
+    // here) — the same generous 10k cap as the CLI's --intent applies.
+    if (arg.trim().length > MAX_INTENT_CHARS) {
+      return {
+        ok: false,
+        message: `'intent' is ${arg.trim().length} characters — inline intents are capped at ${MAX_INTENT_CHARS}`,
+      };
+    }
+    return { ok: true, value: arg };
+  },
   changeset: (arg) =>
     isPlainObject(arg)
       ? // Runtime authority is ChangeSetSchema.strict() inside the core; the

@@ -752,21 +752,20 @@ describe('handleRpcLine: lco_generate (PROD-004 paid-call consent)', () => {
     expect(text(res)).toContain('single');
   });
 
-  it('oversized intent (defense in depth): cmdGenerate preflight refuses, ZERO adapter calls, nothing written', async () => {
+  it('oversized intent (UX-004): the inline 10k cap is enforced at the ARG layer, ZERO adapter calls', async () => {
     const root = freshRoot('spec-core-mcp-gen-bigintent-');
     const bigIntent = 'y'.repeat(10_001);
     const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
-    const digest = generateConsentDigest(bigIntent, 'p-mini', 'single');
 
+    // The arg layer refuses before any consent/digest/adapter work: -32602.
     const res = await callTool(
       'lco_generate',
-      { dir: root, intent: bigIntent, variant: 'single', profile: 'p-mini', consent: { digest } },
+      { dir: root, intent: bigIntent, variant: 'single', profile: 'p-mini' },
       { allowGenerate: true, llm },
     );
 
-    expect(res.result.isError).toBe(true);
-    expect(text(res)).toContain('intent');
-    expect(text(res)).toContain('--intent-file');
+    expect(res.error!.code).toBe(-32602);
+    expect(res.error!.message).toContain('capped at');
     expect(calls()).toBe(0);
     expect(existsSync(join(root, 'spec'))).toBe(false);
   });

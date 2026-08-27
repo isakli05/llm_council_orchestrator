@@ -920,3 +920,78 @@ describe('cmdGenerate — unknown usage summaries (UX-003)', () => {
     expect(result.output).toContain('1 HTTP attempt'); // attempts distinguished from calls
   });
 });
+
+// ---------------------------------------------------------------------------
+// T11 review fix: --intent-file is the documented escape hatch for long
+// intents — trim + blank-only rejection applies, but NOT the inline 10k cap.
+// ---------------------------------------------------------------------------
+
+describe('runCli generate — intent-file length design (review fix)', () => {
+  /** A valid intent longer than the inline cap: the escape hatch must accept it. */
+  function longIntentFile(dir: string, chars: number): string {
+    const path = join(dir, `intent-${chars}.txt`);
+    const filler = 'with plain-text pages and strict evidence rules. ';
+    const head = 'build a small wiki engine INTENT-FILE-LONG-SENTINEL ';
+    const text = head + filler.repeat(Math.ceil((chars - head.length) / filler.length));
+    writeFileSync(path, text.slice(0, chars), 'utf8');
+    return path;
+  }
+
+  it('a >10k-char --intent-file with valid content is ACCEPTED (documented escape hatch)', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-longfile-');
+    const intentPath = longIntentFile(dir, 10_500);
+
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      async (_url: unknown, init?: { body?: string }): Promise<Response> => {
+        bodies.push(String(init?.body));
+        return jsonResponse({
+          choices: [{ message: { content: JSON.stringify(pStandardBundle()) } }],
+          usage: { prompt_tokens: 11, completion_tokens: 7 },
+        });
+      },
+    );
+
+    await expect(
+      runCli(['generate', dir, '--intent-file', intentPath, '--variant', 'single']),
+    ).resolves.toBe(0);
+    expect(bodies).toHaveLength(1);
+    const sent = (JSON.parse(bodies[0]!) as { messages: { content: string }[] })
+      .messages[0]!.content;
+    expect(sent).toContain('INTENT-FILE-LONG-SENTINEL'); // the long intent reached the pipeline
+    expect(existsSync(join(dir, 'spec', 'manifest.json'))).toBe(true);
+  });
+
+  it('whitespace-only --intent-file → exit 2, ZERO adapter calls (parity with inline)', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-wsfile-');
+    const intentPath = join(dir, 'blank.txt');
+    writeFileSync(intentPath, '   \n\t  \n', 'utf8');
+    let fetches = 0;
+    vi.stubGlobal(
+      'fetch',
+      async (): Promise<Response> => {
+        fetches += 1;
+        return jsonResponse({ choices: [{ message: { content: 'x' } }] });
+      },
+    );
+
+    await expect(runCli(['generate', dir, '--intent-file', intentPath])).resolves.toBe(2);
+    expect(stderr()).toContain('blank');
+    expect(fetches).toBe(0);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('a --intent-file over the 1,000,000-char sanity ceiling → exit 2 naming the ceiling', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-hugefile-');
+    const intentPath = longIntentFile(dir, 1_000_001);
+
+    await expect(runCli(['generate', dir, '--intent-file', intentPath])).resolves.toBe(2);
+    expect(stderr()).toContain('sanity ceiling');
+    expect(stderr()).toContain('1000000');
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+});

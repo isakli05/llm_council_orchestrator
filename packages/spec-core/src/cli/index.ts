@@ -10,7 +10,14 @@ import { cmdTrace } from './commands/trace';
 import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 import { cmdCheck } from './commands/check';
-import { cmdGenerate, DEFAULT_GENERATE_VARIANT, normalizeIntent, MAX_INTENT_CHARS } from './commands/generate';
+import {
+  cmdGenerate,
+  DEFAULT_GENERATE_VARIANT,
+  normalizeIntent,
+  normalizeFileIntent,
+  MAX_INTENT_CHARS,
+  MAX_INTENT_FILE_CHARS,
+} from './commands/generate';
 import {
   MAX_COMPLETIONS,
   worstCaseAttempts,
@@ -93,7 +100,9 @@ commands:
                                --max-tokens, --max-wall-ms or LCO_GENERATE_MAX_ATTEMPTS,
                                LCO_GENERATE_MAX_TOKENS, LCO_GENERATE_MAX_WALL_MS. --intent
                                is trimmed and rejected when blank or over ${MAX_INTENT_CHARS}
-                               chars (use --intent-file) BEFORE any paid call. The evidence
+                               chars BEFORE any paid call; --intent-file is the long-intent
+                               path (trim + blank check + a ${MAX_INTENT_FILE_CHARS}-char
+                               sanity ceiling, no inline cap). The evidence
                                gate decides: blocked intent -> exit 1 with reasons, nothing
                                written; lint-clean spec -> spec/ section files written,
                                exit 0. Refuses (exit 2) if <dir>/spec already exists;
@@ -543,9 +552,9 @@ export async function runCli(argv: string[]): Promise<number> {
     case 'generate': {
       // Wrapper edge: resolve --intent-file to the intent text HERE (IO stays
       // at the boundary); an unreadable or empty file is a usage error (2).
-      // Parity with inline --intent: the file's content is trimmed and a
-      // blank-after-trim file is refused (UX-004) — no length cap on files,
-      // they are the documented escape hatch for long intents.
+      // Parity with inline --intent on trim/blank (UX-004); the LENGTH design
+      // differs by channel: files are the escape hatch for long intents — no
+      // inline 10k cap, only a generous sanity ceiling (see generate.ts).
       let intent: string;
       if (parsed.intentFile !== undefined) {
         let raw: string;
@@ -555,7 +564,7 @@ export async function runCli(argv: string[]): Promise<number> {
           console.error(`lco: cannot read --intent-file ${parsed.intentFile}: ${(err as Error).message}`);
           return 2;
         }
-        const normalized = normalizeIntent(raw);
+        const normalized = normalizeFileIntent(raw);
         if (!normalized.ok) {
           console.error(`lco: --intent-file ${parsed.intentFile}: ${normalized.error}`);
           return 2;

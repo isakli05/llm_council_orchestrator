@@ -24,11 +24,22 @@ export const DEFAULT_GENERATE_VARIANT = 'single' as const;
 export const DEFAULT_GENERATE_PROFILE = 'p-standard' as const;
 
 /**
- * UX-004: inline intent length cap. Deliberately generous (natural-language
- * intents are hundreds-to-low-thousands of chars); the error points at
- * --intent-file, the unbounded-by-design escape hatch for long input.
+ * UX-004: inline intent length cap (CLI `--intent`, MCP `intent` arg — both
+ * inline channels). Deliberately generous (natural-language intents are
+ * hundreds-to-low-thousands of chars); the error points at --intent-file,
+ * the documented escape hatch for long input.
  */
 export const MAX_INTENT_CHARS = 10_000;
+
+/**
+ * UX-004 (review fix): --intent-file sanity ceiling. Files are the escape
+ * hatch for long intents and carry NO inline-style cap — but a >1M-char file
+ * is almost certainly a wrong-file mistake (a dump, not an intent), so it is
+ * refused with a message naming the ceiling. Also the defense-in-depth bound
+ * inside cmdGenerate: the library-level cap must never reject what a channel
+ * legitimately accepted (inline <= 10k < file <= 1M).
+ */
+export const MAX_INTENT_FILE_CHARS = 1_000_000;
 
 export interface GenerateOptions {
   intent: string;
@@ -54,12 +65,14 @@ export interface GenerateResult {
 }
 
 /**
- * UX-004 intent preflight: normalize (trim — parity with --intent-file) and
- * refuse blank or oversized intents BEFORE any adapter is constructed, so a
- * bad invocation costs nothing. Shared by the CLI parser (earliest, zero IO)
- * and cmdGenerate itself (library/MCP defense in depth).
+ * UX-004 intent preflight: normalize (trim) and refuse blank intents BEFORE
+ * any adapter is constructed, so a bad invocation costs nothing. The length
+ * cap is CHANNEL-specific (inline 10k; file sanity ceiling 1M) — see
+ * normalizeIntent / normalizeFileIntent.
  */
-export function normalizeIntent(raw: string): { ok: true; intent: string } | { ok: false; error: string } {
+export type IntentCheck = { ok: true; intent: string } | { ok: false; error: string };
+
+function checkIntent(raw: string, maxChars: number, tooLong: (got: number) => string): IntentCheck {
   const intent = raw.trim();
   if (intent === '') {
     return {
@@ -67,13 +80,30 @@ export function normalizeIntent(raw: string): { ok: true; intent: string } | { o
       error: 'intent cannot be blank — a whitespace-only intent would only burn paid calls; pass real text via --intent or --intent-file',
     };
   }
-  if (intent.length > MAX_INTENT_CHARS) {
-    return {
-      ok: false,
-      error: `intent is ${intent.length} characters — inline intent is capped at ${MAX_INTENT_CHARS}; use --intent-file for long intents`,
-    };
+  if (intent.length > maxChars) {
+    return { ok: false, error: tooLong(intent.length) };
   }
   return { ok: true, intent };
+}
+
+/** INLINE intent (--intent text, MCP intent arg): trimmed, non-blank, <= 10k chars. */
+export function normalizeIntent(raw: string): IntentCheck {
+  return checkIntent(
+    raw,
+    MAX_INTENT_CHARS,
+    (got) => `intent is ${got} characters — inline intent is capped at ${MAX_INTENT_CHARS}; use --intent-file for long intents`,
+  );
+}
+
+/** FILE intent (--intent-file): trimmed, non-blank, <= 1M-char sanity ceiling (no inline cap). */
+export function normalizeFileIntent(raw: string): IntentCheck {
+  return checkIntent(
+    raw,
+    MAX_INTENT_FILE_CHARS,
+    (got) =>
+      `intent file is ${got} characters — over the ${MAX_INTENT_FILE_CHARS}-character sanity ceiling ` +
+      '(an intent is a natural-language statement, not a document; check the file)',
+  );
 }
 
 function lintReason(f: LintFinding): string {
@@ -127,7 +157,17 @@ export function lintRejections(bundle: SpecBundle): string[] | null {
  */
 export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<GenerateResult> {
   // --- 0. intent preflight (UX-004: before ANYTHING paid) ----------------------
-  const normalized = normalizeIntent(opts.intent);
+  // Defense in depth at the library bound: trim + non-blank + the FILE-level
+  // sanity ceiling (the widest legitimate channel) — channel-specific tighter
+  // caps (inline 10k) are enforced at the channel boundaries (parseArgs, the
+  // MCP arg layer), so this never rejects what a channel legitimately passed.
+  const normalized = checkIntent(
+    opts.intent,
+    MAX_INTENT_FILE_CHARS,
+    (got) =>
+      `intent is ${got} characters — over the ${MAX_INTENT_FILE_CHARS}-character sanity ceiling ` +
+      '(an intent is a natural-language statement, not a document)',
+  );
   if (!normalized.ok) {
     throw new Error(`invalid intent: ${normalized.error}`);
   }
