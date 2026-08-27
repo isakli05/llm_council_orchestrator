@@ -10,6 +10,7 @@ import { cmdTrace } from './commands/trace';
 import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 import { cmdCheck } from './commands/check';
+import { cmdDoctor } from './commands/doctor';
 import {
   cmdGenerate,
   DEFAULT_GENERATE_VARIANT,
@@ -109,6 +110,24 @@ commands:
                                written; lint-clean spec -> spec/ section files written,
                                exit 0. Refuses (exit 2) if <dir>/spec already exists;
                                --intent and --intent-file are mutually exclusive.
+  doctor [dir] [--json]        runtime environment diagnostics (field tool; CLI-only,
+                               no MCP tool): one line per check —
+                               [name] ok/warn/fail/skip: detail — remedy: ... — and
+                               NEVER an env VALUE or length, only set/unset. Checks:
+                               node version (engines >=22), LCO_LLM_* provider env
+                               (presence + validity; mock is the default adapter),
+                               LCO_MCP_* consent flags (exactly '1' opts in),
+                               LCO_GENERATE_MAX_* budget env, write/lock/atomic-
+                               rename probe in <dir> (default: the current directory;
+                               a probe file is created and removed — nothing else is
+                               touched), spec/ compile summary when <dir>/spec exists,
+                               dist bin self-check (shebang + exec mode; skipped
+                               without dist/), generated/spec-schema.json freshness
+                               (warn only). FAIL = broken capability (unwritable dir,
+                               broken bins, non-compiling spec) -> exit 1; WARN =
+                               unconfigured optional (live LLM env, budget overrides)
+                               -> exit 0; --json emits {"checks":[{name,status,
+                               detail,remedy?}...],"healthy":bool}
 
 changeset template (all three lists are optional; patch keys are strict — typos are rejected):
   {
@@ -146,9 +165,10 @@ const COMMANDS = [
   'init',
   'check',
   'generate',
+  'doctor',
 ] as const;
 type Command = (typeof COMMANDS)[number];
-type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate'>;
+type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate' | 'doctor'>;
 type InitProfile = 'p-mini' | 'p-standard';
 type GenerateVariant = 'single' | 'council';
 
@@ -160,6 +180,7 @@ type ParseResult =
   | { command: SingleDirCommand; dir: string }
   | { command: 'change'; dir: string; changesetPath: string }
   | { command: 'plan'; dir: string; json: boolean }
+  | { command: 'doctor'; dir: string; json: boolean }
   | { command: 'init'; dir: string; profile: InitProfile; name: string }
   | { command: 'check'; dir: string; task?: string; yes: boolean; timeoutMs?: number }
   | {
@@ -198,7 +219,9 @@ function parseArgs(argv: string[]): ParseResult {
     // above guarantees the literal, but does not narrow `string` for TS.
     return { commandHelp: command as Command };
   }
-  if (rest.length === 0) {
+  // doctor is the one command whose <dir> is OPTIONAL (defaults to the
+  // current directory) — every other command keeps the missing-dir error.
+  if (rest.length === 0 && command !== 'doctor') {
     return { error: `missing <dir> argument for '${command}'` };
   }
   if (command === 'change') {
@@ -223,6 +246,23 @@ function parseArgs(argv: string[]): ParseResult {
       }
     }
     return { command: 'plan', dir, json };
+  }
+  if (command === 'doctor') {
+    // `lco doctor` (cwd), `lco doctor <dir>`, `lco doctor --json`, and the
+    // combinations; anything else is a usage error. A leading '--' token is
+    // never taken as a directory name.
+    let dir: string | undefined;
+    let json = false;
+    for (const arg of rest) {
+      if (arg === '--json') {
+        json = true;
+      } else if (dir === undefined && !arg.startsWith('--')) {
+        dir = arg;
+      } else {
+        return { error: `unexpected argument for 'doctor': ${arg}` };
+      }
+    }
+    return { command: 'doctor', dir: dir ?? '.', json };
   }
   if (command === 'init') {
     const [dir, ...flags] = rest;
@@ -559,6 +599,28 @@ export async function runCli(argv: string[]): Promise<number> {
           'as-is — replace every EXAMPLE entry with your own content',
       );
       return 0;
+    }
+    case 'doctor': {
+      // CLI boundary: the environment snapshot, node version and clock are
+      // read HERE only and injected — the core stays deterministic under
+      // test (same pattern as every other command). packageRoot is resolved
+      // relative to this module (src/cli or dist/cli — same depth both in
+      // the repo build and a packed install, the readVersion contract).
+      let result;
+      try {
+        result = await cmdDoctor(parsed.dir, {
+          env: { ...process.env },
+          nodeVersion: process.version,
+          nowIso: new Date().toISOString(),
+          packageRoot: join(__dirname, '../..'),
+          json: parsed.json,
+        });
+      } catch (err) {
+        console.error(`lco: doctor failed: ${(err as Error).message}`);
+        return 2;
+      }
+      console.log(result.output);
+      return result.code;
     }
     case 'generate': {
       // Wrapper edge: resolve --intent-file to the intent text HERE (IO stays

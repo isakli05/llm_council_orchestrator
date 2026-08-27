@@ -78,6 +78,7 @@ bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hat
 | `init <dir> [--profile p-mini\|p-standard] [--name <ad>]` | ÇALIŞAN minimal EXAMPLE spec iskeleti yazar; `<dir>/spec` varsa reddeder |
 | `check <dir> [--task TASK-0001] [--yes] [--timeout-ms 60000]` | TaskContract verification komutlarını önizler/koşar — **varsayılan DRY-RUN** |
 | `generate <dir> --intent "<metin>" \| --intent-file <yol> [--variant single\|council] [--profile p-mini\|p-standard] [--max-attempts N] [--max-tokens N] [--max-wall-ms N]` | doğal-dil niyetini canlı LLM ile derlenebilir `spec/` taslağına çevirir; kanıt kapısı bloklarsa HİÇBİR dosya yazmaz (ayrıntı: aşağıda) |
+| `doctor [dir] [--json]` | çalışma-ortamı tanısı (P3-2): node sürümü, `LCO_LLM_*`/`LCO_MCP_*`/`LCO_GENERATE_MAX_*` env (yalnız set/unset — değer ASLA yazılmaz), `<dir>`'de yazma/kilit/atomik-rename probu, `spec/` derleme özeti, dist bin (shebang + çalıştırma modu) ve şema artefaktı tazeliği; satır başına `[ad] ok/warn/fail/skip` |
 
 Çıkış kodları (tüm CLI için tutarlı sözleşme — **0** başarı, **1** içerik/kural
 başarısızlığı, **2** kullanım/şema hatası):
@@ -94,10 +95,27 @@ başarısızlığı, **2** kullanım/şema hatası):
 | `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
 | `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme VEYA lint reddi (BACK-006: check lint-clean bundle ister), bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
 | `generate` | `spec/` yazıldı (state draft) | kanıt kapısı bloğu VEYA savunma-lint reddi — HİÇBİR dosya yazılmaz | kullanım hatası (bozuk bayrak, eksik/çakışan/boş/aşırı-uzun `--intent`), eksik `LCO_LLM_*` env, `<dir>/spec` zaten var (üzerine yazma reddi), `BUDGET_EXCEEDED` (koşu bütçesi aşıldı — hiçbir şey yazılmaz) |
+| `doctor` | hiçbir kontrol **fail** değil (warn/skip exit 0'da kalır) | en az bir FAIL: kırık yetenek — yazılamayan/olmayan dizin, başarısız atomik-rename probu, bozuk dist bin, derlenmeyen `spec/` | kullanım hatası (bozuk bayrak, fazladan konum argümanı) |
 
 Lint kuralları: **L01–L08, L10, L12** (10 bağlayıcı kural; L09 ve L11 şema katmanında
 zorlanır, lint değil). Her kuralın `fixtures/bad/LXX/` altında beklenen hatayı üreten
 bir yakalama vektörü vardır.
+
+### `doctor` — saha tanı aracı (P3-2)
+
+`lco doctor [dir] [--json]` çalışma ortamını denetler ve sorunları raporlar;
+`<dir>` varsayılanı geçerli dizindir. Gizlilik sözleşmesi kesindir: doctor bir env
+değişkeninin DEĞERİNİ (hatta uzunluğunu) ASLA yazmaz — yalnız set/unset ve geçerlilik.
+Ciddiyet eşlemesi: **FAIL** = kırık yetenek (yazılamayan dizin, başarısız atomik
+yazma/rename probu, bozuk dist bin, derlenmeyen `spec/`) → exit 1; **WARN** =
+yapılandırılmamış opsiyonel (canlı `LCO_LLM_*` env'i yok, bayraklı ama tam '1'
+olmayan `LCO_MCP_*`, çöp `LCO_GENERATE_MAX_*`, bayat şema artefaktı) → exit 0;
+**SKIP** = bu bağlamda uygulanamaz (`spec/` yok, dist/ yok — kaynak koşusu asla
+yanlış-başarısız olmaz, paketlenmiş kurulumda şema regeneratörü yok). Probe yan
+etkisi yoktur: oluşturduğu gizli probe dosyasını siler, CANLI kilidi asla kırmaz
+(sadece uyarır). `--json` tam olarak `{"checks":[{name,status,detail,remedy?}…],
+"healthy":bool}` yazar (plan `--json` ile aynı stil). Doctor CLI-yalnızdır: MCP
+sunucusuna doctor aracı eklenmez (stdout JSON-RPC saflığı korunur).
 
 ## Uçtan Uca Tur — Gerçek Koşulmuş
 

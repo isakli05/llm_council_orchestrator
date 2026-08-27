@@ -106,6 +106,32 @@ if [ "$VERSION_OUT" != "$EXPECTED_VERSION" ]; then
 fi
 say "lco --help ok (usage on stdout); lco --version ok: $VERSION_OUT (matches installed package.json)"
 
+# --- 4c. installed `lco doctor` (P3-2) — diagnostics exit 0 in a healthy install
+say "== phase 4c: lco doctor on the scaffolded project (P3-2) =="
+if ! DOCTOR_OUT=$("$LCO" doctor "$SPEC_PROJECT"); then
+  say "FAIL: lco doctor exited non-zero in a healthy install context"
+  exit 1
+fi
+printf '%s\n' "$DOCTOR_OUT" | grep -q '^\[node\] ok:' || { say "FAIL: doctor output missing '[node] ok:'"; exit 1; }
+printf '%s\n' "$DOCTOR_OUT" | grep -q '^\[spec\] ok:' || { say "FAIL: doctor output missing '[spec] ok:'"; exit 1; }
+if ! DOCTOR_JSON=$("$LCO" doctor "$SPEC_PROJECT" --json); then
+  say "FAIL: lco doctor --json exited non-zero"
+  exit 1
+fi
+node -e '
+  const parsed = JSON.parse(process.argv[1]);
+  if (parsed.healthy !== true || !Array.isArray(parsed.checks) || parsed.checks.length === 0) {
+    console.error("smoke: bad doctor --json payload");
+    process.exit(1);
+  }
+' "$DOCTOR_JSON" || exit 1
+# The probes left no residue in the diagnosed project (probe file + lockfile gone).
+if find "$SPEC_PROJECT" -maxdepth 1 \( -name '.lco-doctor-*' -o -name '.lco-revision.lock' \) | grep -q .; then
+  say "FAIL: doctor left probe/lock residue in $SPEC_PROJECT"
+  exit 1
+fi
+say "lco doctor ok: exit 0, [node]/[spec] ok, healthy json, no residue"
+
 # --- 5. installed `lco-mcp` initialize handshake + protocol pins ----------------------
 say "== phase 5: lco-mcp handshake over stdio (initialize, notification silence, parse error) =="
 MCP_OUT="$WORK/mcp-initialize.out"
