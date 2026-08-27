@@ -445,6 +445,53 @@ describe('runCli change', () => {
   });
 });
 
+describe('runCli doctor (P3-2)', () => {
+  it('doctor with no <dir> -> defaults to cwd, exit 0 (warn is not a failure)', async () => {
+    // The vitest cwd is the package root: writable, no spec/ (skip), dist
+    // built by pretest (bins ok), schema fresh (schema ok). Unset LCO_LLM_*
+    // env yields a provider-env WARN — which must NOT fail the exit contract.
+    await expect(runCli(['doctor'])).resolves.toBe(0);
+    expect(stdout()).toContain('[node] ok:');
+    expect(stdout()).toContain('[write] ok:');
+    expect(stdout()).toMatch(/doctor: \d+ checks/);
+  });
+
+  it('doctor <dir> --json -> one parseable {checks, healthy} object', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'spec-core-cli-doctor-'));
+    tmpDirs.push(root);
+    await expect(runCli(['doctor', root, '--json'])).resolves.toBe(0);
+    const parsed = JSON.parse(stdout()) as {
+      checks: Array<{ name: string; status: string }>;
+      healthy: boolean;
+    };
+    expect(parsed.healthy).toBe(true);
+    expect(parsed.checks.map((c) => c.name)).toContain('write');
+  });
+
+  it('doctor on a nonexistent dir -> exit 1 (broken capability is a FAIL)', async () => {
+    await expect(runCli(['doctor', '/definitely/not/here/lco-doctor'])).resolves.toBe(1);
+    expect(stdout()).toContain('[write] fail:');
+  });
+
+  it('doctor --help -> its own usage block, exit 0', async () => {
+    await expect(runCli(['doctor', '--help'])).resolves.toBe(0);
+    expect(stdout()).toContain('doctor [dir] [--json]');
+    expect(stdout()).toContain('(run `lco --help` for the full command overview)');
+    expect(stderr()).toBe('');
+  });
+
+  it('unknown flag and extra positional -> exit 2 usage error', async () => {
+    await expect(runCli(['doctor', '/tmp', '--bogus'])).resolves.toBe(2);
+    expect(stderr()).toContain('unexpected argument');
+    await expect(runCli(['doctor', '/tmp', 'extra'])).resolves.toBe(2);
+  });
+
+  it('the overview USAGE lists doctor', async () => {
+    await runCli(['--help']);
+    expect(stdout()).toContain('doctor [dir] [--json]');
+  });
+});
+
 describe('runCli init', () => {
   it('fresh dir with --profile/--name -> exit 0, section files listed, scaffold compiles', async () => {
     const root = mkdtempSync(join(tmpdir(), 'spec-core-cli-init-'));

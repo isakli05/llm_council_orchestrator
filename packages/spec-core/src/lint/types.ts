@@ -1,3 +1,5 @@
+import type { SpecBundle } from '../schemas';
+
 export const LINT_RULES = [
   'L01_UNDEFINED_TERM',
   'L02_ORPHAN_REQUIREMENT',
@@ -26,4 +28,15 @@ export interface LintResult {
   errors: LintFinding[];
   warnings: LintFinding[];
   summary: Record<string, number>;
+}
+
+/**
+ * A lint rule: scans a compiled bundle and reports findings tagged with its
+ * own rule id. Rule bodies live in `src/lint/rules/`. Lives here (not in
+ * engine.ts) so rules depend on the types module only — engine imports the
+ * type from here, never the other way around.
+ */
+export interface LintRule {
+  id: LintRuleId;
+  check(bundle: SpecBundle): LintFinding[];
 }

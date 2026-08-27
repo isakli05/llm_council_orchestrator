@@ -151,11 +151,13 @@
           "properties": {
             "statement": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 100000
             },
             "normalized": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 100000
             }
           },
           "required": [
@@ -171,11 +173,13 @@
             "properties": {
               "term": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 500
               },
               "definition": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 4000
               }
             },
             "required": [
@@ -183,7 +187,8 @@
               "definition"
             ],
             "additionalProperties": false
-          }
+          },
+          "maxItems": 100
         },
         "assumptions": {
           "type": "array",
@@ -196,18 +201,21 @@
               },
               "statement": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 4000
               },
               "evidence": {
                 "type": "array",
                 "items": {
                   "type": "string",
                   "pattern": "^(E)-\\d{4}$"
-                }
+                },
+                "maxItems": 50
               },
               "impact_if_wrong": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 4000
               }
             },
             "required": [
@@ -217,7 +225,8 @@
               "impact_if_wrong"
             ],
             "additionalProperties": false
-          }
+          },
+          "maxItems": 100
         },
         "evidence": {
           "type": "array",
@@ -239,7 +248,8 @@
               },
               "source": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 1000
               },
               "hash": {
                 "$ref": "#/definitions/SpecBundle/properties/manifest/properties/evidence_snapshot/properties/pack_hash"
@@ -252,7 +262,8 @@
               "hash"
             ],
             "additionalProperties": false
-          }
+          },
+          "maxItems": 100
         },
         "requirements": {
           "type": "array",
@@ -265,7 +276,8 @@
               },
               "statement": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 20000
               },
               "priority": {
                 "type": "string",
@@ -280,7 +292,8 @@
                 "items": {
                   "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 50
               },
               "acceptance_refs": {
                 "type": "array",
@@ -288,7 +301,8 @@
                   "type": "string",
                   "pattern": "^(TST)-\\d{4}$"
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 50
               },
               "terms_used": {
                 "type": "array",
@@ -306,7 +320,8 @@
               "acceptance_refs"
             ],
             "additionalProperties": false
-          }
+          },
+          "maxItems": 100
         },
         "decisions": {
           "type": "array",
@@ -329,7 +344,8 @@
                 "type": "array",
                 "items": {
                   "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
-                }
+                },
+                "maxItems": 50
               },
               "confidence": {
                 "type": "number",
@@ -392,7 +408,8 @@
               "status"
             ],
             "additionalProperties": false
-          }
+          },
+          "maxItems": 100
         },
         "contracts": {
           "type": "array",
@@ -414,11 +431,13 @@
               },
               "symbol": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 1000
               },
               "definition": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 200000
               }
             },
             "required": [
@@ -428,7 +447,8 @@
               "definition"
             ],
             "additionalProperties": false
-          }
+          },
+          "maxItems": 100
         },
         "tasks": {
           "type": "array",
@@ -441,11 +461,13 @@
               },
               "title": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 500
               },
               "purpose": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 4000
               },
               "refs": {
                 "type": "object",
@@ -454,19 +476,23 @@
                     "type": "array",
                     "items": {
                       "$ref": "#/definitions/SpecBundle/properties/requirements/items/properties/id"
-                    }
+                    },
+                    "maxItems": 50
                   },
                   "architecture": {
                     "type": "array",
                     "items": {
-                      "type": "string"
-                    }
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "maxItems": 50
                   },
                   "decisions": {
                     "type": "array",
                     "items": {
                       "$ref": "#/definitions/SpecBundle/properties/decisions/items/properties/claim_id"
-                    }
+                    },
+                    "maxItems": 50
                   }
                 },
                 "required": [
@@ -480,27 +506,37 @@
                 "type": "array",
                 "items": {
                   "$ref": "#/definitions/SpecBundle/properties/tasks/items/properties/task_id"
-                }
+                },
+                "maxItems": 50
               },
               "preconditions": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 50
               },
               "permitted_scope": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 50
               },
               "protected": {
                 "type": "array",
                 "items": {
-                  "type": "string"
-                }
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "maxItems": 50
               },
               "interface_changes": {
                 "type": "array",
@@ -509,11 +545,13 @@
                   "properties": {
                     "symbol": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "maxLength": 2000
                     },
                     "file": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "maxLength": 1000
                     }
                   },
                   "required": [
@@ -521,18 +559,23 @@
                     "file"
                   ],
                   "additionalProperties": false
-                }
+                },
+                "maxItems": 50
               },
               "invariants": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 50
               },
               "instructions": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 20000
               },
               "tests": {
                 "type": "array",
@@ -553,15 +596,18 @@
                     },
                     "file": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "maxLength": 1000
                     },
                     "cases": {
                       "type": "array",
                       "items": {
                         "type": "string",
-                        "minLength": 1
+                        "minLength": 1,
+                        "maxLength": 2000
                       },
-                      "minItems": 1
+                      "minItems": 1,
+                      "maxItems": 50
                     }
                   },
                   "required": [
@@ -571,7 +617,8 @@
                   ],
                   "additionalProperties": false
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 20
               },
               "verification": {
                 "type": "array",
@@ -580,11 +627,13 @@
                   "properties": {
                     "command": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "maxLength": 2000
                     },
                     "expect": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "maxLength": 2000
                     }
                   },
                   "required": [
@@ -593,18 +642,23 @@
                   ],
                   "additionalProperties": false
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 20
               },
               "acceptance": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
                 },
-                "minItems": 1
+                "minItems": 1,
+                "maxItems": 50
               },
               "rollback": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 4000
               },
               "completion_evidence": {
                 "type": "object",
@@ -674,7 +728,8 @@
               "complexity"
             ],
             "additionalProperties": false
-          }
+          },
+          "maxItems": 100
         },
         "test_files": {
           "type": "array",

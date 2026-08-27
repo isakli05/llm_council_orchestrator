@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+
+/** UTF-8 byte length of s (the unit promptBytes accounts in). */
+const byteLength = (s: string): number => new TextEncoder().encode(s).length;
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runPipeline, stripJsonFences } from './runner';
@@ -161,7 +164,7 @@ function makeLlm(responses: string[]): {
 
 describe('runPipeline — single variant', () => {
   it('(a) greenfield ET-01 + valid bundle JSON → kind spec, lint clean, exactly 1 call', async () => {
-    const { llm, calls } = makeLlm([JSON.stringify(et01Bundle())]);
+    const { llm, calls, prompts } = makeLlm([JSON.stringify(et01Bundle())]);
     const out = await runPipeline(task('ET-01'), 'single', llm, NOW);
 
     expect(out.kind).toBe('spec');
@@ -172,7 +175,7 @@ describe('runPipeline — single variant', () => {
       expect(out.bundle.requirements).toHaveLength(PET_CLINIC.requirements.length); // derived from the mock base, not hardcoded
     }
     expect(calls()).toBe(1);
-    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1, attempts: 1, callsWithoutUsage: 0, usageKnown: true });
+    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1, attempts: 1, callsWithoutUsage: 0, usageKnown: true, promptBytes: byteLength(prompts[0]!) });
   });
 
   it('(a) accepts output wrapped in ```json fences', async () => {
@@ -183,7 +186,7 @@ describe('runPipeline — single variant', () => {
   });
 
   it('(b) ambiguous ET-13 + UNRESOLVED decision leak → blocked with L08 reasons', async () => {
-    const { llm } = makeLlm([JSON.stringify(et13UnresolvedBundle())]);
+    const { llm, prompts } = makeLlm([JSON.stringify(et13UnresolvedBundle())]);
     const out = await runPipeline(task('ET-13'), 'single', llm, NOW);
 
     expect(out.kind).toBe('blocked');
@@ -194,7 +197,7 @@ describe('runPipeline — single variant', () => {
       expect(out.reasons.some((r) => r.includes('DEC-0001'))).toBe(true);
       expect(out.reasons.some((r) => r.includes('manifest.unresolved_count'))).toBe(true);
     }
-    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1, attempts: 1, callsWithoutUsage: 0, usageKnown: true });
+    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1, attempts: 1, callsWithoutUsage: 0, usageKnown: true, promptBytes: byteLength(prompts[0]!) });
   });
 
   it('(c) garbage text → schema retry also garbage → blocked with schema-validation reason', async () => {
@@ -295,12 +298,29 @@ describe('runPipeline — council variant', () => {
     expect(out.variant).toBe('council');
     expect(calls()).toBe(3);
     // usage sums across the three calls: in 10+20+30, out 5+10+15
-    expect(out.usage).toEqual({ in: 60, out: 30, calls: 3, attempts: 3, callsWithoutUsage: 0, usageKnown: true });
+    expect(out.usage).toEqual({ in: 60, out: 30, calls: 3, attempts: 3, callsWithoutUsage: 0, usageKnown: true, promptBytes: prompts.reduce((sum, p) => sum + byteLength(p), 0) });
     expect(prompts).toHaveLength(3);
     // call 3 (proposeB+judge) receives proposal A's JSON verbatim
     expect(prompts[2]).toContain('sentinel-proposal-a-7q4z');
     // call 2 (independent proposal) does not see A
     expect(prompts[1]).not.toContain('sentinel-proposal-a-7q4z');
+  });
+
+  it('promptBytes (PERF-001) accounts the UTF-8 bytes of every prompt sent, exactly', async () => {
+    const { llm, prompts } = makeLlm([
+      CLASSIFIER_OK,
+      proposalAJson(),
+      JSON.stringify(et01Bundle()),
+    ]);
+    const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
+
+    expect(out.kind).toBe('spec');
+    expect(prompts.length).toBeGreaterThan(0);
+    // The audit's cost observability ask: the schema embed repeats on every
+    // bundle-producing call; the runner now MEASURES that instead of guessing.
+    const expected = prompts.reduce((sum, p) => sum + byteLength(p), 0);
+    expect(out.usage.promptBytes).toBe(expected);
+    expect(out.usage.promptBytes).toBeGreaterThan(10_000); // the embedded schema alone is ~21 KiB per bundle-producing prompt
   });
 
   it('garbage FINAL output → schema retry also garbage → blocked after 4 calls', async () => {

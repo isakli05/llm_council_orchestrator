@@ -1,4 +1,4 @@
-import type { LintRule } from '../engine';
+import type { LintRule } from '../types';
 import type { LintFinding } from '../types';
 import { isJudgeableExpect, EXPECT_GRAMMAR_DOC } from '../../check/expect';
 

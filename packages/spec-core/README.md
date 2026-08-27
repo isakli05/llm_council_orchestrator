@@ -9,9 +9,9 @@ iddialarını ölçen deterministik değerlendirme (eval) altyapısı.
 Deneyin sorusu: *"Konsey, tek ajandan ölçülebilir şekilde daha mı doğru — ve maliyeti
 kabul edilebilir mi?"* Bu paket o soruya **kanıtla** cevap vermeyi hedefler; tahminle değil.
 
-Çekirdek iki yüzeyden tüketilir: **`lco` CLI** (10 komut: compile, lint, freeze, verify,
-change, trace, plan, init, check, generate) ve **`lco-mcp`** stdio sunucusu (10 MCP
-aracı) — ikisi de aynı saf komut çekirdeklerini çağırır.
+Çekirdek iki yüzeyden tüketilir: **`lco` CLI** (11 komut: compile, lint, freeze, verify,
+change, trace, plan, init, check, generate, doctor) ve **`lco-mcp`** stdio sunucusu
+(10 MCP aracı) — ikisi de aynı saf komut çekirdeklerini çağırır.
 
 ## Kurulum
 
@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (1078 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe, yayın kapısı)
+pnpm --filter ./packages/spec-core test    # vitest (1231 test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -56,9 +56,10 @@ derler, tek build — PATH'te pnpm gerektirir). Yayınlama bir
 
 ## CLI: `lco`
 
-Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`). On komut;
-dokuzu bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır, `generate` ise o
-dizini bir niyet metninden üretir.
+Derleme sonrası `dist/cli/index.js` çalıştırılabilirdir (paket `bin`'i `lco`). On bir
+komut; dokuzu bir spec dizini (`<dir>/spec/*.json` bölüm dosyaları) alır, `generate`
+o dizini bir niyet metninden üretir, `doctor` ise isteğe bağlı bir `<dir>`'i (varsayılan:
+geçerli dizin) yalnız OKUR — tanı yazar, hiçbir şey değiştirmez.
 
 Yardım ve sürüm (UX-002): `lco --help` (veya `-h`) genel kullanımı, `lco <komut> --help`
 o komutun kendi yardımını stdout'a yazdırır ve **exit 0** verir — yardım, komutun kendi
@@ -69,7 +70,7 @@ bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hat
 | komut | işlev |
 | --- | --- |
 | `compile <dir>` | spec/ ağacını derle + şemayla doğrula |
-| `lint <dir>` | derle + 10 lint kuralı; kural/ciddiyet/yol/mesaj tablosu |
+| `lint <dir>` | derle + 12 lint kuralı; kural/ciddiyet/yol/mesaj tablosu |
 | `freeze <dir>` | kapı kontrollü dondurma (yalnız `draft` durumundan; lint temiz + sayaç sıfır); `spec/manifest.json`'a artifact hash yazar |
 | `verify <dir>` | bölüm hash'lerini yeniden hesapla, manifest ile karşılaştır (drift) |
 | `change <dir> <changeset.json>` | FROZEN spec'e changeset uygular: aday revizyonu ÖNCE tamamen doğrular (compile + lint), sonra sürüm+1, state→draft ve değişen bölümleri atomik yazar; lint-geçersiz change → exit 1 ve DİSKE HİÇBİR ŞEY YAZILMAZ |
@@ -78,6 +79,7 @@ bağımsız-değişken doğrulamasından ÖNCE gelir (`lco init --help` asla hat
 | `init <dir> [--profile p-mini\|p-standard] [--name <ad>]` | ÇALIŞAN minimal EXAMPLE spec iskeleti yazar; `<dir>/spec` varsa reddeder |
 | `check <dir> [--task TASK-0001] [--yes] [--timeout-ms 60000]` | TaskContract verification komutlarını önizler/koşar — **varsayılan DRY-RUN** |
 | `generate <dir> --intent "<metin>" \| --intent-file <yol> [--variant single\|council] [--profile p-mini\|p-standard] [--max-attempts N] [--max-tokens N] [--max-wall-ms N]` | doğal-dil niyetini canlı LLM ile derlenebilir `spec/` taslağına çevirir; kanıt kapısı bloklarsa HİÇBİR dosya yazmaz (ayrıntı: aşağıda) |
+| `doctor [dir] [--json]` | çalışma-ortamı tanısı (P3-2): node sürümü, `LCO_LLM_*`/`LCO_MCP_*`/`LCO_GENERATE_MAX_*` env (yalnız set/unset — değer ASLA yazılmaz), `<dir>`'de yazma/kilit/atomik-rename probu, `spec/` derleme özeti, dist bin (shebang + çalıştırma modu) ve şema artefaktı tazeliği; satır başına `[ad] ok/warn/fail/skip` |
 
 Çıkış kodları (tüm CLI için tutarlı sözleşme — **0** başarı, **1** içerik/kural
 başarısızlığı, **2** kullanım/şema hatası):
@@ -92,18 +94,41 @@ başarısızlığı, **2** kullanım/şema hatası):
 | `trace` | rapor çıktı | — (kullanılmaz) | derleme hatası |
 | `plan` | sıra üretildi | bağımlılık döngüsü | derleme/kullanım hatası VEYA lint reddi (BACK-006: plan lint-clean bundle ister) |
 | `init` | iskelet yazıldı | — (kullanılmaz) | `<dir>/spec` zaten var (üzerine yazma reddi), IO hatası |
-| `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/UNPARSEABLE-EXPECT | derleme VEYA lint reddi (BACK-006: check lint-clean bundle ister), bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
+| `check` | tüm PASS veya DRY | en bir FAIL/TIMEOUT/OUTPUT-CAP/UNPARSEABLE-EXPECT | derleme VEYA lint reddi (BACK-006: check lint-clean bundle ister), bilinmeyen `--task`, bozuk bayrak, kanıt yazım hatası |
 | `generate` | `spec/` yazıldı (state draft) | kanıt kapısı bloğu VEYA savunma-lint reddi — HİÇBİR dosya yazılmaz | kullanım hatası (bozuk bayrak, eksik/çakışan/boş/aşırı-uzun `--intent`), eksik `LCO_LLM_*` env, `<dir>/spec` zaten var (üzerine yazma reddi), `BUDGET_EXCEEDED` (koşu bütçesi aşıldı — hiçbir şey yazılmaz) |
+| `doctor` | hiçbir kontrol **fail** değil (warn/skip exit 0'da kalır) | en az bir FAIL: kırık yetenek — yazılamayan/olmayan dizin, başarısız atomik-rename probu, bozuk dist bin, derlenmeyen `spec/` | kullanım hatası (bozuk bayrak, fazladan konum argümanı) |
 
-Lint kuralları: **L01–L08, L10, L12** (10 bağlayıcı kural; L09 ve L11 şema katmanında
-zorlanır, lint değil). Her kuralın `fixtures/bad/LXX/` altında beklenen hatayı üreten
-bir yakalama vektörü vardır.
+Lint kuralları: **L01–L08, L10, L12, L13, L14** (12 bağlayıcı kural; L09 ve L11 şema
+katmanında zorlanır, lint değil). L01–L12'nin her birinin `fixtures/bad/LXX/` altında
+beklenen hatayı üreten bir yakalama vektörü vardır; semantik-kapanış kuralları L13
+(kırık referans) ve L14 (yargılanabilir expect) birim testleriyle ve `plan`/`check`'in
+lint-clean yükleme kapısıyla (BACK-006) sabitlenir.
+
+### `doctor` — saha tanı aracı (P3-2)
+
+`lco doctor [dir] [--json]` çalışma ortamını denetler ve sorunları raporlar;
+`<dir>` varsayılanı geçerli dizindir. Gizlilik sözleşmesi kesindir: doctor bir env
+değişkeninin DEĞERİNİ (hatta uzunluğunu) ASLA yazmaz — yalnız set/unset ve geçerlilik.
+Ciddiyet eşlemesi: **FAIL** = kırık yetenek (yazılamayan dizin, başarısız atomik
+yazma/rename probu, bozuk dist bin, derlenmeyen `spec/`) → exit 1; **WARN** =
+yapılandırılmamış opsiyonel (canlı `LCO_LLM_*` env'i yok, bayraklı ama tam '1'
+olmayan `LCO_MCP_*`, çöp `LCO_GENERATE_MAX_*`, bayat şema artefaktı) → exit 0;
+**SKIP** = bu bağlamda uygulanamaz (`spec/` yok, dist/ yok — kaynak koşusu asla
+yanlış-başarısız olmaz, paketlenmiş kurulumda şema regeneratörü yok). Probe yan
+etkisi yoktur: oluşturduğu gizli probe dosyasını siler ve mevcut bir kilidi —
+canlı VEYA bayat — ASLA kırmaz (süresiz staleMs ile edinir; bayat kilidi pid'i ve
+yaşıyla adlandırıp uyarır, kanıtı yerinde bırakır). Node sürümü eşiği
+(`>=22`) package.json'ın `engines.node` alanından ÇALIŞMA ZAMANINDA okunur
+(`--version`'ın okuduğu aynı dosya; okunamazsa derleme-sabiti yedek — test ikisini
+birbirine sabitler). `--json` tam olarak `{"checks":[{name,status,detail,remedy?}…],
+"healthy":bool}` yazar (plan `--json` ile aynı stil). Doctor CLI-yalnızdır: MCP
+sunucusuna doctor aracı eklenmez (stdout JSON-RPC saflığı korunur).
 
 ## Uçtan Uca Tur — Gerçek Koşulmuş
 
 Aşağıdaki tur **gerçekten koşuldu** (2026-08-25, Node v24.14.0; çıktılar kırpılmış,
 çıkış kodları olduğu gibi). Repro için: `cd packages/spec-core` ve `pnpm --filter
-lco-spec build` yapılmış olmalı; komutlar `node dist/cli/index.js …` ile.
+./packages/spec-core build` yapılmış olmalı; komutlar `node dist/cli/index.js …` ile.
 
 **1) init — çalışan EXAMPLE iskelet** (`p-standard`: NFR OPS-0001 + TASK-0002 + kontrat):
 
@@ -144,7 +169,7 @@ compiled /tmp/lco-tour/spec (lco-spec/1.0 v1, state: draft, project: tour-app)
   test_files    2
 # exit 0
 $ node dist/cli/index.js lint /tmp/lco-tour
-lint OK: 0 errors, 0 warnings (10 rules)
+lint OK: 0 errors, 0 warnings (12 rules)
 # exit 0
 ```
 
@@ -271,7 +296,7 @@ TASK	COMMAND	EXPECT	EXPECTED→ACTUAL	STATUS
 TASK-0001	node --version	exit 0	0 → -	DRY
 TASK-0002	node --version	exit 0	0 → -	DRY
 summary: 0 pass, 0 fail, 2 dry
-(0 timeout, 0 unparseable-expect)
+(0 timeout, 0 output-cap, 0 unparseable-expect)
 # exit 0
 
 $ node dist/cli/index.js check /tmp/lco-tour --yes
@@ -280,7 +305,7 @@ TASK	COMMAND	EXPECT	EXPECTED→ACTUAL	STATUS
 TASK-0001	node --version	exit 0	0 → 0	PASS
 TASK-0002	node --version	exit 0	0 → 0	PASS
 summary: 2 pass, 0 fail, 0 dry
-(0 timeout, 0 unparseable-expect)
+(0 timeout, 0 output-cap, 0 unparseable-expect)
 evidence: /tmp/lco-tour/spec/evidence/TASK-0001-check-20260825T170456Z-001.json, /tmp/lco-tour/spec/evidence/TASK-0002-check-20260825T170456Z-001.json
 # exit 0
 ```
@@ -378,10 +403,18 @@ Operasyonel notlar:
   group'lar POSIX mekanizmasıdır — Windows (job object'ler gerektirir) kapsam
   dışıdır; kendini yeni oturuma taşıyan (`setsid`) bir torun gruptan kaçar ve
   yalnızca çekirdek düzeyinde izolasyon (cgroup/sandbox) kapsanabilir.
-- **1 MB çıktı sınırı taşması TIMEOUT sayılır.** Üretim yürütücüsü akış başına
-  1 MB'lık sınırla (exec'in maxBuffer varsayılanı ile aynı) çalışır; sınırı aşan
-  çıktı GRUBU öldürür ve sonuç `TIMEOUT` ile yargılanır — fail-closed: geveze
-  bir komut asla PASS olamaz.
+- **1 MiB çıktı sınırı taşması `OUTPUT-CAP` sayılır (OPS-003).** Üretim
+  yürütücüsü akış başına 2^20 kod-birimi (1 MiB değerinde; exec'in maxBuffer'ı
+  utf8 altında KARAKTER sayar — bayt değil, burada da öyle; ayrıntı:
+  `runner.ts` `MAX_BUFFER_BYTES` başlığı) sınırıyla çalışır; sınırı aşan çıktı
+  GRUBU öldürür ve sonuç ayrı etiketle yargılanır: `OUTPUT-CAP` (exit null,
+  kanıta yazılır, çıkış 1'e katkı) — fail-closed: geveze bir komut asla PASS
+  olamaz. `TIMEOUT` yalnızca gerçek zaman aşımı kill'i ve sinyalle ölüm
+  içindir; operatör `TIMEOUT` görüyorsa teşhisi asılı komuttur, geveze
+  komut değil — ikisi hiçbir yüzeyde (tablo, özet satırı, kanıt) aynı
+  etiketi paylaşmaz. Çare: komutu sessizleştirin ya da çıktıyı dosyaya
+  yönlendirin (ör. `> out.log 2>&1`) ve günlüğü dosyadan okuyun; özet satırı
+  taşmayı ayrıca sayar (`N output-cap`).
 - **Sinyalle öldürme → TIMEOUT.** Sinyalle biten bir sürece çıkış kodu atanmaz
   (`exit: null`, `TIMEOUT`): öldürülmüş süreç, yargılanmış bir çıkış koduyla
   karıştırılamaz. Zombi bırakılmaz: kabuk, karara varılmadan önce reaped edilir.
@@ -431,11 +464,17 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
   değer exit 2). İptal temizdir: boru hattı sıkı sıkıya sıralıdır, ödenememiş
   promise bırakmaz; HTTP adaptörü bütçe defterini deneme BAŞINA şarj eder, cap
   dolunca bir sonraki istek hiç gönderilmez.
-- **Kullanım muhasebesi (UX-001 + UX-003):** özetler tamamlama ve HTTP denemesini
-  ayrı ayrı gösterir (`N LLM call(s) / M HTTP attempt(s)` — zaman aşımına uğrayan
-  denemeler dahil). Sağlayıcı usage BİLDİRMEDİĞİNDE token sayıları `unknown`
+- **Kullanım muhasebesi (UX-001 + UX-003 + PERF-001):** özetler tamamlama ve HTTP
+  denemesini ayrı ayrı gösterir (`N LLM call(s) / M HTTP attempt(s)` — zaman aşımına
+  uğrayan denemeler dahil). Sağlayıcı usage BİLDİRMEDİĞİNDE token sayıları `unknown`
   görünür — asla `0 in / 0 out` değil; G4 maliyet koşulu da unknown'ı geçmez
-  (`0 <= 3×0` kanıt değildir).
+  (`0 <= 3×0` kanıt değildir). Ayrıca koşunun gönderdiği **prompt baytları**
+  (`K prompt bytes`) koşucu tarafından YEREL olarak ölçülür ve her durumda raporlanır —
+  gömülü şema (~23 KiB) bundle üreten her çağrıda ve her doğrulama-retry'inde
+  tekrarlanır; bu maliyet tahmin edilmez, sayılır. Prompt önbellekleme/BJM
+  referanslama BİLİNÇLİ olarak ertelenmiştir: sağlayıcılar önbellek anahtarı ve
+  isabet raporlaması açısından farklıdır, koşucu sağlayıcı-agnostiktir; ölçüm önce
+  gelir, önbellekleme ölçülen bir maliyeti gerekçelendirdiğinde eklenir.
 - **Env sözleşmesi (fail-closed):** `LCO_LLM_BASE_URL`, `LCO_LLM_API_KEY` ve
   `LCO_LLM_MODEL` kullanıcı tarafından açıkça sağlanmalıdır; biri eksikse komut yarım
   yapılandırmayla devam etmez, exit 2 verir. İsteğe bağlı: `LCO_LLM_MAX_TOKENS`
@@ -514,7 +553,7 @@ JSON yapılandırma alternatifi (ör. `.mcp.json` veya kendi istemciniz):
 
 Notlar:
 
-- **Önce derleyin:** sunucu `dist/`den koşar — `pnpm --filter lco-spec build`
+- **Önce derleyin:** sunucu `dist/`den koşar — `pnpm --filter ./packages/spec-core build`
   (yukarıdaki test-sırası notuyla aynı gerekçe).
 - **stdout yalnız JSON-RPC** (bağlayıcı): stdout'a yalnız yanıt satırları yazılır; her
   tanılama stderr'e gider. Eski `mcp_bridge` hatasının (protokol akışına log karışması)
@@ -621,8 +660,10 @@ rızasının vekili DEĞİLDİR** — dört katman, hepsi birlikte zorunlu:
    istek actionable bir reddetme (isError, exit 2) alır.
 2. **İçerik kalitesi:** spec **frozen + hash-doğrulanmış + lint-clean** olmalıdır
    (`loadBundleAtLevel('lint-clean')` + `verifyFrozen` çekirdekleri). Draft spec,
-   freeze sonrası kurcalanmış (drift) içerik veya lint-kirli bundle, neyin
-   başarısız olduğunu adlandıran bir reddetmeyle geri çevrilir.
+   freeze sonrası yeniden hash'i eşleşmeyen (drift'e girmiş) içerik veya lint-kirli
+   bundle, neyin başarısız olduğunu adlandıran bir reddetmeyle geri çevrilir
+   (drift doğrulaması anlamsal bölüm kimliğidir — tampon-boşluğu düzeyinde
+   düzenleme yakalamaz; bkz. "Bilinen Sınırlar").
 3. **Önizleme-hash'ine bağlı rıza:** yürütme isteği `consent.digest` taşır —
    tam olarak neyin koşacağına ilişkin özet (`sha256(JSON.stringify({spec_version,
    tasks:[{task_id, verification:[{command, expect}]}]}, null, 2))`; DRY yanıt bu
@@ -710,6 +751,63 @@ Bilinmeyen anahtar **her yerde reddedilir**, sessizce silinmez:
   (`additionalProperties: false`) hizalıdır. (Bu paketin eski sürümündeki "zod siler /
   JSON Şema reddeder" yüzey farkı, tamamlama planının şema-sıkılaştırma göreviyle
   kapatıldı.)
+
+## L12 Kapsam-Örtüşme Semantiği (BACK-007)
+
+`L12_SCOPE_OVERLAP` bir ERROR'dur ve dondurma kapısıdır; bu yüzden örtüşme modeli
+yaklaşıklık değil, TANIMLI bir desen dili üzerinde kesindir:
+
+- **Desen dili** (`permitted_scope` glob'ları): `/`-ayrılmış segment dizisi;
+  segment içinde edebi karakter kendini, `?` TAM OLARAK BİR karakteri (`/` hariç),
+  `*` SIFIR VEYA DAHA FAZLA karakteri (`/` hariç; ardışık yıldızlar tektir:
+  `a**b` = `a*b`), yalnızca `**` yazılan segment İSTENEN SAYIDA segmenti (sıfır
+  dahil) eşler (`src/**` → `src` kendisi ve altındaki her şey). `\` `/`'ye
+  normalize edilir; boş segmentler (`//`, sonaki `/`) atılır. Bu dilin dışındaki
+  dizeler (karakter sınıfları, küme parantezleri) edebi kabul edilir.
+- **Örtüşme tanımı:** iki glob, İKİSİNİ de sağlayan bir dosya yolu VARsa örtüşür.
+  Bu alt küme için kesin hesaplanır (segment-birleşim + `**`-farkındalıklı yol DP;
+  `src/lint/rules/l12.ts` — birim-test edilmiş saf fonksiyonlar, tablo + kaba-kuvvet
+  çapraz denetim ile). Sonuç: `src/*.ts` ile `src/*.md` KANITLANARAK ayrıktır
+  (uzantı farkı tanık gerektirir), `src/*.ts` ile `src/*.t?` kanıtlanarak örtüşür
+  (`src/a.ts` tanığı), `*` asla `/` geçmez.
+- **Sıralama semantiği:** çakışma, iki görev arasında bir `depends_on` YOLU
+  (geçişli kapanış; A←B←C zinciri de dahil) VARSA bastırılır — doğrudan kenar
+  yeterli ama gerekli değildir. Kayıtlı gerekçe: zincir de aynı şekilde serileştirir,
+  tavlama denetimin adını verdiği yanlış-pozitif sınıfıydı; kapanış girdi
+  tavanlarındaki boyutlarda ucuzdur (iteratif DFS; derin zincillerde yığın taşması
+  yok); döngü içindeki her çift "sıralı" sayılır ama döngü zaten L04'ün hatasıdır.
+  Elmas ortası (B ve C ikisi de A'ya bağlı, aralarında yol YOK) hâlâ işaretlenir —
+  gerçekten paralel koşabilirler.
+- Hata mesajı çareyi adlandırır: görevler arasına `depends_on` yolu ekle YA DA
+  kapsamları ayır.
+
+## Girdi Tavanları (PERF-001)
+
+Şema, kareli lint/hash işlerinin KoşMASINDAN ÖNCE girdiyi sınırlar (düşmanca MCP
+girdisi ve başıboş LLM çıktısı için bir duvar — seyyar tripwire değil). Tavanlar
+fixture/eval bünyesindeki en büyük gözlemlenen kullanımın ~10x+ üstünde seçildi
+(ölçüm önce yapıldı; tam tablo `src/schemas/limits.ts` başlığında):
+
+| Alan | Ölçülen max | Tavan |
+| --- | --- | --- |
+| görev / bundle | 4 | 100 |
+| requirement / karar / kanıt / sözlük / varsayım / sözleşme | 1–4 | 100 (her biri) |
+| `refs.*`, `depends_on`, `permitted_scope`, `protected` (görev başına) | 0–2 | 50 |
+| `tests`, `verification` (görev başına) | 1 | 20 |
+| test case sayısı (test başına) | 2 | 50 |
+| `title` | 25 krk | 500 |
+| `purpose` / `rollback` | 63–73 krk | 4.000 |
+| `instructions` | 111 krk | 20.000 |
+| liste öğesi / komut / dosya-yolu | ≤83 krk | 1.000–2.000 |
+| `intent.statement` | 111 krk | 100.000 (niyet yankısı uzun olabilir) |
+
+**KIRICI SIKILAŞTIRMA:** tavanan aşan bundle şema hatasıyla reddedilir ve hata
+limiti + çareyi adlandırır (`bundle exceeds 100 tasks — split the spec into
+separately frozen bundles`). Ölçek regresyonu `src/scale-benchmark.test.ts` ile
+korumalıdır: 10/100/1000 görevlik deterministik sentetik bundle'lar üzerinde
+L12 + kapanış + lint + hash + derleme, cömert (~10x) tavanların altında
+kalmalıdır (turuncu değil kırmızı bir sınır — aşıldığında mertibe regresyonu var
+demektir).
 
 ## Şema Sürümü ve Uyumluluk Politikası (`lco-spec/1.x`)
 
@@ -864,8 +962,8 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
 
 ## Dürüst Durum Bildirimi
 
-- **Yüzey tamamlandı:** CLI 10 komut (compile, lint, freeze, verify, change, trace,
-  plan, init, check, generate) + `lco-mcp` stdio sunucusu (10 araç). Her komut çekirdeği
+- **Yüzey tamamlandı:** CLI 11 komut (compile, lint, freeze, verify, change, trace,
+  plan, init, check, generate, doctor) + `lco-mcp` stdio sunucusu (10 araç). Her komut çekirdeği
   safdır: yazdırma yok, `process.exit` yok; saat yalnız CLI/MCP sınırında okunup
   çekirdeklere `nowIso` olarak enjekte edilir.
 - **Deterministik kapı geçiyor**: G1 15/15, G2 doğru, G3 8/8 →
@@ -918,11 +1016,15 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
   (`ClassifierOutputSchema` — strict DEĞİLDİR; ürün şeması değildir, bilinçli
   kapsam dışı) gevşek kalır; sınıflandırıcının `must_be_blocked=true` hükmü
   kodda monotonik olarak uygulanır (BACK-001), prompt'a emanet edilmez.
-- **verify ham bayt değil, şema-normalize edilmiş bölüm içeriğini hash'ler:** hash,
-  ayrıştırılmış bölümün kanonik JSON'udur — ham dosya biçimlendirmesi (girinti, anahtar
-  sırası) ve trim-refine'lı metin alanlarının baş/son boşluk değişiklikleri drift
-  üretmez (turdaki tamper denemesi #1'in exit 0 çıkması tam olarak budur). Kasıtlı
-  tasarım: bölüm-içeriği drift dedektörü, tamper kanıtı değildir (G2 kapsam notu).
+- **verify ham bayt değil, şema-normalize edilmiş bölüm içeriğini hash'ler (DATA-003,
+  kabul edilmiş sınırlama):** hash, ayrıştırılmış bölümün kanonik JSON'udur — verify'nin
+  kanıtladığı şey bölümlerin ANLAMSAL (semantic) kimliğidir, bayt-düzeyi değişiklik
+  kanıtı değil. Ham dosya biçimlendirmesi (girinti), anahtar sırası ve trim-refine'lı
+  metin alanlarının baş/son boşluk değişiklikleri normalize edildiği için drift üretmez
+  (turdaki tamper denemesi #1'in exit 0 çıkması tam olarak budur); aynı dizgenin
+  ortasına giren boşluk ya da herhangi bir anlam-değiştiren düzenleme yakalanır. Kasıtlı
+  tasarım: bölüm-içeriği drift dedektörü, tamper kanıtı değildir (G2 kapsam notu) —
+  bayt-düzeyi provenance isteniyorsa bu mekanizmaya eklenmelidir, yerine geçmez.
 - **Manifest'in kendisi hash kapsamının DIŞINDADIR (DATA-002):** `verify`, bölüm
   içeriğini manifest'te saklanan `artifact_hashes`'e karşı doğrular; ama
   manifest'in KENDİSİ — proje kimliği, `spec_schema`/`spec_version` üstverisi,
@@ -1009,6 +1111,26 @@ commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
 izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
 birlikte yaşar (bkz. "Yayın ve Sahiplik").
 
+- **2026-08-27 — P3-5 / P3 düzeltme programının kapanışı (bu aşama):** OPS-003 —
+  1 MiB çıktı sınırı taşması artık ayrı `OUTPUT-CAP` etiketiyle yargılanır
+  (`TIMEOUT` yalnızca gerçek zaman aşımı kill'i ve sinyalle ölüm; tablo satırı,
+  özet satırındaki `N output-cap` sayacı, kanıt dosyası ve `--help` aynı
+  sınıflamayı taşır). DATA-003 ACCEPTED-DOC — kanonik hash'lemenin
+  tampon-alanı/biçim/anahtar-sırası normalizasyonu "Bilinen Sınırlar"da
+  anlamsal-bölüm-kimliği çerçevesiyle belgelendi; tamper dili her yerde
+  accidental-drift kapsamına sabitlendi. Doküman-gerçeği süpürgesi: 11 CLI
+  komutu (doctor), 12 lint kuralı (L13/L14), check özet satırı, ~23 KiB gömülü
+  şema. Bu girdi son girdiden (P3-1) bu yana birleşen aşamaları da kapsar:
+  P3-2 doctor komutu, P3-3 CLI/eval çekirdek bölünmesi (davranış değişikliği
+  yok), P3-4 coverage eşiği (91/89/96/91, `test:coverage`) + D-state watchdog
+  — 1231 test.
+- **2026-08-27 — P3-1 (bu aşama):** L12 kapsam-örtüşme semantiği (BACK-007) — tanımlı
+  glob alt kümesi (edebi/`?`/`*`/segment-`**`), kesin örtüşme modeli (tablo +
+  kaba-kuvvet çapraz denetimli saf fonksiyonlar; `src/*.ts` vs `src/*.md` artık
+  kanıtlanarak ayrık), bağımlılık-yolu (geçişli) sıralama semantiği; PERF-001 —
+  girdi tavanları (`src/schemas/limits.ts`; kırıcı sıkılaştırma), prompt-bayt
+  ölçümü kullanım satırında, Set-tabanlı test-dosya dedupe, 10/100/1000-görev
+  ölçek-tavanı testi — 1158 test.
 - **2026-08-27 — P2-6 (bu aşama):** yayın sahipliği/provenance — kirli/etiketsiz yayın
   yasağı (test edilen karar çekirdeği `src/release/readiness.ts` + sınır betiği
   `scripts/prepublish-check.js`, `prepublishOnly`'ye bağlı), manuel

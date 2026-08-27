@@ -55,7 +55,12 @@ interface FakeCall {
 
 /** Injectable fake Executor: records every call, answers from `plan`. */
 function fakeExec(
-  plan: (call: FakeCall, index: number) => { exit: number | null; stdout: string; timedOut: boolean },
+  plan: (call: FakeCall, index: number) => {
+    exit: number | null;
+    stdout: string;
+    timedOut: boolean;
+    killReason?: 'timeout' | 'output-cap';
+  },
 ): { calls: FakeCall[]; exec: Executor } {
   const calls: FakeCall[] = [];
   const exec: Executor = async (cmd, cwd, timeoutMs) => {
@@ -191,6 +196,42 @@ describe('runChecks --yes: outcome classification', () => {
     expect(result.code).toBe(1);
     expect(result.outcomes[0]).toMatchObject({ status: 'TIMEOUT', actualExit: null, outputTail: '...partial' });
     expect(JSON.parse(readFileSync(evidencePath(root, 'TASK-0001'), 'utf8')).checks[0].status).toBe('TIMEOUT');
+  });
+
+  // OPS-003: buffer overflow must NEVER wear the TIMEOUT label — an operator
+  // reading TIMEOUT is meant to be diagnosing a hang, not a noisy command.
+  it('timedOut + killReason "output-cap" -> OUTPUT-CAP (distinct label), code 1, evidence says OUTPUT-CAP', async () => {
+    const root = freshRoot('spec-core-check-outputcap-');
+    const bundle = bundleWith({
+      'TASK-0001': [{ command: 'verbose-suite', expect: 'exit 0' }],
+    });
+    const { exec } = fakeExec(() => ({
+      exit: null,
+      stdout: 'x'.repeat(600),
+      timedOut: true,
+      killReason: 'output-cap',
+    }));
+
+    const result = await runChecks(bundle, root, { yes: true, nowIso: NOW, exec });
+
+    expect(result.code).toBe(1);
+    // NOT generic FAIL (exit null vs 0), NOT TIMEOUT — the explicit cap label.
+    expect(result.outcomes[0]).toMatchObject({ status: 'OUTPUT-CAP', actualExit: null });
+    expect(result.outcomes[0].outputTail).toBe('x'.repeat(500)); // tail keeps its last 500 chars
+    expect(JSON.parse(readFileSync(evidencePath(root, 'TASK-0001'), 'utf8')).checks[0].status).toBe('OUTPUT-CAP');
+  });
+
+  it('killReason "timeout" — explicit OR omitted — keeps the TIMEOUT label (protected semantics)', async () => {
+    const bundle = bundleWith({
+      'TASK-0001': [{ command: 'sleep 30', expect: 'exit 0' }],
+    });
+    for (const killReason of ['timeout' as const, undefined]) {
+      const root = freshRoot('spec-core-check-timeout-reason-');
+      const { exec } = fakeExec(() => ({ exit: null, stdout: '', timedOut: true, killReason }));
+      const result = await runChecks(bundle, root, { yes: true, nowIso: NOW, exec });
+      expect(result.outcomes[0].status).toBe('TIMEOUT');
+      expect(result.code).toBe(1);
+    }
   });
 
   it('unparseable expect -> UNPARSEABLE-EXPECT and the command is NEVER executed (fail-closed)', async () => {
@@ -479,6 +520,41 @@ describe('runChecks --yes: SEC-004 evidence hardening', () => {
     );
   });
 
+  // T15 rider (TEST-003 carry list): padStart(3) broke lexicographic order at
+  // the 999/1000 boundary ('1000' < '999' as text). The same injected
+  // timestamp 1001 times in a row forces the counter past 999; the file list
+  // (readdir/sort order — how every consumer orders evidence) must stay in
+  // numeric run order across the boundary.
+  it('1001 same-timestamp runs: lexicographic file order stays numeric past seq 999 (T15)', async () => {
+    const root = freshRoot('spec-core-check-seq999-');
+    const bundle = bundleWith({ 'TASK-0001': [{ command: 'echo x', expect: 'exit 0' }] });
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: '', timedOut: false }));
+    const RUNS = 1001;
+    for (let i = 0; i < RUNS; i++) {
+      await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
+    }
+
+    const files = evidenceFilesFor(root, 'TASK-0001'); // sorted lexicographically
+    expect(files).toHaveLength(RUNS);
+    // seq tail: 3-digit historical form, or the x-prefixed overflow form.
+    const seqOf = (f: string): number => {
+      const m = /-(x?\d+)\.json$/.exec(f);
+      if (!m) throw new Error(`unparseable evidence name: ${f}`);
+      return m[1]!.startsWith('x') ? Number(m[1]!.slice(1)) : Number(m[1]);
+    };
+    const seqs = files.map(seqOf);
+    for (let i = 1; i < seqs.length; i++) {
+      expect(seqs[i], `file ${i} (${files[i]}) must follow ${files[i - 1]}`).toBe(seqs[i - 1]! + 1);
+    }
+    // Names up to 999 are byte-identical to the historical form (protected).
+    expect(files[0]).toBe('TASK-0001-check-20260825T120000Z-001.json');
+    expect(files[998]).toBe('TASK-0001-check-20260825T120000Z-999.json');
+    // The 1000th run crosses the boundary: the overflow form sorts AFTER every
+    // 3-digit name (digits sort before 'x' in UTF-16).
+    expect(files[999]).toBe('TASK-0001-check-20260825T120000Z-x001000.json');
+    expect(files[1000]).toBe('TASK-0001-check-20260825T120000Z-x001001.json');
+  }, 180_000);
+
   it('a later run with a DIFFERENT nowIso sorts after the earlier one', async () => {
     const root = freshRoot('spec-core-check-chrono-');
     const bundle = bundleWith({});
@@ -657,7 +733,9 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     expect(result.outcomes.map((o) => o.status)).toEqual(['PASS', 'PASS']);
     expect(result.outcomes[0].durationMs).toBeLessThan(1500); // did not wait for the grandchild
     // Past the grandchild's would-be write time: nothing survived the verdict.
-    await sleep(1600);
+    // (T16 marker margin: 1.2s write + a >=600ms cushion for CI scheduler
+    // jitter — 1600ms was only 400ms and flaked under load.)
+    await sleep(2000);
     expect(existsSync(marker)).toBe(false);
   }, 10_000);
 
@@ -739,7 +817,7 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     expect(() => process.kill(-pid, 0)).toThrow();
   }, 10_000);
 
-  it('maxBuffer overflow still classifies TIMEOUT and the group cleanup runs on that path', async () => {
+  it('maxBuffer overflow classifies OUTPUT-CAP explicitly and the group cleanup runs on that path', async () => {
     const root = freshRoot('spec-core-sec005-overflow-');
     const marker = join(root, 'ov.txt');
     // >1MB of output overflows the buffer (fail-on-overflow preserved); the
@@ -761,8 +839,13 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
       nowIso: NOW,
     });
 
-    expect(result.outcomes[0].status).toBe('TIMEOUT'); // verbose output can never PASS
-    await sleep(1800);
+    // OPS-003: the explicit cap label — never TIMEOUT (an operator reading
+    // TIMEOUT diagnoses a hang), never PASS (fail-closed on a truncated read).
+    expect(result.outcomes[0].status).toBe('OUTPUT-CAP');
+    expect(result.outcomes[0].actualExit).toBe(null);
+    expect(JSON.parse(readFileSync(evidencePath(root, 'TASK-0001'), 'utf8')).checks[0].status).toBe('OUTPUT-CAP');
+    // T16 marker margin: 1.5s write + >=600ms cushion (1800ms was 300ms).
+    await sleep(2100);
     expect(existsSync(marker)).toBe(false);
   }, 15_000);
 
@@ -799,7 +882,7 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     // Death by our signal ⇒ TIMEOUT classification (T16 semantics preserved).
     expect(result.timedOut).toBe(true);
     expect(result.exit).toBeNull();
-    await sleep(1500); // past the would-be write time: nothing survived
+    await sleep(1800); // T16 marker margin: 1.2s write + >=600ms cushion (was 1500/300ms)
     expect(existsSync(marker)).toBe(false);
     expect(killActiveProcessGroups()).toBe(0); // registry cleaned at settle
   }, 15_000);

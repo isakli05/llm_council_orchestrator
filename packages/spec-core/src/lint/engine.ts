@@ -1,5 +1,5 @@
 import type { SpecBundle } from '../schemas';
-import type { LintFinding, LintResult, LintRuleId } from './types';
+import type { LintFinding, LintResult, LintRule } from './types';
 import { rule as l01 } from './rules/l01';
 import { rule as l02 } from './rules/l02';
 import { rule as l03 } from './rules/l03';
@@ -13,14 +13,10 @@ import { rule as l12 } from './rules/l12';
 import { rule as l13 } from './rules/l13';
 import { rule as l14 } from './rules/l14';
 
-/**
- * A lint rule: scans a compiled bundle and reports findings tagged with its
- * own rule id. Rule bodies live in `src/lint/rules/`.
- */
-export interface LintRule {
-  id: LintRuleId;
-  check(bundle: SpecBundle): LintFinding[];
-}
+// Backward-compatible surface: LintRule is DEFINED in ./types (rules import
+// it from there); engine re-exports it so existing `from './engine'` type
+// imports keep resolving.
+export type { LintRule } from './types';
 
 /**
  * Rule registry: the evidence-gate rules L01..L08, L10, L12 plus the

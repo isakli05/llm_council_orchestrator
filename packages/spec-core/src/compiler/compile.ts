@@ -141,10 +141,16 @@ export async function compileSpecDir(root: string): Promise<CompileResult> {
   return { ok: true, bundle: parsed.data, errors: [] };
 }
 
-/** test_files ledger: unique task test files in task order (defensive against malformed input). */
+/**
+ * test_files ledger: unique task test files in task order (defensive against
+ * malformed input). Set-based membership — first-seen order preserved, no
+ * repeated linear scans (PERF-001: the old `includes` probe made this
+ * O(n²) on pathological repeated-file inputs; behavior is identical).
+ */
 function deriveTestFiles(tasks: unknown): string[] {
   if (!Array.isArray(tasks)) return [];
   const files: string[] = [];
+  const seen = new Set<string>();
   for (const task of tasks) {
     if (task === null || typeof task !== 'object') continue;
     const tests = (task as { tests?: unknown }).tests;
@@ -152,7 +158,9 @@ function deriveTestFiles(tasks: unknown): string[] {
     for (const test of tests) {
       if (test === null || typeof test !== 'object') continue;
       const file = (test as { file?: unknown }).file;
-      if (typeof file === 'string' && !files.includes(file)) files.push(file);
+      if (typeof file !== 'string' || seen.has(file)) continue;
+      seen.add(file);
+      files.push(file);
     }
   }
   return files;

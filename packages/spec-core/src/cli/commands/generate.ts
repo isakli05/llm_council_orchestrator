@@ -263,12 +263,19 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
 /**
  * UX-001/UX-003 usage summary line: completions vs HTTP attempts are shown
  * separately, and token counts render `unknown` (never 0) when any
- * contributing response came back without provider usage.
+ * contributing response came back without provider usage. PERF-001: prompt
+ * bytes are measured by the runner itself, so they are reported in BOTH
+ * branches — prompt cost is observable even when the provider reports no
+ * token usage.
  */
 function usageLine(u: PipelineUsage): string {
   const calls = `${u.calls} LLM call(s) / ${u.attempts} HTTP attempt(s)`;
+  const bytes = `${u.promptBytes} prompt bytes`;
   if (!u.usageKnown) {
-    return `${calls}, tokens unknown — the provider reported no usage for ${u.callsWithoutUsage} call(s) (unknown is not zero)`;
+    return (
+      `${calls}, tokens unknown — the provider reported no usage for ` +
+      `${u.callsWithoutUsage} call(s) (unknown is not zero), ${bytes} (measured locally)`
+    );
   }
-  return `${calls}, ${u.in} in / ${u.out} out tokens`;
+  return `${calls}, ${u.in} in / ${u.out} out tokens, ${bytes}`;
 }
