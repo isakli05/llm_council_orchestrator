@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHttpLlm } from './http';
+import { BudgetExceededError, createBudgetLedger } from '../budget';
 
 /**
  * Unit tests with a stubbed global fetch — no real network, no real secrets.
@@ -235,6 +236,78 @@ describe('createHttpLlm — transport retry policy', () => {
       /LLM HTTP request to .* failed: fetch failed \(after 4 attempts\)/,
     );
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('createHttpLlm — run-budget accounting (UX-001)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Response bodies are single-use — a factory, never a shared instance.
+  const ok = () =>
+    jsonResponse({
+      choices: [{ message: { content: 'hello' } }],
+      usage: { prompt_tokens: 3, completion_tokens: 2 },
+    });
+
+  it('a successful completion reports attempts=1 (the HTTP attempt tally unit)', async () => {
+    stubEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => ok()));
+    const llm = createHttpLlm();
+    const res = await llm.complete('p');
+    expect(res.attempts).toBe(1);
+  });
+
+  it('timed-out/failed attempts COUNT: two transport failures then success reports attempts=3', async () => {
+    stubEnv();
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    const llm = createHttpLlm();
+    const promise = llm.complete('p');
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const res = await promise;
+    expect(res.attempts).toBe(3);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('with a ledger: each HTTP attempt charges it; exhausting the attempts cap aborts BEFORE the next fetch', async () => {
+    stubEnv();
+    const fetchMock = vi.fn(async () => jsonResponse({}, 500)); // always retryable
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    const ledger = createBudgetLedger({ maxAttempts: 2 }, {});
+    const llm = createHttpLlm(ledger);
+    const promise = llm.complete('p');
+    promise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(2_000); // attempt 1 -> backoff -> attempt 2
+    await expect(promise).rejects.toBeInstanceOf(BudgetExceededError);
+    await expect(promise).rejects.toThrow(/BUDGET_EXCEEDED \(attempts\)/);
+    // the cap (2) stopped the 3rd fetch from ever being issued
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(ledger.spent().attempts).toBe(2);
+  });
+
+  it('with a ledger: the wall cap aborts between attempts (injected clock, no extra fetch)', async () => {
+    stubEnv();
+    const fetchMock = vi.fn(async () => jsonResponse({}, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    let fakeNow = 0;
+    const ledger = createBudgetLedger({ maxWallMs: 1_000 }, { nowMs: () => fakeNow });
+    const llm = createHttpLlm(ledger);
+    const promise = llm.complete('p');
+    promise.catch(() => undefined);
+    fakeNow += 2_000; // the wall budget is blown while attempt 1 sleeps in backoff
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(promise).rejects.toThrow(/BUDGET_EXCEEDED \(wall\)/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

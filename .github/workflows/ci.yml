@@ -1,4 +1,9 @@
-name: ci
+# Scoped CI: this pipeline gates packages/spec-core ONLY. Root-wide
+# build/test stay intentionally broken (legacy apps are archived); the
+# workflow name `ci-spec-core` makes that scope visible in status checks
+# and the README badge. The badge URL is keyed on this FILE name (ci.yml),
+# so the workflow `name` can be scoped without breaking the badge.
+name: ci-spec-core
 
 on:
   push:
@@ -11,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  spec-core:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -20,9 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Root package.json has no `packageManager` field, so the version must be
-      # pinned here explicitly. pnpm must be installed BEFORE setup-node so the
-      # pnpm store path can be resolved for caching.
+      # Root package.json pins `packageManager: pnpm@10.17.1`; the explicit
+      # version below is kept as a second pin so a stray edit to root
+      # package.json cannot silently change the CI toolchain — they must
+      # agree. pnpm must be installed BEFORE setup-node so the pnpm store
+      # path can be resolved for caching.
       - uses: pnpm/action-setup@v4
         with:
           version: 10.17.1
@@ -35,8 +42,32 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # Build MUST run before test: the MCP spawn test requires dist/.
+      # `build` itself removes dist/ first (TEST-002) — a stale module from
+      # a renamed/deleted source file cannot survive into the pack step.
       # Filter by package path, not name: pnpm exits 0 when a name filter
       # matches nothing, so a package rename would silently skip CI.
       - run: pnpm --filter ./packages/spec-core build
+
+      # TEST-002 freshness gate: the build step above regenerated
+      # generated/spec-schema.json from current source. If that left the
+      # working tree dirty — artifact stale, or missing from the repo and
+      # only existing locally — the committed artifact does not match the
+      # schema the code ships. `git status --porcelain` (not bare
+      # git-diff) so an untracked regenerated artifact also fails.
+      - name: Fail if generated schema artifact is stale
+        run: |
+          CHANGED=$(git status --porcelain -- packages/spec-core/generated/)
+          if [ -n "$CHANGED" ]; then
+            echo "::error::packages/spec-core/generated/spec-schema.json does not match what build regenerates from source."
+            echo "::error::Regenerate and commit: pnpm --filter ./packages/spec-core build && git add packages/spec-core/generated && git commit"
+            echo "$CHANGED"
+            exit 1
+          fi
+
       - run: pnpm --filter ./packages/spec-core lint
       - run: pnpm --filter ./packages/spec-core test
+
+      # TEST-002 packed-install gate: build -> npm pack -> install the REAL
+      # tarball into a throwaway project -> run installed `lco init`,
+      # `lco --help/--version`, and an `lco-mcp` JSON-RPC handshake.
+      - run: pnpm --filter ./packages/spec-core smoke:packed

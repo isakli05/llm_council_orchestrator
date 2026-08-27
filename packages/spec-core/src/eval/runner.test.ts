@@ -172,7 +172,7 @@ describe('runPipeline — single variant', () => {
       expect(out.bundle.requirements).toHaveLength(PET_CLINIC.requirements.length); // derived from the mock base, not hardcoded
     }
     expect(calls()).toBe(1);
-    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1 });
+    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1, attempts: 1, callsWithoutUsage: 0, usageKnown: true });
   });
 
   it('(a) accepts output wrapped in ```json fences', async () => {
@@ -194,7 +194,7 @@ describe('runPipeline — single variant', () => {
       expect(out.reasons.some((r) => r.includes('DEC-0001'))).toBe(true);
       expect(out.reasons.some((r) => r.includes('manifest.unresolved_count'))).toBe(true);
     }
-    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1 });
+    expect(out.usage).toEqual({ in: 10, out: 5, calls: 1, attempts: 1, callsWithoutUsage: 0, usageKnown: true });
   });
 
   it('(c) garbage text → schema retry also garbage → blocked with schema-validation reason', async () => {
@@ -295,7 +295,7 @@ describe('runPipeline — council variant', () => {
     expect(out.variant).toBe('council');
     expect(calls()).toBe(3);
     // usage sums across the three calls: in 10+20+30, out 5+10+15
-    expect(out.usage).toEqual({ in: 60, out: 30, calls: 3 });
+    expect(out.usage).toEqual({ in: 60, out: 30, calls: 3, attempts: 3, callsWithoutUsage: 0, usageKnown: true });
     expect(prompts).toHaveLength(3);
     // call 3 (proposeB+judge) receives proposal A's JSON verbatim
     expect(prompts[2]).toContain('sentinel-proposal-a-7q4z');
@@ -636,5 +636,53 @@ describe('runPipeline — validation-informed retry (live attempt-4 fix)', () =>
     expect(out.kind).toBe('blocked');
     expect(calls()).toBe(2);
     if (out.kind === 'blocked') expect(out.reasons[0]).toContain('schema validation');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UX-001 (T11): attempt vs completion accounting + unknown-usage completeness
+// ---------------------------------------------------------------------------
+
+describe('runPipeline — usage accounting: completions vs HTTP attempts, unknown usage', () => {
+  const classifier = JSON.stringify({ profile: 'p-mini', must_be_blocked: false });
+
+  it('attempts default to 1 per completion for plain adapters and sum with reported attempts', async () => {
+    // A budget-aware adapter reports attempts=4 for call 2 (e.g. 3 failed +
+    // 1 success); call 1 (plain-reported, attempts undefined) counts as 1.
+    let n = 0;
+    const llm: LlmAdapter = {
+      async complete(): Promise<LlmResponse> {
+        n += 1;
+        return {
+          text: n === 1 ? classifier : JSON.stringify(et01Bundle()),
+          usage: { in_tokens: 10, out_tokens: 5 },
+          ...(n === 2 ? { attempts: 4 } : {}),
+        };
+      },
+    };
+    const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
+    expect(out.usage.calls).toBe(3);
+    expect(out.usage.attempts).toBe(1 + 4 + 1);
+    expect(out.usage.usageKnown).toBe(true);
+  });
+
+  it('one response without usage -> usageKnown=false (unknown is NOT zero)', async () => {
+    let n = 0;
+    const llm: LlmAdapter = {
+      async complete(): Promise<LlmResponse> {
+        n += 1;
+        // classifier: usage present; proposal A + final: no usage reported
+        return {
+          text: n === 1 ? classifier : JSON.stringify(et01Bundle()),
+          ...(n === 1 ? { usage: { in_tokens: 10, out_tokens: 5 } } : {}),
+        };
+      },
+    };
+    const out = await runPipeline(task('ET-01'), 'council', llm, NOW);
+    expect(out.usage.calls).toBe(3);
+    expect(out.usage.usageKnown).toBe(false);
+    // known contributions still accumulate (10/5 from call 1)
+    expect(out.usage.in).toBe(10);
+    expect(out.usage.out).toBe(5);
   });
 });

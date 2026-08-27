@@ -32,11 +32,18 @@ function passRuns(): RunScore[] {
         variant,
         assertionsPassed: t.assertions.length,
         assertionsTotal: t.assertions.length,
+        repeat: 1,
+        structuralPassed: true,
+        intentPassed: true,
+        missingTerms: [],
+        advisoryInventions: [],
         blockedCorrectly: t.must_be_blocked,
         councilDegraded: false,
         inTokens: variant === 'single' ? 100 : 300,
         outTokens: variant === 'single' ? 50 : 150,
         calls: variant === 'single' ? 1 : 3,
+        attempts: variant === 'single' ? 1 : 3,
+        usageKnown: true,
       });
     }
   }
@@ -59,9 +66,13 @@ describe('renderGateReport — deterministic (mock) input', () => {
     expect(text).toContain('G3: ambiguous/conflicting tasks blocked: 8/8');
     expect(text).toContain('VERDICT: PASS_DETERMINISTIC_ONLY');
     expect(text).not.toContain('G4:');
-    // all 40 runs are tabulated
+    // PROD-003: structural vs intent-fidelity labels + mock scope notes
+    expect(text).toContain('structural passes: 40/40');
+    expect(text).toContain('intent-fidelity passes: 40/40');
+    expect(text).toContain('scripted plumbing');
+    // both tables tabulate every run: per-task outcomes + per-run rows
     expect(text).toContain('## Runs (40)');
-    expect(text.match(/^\| ET-/gm)).toHaveLength(40);
+    expect(text.match(/^\| ET-/gm)).toHaveLength(80);
   });
 
   it('is deterministic: identical input renders byte-identical text (no clock)', () => {
@@ -79,16 +90,17 @@ describe('renderGateReport — deterministic (mock) input', () => {
 
     const text = renderGateReport(input);
 
-    expect(text).toContain('degraded council legs: 1 (ET-13)');
-    // the run's own table row carries the degraded flag
+    expect(text).toContain('degraded council legs: 1 (ET-13 rep 1)');
+    // the run's own runs-table row carries the degraded flag (its 5th column
+    // is ok/FAIL — that distinguishes runs-table rows from per-task rows)
     const row = text
       .split('\n')
-      .find((l) => l.startsWith('| ET-13 | council |'))!;
+      .find((l) => /^\| ET-13 \| council \| 1 \| \d+\/\d+ \| ok \|/.test(l))!;
     expect(row).toMatch(/DEGRADED/);
     // untouched council rows are NOT flagged
     const okRow = text
       .split('\n')
-      .find((l) => l.startsWith('| ET-01 | council |'))!;
+      .find((l) => /^\| ET-01 \| council \| 1 \| \d+\/\d+ \| ok \|/.test(l))!;
     expect(okRow).not.toMatch(/DEGRADED/);
   });
 });
@@ -147,15 +159,17 @@ describe('renderGateReport — live input (G4)', () => {
     const sa = assertSum(input.runs, 'single', (r) => r.assertionsPassed);
     const cc = assertSum(input.runs, 'council', (r) => r.inTokens + r.outTokens);
     const sc = assertSum(input.runs, 'single', (r) => r.inTokens + r.outTokens);
-    expect(text).toContain(`G4: council assertions ${ca} > single ${sa}: pass`);
+    // PROD-003: the claim is labeled — computed over intent-fidelity-passing runs only
+    expect(text).toContain(`G4 (intent-fidelity-passing runs only): council assertions ${ca} > single ${sa}: pass`);
     expect(text).toContain(`council cost ${cc} <= 3x single cost ${sc}: pass`);
+    expect(text).toContain('faithful runs contributing: council 20, single 20');
     expect(text).toContain('VERDICT: PASS');
   });
 
   it('live + council assertions NOT greater (equal) → G4 fail line and verdict FAIL', () => {
     const input = liveInput(0);
     const text = renderGateReport(input);
-    expect(text).toMatch(/G4: council assertions \d+ > single \d+: fail/);
+    expect(text).toMatch(/G4 \(intent-fidelity-passing runs only\): council assertions \d+ > single \d+: fail/);
     expect(text).toContain('VERDICT: FAIL');
   });
 
@@ -302,5 +316,56 @@ describe('runEvalAll — mock e2e', () => {
 
   it('runs without a reportPath (report optional)', async () => {
     await expect(runEvalAll({ variant: 'mock' })).resolves.toBe('PASS_DETERMINISTIC_ONLY');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UX-003 (T11): unknown token usage is NOT zero — display + the G4 cost gate
+// ---------------------------------------------------------------------------
+
+describe('renderGateReport — unknown usage (UX-003)', () => {
+  it('a run with unknown usage renders "unknown" in the token cells, never 0', () => {
+    const input = passInput();
+    const unknownRun = input.runs.find((r) => r.taskId === 'ET-01' && r.variant === 'council')!;
+    unknownRun.usageKnown = false;
+
+    const text = renderGateReport(input);
+
+    // the RUNS-table row (5th column ok/FAIL), not the per-task summary row
+    const row = text.split('\n').find((l) => /^\| ET-01 \| council \| 1 \| \d+\/\d+ \| ok \|/.test(l))!;
+    expect(row).toContain('unknown');
+  });
+
+  it('live + any unknown-usage run → the G4 cost condition FAILS with a named reason (0 <= 3*0 is not evidence)', () => {
+    const input = passInput();
+    input.live = true;
+    input.runs[0]!.usageKnown = false; // one single run lacks provider usage
+
+    const text = renderGateReport(input);
+    expect(text).toContain('unknown usage');
+    expect(text).toContain('G4');
+    expect(text).toContain('VERDICT: FAIL');
+    // the named miss must say WHY unknown fails the cost half
+    const miss = text.split('\n').find((l) => l.startsWith('- G4: token cost not evaluable'));
+    expect(miss).toBeDefined();
+    expect(miss).toContain('not zero');
+  });
+
+  it('mock report: unknown usage does not affect the deterministic verdict (G4 is live-only)', () => {
+    const input = passInput();
+    input.runs[3]!.usageKnown = false;
+    const text = renderGateReport(input);
+    expect(text).toContain('VERDICT: PASS_DETERMINISTIC_ONLY');
+    expect(text).not.toContain('G4:');
+  });
+
+  it('the runs table carries the attempts column (UX-001: attempts ≠ completions)', () => {
+    const input = passInput();
+    input.runs[0]!.attempts = 4; // one completion, four HTTP attempts
+    const text = renderGateReport(input);
+    expect(text).toContain('| task | variant | rep | assertions | intent | blocked-correct | in-tokens | out-tokens | calls | attempts | council-leg |');
+    // the PER-RUN row (5th column ok/FAIL distinguishes it from the per-task summary)
+    const row = text.split('\n').find((l) => /^\| ET-01 \| single \| 1 \| \d+\/\d+ \| ok \|/.test(l))!;
+    expect(row).toMatch(/\| no \| 100 \| 50 \| 1 \| 4 \|/); // ET-01 is greenfield (blocked-correct no), calls 1, attempts 4
   });
 });

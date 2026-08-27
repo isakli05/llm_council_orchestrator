@@ -14,6 +14,13 @@ export interface LlmUsage {
 export interface LlmResponse {
   text: string;
   usage?: LlmUsage;
+  /**
+   * Transport attempts this completion took, INCLUDING retried/timed-out
+   * ones (UX-001: attempts are not completions). An adapter that sets this
+   * self-accounts its transport attempts against the run budget; an adapter
+   * that omits it is charged one attempt per complete() by the runner.
+   */
+  attempts?: number;
 }
 
 export interface LlmCompleteOptions {

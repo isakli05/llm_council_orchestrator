@@ -549,7 +549,7 @@ describe('runCli generate — argument handling', () => {
     expect(stdout()).toContain('11 in / 7 out tokens');
   });
 
-  it('default variant is council (3 LLM calls) and default profile is p-standard', async () => {
+  it('default variant is single (1 LLM call) and default profile is p-standard (UX-001 ruling)', async () => {
     stubEnv();
     const dir = makeTmp('spec-core-generate-defaults-');
 
@@ -557,13 +557,9 @@ describe('runCli generate — argument handling', () => {
     vi.stubGlobal(
       'fetch',
       async (_url: unknown, init?: { body?: string }): Promise<Response> => {
-        const n = bodies.push(String(init?.body)); // 1-based call number
-        const content =
-          n === 1
-            ? JSON.stringify({ profile: 'p-standard', must_be_blocked: false })
-            : JSON.stringify(pStandardBundle());
+        bodies.push(String(init?.body));
         return jsonResponse({
-          choices: [{ message: { content } }],
+          choices: [{ message: { content: JSON.stringify(pStandardBundle()) } }],
           usage: { prompt_tokens: 10, completion_tokens: 5 },
         });
       },
@@ -571,11 +567,12 @@ describe('runCli generate — argument handling', () => {
 
     await expect(runCli(['generate', dir, '--intent', 'a scheduler tool'])).resolves.toBe(0);
 
-    expect(bodies).toHaveLength(3); // council = classifier + proposal + judge
+    // single default: exactly ONE paid call; council is explicit (--variant council)
+    expect(bodies).toHaveLength(1);
     const firstPrompt = (JSON.parse(bodies[0]!) as { messages: { content: string }[] })
       .messages[0]!.content;
     expect(firstPrompt).toContain('EXPECTED COMPLEXITY PROFILE: p-standard');
-    expect(stdout()).toContain('council');
+    expect(stdout()).toContain('single');
   });
 
   it('--intent and --intent-file together → exit 2', async () => {
@@ -651,5 +648,350 @@ describe('runPipeline — widened task parameter (compatibility edge)', () => {
       NOW,
     );
     expect(out.kind).toBe('spec');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UX-004 (T11): intent preflight — bad invocation costs NOTHING
+// ---------------------------------------------------------------------------
+
+describe('runCli generate — intent preflight (UX-004)', () => {
+  function fetchSpy(): { calls: () => number } {
+    let n = 0;
+    vi.stubGlobal(
+      'fetch',
+      async (): Promise<Response> => {
+        n += 1;
+        return jsonResponse({ choices: [{ message: { content: 'x' } }] });
+      },
+    );
+    return { calls: () => n };
+  }
+
+  it('whitespace-only --intent → exit 2 with an actionable message, ZERO adapter HTTP calls', async () => {
+    stubEnv(); // live env fully faked — had an adapter been built, fetch would count
+    const dir = makeTmp('spec-core-generate-wsintent-');
+    const fetchMock = fetchSpy();
+
+    await expect(runCli(['generate', dir, '--intent', '   '])).resolves.toBe(2);
+    expect(stderr()).toContain('blank');
+    expect(fetchMock.calls()).toBe(0);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('oversized --intent (>10000 chars) → exit 2 pointing at --intent-file, ZERO adapter calls', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-bigintent-');
+    const fetchMock = fetchSpy();
+
+    await expect(
+      runCli(['generate', dir, '--intent', 'x'.repeat(10_001)]),
+    ).resolves.toBe(2);
+    expect(stderr()).toContain('--intent-file');
+    expect(fetchMock.calls()).toBe(0);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('--intent is normalized (trimmed) before reaching the pipeline — parity with --intent-file', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-trim-');
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      async (_url: unknown, init?: { body?: string }): Promise<Response> => {
+        bodies.push(String(init?.body));
+        return jsonResponse({
+          choices: [{ message: { content: JSON.stringify(pStandardBundle()) } }],
+          usage: { prompt_tokens: 3, completion_tokens: 2 },
+        });
+      },
+    );
+
+    await expect(
+      runCli(['generate', dir, '--intent', '  padded intent sentinel  ']),
+    ).resolves.toBe(0);
+    const sent = (JSON.parse(bodies[0]!) as { messages: { content: string }[] })
+      .messages[0]!.content;
+    expect(sent).toContain('padded intent sentinel');
+    expect(sent).not.toContain('  padded intent sentinel  '); // raw untrimmed never reaches the LLM
+  });
+
+  it('cmdGenerate preflights too (library/MCP edge): blank intent throws BEFORE adapter construction', async () => {
+    stubEnv({}); // blank env: createHttpLlm would throw the env error if reached
+    const dir = makeTmp('spec-core-generate-libpreflight-');
+    await expect(
+      cmdGenerate(dir, { intent: '   \t ', variant: 'single', profile: 'p-mini', nowIso: NOW }),
+    ).rejects.toThrow(/intent/);
+    await expect(
+      cmdGenerate(dir, { intent: '   \t ', variant: 'single', profile: 'p-mini', nowIso: NOW }),
+    ).rejects.not.toThrow(/live mode requires/); // the intent refusal wins — adapter never constructed
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UX-001 (T11): run budgets — attempts / tokens / wall, CLI flags + env
+// ---------------------------------------------------------------------------
+
+describe('cmdGenerate — run budgets (UX-001)', () => {
+  const classifier = JSON.stringify({ profile: 'p-mini', must_be_blocked: false });
+
+  it('opts.budget.maxAttempts=1 on council → BudgetExceededError aborts, NOTHING written', async () => {
+    const dir = makeTmp('spec-core-generate-budget-');
+    const { llm, calls } = makeLlm([classifier, JSON.stringify(validBundle())]);
+
+    await expect(
+      cmdGenerate(dir, {
+        intent: 'a small pet clinic scheduler',
+        variant: 'council',
+        profile: 'p-mini',
+        nowIso: NOW,
+        llm,
+        budget: { maxAttempts: 1 },
+      }),
+    ).rejects.toThrow(/BUDGET_EXCEEDED \(attempts\)/);
+    expect(calls()).toBe(1); // only the classifier completed before the abort
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('wall budget trips between calls via the injected clock', async () => {
+    const dir = makeTmp('spec-core-generate-wall-');
+    let fakeNow = 0;
+    let n = 0;
+    // each completion "takes" 2s of wall time; after the first call the 1s
+    // budget is blown and the runner's next checkWall aborts the run.
+    const llm: LlmAdapter = {
+      async complete(): Promise<LlmResponse> {
+        n += 1;
+        fakeNow += 2_000;
+        return {
+          text: n === 1 ? classifier : JSON.stringify(validBundle()),
+          usage: { in_tokens: 10, out_tokens: 5 },
+        };
+      },
+    };
+
+    await expect(
+      cmdGenerate(dir, {
+        intent: 'a small pet clinic scheduler',
+        variant: 'council',
+        profile: 'p-mini',
+        nowIso: NOW,
+        llm,
+        budget: { maxWallMs: 1_000 },
+        nowMs: () => fakeNow,
+      }),
+    ).rejects.toThrow(/BUDGET_EXCEEDED \(wall\)/);
+    expect(n).toBe(1);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('a wall budget without an injected clock is refused (cores never read the clock)', async () => {
+    const dir = makeTmp('spec-core-generate-nowallclock-');
+    const { llm } = makeLlm([classifier]);
+    await expect(
+      cmdGenerate(dir, {
+        intent: 'x',
+        variant: 'council',
+        profile: 'p-mini',
+        nowIso: NOW,
+        llm,
+        budget: { maxWallMs: 1_000 },
+      }),
+    ).rejects.toThrow(/nowMs/);
+  });
+
+  it('runCli maps the abort to exit 2 with the structured BUDGET_EXCEEDED message', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-budgetcli-');
+    vi.stubGlobal(
+      'fetch',
+      async (): Promise<Response> =>
+        jsonResponse({
+          choices: [{ message: { content: classifier } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+    );
+
+    // council with an attempts cap of 1: the classifier call consumes it,
+    // proposal A's charge aborts the run.
+    await expect(
+      runCli(['generate', dir, '--intent', 'x', '--variant', 'council', '--max-attempts', '1']),
+    ).resolves.toBe(2);
+    expect(stderr()).toContain('BUDGET_EXCEEDED (attempts)');
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('LCO_GENERATE_MAX_ATTEMPTS env override trips the same abort (flag-free path)', async () => {
+    stubEnv();
+    vi.stubEnv('LCO_GENERATE_MAX_ATTEMPTS', '1');
+    const dir = makeTmp('spec-core-generate-budgetenv-');
+    vi.stubGlobal(
+      'fetch',
+      async (): Promise<Response> =>
+        jsonResponse({
+          choices: [{ message: { content: classifier } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+    );
+
+    await expect(
+      runCli(['generate', dir, '--intent', 'x', '--variant', 'council']),
+    ).resolves.toBe(2);
+    expect(stderr()).toContain('BUDGET_EXCEEDED (attempts)');
+  });
+
+  it('invalid --max-attempts / env values are usage errors (exit 2, fail-closed)', async () => {
+    const dir = makeTmp('spec-core-generate-badbudget-');
+    await expect(
+      runCli(['generate', dir, '--intent', 'x', '--max-attempts', '0']),
+    ).resolves.toBe(2);
+    expect(stderr()).toContain('--max-attempts');
+
+    stubEnv();
+    vi.stubEnv('LCO_GENERATE_MAX_WALL_MS', 'abc');
+    await expect(runCli(['generate', dir, '--intent', 'x'])).resolves.toBe(2);
+    expect(stderr()).toContain('LCO_GENERATE_MAX_WALL_MS');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UX-003 (T11): unknown usage is reported as unknown — never as zero
+// ---------------------------------------------------------------------------
+
+describe('cmdGenerate — unknown usage summaries (UX-003)', () => {
+  it('provider reports no usage → spec summary says unknown tokens (not 0 in / 0 out)', async () => {
+    const dir = makeTmp('spec-core-generate-unknown-');
+    const llm: LlmAdapter = {
+      async complete(): Promise<LlmResponse> {
+        return { text: JSON.stringify(validBundle()) }; // no usage field
+      },
+    };
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('unknown');
+    expect(result.output).not.toMatch(/\b0 in \/ 0 out\b/);
+    expect(result.output).toContain('1 LLM call'); // call/attempt tally still shown
+  });
+
+  it('blocked summary with unknown usage also says unknown', async () => {
+    const dir = makeTmp('spec-core-generate-unknownblocked-');
+    const llm: LlmAdapter = {
+      async complete(): Promise<LlmResponse> {
+        return { text: JSON.stringify(unresolvedBundle()) }; // no usage
+      },
+    };
+
+    const result = await cmdGenerate(dir, {
+      intent: 'stock tool, database undecided',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('unknown');
+    expect(result.output).not.toMatch(/\b0 in \/ 0 out\b/);
+  });
+
+  it('known usage still renders the numeric in/out tally with attempts', async () => {
+    const dir = makeTmp('spec-core-generate-known-');
+    const { llm } = makeLlm([JSON.stringify(validBundle())]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'a small pet clinic scheduler',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('10 in / 5 out tokens');
+    expect(result.output).toContain('1 HTTP attempt'); // attempts distinguished from calls
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T11 review fix: --intent-file is the documented escape hatch for long
+// intents — trim + blank-only rejection applies, but NOT the inline 10k cap.
+// ---------------------------------------------------------------------------
+
+describe('runCli generate — intent-file length design (review fix)', () => {
+  /** A valid intent longer than the inline cap: the escape hatch must accept it. */
+  function longIntentFile(dir: string, chars: number): string {
+    const path = join(dir, `intent-${chars}.txt`);
+    const filler = 'with plain-text pages and strict evidence rules. ';
+    const head = 'build a small wiki engine INTENT-FILE-LONG-SENTINEL ';
+    const text = head + filler.repeat(Math.ceil((chars - head.length) / filler.length));
+    writeFileSync(path, text.slice(0, chars), 'utf8');
+    return path;
+  }
+
+  it('a >10k-char --intent-file with valid content is ACCEPTED (documented escape hatch)', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-longfile-');
+    const intentPath = longIntentFile(dir, 10_500);
+
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      async (_url: unknown, init?: { body?: string }): Promise<Response> => {
+        bodies.push(String(init?.body));
+        return jsonResponse({
+          choices: [{ message: { content: JSON.stringify(pStandardBundle()) } }],
+          usage: { prompt_tokens: 11, completion_tokens: 7 },
+        });
+      },
+    );
+
+    await expect(
+      runCli(['generate', dir, '--intent-file', intentPath, '--variant', 'single']),
+    ).resolves.toBe(0);
+    expect(bodies).toHaveLength(1);
+    const sent = (JSON.parse(bodies[0]!) as { messages: { content: string }[] })
+      .messages[0]!.content;
+    expect(sent).toContain('INTENT-FILE-LONG-SENTINEL'); // the long intent reached the pipeline
+    expect(existsSync(join(dir, 'spec', 'manifest.json'))).toBe(true);
+  });
+
+  it('whitespace-only --intent-file → exit 2, ZERO adapter calls (parity with inline)', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-wsfile-');
+    const intentPath = join(dir, 'blank.txt');
+    writeFileSync(intentPath, '   \n\t  \n', 'utf8');
+    let fetches = 0;
+    vi.stubGlobal(
+      'fetch',
+      async (): Promise<Response> => {
+        fetches += 1;
+        return jsonResponse({ choices: [{ message: { content: 'x' } }] });
+      },
+    );
+
+    await expect(runCli(['generate', dir, '--intent-file', intentPath])).resolves.toBe(2);
+    expect(stderr()).toContain('blank');
+    expect(fetches).toBe(0);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('a --intent-file over the 1,000,000-char sanity ceiling → exit 2 naming the ceiling', async () => {
+    stubEnv();
+    const dir = makeTmp('spec-core-generate-hugefile-');
+    const intentPath = longIntentFile(dir, 1_000_001);
+
+    await expect(runCli(['generate', dir, '--intent-file', intentPath])).resolves.toBe(2);
+    expect(stderr()).toContain('sanity ceiling');
+    expect(stderr()).toContain('1000000');
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
   });
 });

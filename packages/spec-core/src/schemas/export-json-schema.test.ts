@@ -23,4 +23,28 @@ describe('export-json-schema output contract', () => {
     const parsed = JSON.parse(readFileSync(GENERATED_PATH, 'utf8')) as { $ref?: string };
     expect(parsed.$ref).toBe('#/definitions/SpecBundle');
   });
+
+  it('generated/spec-schema.json is BYTE-EXACT with what build regenerates (TEST-002)', () => {
+    // Existence is not freshness: this is the release gate that makes a stale
+    // committed artifact fail locally AND in CI. The regeneration must use the
+    // exact serialization the exporter uses (JSON.stringify, 2-space, no
+    // trailing newline) so only real schema drift can differ.
+    const regenerated = JSON.stringify(
+      zodToJsonSchema(SpecBundleSchema as unknown as Parameters<typeof zodToJsonSchema>[0], 'SpecBundle'),
+      null,
+      2,
+    );
+    const committed = readFileSync(GENERATED_PATH, 'utf8');
+    if (committed !== regenerated) {
+      // Actionable failure: tell the developer exactly how to fix it.
+      throw new Error(
+        'generated/spec-schema.json is STALE — it does not byte-match the schema ' +
+          'built from current source (TEST-002). Regenerate and commit:\n' +
+          '  pnpm --filter ./packages/spec-core build\n' +
+          '  git add packages/spec-core/generated/spec-schema.json && git commit\n' +
+          `(committed ${committed.length} bytes, expected ${regenerated.length} bytes)`,
+      );
+    }
+    expect(committed).toBe(regenerated);
+  });
 });

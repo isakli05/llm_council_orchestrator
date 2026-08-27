@@ -1,6 +1,6 @@
 # lco-spec — local-first spec compiler (LLM Council Orchestrator monorepo)
 
-[![CI](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml)
+[![ci-spec-core](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-workspace-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
@@ -14,7 +14,11 @@ cores:
 - **`lco`** — a 10-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
   `trace`, `plan`, `init`, `check`, `generate` (`lco --help` for usage,
   `lco <command> --help` per command)
-- **`lco-mcp`** — a stdio MCP server exposing 7 tools (`lco_compile` … `lco_check`)
+- **`lco-mcp`** — a stdio MCP server exposing 10 tools (`lco_compile` … `lco_change`).
+  The generation and execution tools are consent-gated env opt-ins — off unless
+  the server starts with `LCO_MCP_ALLOW_GENERATE=1` / `LCO_MCP_ALLOW_EXEC=1`;
+  `lco_generate` is a **paid** LLM call. Trust boundary:
+  [packages/spec-core/README.md](packages/spec-core/README.md).
 
 Everything except `generate` (and live eval runs) is local and deterministic — no
 API keys required.
@@ -75,10 +79,15 @@ OpenAI-compatible endpoint and **fail closed** unless these are set explicitly:
 | `LCO_LLM_MAX_TOKENS` | no | Positive-integer generation cap |
 | `LCO_LLM_EXTRA_BODY` | no | JSON object merged last into the request body |
 
-## CI
+## CI (spec-core only)
 
-The [`ci`](.github/workflows/ci.yml) workflow builds, lints, and tests
-`packages/spec-core` on Node 22 and 24 (badge above).
+The [`ci-spec-core`](.github/workflows/ci.yml) workflow gates **`packages/spec-core`
+only** on Node 22 and 24 (badge above) — root build/test remain intentionally
+broken (legacy is archived). Gates per Node version: self-cleaning build,
+generated-schema freshness (regenerate + fail on `git status --porcelain`
+inside `packages/spec-core/generated/`), lint, full test suite, and a
+packed-install smoke (`npm pack` → install tarball → `lco init` → `lco-mcp`
+handshake).
 
 ## Repository layout
 
@@ -98,11 +107,17 @@ council system (discovery, indexing, role-based analysis, synthesis). It predate
 the spec-core pivot and is kept only as source history:
 
 - **Broken by design.** Not maintained, and not expected to build or pass tests.
-  The former Docker quick start and per-service startup instructions were removed
-  from this README because the images' entrypoints reference scripts that no
-  longer exist.
-- **The root `pnpm build` / `pnpm test` are intentionally broken** after the
-  pivot — do not run them; use the PATH-filtered spec-core commands above.
+  The former Docker quick start, per-service Dockerfiles, compose files
+  (`docker-compose*.yml`), and the legacy `.env.example` were **removed** from
+  the repo (2026-08, ARCH-001): the images' entrypoints referenced scripts and
+  `dist/` files that do not exist, and the env file documented only the dead
+  services. Git history preserves them.
+- **The root offers no legacy targets.** Root `package.json` scripts were cut to
+  a single scoped alias, `pnpm test:spec`; `pnpm build` / `pnpm test` at the
+  root fail by design — use the PATH-filtered spec-core commands above.
+- Each archived directory carries an `ARCHIVED.md` label, and
+  [docs/legacy-salvage-list.md](docs/legacy-salvage-list.md) records the
+  per-subsystem go/no-go extraction verdicts (zero GO).
 - The provider variables this README used to document (`OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`, `INDEXER_*`, `EMBEDDING_*`, …) belonged to those archived
   services. lco-spec's real environment contract is the `LCO_LLM_*` table above.
