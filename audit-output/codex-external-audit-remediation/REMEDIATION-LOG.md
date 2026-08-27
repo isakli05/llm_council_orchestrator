@@ -14,6 +14,31 @@
 > **1231/1231 test, 0 skip** (75 dosya; 576→1231) · packed-install smoke 0
 > · test:coverage 0 (eşikler 91/89/96/91) · install --frozen-lockfile 0.
 >
+> ## ══ U4 KAPANDI — npm Trusted Publishing mimarisi (2026-08-27) ══
+>
+> 1. **Bootstrap yayın:** lco-spec@0.1.0, sahibin kimlik doğrulaması yapılmış
+>    yerel npm CLI oturumundan bir kez yayınlandı (etkileşimli WebAuthn
+>    güvenlik-anahtarı 2FA onayı — kullanıcı tarafından onaylandı; OTP/TOTP
+>    istenmedi, token oluşturulmadı). Dirty-publish kapısı ilk denemede
+>    doğru şekilde diretti (12 izlenmeyen kanıt dosyası) → kanıtlar
+>    commit'lendi (e0f7675), etiket yeni HEAD'e taşındı, yayın tamamlandı.
+> 2. **Kayıt doğrulaması:** npm view lco-spec → 0.1.0; dist-tags
+>    {latest: 0.1.0}; repository birebir; dist.shasum e173deaf924d… =
+>    CI dry-run paketiyle bayt-bayt aynı.
+> 3. **Trusted Publishing:** `npm trust github lco-spec --repo
+>    isakli05/llm_council_orchestrator --file publish.yml --allow-publish`
+>    → id 39815b83-339e-434e-8256-b274d7048a38, permissions: publish;
+>    `npm trust list` ile doğrulandı.
+> 4. **Workflow göçü (11cdd89):** publish.yml NODE_AUTH_TOKEN hattından
+>    arındı; OIDC değişimi (id-token: write + npm@^11.15 kurulum adımı);
+>    TÜM kapılar korunur (yalnız dispatch, dry_run varsayılan true, tam
+>    build/lint/test/smoke + freshness + readiness + sürüm eşleşmesi,
+>    provenance). Depoda npm sırrı YOK, oluşturulmadı.
+> 5. **Doğrulama:** göç push'u uzak CI'da yeşil (run 33073873397: Node 22
+>    44s ✓ + Node 24 36s ✓). 0.1.0 yeniden yayınlanMADI (npm sürümleri
+>    değişmez); ilk uçtan-uca OIDC yayını tasarım gereği bir sonraki
+>    sürümde doğal olarak gerçekleşir.
+>
 > Plan: plans/2026-08-26-codex-remediation.md · Süreç defteri:
 > .superpowers/sdd/2026-08-26-codex-remediation/progress.md (ruling'ler +
 > program-sonrası backlog kayıtlı). Bekleyen kullanıcı kapıları: U1/U2/U3/U4
@@ -26,7 +51,7 @@ güncellenir; "geçti görünüyor" yasak — koşuldu/koşulmadı kanıtı zoru
 | ID | Önem | Durum | Kalem | Commit | Test kanıtı | Not |
 |---|---|---|---|---|---|---|
 | PROD-001 | BLOCKER | FIXED | T2 | 8173842 | bin-contract.test.ts (2 test, RED→GREEN); smoke:packed exit 0; npm pack --json mode 493 ×2 (denetleyici doğruladı) | 578/578 yeşil; smoke gerçek POSIX exec + MCP handshake |
-| SEC-001 | HIGH | USER-GATED | T1 | 9ee0f2c | taahhüt ağacı değer taraması 0 vuruş (süreç-içi); guard tam-dosya incelemesi | Depo tarafı FIXED; U1 rotasyon + U2 purge kullanıcı eylemi bekliyor — runbooklar: U1-KEY-ROTATION.md, U2-HISTORY-PURGE.md |
+| SEC-001 | HIGH | USER-GATED | T1 | 9ee0f2c | taahhüt ağacı değer taraması 0 vuruş (süreç-içi); guard tam-dosya incelemesi | U2 purge YÜRÜTÜLDÜ (2026-08-27): filter-repo replace-text — pickaxe 0 + tüm-rev grep 0; main+4 dal force-push; yedek /tmp/lco-pre-purge.bundle. Kalan TEK kullanıcı eylemi: U1 rotasyon (sağlayıcı anahtarı hâlâ geçerli olabilir — U1-KEY-ROTATION.md) |
 | BACK-001 | HIGH | FIXED | T5 | 8684293 | +18 test RED→GREEN (654/654): blocked+temiz final→blocked; retry UNRESOLVED düşürürse RESOLUTION_MISSING (ID adlı); ekleme/koruma yasal | Zorlama gate kodunda (prompt değil); classifier kanıtı gatedBundle sonrası her yolda |
 | BACK-002 | HIGH | FIXED | T4 | 5d5df34 | +49 lifecycle testi (636/636); 4 denetim senaryosu RED(17 fail)→GREEN çoklu katmanda sabit; e2e: drift'li re-freeze repin YOK | Geçiş tablosu lifecycle.ts'te veri; freeze/changeset/L08/generate tek kapı; blocked çift yönlü kapatıldı |
 | DATA-001 | HIGH | FIXED | T6 | 0cd1d16+eaf3382 | 677/677 (+23 RED-first): eşzamanlı init tek-başarı (8+ koşum stabil); tasks.json yazılamaz → bayt-özdeş + retry; lint-geçersiz change → disk değişmez; stale-lock; MID-WRITE-SIM kalıntısız bayt-özdeşlik (fix turu: temp kaydı yazımdan önce + kilit tarafı ikizi) | src/storage/revision.ts: O_EXCL kilit (pid+inject'li zaman, 10s stale-break), temp+fsync+rename, hardlink yedek + inode-özdeş rollback, manifest-en-son; kilit asla ücretli çağrı span etmez |
