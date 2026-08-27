@@ -1,0 +1,15 @@
+{
+  "task_id": "TASK-0002",
+  "checkedAt": "2026-08-25T23:34:57.825Z",
+  "checks": [
+    {
+      "command": "node --version",
+      "expect": "exit 0",
+      "expectedExit": 0,
+      "actualExit": 0,
+      "status": "PASS",
+      "durationMs": 5,
+      "outputTail": "v24.14.0\n"
+    }
+  ]
+}

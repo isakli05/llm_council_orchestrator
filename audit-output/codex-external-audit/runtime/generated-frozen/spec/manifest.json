@@ -1,0 +1,25 @@
+{
+  "spec_schema": "lco-spec/1.0",
+  "spec_version": 1,
+  "project": {
+    "name": "pet-clinic",
+    "mode": "greenfield"
+  },
+  "complexity_profile": "p-mini",
+  "evidence_snapshot": {
+    "pack_hash": "sha256:63807748e652109db6d0437193f186abdec9dec31982b1c195eb318431bde88d",
+    "collected_at": "2026-08-18T09:00:00Z"
+  },
+  "state": "frozen",
+  "council_run": {
+    "run_id": "run-petclinic-0001",
+    "config_fingerprint": "cfg-a1b2c3d4"
+  },
+  "artifact_hashes": {},
+  "unresolved_count": 0,
+  "blocking_count": 0,
+  "target_runtime": {
+    "platform": "node",
+    "stack": "typescript"
+  }
+}

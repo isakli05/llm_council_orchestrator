@@ -1,0 +1,20 @@
+[
+  {
+    "claim_id": "DEC-0001",
+    "decision": "Persist clinic data in SQLite behind a repository interface.",
+    "rationale": "A single clinic needs zero-ops storage; the repository interface keeps a later migration to Postgres open.",
+    "evidence": [
+      "E-0001"
+    ],
+    "confidence": 0.8,
+    "impact": "medium",
+    "assumptions": [],
+    "alternatives": [
+      {
+        "option": "Postgres from day one",
+        "rejected_because": "No operations staff to run a server at the clinic."
+      }
+    ],
+    "status": "accepted"
+  }
+]

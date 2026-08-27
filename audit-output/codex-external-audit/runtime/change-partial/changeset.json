@@ -1,0 +1,12 @@
+{
+  "id": "CP-9001",
+  "rationale": "Audit partial-write probe",
+  "modified_tasks": [
+    {
+      "task_id": "TASK-0001",
+      "patch": {
+        "title": "Changed title"
+      }
+    }
+  ]
+}

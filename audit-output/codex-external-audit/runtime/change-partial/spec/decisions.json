@@ -1,0 +1,15 @@
+[
+  {
+    "claim_id": "DEC-0001",
+    "decision": "EXAMPLE decision — replace with your own",
+    "rationale": "Scaffold example",
+    "evidence": [
+      "E-0001"
+    ],
+    "confidence": 0.5,
+    "impact": "low",
+    "assumptions": [],
+    "alternatives": [],
+    "status": "accepted"
+  }
+]

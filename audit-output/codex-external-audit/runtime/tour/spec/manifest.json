@@ -1,0 +1,34 @@
+{
+  "spec_schema": "lco-spec/1.0",
+  "spec_version": 2,
+  "project": {
+    "name": "tour-app",
+    "mode": "greenfield"
+  },
+  "complexity_profile": "p-standard",
+  "evidence_snapshot": {
+    "pack_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "collected_at": "2026-08-25T23:34:52.797Z"
+  },
+  "state": "draft",
+  "council_run": {
+    "run_id": "manual",
+    "config_fingerprint": "manual"
+  },
+  "artifact_hashes": {
+    "intent": "sha256:74c2188ebd85a3bff5a929ac9c4ece7318ae111055b67588cfc7885695656c80",
+    "glossary": "sha256:d6271478b54c0288370fe0e1a71a2b19d2b4fb49157f7601a7070596e8455961",
+    "assumptions": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "evidence": "sha256:be885f48007ce6ac96b0901e1aee37b41da539444a1375f5aac77b89b2f14141",
+    "requirements": "sha256:37f8ae32b11e15ec7378d8b305e99d0f722fac270006a7dccf6520e20d2781d1",
+    "decisions": "sha256:04da02f0a80cc4530fb19450d16df1927a53eefcd962f91fd935c12533f77395",
+    "contracts": "sha256:3da59788cb4c91df0a299c69c7a3271cbb3ae2269ba4415ee77fcbdf53199bb8",
+    "tasks": "sha256:c62e7e9b35984d2cd69a8f9383aca4bf3827238a3f98fefd8266993c56b970d4"
+  },
+  "unresolved_count": 0,
+  "blocking_count": 0,
+  "target_runtime": {
+    "platform": "unspecified",
+    "stack": "unspecified"
+  }
+}

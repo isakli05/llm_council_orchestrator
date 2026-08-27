@@ -1,0 +1,25 @@
+{
+  "spec_schema": "lco-spec/1.0",
+  "spec_version": 1,
+  "project": {
+    "name": "beta",
+    "mode": "greenfield"
+  },
+  "complexity_profile": "p-mini",
+  "evidence_snapshot": {
+    "pack_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "collected_at": "2026-08-25T23:38:22.526Z"
+  },
+  "state": "draft",
+  "council_run": {
+    "run_id": "manual",
+    "config_fingerprint": "manual"
+  },
+  "artifact_hashes": {},
+  "unresolved_count": 0,
+  "blocking_count": 0,
+  "target_runtime": {
+    "platform": "unspecified",
+    "stack": "unspecified"
+  }
+}}

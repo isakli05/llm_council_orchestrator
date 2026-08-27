@@ -1,0 +1,8 @@
+[
+  {
+    "id": "CON-0001",
+    "kind": "ts-signature",
+    "symbol": "exampleApi(): void",
+    "definition": "EXAMPLE contract — replace with your own"
+  }
+]

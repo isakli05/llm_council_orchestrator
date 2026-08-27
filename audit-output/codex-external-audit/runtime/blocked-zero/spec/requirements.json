@@ -1,0 +1,45 @@
+[
+  {
+    "id": "REQ-0001",
+    "statement": "The system shall let an **Owner** book, reschedule, and cancel an **Appointment**.",
+    "priority": "must",
+    "evidence": [
+      "E-0001"
+    ],
+    "acceptance_refs": [
+      "TST-0001"
+    ],
+    "terms_used": [
+      "Owner",
+      "Appointment"
+    ]
+  },
+  {
+    "id": "REQ-0002",
+    "statement": "The system shall store **Owner** contact details together with a change history.",
+    "priority": "must",
+    "evidence": [
+      "E-0001"
+    ],
+    "acceptance_refs": [
+      "TST-0002"
+    ],
+    "terms_used": [
+      "Owner"
+    ]
+  },
+  {
+    "id": "REQ-0003",
+    "statement": "The system shall show a reminder when a **Vaccination Record** is overdue.",
+    "priority": "must",
+    "evidence": [
+      "E-0001"
+    ],
+    "acceptance_refs": [
+      "TST-0003"
+    ],
+    "terms_used": [
+      "Vaccination Record"
+    ]
+  }
+]

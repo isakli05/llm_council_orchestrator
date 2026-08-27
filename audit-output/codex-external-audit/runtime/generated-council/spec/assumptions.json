@@ -1,0 +1,10 @@
+[
+  {
+    "id": "AS-0001",
+    "statement": "The clinic runs a single location, so no multi-tenancy is required.",
+    "evidence": [
+      "E-0001"
+    ],
+    "impact_if_wrong": "Every entity would need tenant scoping and access checks."
+  }
+]

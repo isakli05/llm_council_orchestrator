@@ -1,0 +1,14 @@
+[
+  {
+    "term": "Owner",
+    "definition": "A person registered with the clinic who holds one or more pets."
+  },
+  {
+    "term": "Appointment",
+    "definition": "A booked time slot between an Owner and the clinic."
+  },
+  {
+    "term": "Vaccination Record",
+    "definition": "A dated entry tracking one vaccine administered to a pet."
+  }
+]

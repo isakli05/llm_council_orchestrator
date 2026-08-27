@@ -1,0 +1,16 @@
+[
+  {
+    "id": "REQ-0001",
+    "statement": "EXAMPLE requirement — replace with your own",
+    "priority": "must",
+    "evidence": [
+      "E-0001"
+    ],
+    "acceptance_refs": [
+      "TST-0001"
+    ],
+    "terms_used": [
+      "ExampleTerm"
+    ]
+  }
+]

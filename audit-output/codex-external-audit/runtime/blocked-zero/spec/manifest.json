@@ -1,0 +1,35 @@
+{
+  "spec_schema": "lco-spec/1.0",
+  "spec_version": 1,
+  "project": {
+    "name": "pet-clinic",
+    "mode": "greenfield"
+  },
+  "complexity_profile": "p-mini",
+  "evidence_snapshot": {
+    "pack_hash": "sha256:63807748e652109db6d0437193f186abdec9dec31982b1c195eb318431bde88d",
+    "collected_at": "2026-08-18T09:00:00Z"
+  },
+  "state": "frozen",
+  "council_run": {
+    "run_id": "run-petclinic-0001",
+    "config_fingerprint": "cfg-a1b2c3d4"
+  },
+  "artifact_hashes": {
+    "intent": "sha256:7bf0cdefc5da6590331f9ac0b17af73b8293563521e75ce682a0803f9de8b044",
+    "glossary": "sha256:abcefd4cadb88ce4a8850285fe15b76b766577021c75a166510bb2822c9938f4",
+    "assumptions": "sha256:b189a1c2a2e046f044d09072e97fcd1b8f0b75e024d9e3285bd7bbfe84a36028",
+    "evidence": "sha256:401aaa50c57a123115b0b905396a61d60ffe41f1d01bbb58f51b56089bc810c7",
+    "requirements": "sha256:68258f94e4c1dbd4061a9abb95b80d06dd54102fc5cd0b7b6079750200a815dc",
+    "decisions": "sha256:f75a254fdd828591881a6ee06d0814119e4c84cca29479401eb666216076d4b3",
+    "contracts": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "tasks": "sha256:51bed38c76b622c5cd0f2ff5fb8fe0a80c5ef9f3a0727ce76a526c997ece9254"
+  },
+  "unresolved_count": 0,
+  "blocking_count": 0,
+  "target_runtime": {
+    "platform": "node",
+    "stack": "typescript"
+  },
+  "frozen_at": "2026-08-25T23:37:15.018Z"
+}

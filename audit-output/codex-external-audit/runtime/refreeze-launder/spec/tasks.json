@@ -1,0 +1,58 @@
+[
+  {
+    "task_id": "TASK-0001",
+    "title": "Tampered while frozen",
+    "purpose": "Scaffold example",
+    "refs": {
+      "requirements": [
+        "REQ-0001"
+      ],
+      "architecture": [],
+      "decisions": [
+        "DEC-0001"
+      ]
+    },
+    "depends_on": [],
+    "preconditions": [
+      "Spec scaffold initialized"
+    ],
+    "permitted_scope": [
+      "src/**"
+    ],
+    "protected": [],
+    "interface_changes": [],
+    "invariants": [
+      "EXAMPLE invariant — replace with your own"
+    ],
+    "instructions": "EXAMPLE instructions — replace with real implementation guidance",
+    "tests": [
+      {
+        "kind": "unit",
+        "file": "example.test.ts",
+        "cases": [
+          "REQ-0001: example behavior"
+        ]
+      }
+    ],
+    "verification": [
+      {
+        "command": "node --version",
+        "expect": "exit 0"
+      }
+    ],
+    "acceptance": [
+      "EXAMPLE acceptance criterion"
+    ],
+    "rollback": "git revert the task commit",
+    "completion_evidence": {
+      "required": [
+        "test_summary"
+      ]
+    },
+    "risk": {
+      "level": "low",
+      "note": "Scaffold"
+    },
+    "complexity": "xs"
+  }
+]
