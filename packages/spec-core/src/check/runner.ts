@@ -161,6 +161,32 @@ export const GROUP_KILL_GRACE_MS = 400;
 /** How often group teardown polls for the group to die. */
 const GROUP_KILL_POLL_MS = 25;
 
+// --- active-group registry (OPS-001 shutdown containment) ---------------------------
+//
+// The MCP server tracks in-flight REQUESTS, but a request may currently be
+// running verification commands through this executor. If the server must
+// exit while such work is still in flight (drain timeout after the client
+// vanished), its own timeout timers die with the process — the registry lets
+// the exit path SIGKILL every still-running group so no descendant outlives
+// the abandoned session. Groups register at spawn and unregister when the
+// executor resolves (by the SEC-005 invariant, resolution ⇒ group dead).
+
+const activeProcessGroups = new Set<number>();
+
+/** SIGKILL (or `sig`) every still-registered process group; returns how many. */
+export function killActiveProcessGroups(sig: NodeJS.Signals = 'SIGKILL'): number {
+  let killed = 0;
+  for (const pgid of [...activeProcessGroups]) {
+    try {
+      process.kill(-pgid, sig);
+      killed += 1;
+    } catch {
+      // ESRCH etc.: the group is already gone — nothing to signal.
+    }
+  }
+  return killed;
+}
+
 export interface ProcessGroupExecOptions {
   cwd: string;
   timeoutMs: number;
@@ -232,6 +258,7 @@ export function execInProcessGroup(
     }
 
     const pgid = child.pid;
+    if (pgid !== undefined) activeProcessGroups.add(pgid);
     let out = '';
     let errText = '';
     let exitCode: number | null = null;
@@ -331,6 +358,7 @@ export function execInProcessGroup(
     function settle(): void {
       if (settled || !teardownDone || !streamsClosed) return;
       settled = true;
+      if (pgid !== undefined) activeProcessGroups.delete(pgid);
       const combined = `${out}${errText}`;
       if (spawnFailed) {
         resolve({ exit: null, stdout: combined, timedOut: false });

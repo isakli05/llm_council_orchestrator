@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { createInterface } from 'node:readline';
 import { cmdCompile } from '../cli/commands/compile';
 import { cmdLint } from '../cli/commands/lint';
 import { cmdFreeze } from '../cli/commands/freeze';
@@ -67,7 +66,8 @@ import type { LlmAdapter } from '../eval/llm/adapter';
  *
  * Structure: `handleRpcLine` is the testable core (line in -> response line
  * out, or null for notifications); the `require.main` block is the bin wiring
- * (readline over stdin, write responses to stdout).
+ * (the OPS-001 stdio session from ./stdio over stdin/stdout: frame cap,
+ * in-flight cap, stdout backpressure, graceful EPIPE shutdown).
  */
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -466,6 +466,122 @@ function errorResponse(id: JsonRpcId, code: number, message: string): string {
   return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } });
 }
 
+// --- SEC-006: the full JSON-RPC 2.0 envelope gate ------------------------------------
+//
+// The audit confirmed the server dispatched nonconformant envelopes: a "1.0"
+// runtime version was accepted, an OBJECT id was echoed back (response
+// amplification), and params shape / unknown fields / batches were never
+// considered. The gate below runs BEFORE any dispatch decision. Rules:
+//
+//   jsonrpc  MUST be exactly the string "2.0"
+//   method   MUST be a non-empty string
+//   id       if present MUST be string | number | null (spec-legal, though
+//            discouraged); an invalid id is NEVER echoed — the error response
+//            carries id null (JSON-RPC 2.0 §5.1's id-detection rule)
+//   params   if present MUST be a plain object (MCP is named-parameters only;
+//            positional arrays are refused)
+//   fields   exactly jsonrpc/id/method/params — unknown keys are refused
+//            (the same strictness policy the tool schemas already hold)
+//   batches  a JSON array body is refused with ONE invalid-request error —
+//            this server is single-request-per-line by design (documented
+//            no-batch stance, MCP-over-stdio needs no batches)
+//
+// An INVALID envelope always gets an error response (id null when the id is
+// unusable); silence is reserved for VALID notifications only.
+
+/** Envelope fields a JSON-RPC 2.0 request may carry — nothing else. */
+const ENVELOPE_KEYS: ReadonlySet<string> = new Set(['jsonrpc', 'id', 'method', 'params']);
+
+/** JSON-RPC 2.0 id domain: string, number, or null (never object/array/bool). */
+export function isJsonRpcId(v: unknown): v is JsonRpcId {
+  return typeof v === 'string' || typeof v === 'number' || v === null;
+}
+
+/** A plain object check shared by the envelope gate and the argument layer. */
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Validate one parsed line as a JSON-RPC 2.0 request envelope (SEC-006).
+ * Pure: no dispatch, no IO. `ok:false` carries the id the error response
+ * should use — the request's own id when it is legal, else null.
+ */
+export function validateJsonRpcEnvelope(
+  msg: unknown,
+):
+  | { ok: true; hasId: boolean; id: JsonRpcId; method: string; params?: unknown }
+  | { ok: false; id: JsonRpcId; code: number; message: string } {
+  if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
+    return {
+      ok: false,
+      id: null,
+      code: -32600,
+      message: Array.isArray(msg)
+        ? 'Invalid Request: batch requests are not supported — one JSON-RPC object per line'
+        : 'Invalid Request: expected a JSON-RPC 2.0 request object',
+    };
+  }
+  const req = msg as Record<string, unknown>;
+  const hasId = 'id' in req;
+  const rawId = req.id;
+  // Echo the request's id ONLY when it is a legal id; anything else (objects,
+  // arrays, booleans) must never be reflected into a response.
+  const echoId: JsonRpcId = hasId && isJsonRpcId(rawId) ? rawId : null;
+
+  if (req.jsonrpc !== '2.0') {
+    return {
+      ok: false,
+      id: echoId,
+      code: -32600,
+      message: `Invalid Request: jsonrpc must be exactly "2.0" (got ${JSON.stringify(
+        req.jsonrpc,
+      )})`,
+    };
+  }
+  for (const key of Object.keys(req)) {
+    if (!ENVELOPE_KEYS.has(key)) {
+      return {
+        ok: false,
+        id: echoId,
+        code: -32600,
+        message: `Invalid Request: unknown envelope field '${key}' (allowed: jsonrpc, id, method, params)`,
+      };
+    }
+  }
+  if (hasId && !isJsonRpcId(rawId)) {
+    return {
+      ok: false,
+      id: null,
+      code: -32600,
+      message: 'Invalid Request: id must be a string, a number, or null',
+    };
+  }
+  if (typeof req.method !== 'string' || req.method === '') {
+    return {
+      ok: false,
+      id: echoId,
+      code: -32600,
+      message: 'Invalid Request: method must be a non-empty string',
+    };
+  }
+  if (req.params !== undefined && !isPlainObject(req.params)) {
+    return {
+      ok: false,
+      id: echoId,
+      code: -32600,
+      message: 'Invalid Request: params must be an object (named parameters only; batches and positional params are not supported)',
+    };
+  }
+  return {
+    ok: true,
+    hasId,
+    id: hasId ? (rawId as JsonRpcId) : null,
+    method: req.method,
+    params: req.params,
+  };
+}
+
 /** Per-call server-boundary options for {@link handleRpcLine} (tests inject these). */
 export interface HandleRpcOptions {
   /** Overrides the env-derived execution opt-in (LCO_MCP_ALLOW_EXEC). */
@@ -509,26 +625,24 @@ export async function handleRpcLine(
   } catch {
     return errorResponse(null, -32700, 'Parse error: line is not valid JSON');
   }
-  if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
-    return errorResponse(null, -32600, 'Invalid Request: expected a JSON-RPC 2.0 request object');
+  // SEC-006: the FULL envelope is validated before any dispatch decision —
+  // jsonrpc version, id domain, params shape, unknown fields, batches. An
+  // invalid envelope gets an error response (id null when the id is
+  // unusable); only a VALID notification is silent.
+  const envelope = validateJsonRpcEnvelope(msg);
+  if (!envelope.ok) {
+    return errorResponse(envelope.id, envelope.code, envelope.message);
   }
-  const req = msg as { id?: unknown; method?: unknown };
-  const hasId = 'id' in req;
-  const id = hasId ? (req.id as JsonRpcId) : null;
-
-  if (typeof req.method !== 'string' || req.method === '') {
-    // Malformed requests are only answered when they carry an id.
-    return hasId ? errorResponse(id, -32600, 'Invalid Request: missing method') : null;
-  }
+  const { hasId, id, method } = envelope;
 
   // Notifications never get a response — by protocol when they lack an id,
   // and by convention for the whole notifications/* namespace (initialize
   // handshake messages arrive both ways depending on the client).
-  if (!hasId || req.method.startsWith('notifications/')) {
+  if (!hasId || method.startsWith('notifications/')) {
     return null;
   }
 
-  switch (req.method) {
+  switch (method) {
     case 'initialize':
       return resultResponse(id, {
         protocolVersion: PROTOCOL_VERSION,
@@ -544,9 +658,13 @@ export async function handleRpcLine(
         })),
       });
     case 'tools/call':
-      return handleToolsCall(req as { id: JsonRpcId; params?: unknown }, id, options);
+      return handleToolsCall(
+        { id, params: envelope.params },
+        id,
+        options,
+      );
     default:
-      return errorResponse(id, -32601, `Method not found: ${req.method}`);
+      return errorResponse(id, -32601, `Method not found: ${method}`);
   }
 }
 
@@ -768,39 +886,19 @@ function parseToolInput(
   return { ok: true, value };
 }
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
 // --- bin wiring (`lco-mcp` -> dist/mcp/server.js) -----------------------------------
 //
 // Guarded so importing handleRpcLine (tests, library consumers) has no side
-// effects. readline splits stdin into lines; each line is handed to the RPC
-// core and only its non-null responses are written — one JSON.stringify per
+// effects. The stateful session (frame cap, in-flight cap, backpressure,
+// graceful shutdown — OPS-001) lives in ./stdio; it is required lazily HERE
+// so no module cycle exists for library importers. Only its non-null
+// JSON-RPC responses are ever written to stdout — one JSON.stringify per
 // response, one line each. EVERYTHING else (including the last-resort
 // rejection handler) goes to stderr.
 
 if (typeof require !== 'undefined' && require.main === module) {
-  // A client that dies closes our stdout mid-write: swallow EPIPE and exit
-  // quietly (an unhandled 'error' on the stdout socket would otherwise crash
-  // with a stack trace). Anything else is a real stream error — rethrow.
-  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EPIPE') process.exit(0);
-    throw err;
-  });
-
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  rl.on('line', (line: string) => {
-    const trimmed = line.trim();
-    if (trimmed === '') return; // ignore blank keepalive lines
-    void handleRpcLine(trimmed).then(
-      (response) => {
-        if (response !== null) process.stdout.write(`${response}\n`);
-      },
-      (err: unknown) => {
-        // handleRpcLine itself never rejects; this is a belt-and-braces guard.
-        console.error('lco-mcp: unhandled error while processing a line:', err);
-      },
-    );
-  });
+  // Lazy require: avoids a server.ts <-> stdio.ts import cycle at module
+  // load (stdio.ts imports handleRpcLine from here).
+  const { McpStdioServer } = require('./stdio') as typeof import('./stdio');
+  new McpStdioServer({ input: process.stdin, output: process.stdout }).start();
 }

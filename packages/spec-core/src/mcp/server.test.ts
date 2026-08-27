@@ -448,6 +448,114 @@ describe('handleRpcLine: protocol errors', () => {
   });
 });
 
+// --- SEC-006: full JSON-RPC 2.0 envelope validation (conformance battery) ----------
+//
+// The audit's confirmed defects were the RED cases here: a "1.0" runtime
+// version was ACCEPTED (and dispatched), an object id was ECHOED, and params /
+// unknown fields / batches were never considered. Every case below pins the
+// envelope gate BEFORE dispatch — a nonconformant envelope must never reach a
+// tool, and an invalid id must never be reflected back (amplification).
+
+describe('handleRpcLine: JSON-RPC 2.0 envelope conformance (SEC-006)', () => {
+  it('jsonrpc MUST be exactly "2.0": "1.0" is refused, never dispatched (-32600)', async () => {
+    const res = await rpc('{"jsonrpc":"1.0","id":1,"method":"initialize","params":{}}');
+    expect(res.id).toBe(1);
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('2.0');
+  });
+
+  it('missing jsonrpc field is refused (-32600), not silently treated as 2.0', async () => {
+    const res = await rpc('{"id":2,"method":"initialize","params":{}}');
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('jsonrpc');
+  });
+
+  it('jsonrpc as a NUMBER (2.0) is refused — the field is the string "2.0"', async () => {
+    const res = await rpc('{"jsonrpc":2.0,"id":3,"method":"tools/list"}');
+    expect(res.error.code).toBe(-32600);
+  });
+
+  it('OBJECT id is refused (-32600) and NEVER echoed: the response id is null', async () => {
+    const evil = { inject: 'amplify-me' };
+    const res = await rpc(
+      `{"jsonrpc":"2.0","id":${JSON.stringify(evil)},"method":"initialize","params":{}}`,
+    );
+    expect(res.error.code).toBe(-32600);
+    expect(res.id).toBeNull(); // the object is not echoed
+    expect(JSON.stringify(res)).not.toContain('amplify-me');
+  });
+
+  it('ARRAY id and BOOLEAN id are refused (-32600), id null, never echoed', async () => {
+    const arr = await rpc('{"jsonrpc":"2.0","id":[1,2],"method":"initialize","params":{}}');
+    expect(arr.error.code).toBe(-32600);
+    expect(arr.id).toBeNull();
+
+    const bool = await rpc('{"jsonrpc":"2.0","id":true,"method":"initialize","params":{}}');
+    expect(bool.error.code).toBe(-32600);
+    expect(bool.id).toBeNull();
+  });
+
+  it('valid id types pass the gate: string, integer, and explicit null are echoed', async () => {
+    const str = await rpc('{"jsonrpc":"2.0","id":"abc","method":"tools/list"}');
+    expect(str.id).toBe('abc');
+    expect(str.result).toBeTruthy();
+
+    const float = await rpc('{"jsonrpc":"2.0","id":1.5,"method":"tools/list"}');
+    expect(float.id).toBe(1.5);
+    expect(float.result).toBeTruthy();
+
+    const nil = await rpc('{"jsonrpc":"2.0","id":null,"method":"tools/list"}');
+    expect(nil.id).toBeNull();
+    expect(nil.result).toBeTruthy();
+  });
+
+  it('params must be an OBJECT when present (MCP named-parameters stance): array/string -> -32600', async () => {
+    const arr = await rpc('{"jsonrpc":"2.0","id":7,"method":"initialize","params":[1,2]}');
+    expect(arr.error.code).toBe(-32600);
+    expect(arr.error.message).toContain('params');
+
+    const str = await rpc('{"jsonrpc":"2.0","id":8,"method":"initialize","params":"x"}');
+    expect(str.error.code).toBe(-32600);
+  });
+
+  it('unknown top-level envelope fields are refused (-32600), never ignored', async () => {
+    const res = await rpc('{"jsonrpc":"2.0","id":9,"method":"initialize","params":{},"extra":1}');
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('extra');
+  });
+
+  it('batches are refused with a SINGLE invalid-request error naming the no-batch stance', async () => {
+    const res = await rpc(
+      '[{"jsonrpc":"2.0","id":1,"method":"initialize"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]',
+    );
+    expect(res.id).toBeNull();
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('batch');
+  });
+
+  it('invalid envelope WITHOUT an id still gets the id:null error (only VALID notifications are silent)', async () => {
+    // A notification (silent) requires a VALID envelope; this one has no method.
+    const res = await rpc('{"jsonrpc":"2.0","params":{}}');
+    expect(res.id).toBeNull();
+    expect(res.error.code).toBe(-32600);
+  });
+
+  it('a VALID notification stays silent — unknown method, no id -> null', async () => {
+    expect(await handleRpcLine('{"jsonrpc":"2.0","method":"resources/list"}')).toBeNull();
+  });
+
+  it('notifications/* WITH an id stays silent (documented convention, pinned)', async () => {
+    expect(
+      await handleRpcLine('{"jsonrpc":"2.0","id":5,"method":"notifications/initialized"}'),
+    ).toBeNull();
+  });
+
+  it('empty-string method with an id -> -32600', async () => {
+    const res = await rpc('{"jsonrpc":"2.0","id":11,"method":"","params":{}}');
+    expect(res.error.code).toBe(-32600);
+  });
+});
+
 // --- tools/call lco_init (PROD-004) --------------------------------------------------
 
 describe('handleRpcLine: lco_init', () => {
@@ -1597,6 +1705,99 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () =
     },
     30_000,
   );
+});
+
+// --- integration: OPS-001 graceful EPIPE over real stdio ---------------------------
+//
+// Spawn the BUILT server, start a REAL execution (consent chain, `sleep`)
+// and kill the client's read end mid-run. The server must: (1) keep serving
+// the in-flight mutation to completion (bounded drain), (2) exit NONZERO
+// (work/responses were abandoned mid-stream — never the old exit 0), (3)
+// leave every stdout line it did deliver complete and parseable (no torn
+// writes). A second scenario pins the fast path: EPIPE with nothing truly
+// in flight still exits nonzero.
+
+describe('integration: spawn dist/mcp/server.js — EPIPE (OPS-001)', () => {
+  it(
+    'client dies mid-check-execution: server waits for the work, then exits nonzero; delivered lines all parse',
+    async () => {
+      const serverJs = join(__dirname, '../../dist/mcp/server.js');
+      if (!existsSync(serverJs)) {
+        throw new Error('dist/mcp/server.js not found — run the build first (fail-closed)');
+      }
+      const root = makeSpecRoot(
+        inlineWithVerification([{ command: 'sleep 2', expect: 'exit 0' }]),
+      );
+      const frozen = await rpc(
+        `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+        { allowExec: true },
+      );
+      expect(frozen.result.isError).toBe(false);
+      const dry = await rpc(
+        `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify({ dir: root })}}}`,
+        { allowExec: true },
+      );
+      const digest = digestFromDry(dry.result.content[0].text);
+
+      const child = spawn(process.execPath, [serverJs], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, LCO_MCP_ALLOW_EXEC: '1' },
+      });
+      const delivered: Buffer[] = [];
+      child.stdout.on('data', (c: Buffer) => delivered.push(c));
+      child.stderr.on('data', () => {});
+      child.stdin.write(
+        `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify(
+          { dir: root, consent: { digest } },
+        )}}}\n`,
+      );
+      // The execution is now in flight (the sleep runs ~2s). Kill the read
+      // end of the server's stdout — its response write will EPIPE.
+      child.stdout.destroy();
+
+      // The server must NOT exit while the check still runs (graceful drain),
+      // and must NOT exit 0 afterwards (work was abandoned mid-stream).
+      const exited = new Promise<number | null>((resolveExit) => {
+        child.on('close', (code: number | null) => resolveExit(code));
+      });
+      // At 0.7s the 2s sleep is still running: the process must still be alive.
+      await new Promise((r) => setTimeout(r, 700));
+      expect(child.exitCode).toBeNull(); // still draining in-flight work
+      expect(child.killed).toBe(false);
+
+      const code = await exited;
+      // The documented client-gone code: work was abandoned mid-stream.
+      expect(code).toBe(3); // EXIT_CLIENT_GONE — never the old silent 0
+      // No torn writes: every complete stdout line delivered before the pipe
+      // died parses as JSON-RPC.
+      const text = Buffer.concat(delivered).toString('utf8');
+      const lines = text.split('\n').filter((l) => l.trim() !== '');
+      for (const line of lines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+    },
+    30_000,
+  );
+
+  it('EPIPE with no work left: exits nonzero immediately (never the old silent 0)', async () => {
+    const serverJs = join(__dirname, '../../dist/mcp/server.js');
+    if (!existsSync(serverJs)) {
+      throw new Error('dist/mcp/server.js not found — run the build first (fail-closed)');
+    }
+    const child = spawn(process.execPath, [serverJs], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    child.stderr.on('data', () => {});
+    child.stdin.write('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n');
+    // Let the first response flush, then kill the read end; the response to
+    // the SECOND request writes into the dead pipe -> EPIPE -> nonzero exit.
+    await new Promise((r) => setTimeout(r, 300));
+    child.stdout.destroy();
+    child.stdin.write('{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
+    child.stdin.end();
+    const [code] = await once(child, 'close');
+    expect(code).toBe(3); // EXIT_CLIENT_GONE, immediately — nothing to drain
+  }, 15_000);
 });
 
 // --- integration: spawn with LCO_MCP_ALLOW_GENERATE=1 but NO LCO_LLM_* env ----------

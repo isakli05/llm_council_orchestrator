@@ -533,6 +533,69 @@ Notlar:
   executed; pass --yes to execute`. Bildirimler (`notifications/*`) yanıt almaz;
   bozuk satır `-32700` (id `null`); bilinmeyen araç `-32602`; bilinmeyen metod `-32601`.
 
+### Dayanıklılık ve Protokol Sınırları (OPS-001, SEC-006)
+
+Sunucu tek bir stdio oturumunu sınırlarla yönetir (`src/mcp/stdio.ts`); hiçbir
+girdi türü süreci sınırsız belleğe, sınırsız eşzamanlı işe veya sessiz bir
+yarıda kesintiye (truncated exit) götüremez:
+
+- **Frame sınırı — 1 MiB/satır.** stdin parça parça (chunk) okunur ve satırlar
+  bir BAYT bütçesi altında birleştirilir; sınırı aşan satır ASLA tamamen
+  tamponlanmaz: taşan baytlar sonraki newline'a kadar atılır, istemciye bir
+  kez `-32600 Request too large` (id `null`) yanıtı verilir, stderr'e tanılama
+  düşer ve bağlantı AÇIK kalır — bir sonraki düzgün satır normal hizmet görür.
+  Meşru MCP frameleri küçüktür (en büyük argüman 10k karakterlik inline
+  intent'tir); 1 MiB %100 pay demektir. (Node `readline` satırı tamponlamadan
+  sınırlayamaz — bu yüzden assembler sunucunun kendisindedir.)
+- **Eşzamanlı iş sınırı — 16 in-flight istek.** Bir istek kabul anından yanıtın
+  yazılmasına kadar "in-flight" sayılır. 17.'si anında yapılandırılmış bir
+  `-32000 Server busy` hatası alır (kendi id'si yankılanır) — sıraya girmez,
+  bekletilmez. Bildirimler ve bozuk satırlar iş başlatmadığı için bu sınıra
+  takılmaz. Sınır, bir istemcinin aynı anda ayakta tutabileceği araç koşusunu,
+  mutasyonu ve çocuk süreci sınırlar.
+- **Mutasyon serileştirme.** Aynı kökteki mutasyonlar depolama katmanının
+  kök-başına kilidiyle zaten serileşir (T6; sunucu düzeyinde de sabitlenmiştir);
+  farklı kökler in-flight sınırına kadar eşzamanlı ilerler. Ek kural
+  (bilinçli karar): **aynı kök için ikinci bir `lco_generate` ilk uçarken**
+  anında yapılandırılmış reddetme alır (`isError`, SIFIR LLM çağrısı). Önce
+  her ikisi de rızadan geçip ücretli boru hattını İKİ KEZ koşturuyordu (yazma
+  no-clobber ile güvenliydi ama harcama ikileydi); ücretli olan tek araç için
+  in-flight tekrar-reddi ucuz ve dürüsttür. `lco_init`/`lco_change` yerel ve
+  ücretsizdir — onlar kilit semantiğinde kalır (T10 exactly-one-winner).
+  Dedup anahtarı istenen `dir`'in sözcüksel çözümüdür (`path.resolve`);
+  sembolik bağlantı takma adlarını yakalamaz — doğruluk yededi her zaman
+  kilitken bu yalnızca harcama dedup'idir.
+- **stdout backpressure.** Yanıtlar `Writable.write`'tan geçer; `false`
+  döndüğünde stdin okuma DURUR ve akış `drain` olana kadar durur. Duraklatılmış
+  girdi yeni satır üretmediği için yazma kuyruğu yapısal olarak sınırlıdır
+  (in-flight ≤ 16 yanıt + duraklatılmış boru) — sınırsız tampon büyümesi yoktur.
+- **Kapanış semantiği ve çıkış kodları.** stdin EOF (düzenli kapanış): yeni
+  satır alınmaz, in-flight işin bitmesi ve bekleyen yazımların boşalması
+  beklenir, çıkış `0`. stdout EPIPE (istemci öldü): yeni satır alınmaz, artık
+  yazılmaz (ölü bora yanıt yazılmaz — yarım satır oluşmaz), in-flight işin
+  bitmesi **10 saniyelik drain penceresi** içinde beklenir (başlamış disk
+  yazımları ve çocuk yaşam döngüleri bitsin diye), sonra çıkış `3` — iş
+  ortada bırakıldı, sessiz `0` asla değil. Drain penceresi aşılırsa hâlâ
+  koşan doğrulama süreç grupları SIGKILL edilir (ölü bir süreç onları
+  reap edemez — OPS-001/SEC-005 kapsama) ve çıkış `4` olur. EOF yolunda
+  yapay zamanlayıcı YOKTUR: araçların kendi iç bütçeleri vardır (UX-003 wall
+  budget, check timeout'ları). Kapanış zamanlayıcısı süreç sınırında
+  duvar-saatlidir — T16 gerekçesiyle aynı: gerçek bir stdio oturumunun gerçek
+  kapanışını yönetir, deterministik çekirdeğin parçası değildir (testlerde
+  enjekte edilebilir).
+- **JSON-RPC 2.0 zarfı (SEC-006).** Dispatch'ten ÖNCE tam doğrulama:
+  `jsonrpc` tam olarak `"2.0"` olmalı (`"1.0"`, `2.0` sayısı, eksik → `-32600`);
+  `method` boş olmayan dize; `id` varsa dize/sayı/`null` — nesne/dizi/boolean
+  id reddedilir ve ASLA yankılanmaz (yanıtın id'si `null`; JSON-RPC 2.0 §5.1
+  id-saptama kuralı); `params` varsa nesne olmalı (MCP adlandırılmış
+  parametre kullanır; konumsal dizi reddedilir); zarf dışı bilinmeyen alan
+  reddedilir (`additionalProperties:false` sıkılaştırma politikasının zarf
+  uzantısı); **batch** (dizi gövde) tek bir `-32600` hatasıyla reddedilir —
+  sunucu tasarımı gereği satır-başına-tek-istektir (stdio-MCP batch'e ihtiyaç
+  duymaz; belgelenmiş no-batch tavrı). Yalnızca GEÇERLİ bildirimler sessizdir:
+  idsiz her geçerli istek ve `notifications/*` (id'li olsa bile, belgelenmiş
+  uzantı) yanıt almaz; geçersiz zarf id'siz olsa bile `id:null` hatası alır.
+
 ### Yürütme Rızası: `lco_check` ve `LCO_MCP_ALLOW_EXEC` (SEC-002)
 
 Güven sınırı (trust boundary) modeli: spec metni modelin kontrolündedir ve bir

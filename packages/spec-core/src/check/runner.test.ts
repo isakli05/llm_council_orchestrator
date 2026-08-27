@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import {
   DEFAULT_TIMEOUT_MS,
   execCommand,
+  killActiveProcessGroups,
   parseExpect,
   runChecks,
   type Executor,
@@ -773,4 +774,33 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     expect(result).toMatchObject({ exit: 0, timedOut: false });
     expect(Date.now() - started).toBeLessThan(1000); // the empty-group fast path costs no grace wait
   }, 10_000);
+
+  // --- OPS-001: the active-group registry (shutdown containment) ------------------
+
+  it('the registry is empty when idle and empty again after a run settles', async () => {
+    // Idle: nothing to kill, zero reported.
+    expect(killActiveProcessGroups()).toBe(0);
+    const root = freshRoot('spec-core-ops001-registry-');
+    const result = await execCommand('echo hi', root, 5000);
+    expect(result.exit).toBe(0);
+    // The executor unregistered its (dead) group at settle — still empty.
+    expect(killActiveProcessGroups()).toBe(0);
+  }, 10_000);
+
+  it('killActiveProcessGroups kills a STILL-RUNNING group: the executor resolves TIMEOUT, contained', async () => {
+    const root = freshRoot('spec-core-ops001-kill-');
+    const marker = join(root, 'late.txt');
+    // A command that outlives the external kill would write the marker at 1.2s.
+    const run = execCommand(`( sleep 5; echo leaked > ${marker} ) & sleep 30`, root, 60_000);
+    await sleep(400); // the group is up and running now
+    const killed = killActiveProcessGroups(); // the MCP drain-timeout path
+    expect(killed).toBeGreaterThanOrEqual(1); // the running group was signalled
+    const result = await run;
+    // Death by our signal ⇒ TIMEOUT classification (T16 semantics preserved).
+    expect(result.timedOut).toBe(true);
+    expect(result.exit).toBeNull();
+    await sleep(1500); // past the would-be write time: nothing survived
+    expect(existsSync(marker)).toBe(false);
+    expect(killActiveProcessGroups()).toBe(0); // registry cleaned at settle
+  }, 15_000);
 });
