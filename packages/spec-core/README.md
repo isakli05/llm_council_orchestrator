@@ -277,14 +277,14 @@ TASK-0001	node --version	exit 0	0 → 0	PASS
 TASK-0002	node --version	exit 0	0 → 0	PASS
 summary: 2 pass, 0 fail, 0 dry
 (0 timeout, 0 unparseable-expect)
-evidence: /tmp/lco-tour/spec/evidence/TASK-0001-check.json, /tmp/lco-tour/spec/evidence/TASK-0002-check.json
+evidence: /tmp/lco-tour/spec/evidence/TASK-0001-check-20260825T170456Z-001.json, /tmp/lco-tour/spec/evidence/TASK-0002-check-20260825T170456Z-001.json
 # exit 0
 ```
 
-Kanıt dosyası (görev başına biri; `--yes` altında yazılır):
+Kanıt dosyası (koşum başına YENİ bir dosya; `--yes` altında yazılır — SEC-004):
 
 ```sh
-$ cat /tmp/lco-tour/spec/evidence/TASK-0001-check.json
+$ cat /tmp/lco-tour/spec/evidence/TASK-0001-check-20260825T170456Z-001.json
 {
   "task_id": "TASK-0001",
   "checkedAt": "2026-08-25T17:04:56.607Z",
@@ -317,11 +317,40 @@ modeli bağlayıcıdır:
   eşleşmesidir. `exit N` bulunamayan expect → `UNPARSEABLE-EXPECT`: komut **hiç
   koşulmaz** ve başarısız sayılır (çıkış 1). Yargılanamayan bir şeyi koşmak başarı
   tiyatrosu olurdu.
-- **Kanıt dosyaları.** `--yes` altında görev başına `spec/evidence/<TASK-ID>-check.json`
-  yazılır: `{task_id, checkedAt, checks:[…]}` — her komut için
-  command/expect/expectedExit/actualExit/status/durationMs/outputTail (birleşik
+- **Kanıt dosyaları (SEC-004 ile sertleştirildi).** `--yes` altında görev başına,
+  KOŞUM başına YENİ bir dosya yazılır: `spec/evidence/<TASK-ID>-check-<RUN>.json`
+  (`{task_id, checkedAt, checks:[…]}` — her komut için
+  command/expect/expectedExit/actualExit/status/durationMs/outputTail; birleşik
   stdout+stderr'nin son 500 karakteri). Atlanan (`UNPARSEABLE-EXPECT`) girdiler de
   kayda girer: dosya `--yes`'in ne yaptığının **ve** neyi atladığının denetim izidir.
+  Sertleştirme:
+  - **Run-addressed + immutable:** `<RUN>`, enjekte edilen `nowIso` + task id +
+    çarpışma sayacından üretilen deterministik bir koşum kimliğidir. Her koşum
+    YENİ bir dosya yazar — sonraki bir koşum öncekinin izini ASLA ezmez (geç bir
+    PASS, erken bir FAIL'in kaydını silemez).
+  - **Mod 0600:** kanıt dosyaları yalnız sahibince okunur (çıktı kuyrukları sır
+    taşıyabilir — aşağıdaki redaksiyon notuna bakın).
+  - **Redaksiyon (en iyi çaba, garanti DEĞİL):** yakalanan çıktı kalıcı hale
+    gelmeden ÖNCE bilinen gizli desenlerden geçer — bearer token'lar, `sk-`/`zai-`
+    önekli API anahtarları, `PASSWORD=`/`TOKEN=` tarzı atamalar ve JWT şekilleri
+    `[REDACTED:<tür>]` ile değiştirilir. Eşleştirme kasıtlı olarak muhafazakârdır
+    (olağan test çıktısını bozmaz); bu EN İYİ ÇABA'dır, garanti değildir — başka
+    şekilde yazılmış bir sır değiştirilmeden kalır.
+  - **Retention/commit önerisi (dürüst):** kanıt dosyaları redaksiyondan sonra
+    bile hassas kuyruklar taşıyabilir. Repoya commitlemeden önce gözden geçirin
+    ya da `spec/evidence/` için gitignore deseni kullanın:
+    `printf 'spec/evidence/\n' >> .gitignore`. Denetim izini repoda tutmak
+    istiyorsanız commit öncesi insan incelemesini süreçlerinize ekleyin.
+- **Yol güvenliği (SEC-003).** Spec kökü realpath ile çözülür; sabit bölüm
+  yolları (`spec/<bölüm>.json`) ve `spec/evidence` dizini çözülen kökün İÇİNDE
+  kalmak zorundadır (realpath karşılaştırması; önek-dizgesi karşılaştırması
+  değil). Okuma kapısı derleme (compile) sınırındadır: kökün dışına çözülen
+  sembolik bağlantılı bir bölüm veya `spec/` dizini derleme hatası olarak
+  reddedilir; kökün içinde kalan bağlantılar yasal kalır (meşru reorganizasyon).
+  Yazma tarafı daha katıdır: `spec/`, `spec/evidence` veya bir bölüm dosyası
+  sembolik bağlantıysa yazma, bağlantıyı ADLANDIRAN yapılandırılmış bir hatayla
+  reddedilir — yazılar asla bağlantıyı takip etmez. (POSIX hedeflenir; Windows
+  junction davranışı kapsam dışıdır.)
 
 Operasyonel notlar:
 
@@ -469,6 +498,15 @@ Notlar:
   tanılama stderr'e gider. Eski `mcp_bridge` hatasının (protokol akışına log karışması)
   tekrarı yasaktır ve test-enforcelıdır: entegrasyon testi spawn edilen sürecin
   stdout'undaki **her satırı** `JSON.parse` ile doğrular.
+- **`dir` argümanı her çağrıda realpath ile normalize edilir** (bağlantılı üst
+  dizinlerden ulaşlanan bir kök yasaldır ve gerçek yoluna çözülür) ve
+  `LCO_MCP_EXEC_ROOT` ayarlıysa çözülen yolun pinin içinde kalması zorunludur
+  (SEC-003, izinli-kök politikası — her araca, `lco_generate`'ın yazma hedefine
+  kadar; dışarıdaki/red dışındaki `dir` `-32602` ile reddedilir, pinin kendisi
+  çözülemiyorsa her çağrı fail-closed reddedilir). Pin AYARLI DEĞİLSE yol
+  politikası yoktur: bu, BELGELİ yerel-güven sınırıdır — pinsiz sunucu,
+  istemcisine yerel yollarla çalışmayı açıkça emanet eden operatördür. Güvenilir
+  olmayan bir istemciye açarken `LCO_MCP_EXEC_ROOT` kullanın.
 - **`lco_check` aracı varsayılan olarak SADECE önizleme yapar** (DRY) — `yes` parametresi
   MCP yüzeyinden kaldırıldı (SEC-002); yürütme rızası için aşağıdaki Yürütme Rızası
   bölümüne bakın.
@@ -513,8 +551,12 @@ rızasının vekili DEĞİLDİR** — dört katman, hepsi birlikte zorunlu:
    bayrakları çocuk süreçlere ASLA geçmez.
 
 İsteğe bağlı 5. katman: `LCO_MCP_EXEC_ROOT=/abs/yol` çalışma alanını sabitler —
-ayarlandığında rıza yalnız o yol altındaki spec kökleri için geçerlidir (bu bir
-rıza-sınırı sabitlemesidir; süreç izolasyonu P2-2 kapsamındadır).
+ayarlandığında rıza yalnız o yolun (realpath ile çözülmüş) altına RESOLVE EDEN
+spec kökleri için geçerlidir (SEC-003: sözcüksel olarak pin altında görünen ama
+sembolik bağlantıyla dışarı kaçan bir yol reddedilir). Aynı pin sunucu sınırında
+HER aracın `dir` argümanına da uygulanır (aşağıdaki izinli-kök politikası) —
+`lco_generate`'ın yazma hedefi dahil. Bu bir rıza-sınırı sabitlemesidir; süreç
+izolasyonu P2-2 kapsamındadır.
 
 **CLI asimetrisi (bilinçli):** `lco check --yes` miras alınan tam ortamla koşar —
 orada rızayı veren insan, ortamın da sahibidir. MCP yolunda rızayı veren

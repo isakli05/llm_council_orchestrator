@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { handleRpcLine } from './server';
-import { generateConsentDigest } from './consent';
+import { generateConsentDigest, EXEC_ROOT_ENV } from './consent';
 import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 
 const FIXTURES = join(__dirname, '../../fixtures');
@@ -1418,7 +1419,11 @@ describe('handleRpcLine: lco_check execution consent (SEC-002)', () => {
     expect(res.result.isError).toBe(false);
     expect(res.result.content[0].text).toContain('PASS');
     expect(existsSync(join(root, 'EXECUTED.txt'))).toBe(true);
-    expect(existsSync(join(root, 'spec', 'evidence', 'TASK-0001-check.json'))).toBe(true);
+    // SEC-004: run-addressed immutable evidence (never the overwritten name).
+    const evidence = readdirSync(join(root, 'spec', 'evidence')).filter((f) =>
+      f.startsWith('TASK-0001-check-'),
+    );
+    expect(evidence).toHaveLength(1);
   });
 
   it('consent digest binds the task selection: an all-tasks digest does not authorize a --task run', async () => {
@@ -1471,8 +1476,12 @@ describe('handleRpcLine: lco_check execution consent (SEC-002)', () => {
     );
 
     expect(res.result.isError).toBe(false); // unpinned: full chain executes
-    expect(pinned.result.isError).toBe(true); // pinned elsewhere: refused
-    expect(pinned.result.content[0].text).toContain('LCO_MCP_EXEC_ROOT');
+    // pinned elsewhere: refused. SEC-003 moved the refusal UP to the dir
+    // policy at the server boundary — a pin that does not resolve fails
+    // closed as -32602 before the tool core (or the consent gate) ever runs.
+    expect(pinned.error).toBeDefined();
+    expect(pinned.error.code).toBe(-32602);
+    expect(pinned.error.message).toContain('LCO_MCP_EXEC_ROOT');
   });
 
   it('every consent refusal stays off stdout (purity) and off the crash path', async () => {
@@ -1574,9 +1583,13 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () =
       expect(text).toMatch(/printenv LCO_MCP_ALLOW_EXEC\t.*\t1 → 1\tPASS/);
       expect(text).toMatch(/printenv PATH\t.*\t0 → 0\tPASS/);
       // The server's own secret never reached the children — and the evidence
-      // file records the judged outcome for the audit trail.
+      // file records the judged outcome for the audit trail (run-addressed
+      // name since SEC-004; the server's own secret stays redacted/absent).
+      const evidenceDir = join(root, 'spec', 'evidence');
+      const evidenceName = readdirSync(evidenceDir).find((f) => f.startsWith('TASK-0001-check-'));
+      expect(evidenceName).toBeDefined();
       const evidence = JSON.parse(
-        readFileSync(join(root, 'spec', 'evidence', 'TASK-0001-check.json'), 'utf8'),
+        readFileSync(join(evidenceDir, evidenceName!), 'utf8'),
       ) as Record<string, any>;
       expect(evidence.checks).toHaveLength(2);
       expect(evidence.checks.every((c: any) => c.status === 'PASS')).toBe(true);
@@ -1654,4 +1667,91 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_GENERATE=1', 
     },
     30_000,
   );
+});
+
+// --- SEC-003: dir argument policy at the server boundary ----------------------------
+//
+// Every tool's `dir` is REALPATH-NORMALIZED before the core runs (a root
+// reached through symlinked parents works), and when the operator pinned the
+// server with LCO_MCP_EXEC_ROOT the dir must RESOLVE inside the pin — the pin
+// now governs every tool's workspace, not only execution consent.
+
+describe('tools/call: MCP dir policy (SEC-003)', () => {
+  it('dir reached through a symlinked parent is normalized and the tool still works', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const holder = freshRoot('spec-core-mcp-dirlink-');
+    const link = join(holder, 'workspace');
+    symlinkSync(root, link);
+
+    const res = await callTool('lco_compile', { dir: link });
+    expect(res.result.isError).toBe(false);
+    expect(text(res)).toContain('compiled');
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + dir inside the pin -> accepted', async () => {
+    const pin = freshRoot('spec-core-mcp-pin-');
+    const root = makeSpecRoot(inlineConforming());
+    rmSync(root, { recursive: true, force: true });
+    // Rebuild the spec INSIDE the pin.
+    const inside = join(pin, 'work');
+    mkdirSync(inside);
+    const spec = join(inside, 'spec');
+    mkdirSync(spec);
+    const bundle = inlineConforming();
+    for (const name of [...SECTION_FILES, 'legacy'] as const) {
+      if (bundle[name] === undefined) continue;
+      writeFileSync(join(spec, `${name}.json`), JSON.stringify(bundle[name], null, 2));
+    }
+
+    const res = await callTool('lco_compile', { dir: inside }, { env: { [EXEC_ROOT_ENV]: pin } });
+    expect(res.result.isError).toBe(false);
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + dir OUTSIDE the pin -> -32602 naming the pin (every tool)', async () => {
+    const pin = freshRoot('spec-core-mcp-pin2-');
+    const root = makeSpecRoot(inlineConforming());
+
+    const res = await callTool('lco_compile', { dir: root }, { env: { [EXEC_ROOT_ENV]: pin } });
+    expect(res.error).toBeDefined();
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + dir escaping the pin THROUGH A SYMLINK -> -32602 (realpath, not prefix)', async () => {
+    const pin = freshRoot('spec-core-mcp-pin3-');
+    const elsewhere = freshRoot('spec-core-mcp-elsewhere-');
+    symlinkSync(elsewhere, join(pin, 'escape')); // lexical: pin/escape — resolves: elsewhere
+
+    const res = await callTool('lco_compile', { dir: join(pin, 'escape') }, { env: { [EXEC_ROOT_ENV]: pin } });
+    expect(res.error).toBeDefined();
+    expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + not-yet-existing dir INSIDE the pin -> accepted (init/generate creation path)', async () => {
+    const pin = freshRoot('spec-core-mcp-pin4-');
+    const res = await callTool(
+      'lco_init',
+      { dir: join(pin, 'fresh'), profile: 'p-mini', name: 'mcp-app' },
+      { env: { [EXEC_ROOT_ENV]: pin } },
+    );
+    expect(res.result.isError).toBe(false);
+    expect(existsSync(join(pin, 'fresh', 'spec'))).toBe(true);
+  });
+
+  it('LCO_MCP_EXEC_ROOT set but the pin path does not exist -> fail closed (-32602)', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const res = await callTool(
+      'lco_compile',
+      { dir: root },
+      { env: { [EXEC_ROOT_ENV]: join(tmpdir(), 'lco-no-such-pin-xyz') } },
+    );
+    expect(res.error).toBeDefined();
+    expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('no pin: a dir outside any workspace still works (local-trust boundary documented in README)', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const res = await callTool('lco_compile', { dir: root });
+    expect(res.result.isError).toBe(false);
+  });
 });

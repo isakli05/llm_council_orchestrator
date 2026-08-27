@@ -77,7 +77,9 @@ commands:
                                and its exit code is compared to the first 'exit N' in the
                                expect description — an expect without a judgeable 'exit N'
                                is UNPARSEABLE-EXPECT and is never executed (fail-closed).
-                               Evidence per task: spec/evidence/<TASK-ID>-check.json.
+                               Evidence per task: spec/evidence/<TASK-ID>-check-<RUN>.json
+                               (run-addressed, immutable, mode 0600; reruns never overwrite
+                               earlier evidence; output tails are redacted best-effort).
                                Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE
   generate <dir> --intent <text> | --intent-file <path>
                                [--variant single|council] [--profile p-mini|p-standard]

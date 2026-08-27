@@ -12,6 +12,7 @@ import {
   RequirementSchema,
 } from '../../schemas';
 import { acquireSpecRootLock, createDirAtomically } from '../../storage/revision';
+import { assertNotSymlink } from '../../storage/paths';
 
 export interface InitResult {
   /** 0 scaffold written, 2 refusal (an existing spec/ was never touched). */
@@ -71,6 +72,10 @@ type Contract = z.infer<typeof ContractSchema>;
  */
 export async function cmdInit(dir: string, opts: InitOptions): Promise<InitResult> {
   const specDir = join(dir, 'spec');
+  // SEC-003: lstat catches a DANGLING spec symlink that pathExists (stat,
+  // follows links) would miss — the scaffold refuses instead of clobbering
+  // or writing through a link.
+  assertNotSymlink(specDir, 'init scaffold target spec/');
   if (await pathExists(specDir)) {
     return { code: 2, files: [] }; // fast refusal: zero fs side effects
   }

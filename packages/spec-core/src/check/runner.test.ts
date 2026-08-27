@@ -1,5 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +17,7 @@ import {
   runChecks,
   type Executor,
 } from './runner';
+import { PathEscapeError } from '../storage/paths';
 import { SpecBundleSchema, type SpecBundle, type TaskContract } from '../schemas';
 
 const FIXTURES = join(__dirname, '../../fixtures');
@@ -62,8 +72,19 @@ function freshRoot(prefix: string): string {
   return root;
 }
 
+/** The (single) run-addressed evidence file for a task: <TASK-ID>-check-<run>.json. */
 function evidencePath(root: string, taskId: string): string {
-  return join(root, 'spec', 'evidence', `${taskId}-check.json`);
+  const dir = join(root, 'spec', 'evidence');
+  const matches = readdirSync(dir).filter((f) => f.startsWith(`${taskId}-check-`));
+  expect(matches).toHaveLength(1);
+  return join(dir, matches[0]!);
+}
+
+/** All evidence files for a task in readdir (lexicographic) order. */
+function evidenceFilesFor(root: string, taskId: string): string[] {
+  return readdirSync(join(root, 'spec', 'evidence'))
+    .filter((f) => f.startsWith(`${taskId}-check-`))
+    .sort();
 }
 
 afterEach(() => {
@@ -206,7 +227,7 @@ describe('runChecks --yes: outcome classification', () => {
 // --- evidence: ONE file per task, checks array, injected checkedAt --------------
 
 describe('runChecks --yes: evidence file shape', () => {
-  it('one task with two entries -> a single <TASK-ID>-check.json with a checks array', async () => {
+  it('one task with two entries -> a single run-addressed evidence file with a checks array', async () => {
     const root = freshRoot('spec-core-check-evidence-');
     const bundle = bundleWith({
       'TASK-0001': [
@@ -224,9 +245,9 @@ describe('runChecks --yes: evidence file shape', () => {
 
     expect(result.code).toBe(1); // PASS + FAIL
     const evidenceDir = join(root, 'spec', 'evidence');
-    expect(readdirSync(evidenceDir)).toEqual(['TASK-0001-check.json']); // exactly one file
+    expect(readdirSync(evidenceDir)).toEqual(['TASK-0001-check-20260825T120000Z-001.json']); // exactly one file
 
-    const stored = JSON.parse(readFileSync(join(evidenceDir, 'TASK-0001-check.json'), 'utf8'));
+    const stored = JSON.parse(readFileSync(join(evidenceDir, 'TASK-0001-check-20260825T120000Z-001.json'), 'utf8'));
     expect(Object.keys(stored)).toEqual(['task_id', 'checkedAt', 'checks']);
     expect(stored.task_id).toBe('TASK-0001');
     expect(stored.checkedAt).toBe(NOW);
@@ -257,9 +278,9 @@ describe('runChecks --yes: evidence file shape', () => {
 
     expect(result.code).toBe(0);
     expect(readdirSync(join(root, 'spec', 'evidence')).sort()).toEqual([
-      'TASK-0001-check.json',
-      'TASK-0002-check.json',
-      'TASK-0003-check.json',
+      'TASK-0001-check-20260825T120000Z-001.json',
+      'TASK-0002-check-20260825T120000Z-001.json',
+      'TASK-0003-check-20260825T120000Z-001.json',
     ]);
   });
 
@@ -368,7 +389,7 @@ describe('runChecks task selection', () => {
     expect(calls.map((c) => c.cmd)).toEqual(['only-this']);
     expect(calls[0].cwd).toBe(root);
     expect(result.outcomes.map((o) => o.taskId)).toEqual(['TASK-0002']);
-    expect(readdirSync(join(root, 'spec', 'evidence'))).toEqual(['TASK-0002-check.json']);
+    expect(readdirSync(join(root, 'spec', 'evidence'))).toEqual(['TASK-0002-check-20260825T120000Z-001.json']);
     expect(result.code).toBe(0);
   });
 
@@ -381,7 +402,7 @@ describe('runChecks task selection', () => {
 
     const result = await runChecks(bundle, root, { task: 'TASK-9999', yes: true, nowIso: NOW, exec });
 
-    expect(result).toEqual({ code: 2, outcomes: [] });
+    expect(result).toEqual({ code: 2, outcomes: [], evidenceFiles: [] });
     expect(calls).toHaveLength(0);
     expect(readdirSync(root)).toEqual([]);
   });
@@ -408,5 +429,147 @@ describe('runChecks executor plumbing', () => {
     await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
 
     expect(calls[0].timeoutMs).toBe(60_000);
+  });
+});
+
+// --- SEC-004: hardened, run-addressed, immutable evidence --------------------------
+
+describe('runChecks --yes: SEC-004 evidence hardening', () => {
+  it('evidence files are created with mode 0600 (owner-only)', async () => {
+    const root = freshRoot('spec-core-check-mode-');
+    const bundle = bundleWith({});
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: 'ok', timedOut: false }));
+
+    await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
+
+    const file = evidencePath(root, 'TASK-0001');
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('a second run NEVER overwrites the first: two files, ordered names', async () => {
+    const root = freshRoot('spec-core-check-rerun-');
+    const bundle = bundleWith({});
+    const first = fakeExec(() => ({ exit: 0, stdout: 'first run ok', timedOut: false }));
+    await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec: first.exec });
+
+    const second = fakeExec(() => ({ exit: 1, stdout: 'second run FAILED', timedOut: false }));
+    await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec: second.exec });
+
+    const files = evidenceFilesFor(root, 'TASK-0001');
+    expect(files).toHaveLength(2); // immutable: the first run survived
+    expect(files).toEqual([...files].sort()); // ordered (lexicographic = chronological)
+    const firstJson = JSON.parse(readFileSync(join(root, 'spec', 'evidence', files[0]!), 'utf8'));
+    const secondJson = JSON.parse(readFileSync(join(root, 'spec', 'evidence', files[1]!), 'utf8'));
+    expect(firstJson.checks[0].outputTail).toBe('first run ok'); // NOT erased by the rerun
+    expect(secondJson.checks[0].outputTail).toBe('second run FAILED');
+  });
+
+  it('run id is deterministic: injected nowIso + task id + collision counter', async () => {
+    const root = freshRoot('spec-core-check-runid-');
+    const bundle = bundleWith({});
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: '', timedOut: false }));
+    const result = await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
+
+    // Same injected clock -> same base name, distinct counter suffix.
+    expect(result.evidenceFiles).toHaveLength(1);
+    expect(result.evidenceFiles[0]).toBe(
+      join(root, 'spec', 'evidence', 'TASK-0001-check-20260825T120000Z-001.json'),
+    );
+  });
+
+  it('a later run with a DIFFERENT nowIso sorts after the earlier one', async () => {
+    const root = freshRoot('spec-core-check-chrono-');
+    const bundle = bundleWith({});
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: '', timedOut: false }));
+    await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: '2026-08-25T12:00:00Z', exec });
+    await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: '2026-08-25T12:05:00Z', exec });
+
+    const files = evidenceFilesFor(root, 'TASK-0001');
+    expect(files).toHaveLength(2);
+    expect(files[0]).toBe('TASK-0001-check-20260825T120000Z-001.json');
+    expect(files[1]).toBe('TASK-0001-check-20260825T120500Z-001.json');
+  });
+
+  it('redaction runs BEFORE persistence: a printed token never lands in the file', async () => {
+    const root = freshRoot('spec-core-check-redact-');
+    const bundle = bundleWith({});
+    const secret = 'sk-AbCdEf1234567890aBcDeF';
+    const { exec } = fakeExec(() => ({ exit: 1, stdout: `auth failed for ${secret}\n`, timedOut: false }));
+
+    const result = await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
+
+    const raw = readFileSync(evidencePath(root, 'TASK-0001'), 'utf8');
+    expect(raw).not.toContain(secret);
+    expect(raw).toContain('[REDACTED:api-key]');
+    // The in-memory outcome carries the SAME redaction (no split-brain trail).
+    expect(result.outcomes[0].outputTail).not.toContain(secret);
+  });
+
+  it('non-secret output tails are stored verbatim (redaction is conservative)', async () => {
+    const root = freshRoot('spec-core-check-clean-tail-');
+    const bundle = bundleWith({});
+    const out = 'Test Files  1 passed (1)\n     Tests  3 passed (3)\n';
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: out, timedOut: false }));
+
+    const result = await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
+
+    expect(result.outcomes[0].outputTail).toBe(out);
+    expect(JSON.parse(readFileSync(evidencePath(root, 'TASK-0001'), 'utf8')).checks[0].outputTail).toBe(out);
+  });
+});
+
+// --- SEC-003: the evidence write cannot escape the spec root ------------------------
+
+describe('runChecks --yes: SEC-003 evidence write containment', () => {
+  it('spec/evidence symlinked elsewhere -> structured refusal, nothing written through the link', async () => {
+    const root = freshRoot('spec-core-check-evlink-');
+    mkdirSync(join(root, 'spec'), { recursive: true });
+    const outside = freshRoot('spec-core-check-outside-');
+    const outsideEvidence = join(outside, 'evidence');
+    mkdirSync(outsideEvidence);
+    symlinkSync(outsideEvidence, join(root, 'spec', 'evidence'));
+
+    const bundle = bundleWith({});
+    const { calls, exec } = fakeExec(() => ({ exit: 0, stdout: 'ok', timedOut: false }));
+
+    await expect(
+      runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec }),
+    ).rejects.toThrow(/symlink/);
+    // Refused BEFORE any write: the outside dir saw no new file.
+    expect(readdirSync(outsideEvidence)).toEqual([]);
+    expect(calls).toHaveLength(1); // commands ran; the EVIDENCE write is what refused
+  });
+
+  it('spec itself symlinked elsewhere -> structured refusal (dir variant)', async () => {
+    const root = freshRoot('spec-core-check-speclink-');
+    const outside = mkdtempSync(join(tmpdir(), 'spec-core-check-outside2-'));
+    tmpDirs.push(outside);
+    mkdirSync(join(outside, 'spec'), { recursive: true });
+    symlinkSync(join(outside, 'spec'), join(root, 'spec'));
+
+    const bundle = bundleWith({});
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: 'ok', timedOut: false }));
+
+    await expect(
+      runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec }),
+    ).rejects.toThrow(PathEscapeError);
+    // Nothing was created inside the symlink target.
+    expect(readdirSync(join(outside, 'spec'))).toEqual([]);
+  });
+
+  it('a symlinked ROOT path still works (legitimate reorganization, no false positive)', async () => {
+    const real = freshRoot('spec-core-check-realroot-');
+    const holder = mkdtempSync(join(tmpdir(), 'spec-core-check-hold-'));
+    tmpDirs.push(holder);
+    const link = join(holder, 'workspace');
+    symlinkSync(real, link);
+
+    const bundle = bundleWith({});
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: 'ok', timedOut: false }));
+    const result = await runChecks(bundle, link, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
+
+    expect(result.code).toBe(0);
+    expect(existsSync(join(real, 'spec', 'evidence'))).toBe(true); // landed under the REAL root
+    expect(readdirSync(join(real, 'spec', 'evidence'))).toHaveLength(1);
   });
 });

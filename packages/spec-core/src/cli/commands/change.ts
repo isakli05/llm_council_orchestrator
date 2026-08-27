@@ -6,6 +6,7 @@ import { applyChangeSet, type ChangeSet } from '../../compiler/changeset';
 import { lintBundle } from '../../lint/engine';
 import type { LintFinding } from '../../lint/types';
 import { acquireSpecRootLock, swapFilesAtomically } from '../../storage/revision';
+import { assertWritableSpecDir } from '../../storage/paths';
 
 export interface ChangeResult {
   /** 0 applied + clean lint, 1 change-gate (lint) failure — nothing written, 2 compile/IO/schema rejection. */
@@ -177,6 +178,10 @@ async function applyUnderLock(
   writes.push({ name: 'manifest.json', content: next.manifest }); // the commit point
 
   try {
+    // SEC-003: the section writes never follow symlinks — a symlinked spec/
+    // dir or section-file target refuses the change (structured throw → code 2
+    // below; nothing written, the frozen spec stays byte-identical).
+    assertWritableSpecDir(dir, writes.map((w) => w.name));
     swapFilesAtomically(join(dir, 'spec'), writes);
   } catch (err) {
     return {

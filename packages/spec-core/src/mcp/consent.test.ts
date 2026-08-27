@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -392,12 +392,46 @@ describe('authorizeExecution', () => {
     const { root, bundle } = await frozenLoadedBundle(inlineConforming());
     const digest = checkPreviewDigest(bundle);
 
-    const outside = authorizeExecution(bundle, root, undefined, digest, '/definitely/elsewhere');
+    // A REAL outside dir (not just a nonexistent path): a second tmp tree the
+    // pin does not cover. Realpath containment must refuse it.
+    const otherTree = mkdtempSync(join(tmpdir(), 'spec-core-consent-out-'));
+    tmpDirs.push(otherTree);
+    const outside = authorizeExecution(bundle, root, undefined, digest, otherTree);
     expect(outside.ok).toBe(false);
     if (!outside.ok) expect(outside.output).toContain('LCO_MCP_EXEC_ROOT');
 
-    // A pin at the parent of the tmp root permits it.
+    // A pin that does not exist at all fails closed for every request.
+    const ghost = authorizeExecution(bundle, root, undefined, digest, '/definitely/elsewhere');
+    expect(ghost.ok).toBe(false);
+    if (!ghost.ok) expect(ghost.output).toContain('LCO_MCP_EXEC_ROOT');
+
+    // A pin at the parent of the tmp root permits it (realpathed both sides).
     const inside = authorizeExecution(bundle, root, undefined, digest, join(root, '..'));
+    expect(inside.ok).toBe(true);
+  });
+
+  it('execRoot pin is REALPATH containment: a dir under the pin via an escaping symlink is refused (SEC-003)', async () => {
+    const { root, bundle } = await frozenLoadedBundle(inlineConforming());
+    const digest = checkPreviewDigest(bundle);
+    const pin = mkdtempSync(join(tmpdir(), 'spec-core-consent-pin-'));
+    tmpDirs.push(pin);
+    const movedRoot = join(pin, 'work');
+    mkdirSync(movedRoot, { recursive: true });
+    // The attack the OLD prefix-string check missed: a path that is
+    // LEXICALLY under the pin but RESOLVES outside it via a symlink.
+    const elsewhere = mkdtempSync(join(tmpdir(), 'spec-core-consent-far-'));
+    tmpDirs.push(elsewhere);
+    symlinkSync(elsewhere, join(pin, 'escape')); // lexical: pin/escape — resolves: elsewhere
+
+    const escaped = authorizeExecution(bundle, join(pin, 'escape'), undefined, digest, pin);
+    expect(escaped.ok).toBe(false);
+    if (!escaped.ok) {
+      expect(escaped.output).toContain('LCO_MCP_EXEC_ROOT');
+      expect(escaped.output).toContain('symlink'); // the refusal names the mechanism
+    }
+
+    // And the honest inside case still passes.
+    const inside = authorizeExecution(bundle, movedRoot, undefined, digest, pin);
     expect(inside.ok).toBe(true);
   });
 });

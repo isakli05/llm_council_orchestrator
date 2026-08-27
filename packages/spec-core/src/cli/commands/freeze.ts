@@ -4,6 +4,7 @@ import { compileSpecDir } from '../../compiler/compile';
 import { freeze } from '../../compiler/freeze';
 import { lintBundle } from '../../lint/engine';
 import { acquireSpecRootLock, swapFilesAtomically } from '../../storage/revision';
+import { assertWritableSpecDir } from '../../storage/paths';
 import { compileFailedOutput } from './compile';
 
 export interface FreezeResult {
@@ -56,6 +57,10 @@ export async function cmdFreeze(dir: string, nowIso: string): Promise<FreezeResu
       };
     }
 
+    // SEC-003: the manifest write never follows symlinks — a symlinked spec/
+    // dir or manifest.json target refuses the freeze (throws for the caller
+    // to report as an environment failure).
+    assertWritableSpecDir(dir, ['manifest.json']);
     swapFilesAtomically(join(dir, 'spec'), [
       { name: 'manifest.json', content: frozen.bundle.manifest },
     ]);

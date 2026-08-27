@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../../schemas';
 import { acquireSpecRootLock, createDirAtomically } from '../../storage/revision';
+import { assertNotSymlink } from '../../storage/paths';
 
 /**
  * Required section files in compile.ts read order. `test_files` is NOT a file
@@ -45,6 +46,9 @@ const SECTION_KEYS = [
  */
 export function writeSpecDir(dir: string, bundle: SpecBundle, nowIso: string): void {
   const specDir = join(dir, 'spec');
+  // SEC-003: lstat catches a DANGLING spec symlink the existsSync no-clobber
+  // check below would miss (existsSync follows; a dangling link reads false).
+  assertNotSymlink(specDir, 'generate write target spec/');
   if (existsSync(specDir)) {
     throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
   }

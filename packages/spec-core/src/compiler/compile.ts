@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SpecBundleSchema, type SpecBundle } from '../schemas';
+import { readContainmentError, tryRealpath, isInside } from '../storage/paths';
 import { duplicateTaskIds } from './closure';
 
 export interface CompileError {
@@ -37,14 +38,49 @@ type SectionName = (typeof REQUIRED_SECTIONS)[number] | 'legacy';
  * file: it is derived from `tasks[].tests[].file` (first-seen order,
  * deduplicated). Fail-closed: on any missing file, invalid JSON, or schema
  * violation the result is `ok: false` and never carries a bundle.
+ *
+ * PATH CONTAINMENT (SEC-003): the root is resolved once with realpath and
+ * every fixed section path — and the `spec/` directory itself — must RESOLVE
+ * inside it. Node follows symlinks on read, so a section (or the whole spec
+ * dir) symlinked outside the apparent workspace is refused as a compile
+ * error here, at the single boundary every reader shares; symlinked paths
+ * that resolve back INSIDE the root stay legal (legitimate reorganization).
  */
 export async function compileSpecDir(root: string): Promise<CompileResult> {
   const specDir = join(root, 'spec');
   const sections = new Map<SectionName, unknown>();
   const errors: CompileError[] = [];
 
+  // Resolve the root; a root that does not exist leaves the section reads to
+  // report their ordinary 'missing file' errors below.
+  const rootReal = tryRealpath(root);
+
+  // The spec/ dir itself: a symlink pointing outside the root escapes EVERY
+  // section at once — one error naming the directory, no section is read.
+  if (rootReal !== undefined) {
+    const specReal = tryRealpath(specDir);
+    if (specReal !== undefined && !isInside(rootReal, specReal)) {
+      return {
+        ok: false,
+        errors: [
+          {
+            path: specDir,
+            message: `path escape: ${specDir} resolves to ${specReal}, outside the spec root ${rootReal} (symlinked section/spec paths must stay inside the root)`,
+          },
+        ],
+      };
+    }
+  }
+
   for (const name of [...REQUIRED_SECTIONS, 'legacy'] as SectionName[]) {
     const file = join(specDir, `${name}.json`);
+    if (rootReal !== undefined) {
+      const escape = readContainmentError(rootReal, file);
+      if (escape !== null) {
+        errors.push({ path: file, message: escape });
+        continue; // never read escaped content
+      }
+    }
     try {
       sections.set(name, JSON.parse(await readFile(file, 'utf8')));
     } catch (err) {

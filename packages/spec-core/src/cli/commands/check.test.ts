@@ -71,8 +71,16 @@ function patchTask1Verification(root: string, entries: Array<{ command: string; 
   writeFileSync(file, JSON.stringify(tasks, null, 2), 'utf8');
 }
 
+/** The (single) run-addressed evidence file for a task: <TASK-ID>-check-<RUN>.json (SEC-004). */
+function evidencePath(root: string, taskId: string): string {
+  const dir = join(root, 'spec', 'evidence');
+  const matches = readdirSync(dir).filter((f) => f.startsWith(`${taskId}-check-`));
+  expect(matches).toHaveLength(1);
+  return join(dir, matches[0]!);
+}
+
 function evidenceOf(root: string, taskId: string): Record<string, unknown> {
-  return JSON.parse(readFileSync(join(root, 'spec', 'evidence', `${taskId}-check.json`), 'utf8')) as Record<string, unknown>;
+  return JSON.parse(readFileSync(evidencePath(root, taskId), 'utf8')) as Record<string, unknown>;
 }
 
 afterEach(() => {
@@ -236,7 +244,7 @@ describe('cmdCheck --yes: real-process smokes', () => {
     expect(result.code).toBe(0);
     expect(result.output).toContain('TASK-0001\tnode --version\texit 0\t0 → 0\tPASS');
     expect(result.output).toContain('1 pass, 0 fail, 0 dry');
-    expect(result.output).toContain('spec/evidence/TASK-0001-check.json');
+    expect(result.output).toMatch(/spec\/evidence\/TASK-0001-check-\d+T\d+Z-001\.json/);
 
     const stored = evidenceOf(root, 'TASK-0001');
     expect(stored).toEqual({
@@ -257,7 +265,7 @@ describe('cmdCheck --yes: real-process smokes', () => {
     // The captured tail really is the process output (a node version string).
     const tail = (stored.checks as Array<{ outputTail: string }>)[0].outputTail;
     expect(tail).toMatch(/v\d+\.\d+/);
-    expect(readdirSync(join(root, 'spec', 'evidence'))).toEqual(['TASK-0001-check.json']);
+    expect(readdirSync(join(root, 'spec', 'evidence')).filter((f) => f.startsWith('TASK-0001-check-'))).toHaveLength(1);
   });
 
   it('`node -e "process.exit(7)"` with expect `exit 7` -> PASS (nonzero codes are judgeable)', async () => {
@@ -339,7 +347,7 @@ describe('runCli wiring: lco check <dir> [--task] [--yes] [--timeout-ms]', () =>
 
     await expect(runCli(['check', root, '--yes'])).resolves.toBe(0);
     expect(stdout()).toContain('\tPASS');
-    expect(existsSync(join(root, 'spec', 'evidence', 'TASK-0001-check.json'))).toBe(true);
+    expect(existsSync(evidencePath(root, 'TASK-0001'))).toBe(true);
   });
 
   it('--task filters (unknown id -> exit 2 through the wrapper)', async () => {

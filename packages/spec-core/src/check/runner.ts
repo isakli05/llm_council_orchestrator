@@ -1,9 +1,11 @@
 import { exec } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../schemas';
 import { acquireSpecRootLock, swapFilesAtomically } from '../storage/revision';
+import { assertNoSymlinkBelow, isInside, PathEscapeError } from '../storage/paths';
 import { parseExpect } from './expect';
+import { redactSecrets } from './redact';
 
 // The expect grammar is defined ONCE in ./expect (BACK-004) and shared with
 // lint L14; re-exported here for the existing import surface.
@@ -32,11 +34,24 @@ export { parseExpect } from './expect';
  *   - `TIMEOUT` (executor killed the process) counts as a failure; a mismatched
  *     exit code is `FAIL`.
  *
- * Evidence: under `yes: true` one JSON file per task is written to
- * `<dir>/spec/evidence/<TASK-ID>-check.json` — `{task_id, checkedAt, checks:
- * [...]}` with one entry per verification command (executed or skipped:
- * a skipped entry is recorded with status UNPARSEABLE-EXPECT, because the
- * file is the audit trail of what `--yes` did). DRY writes nothing, ever.
+ * Evidence: under `yes: true` ONE NEW run-addressed JSON file per task is
+ * written to `<dir>/spec/evidence/<TASK-ID>-check-<RUN>.json` — `{task_id,
+ * checkedAt, checks: [...]}` with one entry per verification command
+ * (executed or skipped: a skipped entry is recorded with status
+ * UNPARSEABLE-EXPECT, because the file is the audit trail of what `--yes`
+ * did). DRY writes nothing, ever.
+ *
+ * EVIDENCE HARDENING (SEC-004): `<RUN>` is a deterministic run id built from
+ * the INJECTED nowIso + the task id + a collision counter, so each check run
+ * writes a NEW file and a rerun can never erase the previous audit trail;
+ * files are created with mode 0600 (owner-only — output tails may carry
+ * secrets); and every captured output passes the best-effort redaction pass
+ * in ./redact BEFORE it is kept in memory or on disk.
+ *
+ * WRITE CONTAINMENT (SEC-003): the evidence write refuses a `spec/` or
+ * `spec/evidence/` that is a symlink (writes never follow symlinks below the
+ * spec root) and requires the evidence dir to resolve inside the resolved
+ * root. A refusal throws before anything is written.
  *
  * Exit-code mapping: every outcome PASS or DRY -> 0; any FAIL / TIMEOUT /
  * UNPARSEABLE-EXPECT (dry included) -> 1; an unknown `opts.task` id -> 2 with
@@ -83,13 +98,21 @@ export interface RunChecksResult {
   /** 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE-EXPECT, 2 unknown --task. */
   code: number;
   outcomes: CheckOutcome[];
+  /**
+   * Absolute paths of the evidence files THIS run wrote (`--yes` only, in
+   * task order; empty for dry runs and the unknown-task refusal).
+   */
+  evidenceFiles: string[];
 }
 
 /** Kill hanging verification commands after this long (per command). */
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
-/** outputTail length — the tail of the combined output kept as evidence. */
+/** outputTail length — the tail of the combined (redacted) output kept as evidence. */
 export const OUTPUT_TAIL_LIMIT = 500;
+
+/** Evidence file mode (SEC-004): owner-only — tails may carry secrets. */
+export const EVIDENCE_FILE_MODE = 0o600;
 
 /**
  * Extract the expected exit code from an `expect` description — the shared
@@ -149,12 +172,13 @@ export async function runChecks(
 ): Promise<RunChecksResult> {
   const selected = opts.task ? bundle.tasks.filter((t) => t.task_id === opts.task) : bundle.tasks;
   if (opts.task !== undefined && selected.length === 0) {
-    return { code: 2, outcomes: [] };
+    return { code: 2, outcomes: [], evidenceFiles: [] };
   }
 
   const execFn = opts.exec ?? execCommand;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const outcomes: CheckOutcome[] = [];
+  const evidenceFiles: string[] = [];
 
   for (const task of selected) {
     const taskOutcomes: CheckOutcome[] = [];
@@ -207,18 +231,19 @@ export async function runChecks(
         actualExit: result.exit,
         status,
         durationMs: Date.now() - startedAt,
-        outputTail: tail(result.stdout),
+        // SEC-004: redact BEFORE keeping — memory and disk share one trail.
+        outputTail: tail(redactSecrets(result.stdout)),
       });
     }
     outcomes.push(...taskOutcomes);
 
     if (opts.yes && taskOutcomes.length > 0) {
-      await writeEvidence(dir, task.task_id, opts.nowIso, taskOutcomes);
+      evidenceFiles.push(await writeEvidence(dir, task.task_id, opts.nowIso, taskOutcomes));
     }
   }
 
   const anyFailure = outcomes.some((o) => o.status !== 'PASS' && o.status !== 'DRY');
-  return { code: anyFailure ? 1 : 0, outcomes };
+  return { code: anyFailure ? 1 : 0, outcomes, evidenceFiles };
 }
 
 /** Last {@link OUTPUT_TAIL_LIMIT} chars of the combined output. */
@@ -227,26 +252,71 @@ function tail(text: string): string {
 }
 
 /**
- * One JSON evidence file per task: {task_id, checkedAt, checks: [...]}.
+ * The run id in an evidence file name: `<task>-check-<compact ISO>-<seq>.json`
+ * where `<compact ISO>` is the INJECTED nowIso with `-.:` stripped (so the
+ * name sorts chronologically and stays filesystem-clean) and `<seq>` is a
+ * zero-padded counter bumped while the name is taken. Deterministic from the
+ * injected clock + task id + directory state — no wall clock, no randomness
+ * (the repo-wide boundary-clock contract).
+ */
+function evidenceRunName(evidenceDir: string, taskId: string, nowIso: string): string {
+  const compactIso = nowIso.replace(/[-:.]/g, '');
+  for (let seq = 1; ; seq++) {
+    const name = `${taskId}-check-${compactIso}-${String(seq).padStart(3, '0')}.json`;
+    if (!existsSync(join(evidenceDir, name))) return name;
+  }
+}
+
+/**
+ * Write ONE run's evidence for one task and return the file path.
+ *
+ * IMMUTABLE + RUN-ADDRESSED (SEC-004): every call writes a NEW file (a fresh
+ * name picked under the per-root lock) — a rerun never overwrites the
+ * previous audit trail, so a later PASS cannot erase an earlier failure.
+ *
+ * MODE 0600 (SEC-004): created owner-only (see EVIDENCE_FILE_MODE) — output
+ * tails may contain secrets even after redaction (best-effort, not a
+ * guarantee).
+ *
+ * CONTAINMENT (SEC-003): `spec` and `spec/evidence` must be REAL directories
+ * (a symlink refuses the write, naming the link) and the evidence dir must
+ * resolve inside the resolved spec root. Checked BEFORE any directory is
+ * created, so a hostile tree sees zero writes.
  *
  * ATOMICITY (DATA-001): the file is staged and swapped into place with a
- * rename under the per-root revision lock — a rerun can never truncate a
- * live evidence file to zero bytes mid-crash, and a failed swap leaves the
- * previous evidence byte-identical.
+ * rename under the per-root revision lock — the write is all-or-nothing.
  */
 async function writeEvidence(
   dir: string,
   taskId: string,
   nowIso: string,
   outcomes: CheckOutcome[],
-): Promise<void> {
+): Promise<string> {
+  // SEC-003, in order: verify spec/ and evidence/ BEFORE creating anything
+  // through them. The pre-mkdir walk catches a DANGLING evidence symlink
+  // (mkdir recursive would otherwise create the target through the link);
+  // the post-mkdir walk catches a link to an existing directory.
+  assertNoSymlinkBelow(dir, ['spec']);
   const evidenceDir = join(dir, 'spec', 'evidence');
+  assertNoSymlinkBelow(dir, ['spec', 'evidence']);
   mkdirSync(evidenceDir, { recursive: true });
+  assertNoSymlinkBelow(dir, ['spec', 'evidence']);
+  const rootReal = realpathSync(dir);
+  const evidenceReal = realpathSync(evidenceDir);
+  if (!isInside(rootReal, evidenceReal)) {
+    throw new PathEscapeError(
+      evidenceDir,
+      `resolves to ${evidenceReal}, outside the spec root ${rootReal}`,
+    );
+  }
+
   const lock = acquireSpecRootLock(dir, nowIso);
   try {
+    const name = evidenceRunName(evidenceDir, taskId, nowIso);
     swapFilesAtomically(evidenceDir, [
       {
-        name: `${taskId}-check.json`,
+        name,
+        mode: EVIDENCE_FILE_MODE,
         content: {
           task_id: taskId,
           checkedAt: nowIso,
@@ -262,6 +332,7 @@ async function writeEvidence(
         },
       },
     ]);
+    return join(evidenceDir, name);
   } finally {
     lock.release();
   }

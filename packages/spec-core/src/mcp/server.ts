@@ -16,6 +16,7 @@ import {
 } from '../cli/commands/generate';
 import { cmdChange } from '../cli/commands/change';
 import type { ChangeSet } from '../compiler/changeset';
+import { checkMcpDir } from '../storage/paths';
 import {
   authorizeExecution,
   checkPreviewDigest,
@@ -599,6 +600,21 @@ async function handleToolsCall(
     // time source, injected once per tool call (tests override via options).
     nowMs: options?.nowMs ?? (() => Date.now()),
   };
+
+  // DIR POLICY (SEC-003, allowed-root): the tool's `dir` is normalized and
+  // policy-checked HERE — once per call, at the same server boundary as the
+  // clock and the capability flags, never inside a command core. ALWAYS
+  // realpath-resolve (a root through symlinked parents is legal and
+  // normalizes); when the operator pinned the process with
+  // LCO_MCP_EXEC_ROOT, the dir must RESOLVE inside the pin — every tool,
+  // including lco_generate's write target. The refusal is a -32602 (the
+  // argument is invalid FOR THIS SERVER) naming the pin.
+  const dirCheck = checkMcpDir(input.value.dir, call.execRoot);
+  if (!dirCheck.ok) {
+    return errorResponse(id, -32602, dirCheck.message);
+  }
+  input.value.dir = dirCheck.dir;
+
   let result: CoreResult;
   try {
     result = await tool.run(input.value, nowIso, call);

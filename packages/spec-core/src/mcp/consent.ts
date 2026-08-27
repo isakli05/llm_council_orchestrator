@@ -1,9 +1,11 @@
 import { exec } from 'node:child_process';
-import { resolve, sep } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Executor } from '../check/runner';
 import { loadBundleAtLevel } from '../compiler/validation';
 import { verifyFrozen } from '../compiler/verify';
 import { sha256Content } from '../compiler/hash';
+import { isInside } from '../storage/paths';
 import type { SpecBundle } from '../schemas';
 
 /**
@@ -42,10 +44,14 @@ import type { SpecBundle } from '../schemas';
  *      inherited env — there the consenting human IS the environment owner.
  *
  * Optional 5th layer: `LCO_MCP_EXEC_ROOT=<abs path>` pins the workspace —
- * when set, execution consent is only honored for spec roots under that path
- * (`lco_generate` consent and its write target are not bound by this pin).
- * This is consent-boundary pinning, NOT process isolation (P2-2/T16 owns
- * sandboxes).
+ * when set, execution consent is only honored for spec roots that RESOLVE
+ * (realpath, both sides) inside the pin: a path that is lexically under the
+ * pin but escapes through a symlink is refused (SEC-003; the earlier
+ * prefix-string comparison could be satisfied by a symlinked dir). The SAME
+ * pin also governs every tool's `dir` at the server boundary (see
+ * checkMcpDir in storage/paths.ts) — including lco_generate's write target,
+ * closing the T10/T9 deferred write-target pin. This is consent-boundary
+ * pinning, NOT process isolation (P2-2/T16 owns sandboxes).
  *
  * T10 REUSABILITY (paid-call consent): layers 1, 3 and the refusal style are
  * not check-specific. `execOptInFromEnv`'s exactly-'1' semantics, the
@@ -225,15 +231,44 @@ export function authorizeExecution(
   execRoot?: string,
 ): ExecAuthorization {
   if (execRoot !== undefined) {
-    const resolved = resolve(dir);
-    if (resolved !== execRoot && !resolved.startsWith(execRoot + sep)) {
+    // SEC-003: REAL containment — both sides resolved with realpath before
+    // comparison. The previous prefix-string check was satisfiable by a
+    // symlinked dir that lived lexically under the pin but resolved outside.
+    let pinReal: string;
+    try {
+      pinReal = realpathSync(execRoot);
+    } catch {
       return {
         ok: false,
         code: 2,
         output:
-          `execution refused: ${dir} is outside LCO_MCP_EXEC_ROOT (${execRoot}) — ` +
-          `the operator pinned execution consent to that workspace. Move the spec ` +
-          `under the pinned root or have the operator restart without the pin.`,
+          `execution refused: LCO_MCP_EXEC_ROOT (${execRoot}) does not resolve to an ` +
+          `existing directory — the pin cannot be honored. Have the operator fix ` +
+          `or remove the pin and restart the server.`,
+      };
+    }
+    let rootReal: string;
+    try {
+      rootReal = realpathSync(dir);
+    } catch {
+      return {
+        ok: false,
+        code: 2,
+        output:
+          `execution refused: ${dir} does not resolve to an existing directory — ` +
+          `execution requires a real spec root under LCO_MCP_EXEC_ROOT (${execRoot}).`,
+      };
+    }
+    if (!isInside(pinReal, rootReal)) {
+      return {
+        ok: false,
+        code: 2,
+        output:
+          `execution refused: ${dir} resolves to ${rootReal}, outside ` +
+          `LCO_MCP_EXEC_ROOT (${execRoot} → ${pinReal}) — the operator pinned ` +
+          `execution consent to that workspace (realpath containment: a symlinked ` +
+          `path cannot move execution outside the pin). Move the spec under the ` +
+          `pinned root or have the operator restart without the pin.`,
       };
     }
   }
