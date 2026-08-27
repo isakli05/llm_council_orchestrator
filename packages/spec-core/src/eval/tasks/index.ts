@@ -15,15 +15,24 @@
  * 3-8 sentence user requests. They are the eval set itself — treat every edit
  * as a change of exam questions, not of copy.
  *
- * PROD-003: every greenfield task also carries ONE MENTIONS_TERMS assertion —
- * the concrete constraints its intent names verbatim (commands, flags,
- * technologies, formats, limits, proper nouns). A structurally valid bundle
- * that never carries those terms FAILS the task: structural validity alone no
- * longer scores. Terms are deliberately script/tech literals (SQLite, JWT,
- * --sep, 429, 09:00), not Turkish prose, so a faithful spec in any language
- * satisfies them by carrying the constraint values. The corpus test pins that
- * every term literally appears in its own intent and that no raw good fixture
- * satisfies any task's full term set.
+ * PROD-003 / RESIDUAL PROD-003: every greenfield task carries ONE
+ * CONSTRAINT_TRACE assertion — the concrete constraints its intent names,
+ * each predeclared as a machine-checkable grounding requirement
+ * (requirement statement -> covering task -> related test -> judgeable
+ * verification, plus optional numeric relation retention and a forbidden-
+ * invention absence list). This REPLACES the earlier MENTIONS_TERMS
+ * term-presence check, which a keyword dump or a glossary echo could satisfy.
+ * Terms are deliberately script/tech literals (SQLite, JWT, --sep, 429,
+ * 09:00), not Turkish prose, so a faithful spec in any language satisfies
+ * them by carrying the constraint values. The corpus test pins that every
+ * term literally appears in its own intent, that no raw good fixture
+ * satisfies any task's constraint set, and that forbidden terms are absent
+ * from their own intent (they police INVENTIONS, not intent wording).
+ *
+ * FROZEN: this corpus (intents + constraint declarations + gate thresholds)
+ * is hash-locked by src/eval/corpus-lock.json (see corpus-lock.ts). Editing
+ * any of it without appending a new dated lock entry makes every eval run
+ * fail loudly.
  */
 
 export type EvalTaskId =
@@ -34,6 +43,59 @@ export type EvalTaskId =
 export type EvalTaskKind = 'greenfield' | 'ambiguous' | 'conflicting';
 
 export type EvalTaskProfile = 'p-mini' | 'p-standard';
+
+/** Declared numeric relation an intent states about a constrained quantity. */
+export type NumericOperator = '==' | '<=' | '>=' | '<' | '>';
+
+/**
+ * One predeclared, machine-checkable intent constraint (RESIDUAL PROD-003).
+ *
+ * `terms` are anchor literals the intent names verbatim. A pure-digit term
+ * (e.g. '7', '429') is matched as a STANDALONE number token (so '7' does not
+ * match inside '17' or 'C7'); every other term is matched as normalized
+ * substring text (so 'PostgreSQL' matches 'postgresql' and 'İstanbul'
+ * matches 'Istanbul').
+ *
+ * `numeric`, when present, additionally requires the declared value to be
+ * retained as a number token in the anchor sentence(s) of the grounding
+ * requirement statement, and every OTHER number in those sentences to be
+ * consistent with the declared relation (an intent-named number is always
+ * allowed — the intent's own quantities are ground truth; a foreign number
+ * on the wrong side of the declared bound is an invented re-scaling).
+ */
+export interface IntentConstraint {
+  /** 'C1'.. per task — unique within its CONSTRAINT_TRACE. */
+  id: string;
+  /** Anchor terms; ALL must be grounded in one requirement statement. */
+  terms: string[];
+  /** Declared numeric relation retained in the anchor sentence (optional). */
+  numeric?: { operator: NumericOperator; value: number };
+}
+
+/**
+ * CONSTRAINT_TRACE (RESIDUAL PROD-003): intent fidelity as a grounding trace
+ * rather than term presence. Each constraint must be carried by an actual
+ * requirement statement (NOT glossary/decision prose, NOT the bundle's own
+ * intent echo); that requirement must be referenced by >= 1 task; that task
+ * must carry a related test case (a case text naming one of the constraint's
+ * terms) and a judgeable verification contract (an `expect` stating an exit
+ * code — the L14 contract — with a real command). Numeric constraints retain
+ * their declared operator/value. `forbidden` lists architectural inventions
+ * the intent explicitly rules out; each term must be ABSENT from the bundle's
+ * commitment surfaces (glossary terms, decision statements, task titles).
+ *
+ * Honest boundary (documented in the pre-registration): a determined
+ * adversary can still fabricate a full fake trace — a deterministic gate
+ * pins WHERE evidence must live, it cannot read prose semantics. A prose
+ * operator flip that keeps every digit ('under 300' -> 'at least 300') is
+ * likewise not detectable without NLP; value re-scaling and off-values are.
+ */
+export interface ConstraintTraceAssertion {
+  type: 'CONSTRAINT_TRACE';
+  constraints: IntentConstraint[];
+  /** Invention vectors: absent from the intent itself, enforced absent from commitment surfaces. */
+  forbidden?: string[];
+}
 
 /**
  * Machine-checkable expectation about the bundle a pipeline produces for a
@@ -47,15 +109,7 @@ export type DeterministicAssertion =
   | { type: 'TRACE_REQ_TASK_COVERED' }
   | { type: 'STATE_IS_DRAFT_OR_BLOCKED' }
   | { type: 'BLOCKED' }
-  /**
-   * PROD-003 intent fidelity: every listed term must appear (normalized,
-   * case-insensitive) in the produced bundle's searchable body text — the
-   * requirements/tasks/tests/glossary/decision prose that implements the
-   * intent. The bundle's own `intent.statement` echo is deliberately NOT
-   * searchable: quoting the intent back is not encoding it. Greenfield tasks
-   * only — a blocked task has no bundle; its fidelity is the BLOCKED assertion.
-   */
-  | { type: 'MENTIONS_TERMS'; terms: string[] };
+  | ConstraintTraceAssertion;
 
 export interface EvalTask {
   /** 'ET-01'..'ET-20', unique across the corpus. */
@@ -85,7 +139,18 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['sqlite', 'shorten', 'resolve'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: single SQLite file, offline (no network/server), 7-char codes,
+        // shorten/stats/resolve subcommands, exit 3 on unknown resolve
+        constraints: [
+          { id: 'C1', terms: ['sqlite'] },
+          { id: 'C2', terms: ['shorten'] },
+          { id: 'C3', terms: ['resolve'] },
+          { id: 'C4', terms: ['7'], numeric: { operator: '==', value: 7 } },
+        ],
+        forbidden: ['http', 'api', 'websocket', 'rest'], // "hiçbir ağ bağlantısı veya harici sunucu gerektirmemeli"
+      },
     ],
   },
   {
@@ -99,7 +164,16 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['markdown', 'html'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: Markdown->HTML, stdlib only, 10 MB input under 2 seconds
+        constraints: [
+          { id: 'C1', terms: ['markdown'] },
+          { id: 'C2', terms: ['html'] },
+          { id: 'C3', terms: ['2'], numeric: { operator: '<', value: 2 } },
+        ],
+        forbidden: ['axios', 'express'], // "yalnızca dilin standart kitaplığı kullanılmalı"
+      },
     ],
   },
   {
@@ -113,7 +187,15 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['100', 'ansi'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: 1..100 range, 7 attempts, ANSI colors
+        constraints: [
+          { id: 'C1', terms: ['ansi'] },
+          { id: 'C2', terms: ['100'], numeric: { operator: '<=', value: 100 } },
+          { id: 'C3', terms: ['7'], numeric: { operator: '<=', value: 7 } },
+        ],
+      },
     ],
   },
   {
@@ -127,7 +209,16 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['csv', 'json', '--sep'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: CSV->JSON, --sep flag, 50.000 rows under 5 seconds
+        constraints: [
+          { id: 'C1', terms: ['csv'] },
+          { id: 'C2', terms: ['json'] },
+          { id: 'C3', terms: ['--sep'] },
+          { id: 'C4', terms: ['5'], numeric: { operator: '<', value: 5 } },
+        ],
+      },
     ],
   },
   {
@@ -141,7 +232,15 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['todo', 'remove'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: single JSON store, add/list/done/remove, <= 200-char titles
+        constraints: [
+          { id: 'C1', terms: ['json'] },
+          { id: 'C2', terms: ['remove'] },
+          { id: 'C3', terms: ['200'], numeric: { operator: '<=', value: 200 } },
+        ],
+      },
     ],
   },
   {
@@ -155,7 +254,17 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['--length', '--no-symbols'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: 16-char default, --length 8..128, --no-symbols, never logged
+        constraints: [
+          { id: 'C1', terms: ['--length'] },
+          { id: 'C2', terms: ['--no-symbols'] },
+          { id: 'C3', terms: ['16'], numeric: { operator: '==', value: 16 } },
+          { id: 'C4', terms: ['8'], numeric: { operator: '>=', value: 8 } },
+          { id: 'C5', terms: ['128'], numeric: { operator: '<=', value: 128 } },
+        ],
+      },
     ],
   },
 
@@ -172,7 +281,18 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['jwt', 'postgresql'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: 24-hour JWT, PostgreSQL, p95 < 300 ms, 500 concurrent
+        constraints: [
+          { id: 'C1', terms: ['jwt'] },
+          { id: 'C2', terms: ['postgresql'] },
+          // unit anchor: 'ms' survives an off-value rewrite, so a wrong bound
+          // fails NUMERIC_VALUE_MISSING rather than mere un-grounding
+          { id: 'C3', terms: ['ms'], numeric: { operator: '<', value: 300 } },
+          { id: 'C4', terms: ['24'], numeric: { operator: '==', value: 24 } },
+        ],
+      },
     ],
   },
   {
@@ -187,7 +307,14 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['30', 'transfer'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: minimal-transfer settlement, deleted expenses recoverable 30 days
+        constraints: [
+          { id: 'C1', terms: ['transfer'] },
+          { id: 'C2', terms: ['30'], numeric: { operator: '<=', value: 30 } },
+        ],
+      },
     ],
   },
   {
@@ -202,7 +329,17 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['jpeg', 'png', '413', 'cdn'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: JPEG/PNG only, > 20 MB rejected with 413, 200/600/1200 px via CDN
+        constraints: [
+          { id: 'C1', terms: ['jpeg'] },
+          { id: 'C2', terms: ['png'] },
+          // unit anchor: 'mb' survives an off-value status-code rewrite
+          { id: 'C3', terms: ['mb'], numeric: { operator: '==', value: 413 } },
+          { id: 'C4', terms: ['cdn'] },
+        ],
+      },
     ],
   },
   {
@@ -217,7 +354,16 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['09:00', 'istanbul'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: Sundays 09:00 Europe/Istanbul, max 3 retries, 90-day blacklist
+        constraints: [
+          { id: 'C1', terms: ['09:00'] },
+          { id: 'C2', terms: ['istanbul'] },
+          { id: 'C3', terms: ['90'], numeric: { operator: '>=', value: 90 } },
+          { id: 'C4', terms: ['3'], numeric: { operator: '<=', value: 3 } },
+        ],
+      },
     ],
   },
   {
@@ -232,7 +378,15 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['weather', '429'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: weather endpoint, 10-minute cache, 429 on quota exceed
+        constraints: [
+          { id: 'C1', terms: ['weather'] },
+          { id: 'C2', terms: ['429'] },
+          { id: 'C3', terms: ['10'], numeric: { operator: '<=', value: 10 } },
+        ],
+      },
     ],
   },
   {
@@ -247,7 +401,16 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['48', '14'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: 48-hour pickup window, 14-day loans, max 3 active, 30-point cap
+        constraints: [
+          { id: 'C1', terms: ['48'], numeric: { operator: '<=', value: 48 } },
+          { id: 'C2', terms: ['14'], numeric: { operator: '==', value: 14 } },
+          { id: 'C3', terms: ['3'], numeric: { operator: '<=', value: 3 } },
+          { id: 'C4', terms: ['30'], numeric: { operator: '<=', value: 30 } },
+        ],
+      },
     ],
   },
 

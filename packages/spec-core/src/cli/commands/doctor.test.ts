@@ -261,7 +261,7 @@ describe('check: provider env (presence only, never values)', () => {
     expect(check.detail).not.toContain(SECRET);
   });
 
-  it('nothing set -> warn naming the three unset vars (mock default is fine, live is not)', () => {
+  it('nothing set -> warn naming the three unset vars (live adapter is the default; it fails closed)', () => {
     const check = checkProviderEnv({});
     expect(check.status).toBe('warn');
     for (const name of ['LCO_LLM_BASE_URL', 'LCO_LLM_API_KEY', 'LCO_LLM_MODEL']) {
@@ -337,7 +337,7 @@ describe('check: MCP consent flags', () => {
     expect(check.detail).toContain('LCO_MCP_ALLOW_EXEC');
   });
 
-  it('relative LCO_MCP_EXEC_ROOT -> warn (exec will refuse)', () => {
+  it('relative LCO_MCP_EXEC_ROOT -> warn (unpredictable pin: resolved against the server cwd)', () => {
     const check = checkMcpFlags({ LCO_MCP_EXEC_ROOT: 'relative/path' }, () => true);
     expect(check.status).toBe('warn');
     expect(check.detail).toContain('not an absolute path');

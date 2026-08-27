@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, beforeAll, afterAll, vi } from 'vitest';
 import {
   chmodSync,
   existsSync,
@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -39,7 +40,36 @@ function loadBundle(rel: string): Record<string, unknown> {
 
 const tmpDirs: string[] = [];
 
+/**
+ * SEC-003 residual: the DEFAULT allowed root of an unpinned server is now
+ * realpath(process.cwd()) — mandatory, not optional. The suite therefore runs
+ * with process.cwd() switched to a fresh base directory (beforeAll) and every
+ * fixture spec root is created INSIDE it, so default-server calls exercise the
+ * "inside the working directory" policy. `freshOutside` creates roots OUTSIDE
+ * the base (siblings under the OS tmpdir) for the refusal tests.
+ */
+let cwdBase: string;
+let prevCwd: string;
+
+beforeAll(() => {
+  prevCwd = process.cwd();
+  cwdBase = mkdtempSync(join(tmpdir(), 'spec-core-mcp-cwd-'));
+  process.chdir(cwdBase);
+});
+
+afterAll(() => {
+  process.chdir(prevCwd);
+  rmSync(cwdBase, { recursive: true, force: true });
+});
+
 function freshRoot(prefix: string): string {
+  const root = mkdtempSync(join(cwdBase, prefix));
+  tmpDirs.push(root);
+  return root;
+}
+
+/** A root OUTSIDE the effective default root (a sibling of cwdBase, not under it). */
+function freshOutside(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
   tmpDirs.push(root);
   return root;
@@ -47,6 +77,18 @@ function freshRoot(prefix: string): string {
 
 function makeSpecRoot(bundle: Record<string, unknown>): string {
   const root = freshRoot('spec-core-mcp-');
+  const spec = join(root, 'spec');
+  mkdirSync(spec);
+  for (const name of [...SECTION_FILES, 'legacy'] as const) {
+    if (bundle[name] === undefined) continue;
+    writeFileSync(join(spec, `${name}.json`), JSON.stringify(bundle[name], null, 2));
+  }
+  return root;
+}
+
+/** A full spec root OUTSIDE the effective default root (SEC-003 refusal fixtures). */
+function makeOutsideSpecRoot(bundle: Record<string, unknown>): string {
+  const root = freshOutside('spec-core-mcp-outside-');
   const spec = join(root, 'spec');
   mkdirSync(spec);
   for (const name of [...SECTION_FILES, 'legacy'] as const) {
@@ -544,10 +586,25 @@ describe('handleRpcLine: JSON-RPC 2.0 envelope conformance (SEC-006)', () => {
     expect(await handleRpcLine('{"jsonrpc":"2.0","method":"resources/list"}')).toBeNull();
   });
 
-  it('notifications/* WITH an id stays silent (documented convention, pinned)', async () => {
-    expect(
-      await handleRpcLine('{"jsonrpc":"2.0","id":5,"method":"notifications/initialized"}'),
-    ).toBeNull();
+  it('notifications/* WITH an id is a REQUEST: -32601 with the id echoed (SEC-006 residual)', async () => {
+    // JSON-RPC 2.0: silence is defined by the ABSENCE of id, never by the
+    // method name. The old `method.startsWith('notifications/')` drop was a
+    // conformance defect — a Request object with an id MUST get a response.
+    const res = await rpc('{"jsonrpc":"2.0","id":5,"method":"notifications/initialized"}');
+    expect(res.id).toBe(5);
+    expect(res.error.code).toBe(-32601);
+    expect(res.error.message).toContain('notifications/initialized');
+
+    const cancelled = await rpc('{"jsonrpc":"2.0","id":"c1","method":"notifications/cancelled","params":{}}');
+    expect(cancelled.id).toBe('c1');
+    expect(cancelled.error.code).toBe(-32601);
+    expect(cancelled.error.message).toContain('notifications/cancelled');
+  });
+
+  it('notifications/* with an explicit null id also gets the -32601 response (id present = request)', async () => {
+    const res = await rpc('{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}');
+    expect(res.id).toBeNull();
+    expect(res.error.code).toBe(-32601);
   });
 
   it('empty-string method with an id -> -32600', async () => {
@@ -1213,6 +1270,11 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       // no-clobber refusal on the same root) and a consent-less generate
       // attempt (default server: refusal, ZERO LLM calls — no env needed).
       const initTarget = freshRoot('spec-core-mcp-spawn-init-');
+      // SEC-003 residual: the spawned server's DEFAULT allowed root is its
+      // cwd (= this suite's cwdBase), so the consent-less generate fixture
+      // must target a dir INSIDE that root to reach the consent gate at all
+      // (an outside dir would be refused by the dir policy first).
+      const genTarget = freshRoot('spec-core-mcp-spawn-gen0-');
 
       const child = spawn(process.execPath, [serverJs], {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -1236,7 +1298,7 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
         '{"id":7, broken json',
         `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"lco_init","arguments":{"dir":${JSON.stringify(initTarget)}}}}`,
         `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"lco_init","arguments":{"dir":${JSON.stringify(initTarget)}}}}`,
-        `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"lco_generate","arguments":{"dir":"${tmpdir()}","intent":"spawn session intent"}}}`,
+        `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"lco_generate","arguments":{"dir":${JSON.stringify(genTarget)},"intent":"spawn session intent"}}}`,
         '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"lco_change","arguments":{"dir":"/tmp","changeset":[1]}}}',
       ];
       for (const line of requests) {
@@ -1873,9 +1935,11 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_GENERATE=1', 
 // --- SEC-003: dir argument policy at the server boundary ----------------------------
 //
 // Every tool's `dir` is REALPATH-NORMALIZED before the core runs (a root
-// reached through symlinked parents works), and when the operator pinned the
-// server with LCO_MCP_EXEC_ROOT the dir must RESOLVE inside the pin — the pin
-// now governs every tool's workspace, not only execution consent.
+// reached through symlinked parents works) and must RESOLVE inside the
+// EFFECTIVE allowed root, computed once per call at the RPC boundary from
+// server state: LCO_MCP_EXEC_ROOT when the operator pinned the process,
+// otherwise realpath(process.cwd()). There is no unpinned, policy-free mode
+// anymore (the audit residual rejects optional security).
 
 describe('tools/call: MCP dir policy (SEC-003)', () => {
   it('dir reached through a symlinked parent is normalized and the tool still works', async () => {
@@ -1950,9 +2014,127 @@ describe('tools/call: MCP dir policy (SEC-003)', () => {
     expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
   });
 
-  it('no pin: a dir outside any workspace still works (local-trust boundary documented in README)', async () => {
+  it('DEFAULT server (no LCO_MCP_EXEC_ROOT): dir inside process.cwd() -> allowed', async () => {
+    // makeSpecRoot creates inside cwdBase — this suite's process.cwd() — so a
+    // default-server call exercises the cwd-derived effective root.
     const root = makeSpecRoot(inlineConforming());
     const res = await callTool('lco_compile', { dir: root });
     expect(res.result.isError).toBe(false);
+    expect(text(res)).toContain('compiled');
+  });
+
+  it('DEFAULT server: dir OUTSIDE the working directory -> -32602 naming the working directory, BEFORE any core runs', async () => {
+    const outside = makeOutsideSpecRoot(inlineConforming());
+
+    const res = await callTool('lco_compile', { dir: outside });
+
+    expect(res.error).toBeDefined();
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toContain('working directory');
+    expect(res.error.message).toContain(realpathSync(cwdBase));
+  });
+
+  it('DEFAULT server: an outside lco_init target is refused with ZERO side effects (no dir created)', async () => {
+    const base = freshOutside('spec-core-mcp-out-init-');
+    const target = join(base, 'never-created');
+
+    const res = await callTool('lco_init', { dir: target });
+
+    expect(res.error.code).toBe(-32602);
+    expect(existsSync(target)).toBe(false);
+    expect(readdirSync(base)).toEqual([]); // nothing at all was written there
+  });
+
+  it('DEFAULT server: an outside lco_generate constructs NO adapter and spends ZERO calls', async () => {
+    const target = freshOutside('spec-core-mcp-out-gen-');
+    const { llm, calls } = makeLlm([JSON.stringify(inlineConforming())]);
+    const digest = generateConsentDigest('an intent outside the root', 'p-mini', 'single');
+
+    const res = await callTool(
+      'lco_generate',
+      { dir: target, intent: 'an intent outside the root', consent: { digest } },
+      { allowGenerate: true, llm },
+    );
+
+    expect(res.error.code).toBe(-32602);
+    expect(calls()).toBe(0); // the refusal precedes any adapter construction/invocation
+    expect(existsSync(join(target, 'spec'))).toBe(false);
+  });
+
+  it('explicit root MISSING -> EVERY tool fails closed (-32602 naming LCO_MCP_EXEC_ROOT)', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const env: NodeJS.ProcessEnv = { [EXEC_ROOT_ENV]: join(tmpdir(), 'lco-no-such-pin-xyz') };
+    const minimal: Array<[string, Record<string, unknown>]> = [
+      ['lco_compile', { dir: root }],
+      ['lco_lint', { dir: root }],
+      ['lco_freeze', { dir: root }],
+      ['lco_verify', { dir: root }],
+      ['lco_trace', { dir: root }],
+      ['lco_plan', { dir: root }],
+      ['lco_check', { dir: root }],
+      ['lco_init', { dir: root }],
+      ['lco_generate', { dir: root, intent: 'x' }],
+      ['lco_change', { dir: root, changeset: { id: 'CP-1', rationale: 'r' } }],
+    ];
+    for (const [name, args] of minimal) {
+      const res = await callTool(name, args, { env });
+      expect(res.error?.code, `${name} must fail closed on a missing root`).toBe(-32602);
+      expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+    }
+  });
+
+  it('explicit root is a FILE (not a directory) -> EVERY tool fails closed', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const fileRoot = join(freshOutside('spec-core-mcp-fileroot-'), 'pin-is-a-file');
+    writeFileSync(fileRoot, 'not a directory');
+    const env: NodeJS.ProcessEnv = { [EXEC_ROOT_ENV]: fileRoot };
+
+    for (const name of ['lco_compile', 'lco_freeze', 'lco_check', 'lco_generate'] as const) {
+      const args =
+        name === 'lco_generate' ? { dir: root, intent: 'x' } : { dir: root };
+      const res = await callTool(name, args, { env });
+      expect(res.error?.code, `${name} must fail closed on a file root`).toBe(-32602);
+      expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+    }
+  });
+
+  it('write/execute tools aimed OUTSIDE the root cause NO effect there (containment)', async () => {
+    // lco_freeze and lco_change on an outside spec root: refused, disk untouched.
+    const outside = makeOutsideSpecRoot(inlineConforming());
+    const before = snapshotSpec(outside);
+    const frozen = await callTool('lco_freeze', { dir: outside });
+    expect(frozen.error.code).toBe(-32602);
+    const changed = await callTool('lco_change', {
+      dir: outside,
+      changeset: { id: 'CP-OUT', rationale: 'r', modified_tasks: [] },
+    });
+    expect(changed.error.code).toBe(-32602);
+    expectIdentical(before, outside); // byte-identical: nothing was written
+
+    // Executing lco_check with a full-looking consent chain on an outside
+    // root: the dir policy refuses BEFORE the consent gate or any shell runs.
+    const injOutside = makeOutsideSpecRoot(
+      inlineWithVerification([{ command: INJECTION_COMMAND, expect: 'exit 0' }]),
+    );
+    const execAttempt = await callTool(
+      'lco_check',
+      { dir: injOutside, consent: { digest: 'sha256:' + 'a'.repeat(64) } },
+      { allowExec: true },
+    );
+    expect(execAttempt.error.code).toBe(-32602);
+    expect(existsSync(join(injOutside, 'PWNED.txt'))).toBe(false);
+    expect(existsSync(join(injOutside, 'spec', 'evidence'))).toBe(false);
+  });
+
+  it('request arguments cannot set the root: execRoot in arguments is a named -32602 refusal', async () => {
+    const root = makeSpecRoot(inlineConforming());
+
+    const compile = await callTool('lco_compile', { dir: root, execRoot: tmpdir() });
+    expect(compile.error.code).toBe(-32602);
+    expect(compile.error.message).toContain('execRoot');
+    expect(compile.error.message).toContain('OPERATOR');
+
+    const check = await callTool('lco_check', { dir: root, execRoot: '/' });
+    expect(check.error.code).toBe(-32602);
   });
 });

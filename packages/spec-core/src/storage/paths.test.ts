@@ -14,6 +14,7 @@ import {
   assertNotSymlink,
   assertWritableSpecDir,
   checkMcpDir,
+  effectiveMcpRoot,
   isInside,
   resolveNearestExisting,
   tryRealpath,
@@ -174,38 +175,78 @@ describe('assertWritableSpecDir', () => {
   });
 });
 
-// --- MCP allowed-root policy ---------------------------------------------------------
+// --- MCP allowed-root policy (SEC-003 residual: the root is MANDATORY) ---------------
+//
+// There is no unpinned, policy-free branch anymore: every call carries an
+// EFFECTIVE root — LCO_MCP_EXEC_ROOT when the operator pinned the process,
+// otherwise the server's working directory — and every dir must resolve
+// inside it. The old "no pin: any dir" tests pinned the optional-policy
+// defect the audit residual rejects and were replaced by their inverses.
 
-describe('checkMcpDir', () => {
-  it('no pin: any dir is accepted and REALPATH-NORMALIZED', () => {
-    const real = freshDir('spec-core-paths-mcp-');
-    const holder = freshDir('spec-core-paths-mcphold-');
-    const link = join(holder, 'link');
-    symlinkSync(real, link);
-    const check = checkMcpDir(link, undefined);
-    expect(check.ok).toBe(true);
-    if (check.ok) expect(check.dir).toBe(tryRealpath(real));
+describe('effectiveMcpRoot', () => {
+  it('no pin -> the server working directory (source cwd)', () => {
+    expect(effectiveMcpRoot(undefined, '/w/dir')).toEqual({ root: '/w/dir', source: 'cwd' });
   });
 
-  it('no pin: a NOT-yet-existing dir resolves via its nearest existing ancestor (creation tools)', () => {
-    const pin = freshDir('spec-core-paths-pin-');
-    const check = checkMcpDir(join(pin, 'new-spec-root'), undefined);
+  it('pin set -> the pin value (source pin)', () => {
+    expect(effectiveMcpRoot('/pinned', '/w/dir')).toEqual({ root: '/pinned', source: 'pin' });
+  });
+
+  it('defaults to the real process.cwd()', () => {
+    expect(effectiveMcpRoot(undefined)).toEqual({ root: process.cwd(), source: 'cwd' });
+  });
+});
+
+describe('checkMcpDir', () => {
+  it('cwd root: a dir inside the working directory is accepted and REALPATH-NORMALIZED', () => {
+    const base = freshDir('spec-core-paths-cwd-');
+    const real = mkdirSync(join(base, 'work'), { recursive: true });
+    void real;
+    const holder = freshDir('spec-core-paths-cwdhold-');
+    const link = join(holder, 'link');
+    symlinkSync(join(base, 'work'), link);
+    const check = checkMcpDir(link, { root: base, source: 'cwd' });
     expect(check.ok).toBe(true);
-    if (check.ok) expect(check.dir).toBe(join(tryRealpath(pin)!, 'new-spec-root'));
+    if (check.ok) expect(check.dir).toBe(tryRealpath(join(base, 'work')));
+  });
+
+  it('cwd root: a dir OUTSIDE the working directory is refused naming the working directory', () => {
+    const base = freshDir('spec-core-paths-cwdin-');
+    const outside = freshDir('spec-core-paths-cwdout-');
+    const check = checkMcpDir(outside, { root: base, source: 'cwd' });
+    expect(check.ok).toBe(false);
+    if (!check.ok) {
+      expect(check.message).toContain('working directory');
+      expect(check.message).toContain(base);
+    }
+  });
+
+  it('cwd root: a NOT-yet-existing dir INSIDE the working directory resolves via its nearest existing ancestor', () => {
+    const base = freshDir('spec-core-paths-cwdcreate-');
+    const check = checkMcpDir(join(base, 'new-spec-root'), { root: base, source: 'cwd' });
+    expect(check.ok).toBe(true);
+    if (check.ok) expect(check.dir).toBe(join(tryRealpath(base)!, 'new-spec-root'));
+  });
+
+  it('cwd root that does not resolve -> fail closed for every dir', () => {
+    const ghost = join(freshDir('spec-core-paths-cwdghost-'), 'deleted');
+    const check = checkMcpDir(tmpdir(), { root: ghost, source: 'cwd' });
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.message).toContain('working directory');
   });
 
   it('pin set + dir inside -> accepted (normalized to the real root)', () => {
     const pin = freshDir('spec-core-paths-pinin-');
     const work = join(pin, 'work');
     mkdirSync(work);
-    const check = checkMcpDir(work, pin);
+    const check = checkMcpDir(work, { root: pin, source: 'pin' });
     expect(check.ok).toBe(true);
   });
 
   it('pin set + dir outside -> refused naming LCO_MCP_EXEC_ROOT', () => {
     const pin = freshDir('spec-core-paths-pinout-');
     const outside = freshDir('spec-core-paths-outside-');
-    const check = checkMcpDir(outside, pin);
+    const check = checkMcpDir(outside, { root: pin, source: 'pin' });
     expect(check.ok).toBe(false);
     if (!check.ok) expect(check.message).toContain('LCO_MCP_EXEC_ROOT');
   });
@@ -218,32 +259,44 @@ describe('checkMcpDir', () => {
     // (resolve(dir).startsWith(resolve(execRoot))), but its realpath escapes —
     // only a realpath comparison refuses it.
     symlinkSync(elsewhere, join(pin, 'escape-link'));
-    const check = checkMcpDir(join(pin, 'escape-link'), pin);
+    const check = checkMcpDir(join(pin, 'escape-link'), { root: pin, source: 'pin' });
     expect(check.ok).toBe(false);
     if (!check.ok) expect(check.message).toContain('LCO_MCP_EXEC_ROOT');
   });
 
   it('pin set + pin itself missing -> fail closed for every dir', () => {
-    const check = checkMcpDir(tmpdir(), join(tmpdir(), 'definitely-not-here-xyz'));
+    const check = checkMcpDir(tmpdir(), {
+      root: join(tmpdir(), 'definitely-not-here-xyz'),
+      source: 'pin',
+    });
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.message).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('pin set + pin resolves to a FILE (not a directory) -> fail closed for every dir', () => {
+    const holder = freshDir('spec-core-paths-pinfile-');
+    const file = join(holder, 'pin-is-a-file');
+    writeFileSync(file, 'not a directory');
+    const check = checkMcpDir(tmpdir(), { root: file, source: 'pin' });
     expect(check.ok).toBe(false);
     if (!check.ok) expect(check.message).toContain('LCO_MCP_EXEC_ROOT');
   });
 
   it('pin set + not-yet-existing dir INSIDE the pin -> accepted (init/generate creation path)', () => {
     const pin = freshDir('spec-core-paths-pincreate-');
-    const check = checkMcpDir(join(pin, 'fresh'), pin);
+    const check = checkMcpDir(join(pin, 'fresh'), { root: pin, source: 'pin' });
     expect(check.ok).toBe(true);
   });
 
   it('pin set + not-yet-existing dir OUTSIDE the pin -> refused', () => {
     const pin = freshDir('spec-core-paths-pinno-');
     const other = freshDir('spec-core-paths-other-');
-    const check = checkMcpDir(join(other, 'fresh'), pin);
+    const check = checkMcpDir(join(other, 'fresh'), { root: pin, source: 'pin' });
     expect(check.ok).toBe(false);
   });
 
   it('empty dir is refused (never resolves)', () => {
-    const check = checkMcpDir('', undefined);
+    const check = checkMcpDir('', { root: process.cwd(), source: 'cwd' });
     expect(check.ok).toBe(false);
   });
 });

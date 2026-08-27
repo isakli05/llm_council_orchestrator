@@ -3,6 +3,8 @@ import { buildTrace } from '../lint/trace';
 import type { SpecBundle } from '../schemas';
 import type { EvalTask, DeterministicAssertion } from './tasks';
 import type { PipelineOutcome, PipelineVariant } from './runner';
+import { checkConstraintTrace, allUnGrounded } from './constraints';
+import type { ConstraintFailure } from './constraints';
 
 /**
  * Deterministic scoring of one pipeline outcome against a task's assertions
@@ -11,10 +13,11 @@ import type { PipelineOutcome, PipelineVariant } from './runner';
  * schema-validated and lint-gated).
  *
  * PROD-003 splits every score into STRUCTURAL validity (every assertion except
- * MENTIONS_TERMS) and INTENT fidelity (the MENTIONS_TERMS assertions plus
- * blocked-correctness). A structurally valid but unfaithful bundle — the audit's
- * "generic good fixture" — now scores structuralPassed=true, intentPassed=false,
- * with the missing intent terms named.
+ * CONSTRAINT_TRACE/BLOCKED) and INTENT fidelity (the CONSTRAINT_TRACE
+ * assertion plus blocked-correctness). A structurally valid but unfaithful
+ * bundle — the audit's "generic good fixture" — scores structuralPassed=true,
+ * intentPassed=false, with the failed constraints named and the trace stage
+ * that broke (RESIDUAL PROD-003: grounding, not term presence).
  */
 
 /**
@@ -30,44 +33,6 @@ export function normalizeForTermMatch(text: string): string {
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-/**
- * The bundle's searchable body: every free-text field a faithful spec would
- * carry a named constraint in. DELIBERATELY EXCLUDES `intent.statement`,
- * `intent.normalized`, and `manifest` — a bundle that quotes the intent back at
- * itself has not encoded anything (the PROD-003 echo cheat).
- */
-export function searchableBundleText(bundle: SpecBundle): string {
-  const parts: string[] = [
-    ...bundle.glossary.flatMap((g) => [g.term, g.definition]),
-    ...bundle.assumptions.flatMap((a) => [a.statement, a.impact_if_wrong]),
-    ...bundle.evidence.map((e) => e.source),
-    ...bundle.requirements.flatMap((r) => [r.statement, ...r.terms_used]),
-    ...bundle.decisions.flatMap((d) => [
-      d.decision,
-      d.rationale,
-      ...d.assumptions,
-      ...d.alternatives.flatMap((x) => [x.option, x.rejected_because]),
-    ]),
-    ...bundle.contracts.flatMap((c) => [c.symbol, c.definition]),
-    ...bundle.tasks.flatMap((t) => [
-      t.title,
-      t.purpose,
-      t.instructions,
-      ...t.preconditions,
-      ...t.permitted_scope,
-      ...t.protected,
-      ...t.invariants,
-      ...t.acceptance,
-      t.rollback,
-      t.risk.note,
-      ...t.interface_changes.flatMap((i) => [i.symbol, i.file]),
-      ...t.tests.flatMap((x) => [x.file, ...x.cases]),
-      ...t.verification.flatMap((v) => [v.command, v.expect]),
-    ]),
-  ];
-  return parts.join('\n');
 }
 
 /** ADVISORY (never gated, PROD-003): first-class concepts (glossary terms +
@@ -99,19 +64,24 @@ export interface RunScore {
    */
   repeat: number;
   /**
-   * PROD-003: every assertion EXCEPT MENTIONS_TERMS passed — the bundle is
-   * structurally valid. True for a generic-but-clean fixture; that is exactly
-   * what the label is for.
+   * PROD-003: every assertion EXCEPT CONSTRAINT_TRACE/BLOCKED passed — the
+   * bundle is structurally valid. True for a generic-but-clean fixture; that
+   * is exactly what the label is for.
    */
   structuralPassed: boolean;
   /**
-   * PROD-003: every MENTIONS_TERMS assertion passed AND blockedCorrectly is
+   * PROD-003: every CONSTRAINT_TRACE assertion passed AND blockedCorrectly is
    * true (for must-be-blocked tasks the block itself is the fidelity). G4's
    * council-advantage comparison counts ONLY intentPassed runs.
    */
   intentPassed: boolean;
-  /** Named intent terms the bundle failed to carry (spec outcomes; on blocked outcomes with a greenfield task, all of them). */
-  missingTerms: string[];
+  /**
+   * RESIDUAL PROD-003: named constraint-trace failures (constraint id + the
+   * trace stage that broke + short evidence). Empty when intent grounding
+   * holds; on blocked outcomes of greenfield tasks every constraint is listed
+   * as NOT_GROUNDED (no bundle exists).
+   */
+  constraintFailures: ConstraintFailure[];
   /** ADVISORY inventions (never gated): unmentioned first-class concepts. */
   advisoryInventions: string[];
   /**
@@ -178,10 +148,11 @@ export interface RunUsage {
  *   req-task edge (via buildTrace) / total requirements; passes iff every
  *   requirement is covered. An empty requirement set is NOT covered — the
  *   evidence gate demands positive traceability.
- * - MENTIONS_TERMS (PROD-003): spec outcome whose searchable body text carries
- *   every named term (normalized). The bundle's own intent echo is not
- *   searchable. A blocked outcome fails it: a bundle that never existed
- *   carried nothing.
+ * - CONSTRAINT_TRACE (RESIDUAL PROD-003): spec outcome whose every declared
+ *   intent constraint is grounded requirement -> covering task -> related
+ *   test -> judgeable verification, with numeric relations retained and
+ *   forbidden inventions absent from the commitment surfaces (constraints.ts).
+ *   A blocked outcome fails it: a bundle that never existed grounded nothing.
  */
 function assertionPasses(
   assertion: DeterministicAssertion,
@@ -219,12 +190,24 @@ function assertionPasses(
       );
       return bundle.requirements.every((r) => covered.has(r.id));
     }
-    case 'MENTIONS_TERMS': {
-      if (outcome.kind !== 'spec') return false;
-      const text = normalizeForTermMatch(searchableBundleText(outcome.bundle));
-      return assertion.terms.every((term) => text.includes(normalizeForTermMatch(term)));
-    }
+    case 'CONSTRAINT_TRACE':
+      return outcome.kind === 'spec' && constraintFailuresFor(task, outcome).length === 0;
   }
+}
+
+/**
+ * The constraint-trace failures for this outcome (single source for both the
+ * assertion verdict and the RunScore's named-failure list): spec outcomes are
+ * checked against the bundle; blocked outcomes of greenfield tasks report
+ * every constraint as ungrounded (no bundle exists to ground anything).
+ */
+function constraintFailuresFor(task: EvalTask, outcome: PipelineOutcome): ConstraintFailure[] {
+  const traces = task.assertions.filter(
+    (a): a is Extract<DeterministicAssertion, { type: 'CONSTRAINT_TRACE' }> => a.type === 'CONSTRAINT_TRACE',
+  );
+  if (traces.length === 0) return [];
+  if (outcome.kind !== 'spec') return traces.flatMap(allUnGrounded);
+  return traces.flatMap((a) => checkConstraintTrace(task, a, outcome.bundle));
 }
 
 /**
@@ -232,9 +215,10 @@ function assertionPasses(
  * split + blocked-correctness + usage passthrough.
  *
  * The split (which side an assertion belongs to is a recorded decision):
- * - INTENT assertions: MENTIONS_TERMS (the named constraints were carried) and
- *   BLOCKED (the intent's demand to be blocked was honored). Both ask "did the
- *   outcome faithfully honor what the intent asked for".
+ * - INTENT assertions: CONSTRAINT_TRACE (the declared constraints were
+ *   GROUNDED, not merely mentioned) and BLOCKED (the intent's demand to be
+ *   blocked was honored). Both ask "did the outcome faithfully honor what the
+ *   intent asked for".
  * - STRUCTURAL assertions: everything else (HAS_REQUIREMENTS, TASKS_ACYCLIC,
  *   TASKS_HAVE_VERIFICATION, TRACE_REQ_TASK_COVERED, STATE_IS_DRAFT_OR_BLOCKED)
  *   — "is the artifact well-formed". A generic clean bundle is structurally
@@ -242,7 +226,7 @@ function assertionPasses(
  * - intentPassed = every intent assertion passes AND blockedCorrectly is true.
  *   For must-be-blocked tasks that reduces to blockedCorrectly — blocking an
  *   ambiguous intent IS fidelity to it. For greenfield tasks it reduces to
- *   carried-constraints AND not-over-blocked.
+ *   grounded-constraints AND not-over-blocked.
  */
 export function scoreRun(
   task: EvalTask,
@@ -251,24 +235,17 @@ export function scoreRun(
   repeat = 1,
 ): RunScore {
   const isIntentAssertion = (a: DeterministicAssertion): boolean =>
-    a.type === 'MENTIONS_TERMS' || a.type === 'BLOCKED';
+    a.type === 'CONSTRAINT_TRACE' || a.type === 'BLOCKED';
   const structuralAssertions = task.assertions.filter((a) => !isIntentAssertion(a));
   const intentAssertions = task.assertions.filter(isIntentAssertion);
 
   const structuralPassed = structuralAssertions.every((a) => assertionPasses(a, task, outcome));
-  const intentTermsPassed = intentAssertions.every((a) => assertionPasses(a, task, outcome));
+  const intentAssertionsPassed = intentAssertions.every((a) => assertionPasses(a, task, outcome));
 
   const blockedCorrectly =
     outcome.kind === 'blocked' || outcome.kind === 'spec'
       ? (outcome.kind === 'blocked') === task.must_be_blocked
       : null;
-
-  const bodyText =
-    outcome.kind === 'spec' ? normalizeForTermMatch(searchableBundleText(outcome.bundle)) : '';
-  const missingTerms = task.assertions
-    .filter((a): a is Extract<DeterministicAssertion, { type: 'MENTIONS_TERMS' }> => a.type === 'MENTIONS_TERMS')
-    .flatMap((a) => a.terms)
-    .filter((term) => !bodyText.includes(normalizeForTermMatch(term)));
 
   return {
     taskId: task.id,
@@ -277,8 +254,8 @@ export function scoreRun(
     assertionsTotal: task.assertions.length,
     repeat,
     structuralPassed,
-    intentPassed: intentTermsPassed && blockedCorrectly === true,
-    missingTerms,
+    intentPassed: intentAssertionsPassed && blockedCorrectly === true,
+    constraintFailures: constraintFailuresFor(task, outcome),
     advisoryInventions: advisoryInventions(task, outcome),
     blockedCorrectly,
     councilDegraded: outcome.councilDegraded === true,

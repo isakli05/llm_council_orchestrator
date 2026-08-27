@@ -48,7 +48,9 @@ import { SpecBundleSchema } from '../../schemas';
  *     no exec bit), spec/ exists but does not compile.
  *   WARN = unconfigured-optional / advisory — nothing is broken yet:
  *     node below the engines floor (the CLI obviously still runs), LCO_LLM_*
- *     unset/partial/invalid (mock is the default adapter), LCO_MCP_* flag
+ *     unset/partial/invalid (CLI/MCP generation defaults to the LIVE HTTP
+ *     adapter and fails closed without them — mocks reach only tests and
+ *     library callers), LCO_MCP_* flag
  *     set-but-not-1 or a bad EXEC_ROOT, LCO_GENERATE_MAX_* garbage, live
  *     lock held by another writer, stale/missing generated/spec-schema.json.
  *   SKIP = not applicable in this context: no spec/ under <dir>, no dist/
@@ -212,7 +214,8 @@ export function checkProviderEnv(env: Record<string, string | undefined>): Docto
   const unset = REQUIRED_LLM_ENV.filter((key) => !env[key]);
   if (unset.length > 0) {
     issues.push(
-      `unset: ${unset.join(', ')} (mock is the default adapter; live generate requires all three)`,
+      `unset: ${unset.join(', ')} (generation defaults to the LIVE HTTP adapter and fails ` +
+        'closed without all three — mocks are available only to tests/library callers)',
     );
   }
 
@@ -267,15 +270,31 @@ export function checkMcpFlags(
 
   const execRoot = env.LCO_MCP_EXEC_ROOT;
   if (!execRoot) {
-    parts.push('LCO_MCP_EXEC_ROOT unset (exec workspace unpinned)');
+    // SEC-003 binding policy: an unset pin is NOT "no path policy" — the
+    // server's effective allowed root is realpath(process.cwd()). Every tool
+    // call's dir must resolve inside it.
+    parts.push(
+      'LCO_MCP_EXEC_ROOT unset (effective allowed root = the server working ' +
+        'directory, realpath-normalized — every tool dir must resolve inside it)',
+    );
   } else if (!isAbsolute(execRoot)) {
-    parts.push('LCO_MCP_EXEC_ROOT set but not an absolute path (exec will refuse)');
+    parts.push(
+      'LCO_MCP_EXEC_ROOT set but not an absolute path — the server RESOLVES a ' +
+        'relative pin against its own working directory at startup (the pin target ' +
+        'then depends on where the server was spawned); use an absolute path for a ' +
+        'predictable effective root',
+    );
     misconfigured = true;
   } else if (!execRootExists(execRoot)) {
-    parts.push('LCO_MCP_EXEC_ROOT set but the path does not exist (exec will refuse)');
+    parts.push(
+      'LCO_MCP_EXEC_ROOT set but the path does not exist (every tool call will refuse)',
+    );
     misconfigured = true;
   } else {
-    parts.push('LCO_MCP_EXEC_ROOT set (absolute, exists)');
+    parts.push(
+      'LCO_MCP_EXEC_ROOT set (absolute, exists — it is the effective allowed root; ' +
+        'every tool dir must resolve inside it)',
+    );
   }
 
   if (misconfigured) {

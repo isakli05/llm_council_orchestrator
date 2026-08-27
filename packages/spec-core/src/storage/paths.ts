@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from 'node:fs';
+import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 /**
@@ -35,9 +35,13 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
  *   access to the tree is not) and cannot be closed portably in Node without
  *   dirfd/O_NOFOLLOW-style APIs.
  *
- * The MCP layer adds the allowed-root policy on top (checkMcpDir): the
- * server's `dir` is ALWAYS realpath-normalized, and when the operator pinned
- * the process with LCO_MCP_EXEC_ROOT the dir must RESOLVE inside the pin.
+ * The MCP layer adds a MANDATORY allowed-root policy on top (checkMcpDir +
+ * effectiveMcpRoot): the server's `dir` is ALWAYS realpath-normalized, and it
+ * must RESOLVE inside the EFFECTIVE allowed root — realpath(LCO_MCP_EXEC_ROOT)
+ * when the operator pinned the process, otherwise realpath of the server's
+ * working directory. There is no unpinned, policy-free branch (the audit
+ * residual rejects optional security); a root that does not resolve to an
+ * existing directory fails every tool call closed.
  *
  * PLATFORM: POSIX is the product target (symlink semantics as described);
  * Windows junction/reparse-point behavior is out of scope and untested.
@@ -178,29 +182,64 @@ export function assertWritableSpecDir(root: string, fileNames: readonly string[]
   }
 }
 
-// --- MCP allowed-root policy ---------------------------------------------------------
+// --- MCP allowed-root policy (SEC-003 residual: MANDATORY effective root) ------------
 
 /** The verdict of {@link checkMcpDir}. */
 export type McpDirCheck = { ok: true; dir: string } | { ok: false; message: string };
+
+/** Where the effective allowed root came from — names the source in refusals. */
+export type McpRootSource = 'pin' | 'cwd';
+
+/** The effective allowed root of one server call: the root value + its origin. */
+export interface EffectiveMcpRoot {
+  /**
+   * The UNRESOLVED root: LCO_MCP_EXEC_ROOT's value when pinned, otherwise the
+   * server process's working directory. {@link checkMcpDir} realpaths it.
+   */
+  root: string;
+  /** 'pin' when the root is LCO_MCP_EXEC_ROOT, 'cwd' when it is process.cwd(). */
+  source: McpRootSource;
+}
+
+/**
+ * The BINDING effective allowed root, computed ONCE per tool call at the RPC
+ * boundary from server state (env + process.cwd() — never from request
+ * arguments):
+ *
+ *   LCO_MCP_EXEC_ROOT set  -> that value (source 'pin')
+ *   otherwise              -> process.cwd()   (source 'cwd')
+ *
+ * Security is therefore NOT optional: an unpinned server is pinned to its own
+ * working directory, and a root that does not resolve to an existing
+ * directory fails every tool call closed (see checkMcpDir).
+ */
+export function effectiveMcpRoot(
+  execRoot: string | undefined,
+  cwd: string = process.cwd(),
+): EffectiveMcpRoot {
+  return execRoot === undefined ? { root: cwd, source: 'cwd' } : { root: execRoot, source: 'pin' };
+}
+
+/** Human name of the root's origin, for refusal messages. */
+function rootSourceLabel(allowed: EffectiveMcpRoot): string {
+  return allowed.source === 'pin'
+    ? `LCO_MCP_EXEC_ROOT (${allowed.root})`
+    : `the server working directory (${allowed.root})`;
+}
 
 /**
  * The MCP server's allowed-root policy for one tool call's `dir`.
  *
  * ALWAYS: the dir is REALPATH-NORMALIZED (an existing dir through symlinked
  * parents resolves to its real path; a not-yet-existing dir resolves via its
- * nearest existing ancestor, so init/generate creation targets normalize too).
- *
- * When `execRoot` (LCO_MCP_EXEC_ROOT, resolved from the server environment —
- * never from the request) is set, the dir must RESOLVE inside the pin's own
- * realpath: a path that is lexically under the pin but escapes through a
- * symlink is refused, and a pin that does not itself resolve fails closed
- * for every call.
- *
- * Without a pin there is no path policy — that is the documented local-trust
- * boundary (README: an unpinned server trusts its client with local paths);
- * the boundary is the operator's to draw at server start.
+ * nearest existing ancestor, so init/generate creation targets normalize too)
+ * and must RESOLVE inside the EFFECTIVE allowed root's own realpath: a path
+ * that is lexically under the root but escapes through a symlink is refused,
+ * and a root that does not itself resolve to an existing DIRECTORY fails
+ * closed for every call — naming whether the root came from the
+ * LCO_MCP_EXEC_ROOT pin or the server working directory.
  */
-export function checkMcpDir(dir: string, execRoot: string | undefined): McpDirCheck {
+export function checkMcpDir(dir: string, allowed: EffectiveMcpRoot): McpDirCheck {
   if (typeof dir !== 'string' || dir.trim() === '') {
     return { ok: false, message: "Invalid arguments: 'dir' must be a non-empty string" };
   }
@@ -210,30 +249,50 @@ export function checkMcpDir(dir: string, execRoot: string | undefined): McpDirCh
   } catch (err) {
     return { ok: false, message: `cannot resolve dir ${dir}: ${(err as Error).message}` };
   }
-  if (execRoot === undefined) {
-    return { ok: true, dir: resolved };
-  }
-  let pinReal: string;
+  let rootReal: string;
   try {
-    pinReal = realpathSync(execRoot);
+    rootReal = realpathSync(allowed.root);
   } catch {
     return {
       ok: false,
       message:
-        `Invalid dir: LCO_MCP_EXEC_ROOT (${execRoot}) does not resolve to an existing ` +
-        'directory — the operator pinned this server to a workspace that is not ' +
-        'there, so every tool call is refused until the pin is fixed or removed',
+        allowed.source === 'pin'
+          ? `Invalid dir: LCO_MCP_EXEC_ROOT (${allowed.root}) does not resolve to an existing ` +
+            'directory — the operator pinned this server to a workspace that is not ' +
+            'there, so every tool call is refused until the pin is fixed or removed'
+          : `Invalid dir: the server working directory (${allowed.root}) does not resolve ` +
+            'to an existing directory — every tool call is refused until the server ' +
+            'is started again from an existing directory (or with a valid ' +
+            'LCO_MCP_EXEC_ROOT pin)',
     };
   }
-  if (!isInside(pinReal, resolved)) {
+  let isDir: boolean;
+  try {
+    isDir = statSync(rootReal).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) {
     return {
       ok: false,
       message:
-        `Invalid dir: ${dir} resolves to ${resolved}, outside LCO_MCP_EXEC_ROOT ` +
-        `(${execRoot} → ${pinReal}) — the operator pinned this server to that ` +
-        'workspace (realpath containment: symlinked paths cannot move a tool ' +
-        'call outside the pin). Use a spec root under the pin, or have the ' +
-        'operator restart the server without the pin.',
+        `Invalid dir: ${rootSourceLabel(allowed)} resolves to ${rootReal}, which is not ` +
+        'a directory — every tool call is refused until the allowed root is an ' +
+        'existing directory',
+    };
+  }
+  if (!isInside(rootReal, resolved)) {
+    return {
+      ok: false,
+      message:
+        `Invalid dir: ${dir} resolves to ${resolved}, outside the allowed root ` +
+        `${rootReal} (from ${rootSourceLabel(allowed)}) — realpath containment: ` +
+        'symlinked paths cannot move a tool call outside the root. ' +
+        (allowed.source === 'pin'
+          ? 'Use a spec root under the pin, or have the operator restart the server ' +
+            'with a different pin.'
+          : 'Use a spec root under the server working directory, or have the operator ' +
+            'restart the server from the workspace root (or with an LCO_MCP_EXEC_ROOT pin).'),
     };
   }
   return { ok: true, dir: resolved };

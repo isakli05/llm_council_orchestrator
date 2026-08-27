@@ -80,16 +80,19 @@ const intentBlock = (intent: string, profile: EvalTaskProfile): string =>
   [`USER INTENT (verbatim):`, '"""', intent, '"""', `EXPECTED COMPLEXITY PROFILE: ${profile}`].join('\n');
 
 /**
- * PROD-003: constraint fidelity is a SCORED property — every concrete
- * constraint the intent names (commands, flags, technologies, formats, limits,
- * status codes, proper nouns) must be carried verbatim into the bundle body
- * that implements it. Paraphrasing "PostgreSQL" into "a relational database"
- * loses the constraint and fails the intent-fidelity assertions.
+ * PROD-003 / RESIDUAL PROD-003: constraint fidelity is a SCORED, GROUNDED
+ * property — every concrete constraint the intent names must be carried into
+ * the requirement statement that states it, and that requirement must be
+ * traceable to a task with a related test case and a judgeable exit-code
+ * verification. Mere presence of the keyword anywhere in the bundle (a
+ * glossary entry, an instruction list) does not score.
  */
 const CONSTRAINT_FIDELITY = [
-  'CONSTRAINT FIDELITY (scored):',
-  '- Every concrete constraint the user intent names — commands, flags, technologies, formats, ports, quotas, limits, status codes, proper nouns — must appear VERBATIM in the requirements/tasks/tests/glossary text that implements it.',
-  '- Do not paraphrase named values away ("PostgreSQL" is not "a relational database"); do not invent first-class entities or behaviors the intent never mentioned.',
+  'CONSTRAINT FIDELITY (scored, grounded):',
+  '- Every concrete constraint the user intent names — commands, flags, technologies, formats, ports, quotas, limits, status codes, proper nouns — must appear VERBATIM inside the REQUIREMENT STATEMENT that states it, not merely mentioned in glossary, decisions, or task instructions.',
+  '- Each such requirement must be referenced by at least one task (refs.requirements), and that task must carry a test case naming the constraint and a verification entry whose expect states an exit code ("exit 0" style).',
+  '- Numeric bounds keep the intent\'s exact values ("at most 3", "under 300 ms"): do not re-scale, round, or widen them.',
+  '- Do not paraphrase named values away ("PostgreSQL" is not "a relational database"); do not invent first-class entities, behaviors, or architecture the intent never mentioned or explicitly ruled out.',
 ].join('\n');
 
 /**

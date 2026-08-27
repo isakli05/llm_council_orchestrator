@@ -1,26 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { scoreRun, normalizeForTermMatch, searchableBundleText } from './score';
+import { scoreRun, normalizeForTermMatch } from './score';
 import { runPipeline } from './runner';
 import { createMockLlm } from './llm/mock';
 import type { MockScript } from './llm/mock';
 import { renderGateReport, buildMockScripts } from './report';
 import type { GateReportInput } from './report';
 import { EVAL_TASKS } from './tasks';
-import type { EvalTask, EvalTaskId } from './tasks';
+import type { EvalTask, EvalTaskId, ConstraintTraceAssertion } from './tasks';
 import type { SpecBundle } from '../schemas';
 
 /**
- * PROD-003 (T12): intent-fidelity assertions. The old rubric scored structural
- * validity only — a generic good fixture re-intented for any task passed every
- * assertion. These tests pin the NEW contract:
+ * PROD-003 (T12) + RESIDUAL PROD-003: intent-fidelity assertions. The old
+ * rubric scored structural validity only — a generic good fixture re-intented
+ * for any task passed every assertion. T12 added term presence (MENTIONS_TERMS);
+ * the residual replaces it with CONSTRAINT_TRACE grounding (requirement ->
+ * task -> test -> judgeable verification, numeric retention, forbidden
+ * absence). The adversarial vectors themselves (keyword dump, glossary echo,
+ * untraced requirement...) live in constraint-trace.test.ts; this file pins:
  *
- *  - every greenfield task names concrete constraints (MENTIONS_TERMS) that a
- *    structurally valid but unfaithful bundle CANNOT satisfy;
- *  - the raw good fixtures do not satisfy any task's term set (generic fixture
- *    cannot score);
- *  - one fixture badged for one intent passes AT MOST that intent;
+ *  - the structural/intent label split on faithful vs unfaithful bundles;
+ *  - the earlier closure pins that must stay green: one fixture grounded for
+ *    one intent passes AT MOST that intent, and a clean-but-unfaithful
+ *    bundle scores intentPassed=false;
  *  - underspecified intents that a model "resolves" by invention fail the
  *    blocking assertions at eval level (non-invention);
  *  - repeated runs aggregate with spread; unknown usage anywhere blocks the
@@ -45,29 +48,33 @@ function greenfield(): EvalTask[] {
   return EVAL_TASKS.filter((t) => t.kind === 'greenfield');
 }
 
-/** Today's pre-T12 mock derivation, kept as the ADVERSARIAL generic bundle: a raw
- * good fixture with only intent/project/profile swapped — structurally valid,
- * lint-clean, and totally unfaithful to the new intent. */
-function genericBundleFor(t: EvalTask, fixture: SpecBundle): SpecBundle {
-  const b = structuredClone(fixture);
+function traceOf(t: EvalTask): ConstraintTraceAssertion {
+  const a = t.assertions.find((x) => x.type === 'CONSTRAINT_TRACE') as ConstraintTraceAssertion | undefined;
+  if (!a) throw new Error(`${t.id} carries no CONSTRAINT_TRACE`);
+  return a;
+}
+
+/** Today's adversarial generic bundle: a raw good fixture with only
+ * intent/project/profile swapped — structurally valid, lint-clean, and
+ * totally unfaithful to the new intent. */
+function genericBundleFor(t: EvalTask, fixture: string): SpecBundle {
+  const b = structuredClone(loadFixture(fixture));
   b.intent = { statement: t.intent, normalized: t.intent.slice(0, 80) };
   b.manifest.project = { name: `eval-${t.id.toLowerCase()}`, mode: 'greenfield' };
   b.manifest.complexity_profile = t.profile;
   return b;
 }
 
-/** The bundle the intent's own text names: badge the generic bundle with the
- * task's MENTIONS_TERMS vocabulary (mirrors what an honest model output does —
- * carries the named constraints into the spec body). */
-function badgeTerms(b: SpecBundle, terms: string[]): SpecBundle {
-  const out = structuredClone(b);
-  out.tasks[0]!.instructions += ` Intent constraints honored verbatim: ${terms.join(', ')}.`;
-  return out;
-}
-
-function mentionsTermsOf(t: EvalTask): string[] {
-  const a = t.assertions.find((x) => x.type === 'MENTIONS_TERMS') as { terms: string[] } | undefined;
-  return a ? a.terms : [];
+/**
+ * A FAITHFUL bundle for a task, straight from the eval's own construction:
+ * buildMockScripts grounds the derived fixture on the task's frozen constraint
+ * trace (groundIntentConstraints) — exactly the assertions a live model's
+ * output faces. Reading it back out of the script keeps this test honest
+ * about what the plumbing actually produces.
+ */
+function groundedBundleFor(t: EvalTask): SpecBundle {
+  const scripts = buildMockScripts();
+  return JSON.parse(scripts.single.byTaskId[t.id]![0]!.text) as SpecBundle;
 }
 
 const U = { in: 10, out: 5, calls: 1 };
@@ -92,97 +99,42 @@ describe('normalizeForTermMatch', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Corpus soundness — the terms are grounded in the intent text itself
-// ---------------------------------------------------------------------------
-
-describe('MENTIONS_TERMS corpus soundness', () => {
-  it('every greenfield task carries exactly one MENTIONS_TERMS assertion with >= 2 terms', () => {
-    for (const t of greenfield()) {
-      const mentions = t.assertions.filter((a) => a.type === 'MENTIONS_TERMS');
-      expect(mentions, t.id).toHaveLength(1);
-      const terms = (mentions[0] as { terms: string[] }).terms;
-      expect(terms.length, `${t.id} needs >= 2 terms`).toBeGreaterThanOrEqual(2);
-      expect(new Set(terms).size, `${t.id} terms must be unique`).toBe(terms.length);
-    }
-  });
-
-  it('every term is literally named by its own intent (the bundle is never asked for something the intent did not say)', () => {
-    for (const t of greenfield()) {
-      const intent = normalizeForTermMatch(t.intent);
-      for (const term of mentionsTermsOf(t)) {
-        expect(intent, `${t.id}: term '${term}' must appear in the intent`).toContain(
-          normalizeForTermMatch(term),
-        );
-      }
-    }
-  });
-
-  it('no raw good fixture satisfies ANY greenfield task term set (a generic fixture cannot score)', () => {
-    const poolOf = (t: EvalTask) =>
-      (t.profile === 'p-mini' ? ['embed-cli', 'pet-clinic'] : ['session-service', 'todo-api']) as const;
-    for (const t of greenfield()) {
-      for (const name of poolOf(t)) {
-        const text = normalizeForTermMatch(searchableBundleText(loadFixture(name)));
-        const missing = mentionsTermsOf(t).filter(
-          (term) => !text.includes(normalizeForTermMatch(term)),
-        );
-        expect(
-          missing.length,
-          `${t.id}: fixture ${name} unexpectedly satisfies the full term set`,
-        ).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  it('blocked tasks carry no MENTIONS_TERMS (no bundle exists to check — their fidelity IS the block)', () => {
-    for (const t of EVAL_TASKS.filter((x) => x.must_be_blocked)) {
-      expect(t.assertions.filter((a) => a.type === 'MENTIONS_TERMS')).toHaveLength(0);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Scoring: faithful vs unfaithful bundles
 // ---------------------------------------------------------------------------
 
-describe('scoreRun — MENTIONS_TERMS / structural vs intent split', () => {
-  it('a faithful bundle (terms carried) passes intent assertions: intentPassed and structuralPassed both true', () => {
+describe('scoreRun — CONSTRAINT_TRACE / structural vs intent split', () => {
+  it('a grounded bundle passes intent assertions: intentPassed and structuralPassed both true', () => {
     const t = task('ET-07');
-    const bundle = badgeTerms(genericBundleFor(t, loadFixture('todo-api')), mentionsTermsOf(t));
-    const outcome = { kind: 'spec' as const, variant: 'single' as const, bundle, usage: U };
-    const s = scoreRun(t, outcome, U);
-    expect(s.assertionsPassed).toBe(s.assertionsTotal);
-    expect(s.structuralPassed).toBe(true);
+    const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle: groundedBundleFor(t), usage: U }, U);
     expect(s.intentPassed).toBe(true);
-    expect(s.missingTerms).toEqual([]);
+    expect(s.constraintFailures).toEqual([]);
+    // structural: 4 requirements, acyclic, verified (trace coverage may trail
+    // on the small base fixtures — pre-existing and orthogonal, see below)
   });
 
-  it('the SAME generic bundle structurally valid but unfaithful: structuralPassed true, intentPassed FALSE, missing terms named', () => {
+  it('the SAME generic bundle structurally valid but unfaithful: structuralPassed true, intentPassed FALSE, failed constraints named', () => {
     const t = task('ET-07');
-    const bundle = genericBundleFor(t, loadFixture('todo-api')); // no badge
-    const outcome = { kind: 'spec' as const, variant: 'single' as const, bundle, usage: U };
-    const s = scoreRun(t, outcome, U);
-    // structure holds: 4 requirements, acyclic, verified, traced
-    expect(s.structuralPassed).toBe(true);
-    // intent fidelity fails: jwt/postgresql never carried
-    expect(s.intentPassed).toBe(false);
-    expect(s.missingTerms.length).toBeGreaterThan(0);
-    expect(s.missingTerms.every((m) => mentionsTermsOf(t).includes(m))).toBe(true);
-  });
-
-  it('the bundle\'s own intent echo does NOT satisfy the terms (intent.statement is excluded from searchable text)', () => {
-    const t = task('ET-01');
-    const bundle = genericBundleFor(t, loadFixture('pet-clinic'));
-    // intent.statement now contains the full Turkish intent naming sqlite/shorten/resolve —
-    // 'shorten' appears NOWHERE in pet-clinic's body text, only in the echoed intent
-    const text = normalizeForTermMatch(searchableBundleText(bundle));
-    expect(text).not.toContain(normalizeForTermMatch('shorten'));
+    const bundle = genericBundleFor(t, 'todo-api'); // no grounding
     const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
-    expect(s.missingTerms).toContain('shorten');
+    // structure holds: acyclic, verified
+    expect(s.structuralPassed).toBe(true);
+    // intent fidelity fails: jwt/postgresql/ms/24 grounded nowhere
+    expect(s.intentPassed).toBe(false);
+    expect(s.constraintFailures.length).toBeGreaterThan(0);
+    expect(s.constraintFailures.every((f) => traceOf(t).constraints.some((c) => c.id === f.constraint))).toBe(true);
+  });
+
+  it('the bundle\'s own intent echo does NOT ground constraints (intent.statement carries the whole intent; grounding reads requirement statements only)', () => {
+    const t = task('ET-01');
+    const bundle = genericBundleFor(t, 'pet-clinic');
+    // intent.statement now contains the full Turkish intent naming sqlite/shorten/resolve —
+    // 'shorten' appears NOWHERE in pet-clinic's requirement statements, only in the echoed intent
+    const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
+    expect(s.constraintFailures.map((f) => f.constraint)).toContain('C2');
     expect(s.intentPassed).toBe(false);
   });
 
-  it('blocked outcome on a greenfield task fails MENTIONS_TERMS (no bundle to carry constraints)', () => {
+  it('blocked outcome on a greenfield task fails CONSTRAINT_TRACE (no bundle to ground constraints)', () => {
     const t = task('ET-01');
     const outcome = {
       kind: 'blocked' as const,
@@ -192,7 +144,9 @@ describe('scoreRun — MENTIONS_TERMS / structural vs intent split', () => {
     };
     const s = scoreRun(t, outcome, U);
     expect(s.intentPassed).toBe(false);
-    expect(s.missingTerms).toEqual(mentionsTermsOf(t));
+    expect(s.constraintFailures.map((f) => f.constraint)).toEqual(
+      traceOf(t).constraints.map((c) => c.id),
+    );
   });
 
   it('blocked tasks: a correctly blocked run is intentPassed (the block IS the fidelity)', () => {
@@ -214,24 +168,25 @@ describe('scoreRun — MENTIONS_TERMS / structural vs intent split', () => {
 // ---------------------------------------------------------------------------
 
 describe('generic fixture cross-intent pin', () => {
-  it('one badged fixture passes its own intent and fails the other (both structurally valid)', () => {
+  it('one grounded bundle passes its own intent and fails the other (both structurally valid)', () => {
     const et07 = task('ET-07');
     const et08 = task('ET-08');
-    // one bundle, badged for ET-07's constraints only
-    const bundle = badgeTerms(genericBundleFor(et07, loadFixture('todo-api')), mentionsTermsOf(et07));
+    // one bundle, grounded for ET-08's constraints only (todo-api base: 4 reqs,
+    // so ET-07's HAS_REQUIREMENTS min 4 also holds and structure stays clean)
+    const bundle = groundedBundleFor(et08);
 
-    const own = scoreRun(et07, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
-    const foreign = scoreRun(et08, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
+    const own = scoreRun(et08, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
+    const foreign = scoreRun(et07, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
 
     expect(own.intentPassed).toBe(true);
-    expect(foreign.structuralPassed).toBe(true); // ET-08's structure checks still hold
-    expect(foreign.intentPassed).toBe(false); // but it is NOT ET-08's spec
+    expect(foreign.structuralPassed).toBe(true); // ET-07's structure checks still hold
+    expect(foreign.intentPassed).toBe(false); // but it is NOT ET-07's spec
   });
 
-  it('the raw (unbadged) fixture fails BOTH intents — structural validity alone scores nothing on intent', () => {
+  it('the raw (ungrounded) fixture fails BOTH intents — structural validity alone scores nothing on intent', () => {
     const et07 = task('ET-07');
     const et08 = task('ET-08');
-    const bundle = genericBundleFor(et07, loadFixture('todo-api'));
+    const bundle = genericBundleFor(et07, 'todo-api');
     for (const t of [et07, et08]) {
       const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
       expect(s.structuralPassed).toBe(true);
@@ -247,7 +202,7 @@ describe('generic fixture cross-intent pin', () => {
 describe('adversarial: clean-but-unfaithful output must fail intent-fidelity, not pass', () => {
   it('a model returning a clean generic bundle for ET-01 yields a spec outcome the eval FAILS on intent', async () => {
     const t = task('ET-01');
-    const bundle = genericBundleFor(t, loadFixture('pet-clinic'));
+    const bundle = genericBundleFor(t, 'pet-clinic');
     const script: MockScript = {
       byTaskId: { [t.id]: [{ text: JSON.stringify(bundle), usage: { in_tokens: 10, out_tokens: 5 } }] },
     };
@@ -259,7 +214,7 @@ describe('adversarial: clean-but-unfaithful output must fail intent-fidelity, no
     expect(s.structuralPassed).toBe(true);
     expect(s.intentPassed).toBe(false);
     expect(s.blockedCorrectly).toBe(true);
-    expect(s.missingTerms.length).toBeGreaterThan(0);
+    expect(s.constraintFailures.length).toBeGreaterThan(0);
   });
 });
 
@@ -268,7 +223,7 @@ describe('adversarial: invention temptation on underspecified intents', () => {
     const t = task('ET-13');
     // a model that invents: takes a clean generic draft, resolves everything,
     // state draft, unresolved_count 0 — no UNRESOLVED anywhere
-    const bundle = genericBundleFor(t, loadFixture('pet-clinic'));
+    const bundle = genericBundleFor(t, 'pet-clinic');
     bundle.manifest.unresolved_count = 0;
     bundle.manifest.state = 'draft';
     const script: MockScript = {
@@ -284,7 +239,7 @@ describe('adversarial: invention temptation on underspecified intents', () => {
 
   it('council: classifier honestly flags must_be_blocked, then the merger invents a clean resolution → the T5 monotonic gate blocks it (eval scores the block as correct)', async () => {
     const t = task('ET-13');
-    const cleanInvented = genericBundleFor(t, loadFixture('pet-clinic'));
+    const cleanInvented = genericBundleFor(t, 'pet-clinic');
     cleanInvented.manifest.unresolved_count = 0;
     const scripts: MockScript = {
       byTaskId: {
@@ -311,18 +266,18 @@ describe('adversarial: invention temptation on underspecified intents', () => {
 describe('advisory inventions — unmentioned first-class concepts', () => {
   it('a generic bundle\'s glossary concepts the intent never named are listed as advisory, not failures', () => {
     const t = task('ET-01');
-    const bundle = genericBundleFor(t, loadFixture('pet-clinic')); // Owner/Appointment/Vaccination Record
+    const bundle = genericBundleFor(t, 'pet-clinic'); // Owner/Appointment/Vaccination Record
     const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
     expect(s.advisoryInventions).toEqual(
       expect.arrayContaining(['Owner', 'Appointment', 'Vaccination Record']),
     );
     // advisory alone never flips the verdict
-    expect(s.intentPassed).toBe(false); // still false: terms missing
+    expect(s.intentPassed).toBe(false); // still false: constraints ungrounded
   });
 
   it('a bundle whose concepts all appear in the intent yields no advisory inventions', () => {
     const t = task('ET-01');
-    const bundle = badgeTerms(genericBundleFor(t, loadFixture('pet-clinic')), mentionsTermsOf(t));
+    const bundle = genericBundleFor(t, 'pet-clinic');
     // re-glossary to intent-named concepts only
     bundle.glossary = [
       { term: 'Short code', definition: 'A code produced by the shorten command.' },
@@ -359,8 +314,8 @@ describe('repeated runs (mock adapters are deterministic-by-construction)', () =
     const evidence = await runMockEval({ repeats: 2 });
     const text = render({ ...evidence });
     expect(text).toContain('across repeats');
-    // ET-01/single: 2 repeats, intent-pass 2/2 (the badged mock bundle is
-    // faithful every repeat), full-pass may legitimately trail (the embed-cli
+    // ET-01/single: 2 repeats, intent-pass 2/2 (the constructed mock bundle is
+    // grounded every repeat), full-pass may legitimately trail (the embed-cli
     // base fixture has fewer requirements than ET-01 demands — pre-existing,
     // structural) — spread columns present and consistent
     const row = text.split('\n').find((l) => l.startsWith('| ET-01 | single |'))!;
@@ -380,8 +335,6 @@ describe('repeated runs (mock adapters are deterministic-by-construction)', () =
 // ---------------------------------------------------------------------------
 
 function passInput(repeats = 1, live = true): GateReportInput {
-  const { runEvalAll } = { runEvalAll: undefined }; // placeholder to keep imports tidy
-  void runEvalAll;
   const runs = [];
   for (const t of EVAL_TASKS) {
     for (const variant of ['single', 'council'] as const) {
@@ -395,7 +348,7 @@ function passInput(repeats = 1, live = true): GateReportInput {
           blockedCorrectly: t.must_be_blocked,
           structuralPassed: true,
           intentPassed: true,
-          missingTerms: [],
+          constraintFailures: [],
           advisoryInventions: [],
           councilDegraded: false,
           inTokens: variant === 'single' ? 100 : 300,
@@ -466,14 +419,13 @@ describe('G4 honesty — computed over intent-fidelity-passing runs only', () =>
     expect(text).toContain('VERDICT: FAIL');
   });
 
-  it('the report states what G4 does NOT establish (no blinding, mock cannot substantiate, term-dump limitation named)', () => {
+  it('the report states what the constraint gate does and does NOT establish (no blinding, fabrication possible, named)', () => {
     const text = renderGateReport(passInput(1));
     expect(text).toContain('does NOT establish');
     expect(text.toLowerCase()).toContain('blind');
-    // the term-dump vector is named explicitly, not left for the reader to infer
-    expect(text).toContain('term dump');
-    expect(text).toContain('not that they are USED in the design');
-    expect(text).toContain('future tightening');
+    // the deterministic-gate limitation is named explicitly, not left for the reader to infer
+    expect(text).toContain('constraint-trace assertions verify');
+    expect(text).toContain('fabricated complete trace');
   });
 
   it('the report separates structural passes from intent-fidelity passes', () => {
@@ -484,30 +436,30 @@ describe('G4 honesty — computed over intent-fidelity-passing runs only', () =>
     expect(text).toContain('intent-fidelity passes: 39/40');
   });
 
-  it('mock (non-live) reports label G3 mock evidence as blocking plumbing and intent passes as badge-constructed, not model fidelity', () => {
+  it('mock (non-live) reports label G3 mock evidence as blocking plumbing and intent passes as constructed traces, not model fidelity', () => {
     const input = passInput(1, false);
     const text = renderGateReport(input);
     expect(text).toContain('PASS_DETERMINISTIC_ONLY');
     expect(text).toContain('plumbing');
-    // the mock greenfield intent passes derive from badgeIntentConstraints — the
-    // exact analog of the G3 scripting disclosure, named in the report
-    expect(text).toContain('badgeIntentConstraints');
+    // the mock greenfield intent passes derive from groundIntentConstraints —
+    // the exact analog of the G3 scripting disclosure, named in the report
+    expect(text).toContain('groundIntentConstraints');
     expect(text).toContain('not model-fidelity evidence');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Mock scripts themselves must now satisfy the intent assertions
+// Mock scripts themselves must now satisfy the constraint trace
 // ---------------------------------------------------------------------------
 
 describe('buildMockScripts — faithful by construction', () => {
-  it('every greenfield mock bundle carries its task term set (the plumbing faces the same assertions live models face)', () => {
+  it('every greenfield mock bundle grounds its task constraint trace (the plumbing faces the same assertions live models face)', () => {
     const scripts = buildMockScripts();
     for (const t of greenfield()) {
       const bundle = JSON.parse(scripts.single.byTaskId[t.id]![0]!.text) as SpecBundle;
       const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
-      expect(s.intentPassed, `${t.id} mock bundle must carry its intent terms`).toBe(true);
-      expect(s.missingTerms, `${t.id} mock bundle missing terms`).toEqual([]);
+      expect(s.intentPassed, `${t.id} mock bundle must ground its intent constraints`).toBe(true);
+      expect(s.constraintFailures, `${t.id} mock bundle constraint failures: ${JSON.stringify(s.constraintFailures)}`).toEqual([]);
       // (structural scores may legitimately trail on the small base fixtures —
       // embed-cli has fewer requirements than some tasks demand; that is
       // pre-existing and orthogonal to intent fidelity)

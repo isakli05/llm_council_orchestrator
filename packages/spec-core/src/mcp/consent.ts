@@ -47,11 +47,13 @@ import type { SpecBundle } from '../schemas';
  * when set, execution consent is only honored for spec roots that RESOLVE
  * (realpath, both sides) inside the pin: a path that is lexically under the
  * pin but escapes through a symlink is refused (SEC-003; the earlier
- * prefix-string comparison could be satisfied by a symlinked dir). The SAME
- * pin also governs every tool's `dir` at the server boundary (see
- * checkMcpDir in storage/paths.ts) — including lco_generate's write target,
- * closing the T10/T9 deferred write-target pin. This is consent-boundary
- * pinning, NOT process isolation (P2-2/T16 owns sandboxes).
+ * prefix-string comparison could be satisfied by a symlinked dir). The
+ * directory policy at the server boundary is MANDATORY for every tool
+ * regardless of this pin (see effectiveMcpRoot/checkMcpDir in
+ * storage/paths.ts): the effective allowed root is this pin when set,
+ * otherwise the server's own working directory — including lco_generate's
+ * write target, closing the T10/T9 deferred write-target pin. This is
+ * consent-boundary pinning, NOT process isolation (P2-2/T16 owns sandboxes).
  *
  * T10 REUSABILITY (paid-call consent): layers 1, 3 and the refusal style are
  * not check-specific. `execOptInFromEnv`'s exactly-'1' semantics, the

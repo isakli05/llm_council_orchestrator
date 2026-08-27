@@ -35,7 +35,7 @@ function passRuns(): RunScore[] {
         repeat: 1,
         structuralPassed: true,
         intentPassed: true,
-        missingTerms: [],
+        constraintFailures: [],
         advisoryInventions: [],
         blockedCorrectly: t.must_be_blocked,
         councilDegraded: false,
@@ -189,6 +189,62 @@ describe('renderGateReport — live input (G4)', () => {
     const input = liveInput(1);
     input.driftCaught = false;
     expect(renderGateReport(input)).toContain('VERDICT: FAIL');
+  });
+
+  // M-1 (2026-08-27 review): the rendered cost line is pinned against the
+  // SHARED constant — no duplicate hardcoded "3x"/3* anywhere in the renderer.
+  it('the G4 cost line renders the G4_COST_MULTIPLIER constant, not a hardcoded 3x', async () => {
+    const { G4_COST_MULTIPLIER } = await import('./gate');
+    const input = liveInput(1);
+    const text = renderGateReport(input);
+    const cc = assertSum(input.runs, 'council', (r) => r.inTokens + r.outTokens);
+    const sc = assertSum(input.runs, 'single', (r) => r.inTokens + r.outTokens);
+    expect(text).toContain(`council cost ${cc} <= ${G4_COST_MULTIPLIER}x single cost ${sc}: pass`);
+    // and the miss line uses the same constant when the cap is exceeded
+    const over = liveInput(1);
+    for (const r of over.runs) if (r.variant === 'council') r.inTokens = 5000;
+    const overText = renderGateReport(over);
+    const ccOver = assertSum(over.runs, 'council', (r) => r.inTokens + r.outTokens);
+    const scOver = assertSum(over.runs, 'single', (r) => r.inTokens + r.outTokens);
+    expect(overText).toContain(`G4: council cost ${ccOver} exceeds ${G4_COST_MULTIPLIER}x single cost ${scOver}`);
+  });
+
+  // I-2 (2026-08-27 review): the pre-registered decision rule (criterion 6)
+  // must be COMPUTED and RENDERED in the live report — clearly labeled as the
+  // binding statistic for the council-advantage claim.
+  it('live report renders the pre-registered claim criterion line (NOT MET when all pairs are concordant)', () => {
+    const text = renderGateReport(liveInput(1));
+    expect(text).toContain(
+      'pre-registered claim criterion (binding for the council-advantage claim; the CLI exit code alone is NOT)',
+    );
+    expect(text).toMatch(/paired exact sign test/);
+    // passRuns(): every greenfield pair is both-pass → 0 discordant → NOT MET
+    expect(text).toMatch(/discordant 0[^\n]*: NOT MET/);
+    // the fallback language is precise: live verdicts are PASS/FAIL only; the
+    // CLAIM is decided solely by criterion 6
+    expect(text).toContain('the council-advantage CLAIM is decided solely by the pre-registered criterion 6');
+    expect(text).toContain('never by the CLI exit code alone');
+  });
+
+  it('live report marks the criterion MET when 12 of 12 discordant greenfield pairs are council wins', () => {
+    const input = liveInput(0); // equal assertions keep G4 rows stable; the criterion line is independent
+    // all 12 greenfield tasks: single fails intent, council passes → 12 discordant, all council wins
+    // (p = P(X >= 12 | 12, 0.5) = 1/4096 ≈ 0.000244 < 0.05 and 12 >= 10 discordants)
+    const greens = EVAL_TASKS.filter((t) => !t.must_be_blocked);
+    expect(greens).toHaveLength(12);
+    for (const r of input.runs) {
+      if (r.variant === 'single' && greens.some((t) => t.id === r.taskId)) {
+        r.intentPassed = false;
+        r.assertionsPassed -= 1;
+      }
+    }
+    const text = renderGateReport(input);
+    expect(text).toMatch(/discordant 12 \(council wins 12[^\n]*\): MET/);
+  });
+
+  it('mock report does NOT render the pre-registered claim criterion line (live-only statistic)', () => {
+    const text = renderGateReport(passInput());
+    expect(text).not.toContain('pre-registered claim criterion');
   });
 });
 
