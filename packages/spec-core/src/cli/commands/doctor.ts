@@ -13,7 +13,12 @@ import {
 } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { compileSpecDir } from '../../compiler/compile';
-import { acquireSpecRootLock, LockHeldError, LOCK_FILE } from '../../storage/revision';
+import {
+  acquireSpecRootLock,
+  DEFAULT_STALE_MS,
+  LockHeldError,
+  LOCK_FILE,
+} from '../../storage/revision';
 import { SpecBundleSchema } from '../../schemas';
 
 /**
@@ -35,7 +40,10 @@ import { SpecBundleSchema } from '../../schemas';
  * SEVERITY MAPPING (recorded decision):
  *   FAIL = broken capability — the thing a command needs cannot work:
  *     target dir missing / not a dir / unwritable, atomic write/rename probe
- *     fails, lock probe fails (a LIVE lock is busy, not broken -> WARN),
+ *     fails, lock probe fails (a pre-existing lock — live OR stale — is
+ *     busy, not broken -> WARN, and is NEVER broken by doctor: the probe
+ *     acquires with an infinite stale window so acquireSpecRootLock cannot
+ *     auto-break a crashed writer's lock out from under the diagnosis),
  *     dist bins broken when dist/ exists (partial build, missing shebang,
  *     no exec bit), spec/ exists but does not compile.
  *   WARN = unconfigured-optional / advisory — nothing is broken yet:
@@ -73,6 +81,13 @@ export interface DoctorOptions {
   env: Record<string, string | undefined>;
   /** Injected process.version string. */
   nodeVersion: string;
+  /**
+   * Injected engines floor, parsed from package.json's engines.node at the
+   * CLI boundary (runtime read — npm always ships package.json). Absent
+   * (unreadable/unparseable package.json, or a direct core caller) means
+   * the compiled-in FALLBACK_ENGINES_FLOOR applies.
+   */
+  enginesFloor?: number;
   /** Injected clock (the lock probe's staleness decision), per repo contract. */
   nowIso: string;
   /** Package root (holds dist/ and generated/); the wrapper passes __dirname/../.. */
@@ -87,8 +102,25 @@ export interface DoctorResult {
   output: string;
 }
 
-/** The engines floor of package.json (keep in sync if it ever moves). */
-const NODE_ENGINES_FLOOR = 22;
+/**
+ * Compiled-in FALLBACK for the engines floor, used only when the CLI
+ * boundary cannot read/parse package.json's engines.node (review fix 2:
+ * the floor itself is read from package.json at RUN TIME — the same file
+ * `--version` reads; npm always ships it with the package). A test pins
+ * package.json and this constant together, so they cannot drift in either
+ * direction.
+ */
+export const FALLBACK_ENGINES_FLOOR = 22;
+
+/**
+ * Parse the engines.node floor (">=22" / ">=18.0.0" -> 22 / 18).
+ * Returns null for anything without a leading `>=N` — the caller then
+ * falls back to FALLBACK_ENGINES_FLOOR.
+ */
+export function parseEnginesFloor(raw: string): number | null {
+  const match = /^>=(\d+)/.exec(raw);
+  return match ? Number(match[1]) : null;
+}
 
 /** The three env vars createHttpLlm() requires for live mode. */
 const REQUIRED_LLM_ENV = ['LCO_LLM_BASE_URL', 'LCO_LLM_API_KEY', 'LCO_LLM_MODEL'] as const;
@@ -109,28 +141,28 @@ const BIN_FILES = ['dist/cli/index.js', 'dist/mcp/server.js'] as const;
 // node
 // ---------------------------------------------------------------------------
 
-export function checkNodeVersion(nodeVersion: string): DoctorCheck {
+export function checkNodeVersion(nodeVersion: string, enginesFloor = FALLBACK_ENGINES_FLOOR): DoctorCheck {
   const match = /^v(\d+)\./.exec(nodeVersion);
   if (!match) {
     return {
       name: 'node',
       status: 'warn',
       detail: `cannot parse node version '${nodeVersion}'`,
-      remedy: `run lco under Node.js >= ${NODE_ENGINES_FLOOR}`,
+      remedy: `run lco under Node.js >= ${enginesFloor}`,
     };
   }
-  if (Number(match[1]) >= NODE_ENGINES_FLOOR) {
+  if (Number(match[1]) >= enginesFloor) {
     return {
       name: 'node',
       status: 'ok',
-      detail: `node ${nodeVersion} meets the package engines floor (>=${NODE_ENGINES_FLOOR})`,
+      detail: `node ${nodeVersion} meets the package engines floor (>=${enginesFloor})`,
     };
   }
   return {
     name: 'node',
     status: 'warn',
-    detail: `node ${nodeVersion} is below the package engines floor (>=${NODE_ENGINES_FLOOR}) — unsupported runtime`,
-    remedy: `upgrade Node to >= ${NODE_ENGINES_FLOOR}`,
+    detail: `node ${nodeVersion} is below the package engines floor (>=${enginesFloor}) — unsupported runtime`,
+    remedy: `upgrade Node to >= ${enginesFloor}`,
   };
 }
 
@@ -373,6 +405,27 @@ export function checkWritePath(dir: string): DoctorCheck {
 // revision lock probe
 // ---------------------------------------------------------------------------
 
+/**
+ * Best-effort holder read for the lock WARN message — diagnosis, never
+ * evidence destruction. Returns the holder pid and the lock's age (from the
+ * INJECTED nowIso vs the lock's recorded acquiredAt), or null when the
+ * lockfile is missing/unparseable (the caller then falls back to the
+ * storage module's own message, which carries the mtime fallback).
+ */
+function heldLockAgeMs(dir: string, nowIso: string): { pid: number; ageMs: number } | null {
+  try {
+    const raw = readFileSync(join(dir, LOCK_FILE), 'utf8');
+    const parsed = JSON.parse(raw) as { pid?: unknown; acquiredAt?: unknown };
+    if (typeof parsed.pid !== 'number' || typeof parsed.acquiredAt !== 'string') return null;
+    const heldMs = Date.parse(parsed.acquiredAt);
+    const nowMs = Date.parse(nowIso);
+    if (Number.isNaN(heldMs) || Number.isNaN(nowMs)) return null;
+    return { pid: parsed.pid, ageMs: nowMs - heldMs };
+  } catch {
+    return null;
+  }
+}
+
 export function checkLock(
   dir: string,
   nowIso: string,
@@ -385,20 +438,43 @@ export function checkLock(
     return { name: 'lock', status: 'skip', detail: 'directory missing (see [write])' };
   }
   try {
-    const lock = acquireSpecRootLock(dir, nowIso);
+    // staleMs: Infinity — REFUSE to break ANY pre-existing lock (review fix
+    // 1, option b): a default acquireSpecRootLock call auto-breaks locks
+    // older than 10s, and a diagnostic that deletes the crashed writer's
+    // lock destroys the very evidence it is diagnosing. With an infinite
+    // stale window every existing lock is "live" to the acquire loop, which
+    // throws LockHeldError immediately and unlinks nothing.
+    const lock = acquireSpecRootLock(dir, nowIso, { staleMs: Infinity });
     lock.release();
     return { name: 'lock', status: 'ok', detail: `revision lock acquire/release works in ${dir}` };
   } catch (err) {
     if (err instanceof LockHeldError) {
-      // Busy, not broken: another writer holds a LIVE lock. doctor never
-      // breaks it — stale-breaking belongs to the writer module.
+      const lockPath = join(dir, LOCK_FILE);
+      const held = heldLockAgeMs(dir, nowIso);
+      if (held && held.ageMs >= DEFAULT_STALE_MS) {
+        // Stale: past the auto-break window — almost certainly a crashed
+        // writer. Name the holder and its age; the file is left in place
+        // (both for the operator and for any post-mortem).
+        return {
+          name: 'lock',
+          status: 'warn',
+          detail:
+            `stale lock detected (holder pid ${held.pid}, age ${Math.round(held.ageMs / 1000)}s — ` +
+            `past the ${Math.round(DEFAULT_STALE_MS / 1000)}s auto-break window): ${lockPath}`,
+          remedy:
+            `if pid ${held.pid} is dead, remove ${lockPath}; otherwise a writer is still ` +
+            'active — doctor left the lock (and its evidence) untouched',
+        };
+      }
+      // Busy, not broken: another writer holds a LIVE lock (or the content
+      // is unparseable — the message carries the mtime fallback).
       return {
         name: 'lock',
         status: 'warn',
         detail: err.message,
         remedy:
           'wait for the other writer to finish; if that writer is dead, remove the ' +
-          'lockfile (a stale lock is auto-broken after 10s)',
+          `lockfile (a stale lock is auto-broken after ${Math.round(DEFAULT_STALE_MS / 1000)}s)`,
       };
     }
     return {
@@ -595,7 +671,7 @@ export async function cmdDoctor(dir: string, opts: DoctorOptions): Promise<Docto
     }
   };
 
-  await run('node', () => checkNodeVersion(opts.nodeVersion));
+  await run('node', () => checkNodeVersion(opts.nodeVersion, opts.enginesFloor ?? FALLBACK_ENGINES_FLOOR));
   await run('provider-env', () => checkProviderEnv(opts.env));
   await run('mcp-flags', () => checkMcpFlags(opts.env, (p) => existsSync(p)));
   await run('budget-env', () => checkBudgetEnv(opts.env));

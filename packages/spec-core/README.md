@@ -112,8 +112,12 @@ yapılandırılmamış opsiyonel (canlı `LCO_LLM_*` env'i yok, bayraklı ama ta
 olmayan `LCO_MCP_*`, çöp `LCO_GENERATE_MAX_*`, bayat şema artefaktı) → exit 0;
 **SKIP** = bu bağlamda uygulanamaz (`spec/` yok, dist/ yok — kaynak koşusu asla
 yanlış-başarısız olmaz, paketlenmiş kurulumda şema regeneratörü yok). Probe yan
-etkisi yoktur: oluşturduğu gizli probe dosyasını siler, CANLI kilidi asla kırmaz
-(sadece uyarır). `--json` tam olarak `{"checks":[{name,status,detail,remedy?}…],
+etkisi yoktur: oluşturduğu gizli probe dosyasını siler ve mevcut bir kilidi —
+canlı VEYA bayat — ASLA kırmaz (süresiz staleMs ile edinir; bayat kilidi pid'i ve
+yaşıyla adlandırıp uyarır, kanıtı yerinde bırakır). Node sürümü eşiği
+(`>=22`) package.json'ın `engines.node` alanından ÇALIŞMA ZAMANINDA okunur
+(`--version`'ın okuduğu aynı dosya; okunamazsa derleme-sabiti yedek — test ikisini
+birbirine sabitler). `--json` tam olarak `{"checks":[{name,status,detail,remedy?}…],
 "healthy":bool}` yazar (plan `--json` ile aynı stil). Doctor CLI-yalnızdır: MCP
 sunucusuna doctor aracı eklenmez (stdout JSON-RPC saflığı korunur).
 

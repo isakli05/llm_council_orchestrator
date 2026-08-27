@@ -10,7 +10,7 @@ import { cmdTrace } from './commands/trace';
 import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 import { cmdCheck } from './commands/check';
-import { cmdDoctor } from './commands/doctor';
+import { cmdDoctor, parseEnginesFloor } from './commands/doctor';
 import {
   cmdGenerate,
   DEFAULT_GENERATE_VARIANT,
@@ -468,6 +468,25 @@ function readBudgetEnv(): RunBudgetSpec | string {
 }
 
 /**
+ * The doctor engines floor, read from the SAME package.json --version reads
+ * (review fix 2: npm always ships package.json next to dist/, so the floor
+ * is the package's own declaration, not a compiled-in guess). Returns
+ * undefined on any read/parse failure — doctor then applies its compiled-in
+ * FALLBACK_ENGINES_FLOOR (pinned against package.json by a test, so the two
+ * cannot drift in either direction).
+ */
+async function readEnginesFloor(): Promise<number | undefined> {
+  try {
+    const raw = await readFile(join(__dirname, '../../package.json'), 'utf8');
+    const engines = (JSON.parse(raw) as { engines?: { node?: unknown } }).engines?.node;
+    if (typeof engines !== 'string') return undefined;
+    return parseEnginesFloor(engines) ?? undefined;
+  } catch {
+    return undefined; // recorded fallback: FALLBACK_ENGINES_FLOOR applies
+  }
+}
+
+/**
  * Functional CLI core: never calls process.exit — the exit code is returned.
  *   0 success, 1 lint/freeze/drift failure, 2 usage/schema error.
  *
@@ -611,6 +630,7 @@ export async function runCli(argv: string[]): Promise<number> {
         result = await cmdDoctor(parsed.dir, {
           env: { ...process.env },
           nodeVersion: process.version,
+          enginesFloor: await readEnginesFloor(),
           nowIso: new Date().toISOString(),
           packageRoot: join(__dirname, '../..'),
           json: parsed.json,

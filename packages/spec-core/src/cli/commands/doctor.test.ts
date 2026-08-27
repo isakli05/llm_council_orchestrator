@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -22,6 +23,8 @@ import {
   checkBins,
   checkSchemaFreshness,
   SchemaToolchainUnavailableError,
+  FALLBACK_ENGINES_FLOOR,
+  parseEnginesFloor,
   type DoctorOptions,
 } from './doctor';
 import { LOCK_FILE } from '../../storage/revision';
@@ -180,6 +183,43 @@ describe('check: node version', () => {
 
   it('unparseable version -> warn', () => {
     expect(checkNodeVersion('not-a-version').status).toBe('warn');
+  });
+
+  it('the floor is INJECTED: a higher floor flips the verdict for the same runtime', () => {
+    expect(checkNodeVersion('v22.0.0', 24).status).toBe('warn');
+    expect(checkNodeVersion('v24.0.0', 24).status).toBe('ok');
+    expect(checkNodeVersion('v18.20.1', 18).status).toBe('ok');
+  });
+
+  it('cmdDoctor plumbs DoctorOptions.enginesFloor through to [node]', async () => {
+    const root = tmpRoot('floor-plumb');
+    const result = await cmdDoctor(root, { ...BASE_OPTS, enginesFloor: 24 });
+    expect(result.output).toContain('[node] warn:');
+    expect(result.output).toContain('>=24');
+  });
+});
+
+describe('engines floor source (review fix 2)', () => {
+  it('parseEnginesFloor: ">=NN..." -> NN; anything else -> null (fallback signal)', () => {
+    expect(parseEnginesFloor('>=22')).toBe(22);
+    expect(parseEnginesFloor('>=18.0.0')).toBe(18);
+    expect(parseEnginesFloor('>=20')).toBe(20);
+    expect(parseEnginesFloor('^20')).toBeNull();
+    expect(parseEnginesFloor('22')).toBeNull();
+    expect(parseEnginesFloor('')).toBeNull();
+  });
+
+  it('DRIFT PIN: the real package.json engines parse equals the compiled fallback constant', () => {
+    // The CLI boundary reads engines.node from package.json at RUN TIME (the
+    // same file --version reads — npm always ships it); this pin makes the
+    // fallback constant and package.json unable to drift apart silently, in
+    // EITHER direction: bump engines without the constant (or vice versa)
+    // and this test fails.
+    const pkg = JSON.parse(
+      readFileSync(join(__dirname, '../../../package.json'), 'utf8'),
+    ) as { engines?: { node?: unknown } };
+    expect(typeof pkg.engines?.node).toBe('string');
+    expect(parseEnginesFloor(pkg.engines!.node as string)).toBe(FALLBACK_ENGINES_FLOOR);
   });
 });
 
@@ -374,6 +414,44 @@ describe('check: revision lock probe', () => {
     const check = checkLock(root, NOW_ISO);
     expect(check.status).toBe('warn');
     // doctor never breaks a live lock (stale-break is the writer module's job).
+    expect(existsSync(join(root, LOCK_FILE))).toBe(true);
+  });
+
+  it('STALE foreign lock -> warn naming the holder + age, and the lock (evidence) is PRESERVED', () => {
+    const root = tmpRoot('lock-stale');
+    writeFileSync(
+      join(root, LOCK_FILE),
+      JSON.stringify({ pid: 424242, acquiredAt: '2026-08-27T11:59:00Z' }), // 60s old: stale
+    );
+    const check = checkLock(root, NOW_ISO);
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain('stale lock detected');
+    expect(check.detail).toContain('424242'); // the (dead) holder's pid — the diagnosis
+    expect(check.detail).toContain('60'); // its age in seconds
+    // A diagnostic must never destroy the evidence it is diagnosing: a
+    // default acquireSpecRootLock call would AUTO-BREAK this lock at 10s.
+    expect(existsSync(join(root, LOCK_FILE))).toBe(true);
+  });
+
+  it('unparseable lock content -> warn (module mtime-fallback message), lock preserved', () => {
+    const root = tmpRoot('lock-garbage');
+    writeFileSync(join(root, LOCK_FILE), 'not-json{');
+    const check = checkLock(root, NOW_ISO);
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain('unparseable');
+    expect(existsSync(join(root, LOCK_FILE))).toBe(true);
+  });
+
+  it('cmdDoctor with a stale lock in <dir> -> exit 0 (warn), lock file intact afterwards', async () => {
+    const root = tmpRoot('lock-stale-flow');
+    writeFileSync(
+      join(root, LOCK_FILE),
+      JSON.stringify({ pid: 999123, acquiredAt: '2026-08-27T11:00:00Z' }), // 1h stale
+    );
+    const result = await cmdDoctor(root, { ...BASE_OPTS, nowIso: NOW_ISO });
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('[lock] warn:');
+    expect(result.output).toContain('stale lock detected');
     expect(existsSync(join(root, LOCK_FILE))).toBe(true);
   });
 
