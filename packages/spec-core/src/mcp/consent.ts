@@ -1,7 +1,6 @@
-import { exec } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Executor } from '../check/runner';
+import { execInProcessGroup, type Executor } from '../check/runner';
 import { loadBundleAtLevel } from '../compiler/validation';
 import { verifyFrozen } from '../compiler/verify';
 import { sha256Content } from '../compiler/hash';
@@ -183,26 +182,16 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
- * The MCP-boundary Executor: child_process.exec with the SCRUBBED
- * environment, cwd = the spec root, killed at the timeout — resolution
- * semantics deliberately identical to the runner's `execCommand` (never
- * rejects; combined stdout+stderr; a kill/signal is a TIMEOUT), only the
- * environment differs (SEC-002 layer 4). The CLI keeps `execCommand` and its
- * inherited env: --yes is human consent by the environment's owner.
+ * The MCP-boundary Executor: the SAME isolated process-group machinery as the
+ * runner's `execCommand` (SEC-005: the group is killed on timeout, output-cap
+ * overflow and normal completion; stdin is EOF; never rejects; combined
+ * stdout+stderr; a kill/signal/output-cap ending is a TIMEOUT), with the
+ * SCRUBBED environment instead of the inherited one (SEC-002 layer 4). The
+ * CLI keeps `execCommand` and its inherited env: --yes is human consent by
+ * the environment's owner.
  */
 export const scrubbedExecutor: Executor = (cmd, cwd, timeoutMs) =>
-  new Promise((resolve_) => {
-    exec(cmd, { cwd, timeout: timeoutMs, env: scrubbedEnv(process.env) }, (err, stdout, stderr) => {
-      const combined = `${stdout ?? ''}${stderr ?? ''}`;
-      if (!err) {
-        resolve_({ exit: 0, stdout: combined, timedOut: false });
-        return;
-      }
-      const timedOut = err.killed === true || typeof err.signal === 'string';
-      const exit = timedOut || typeof err.code !== 'number' ? null : err.code;
-      resolve_({ exit, stdout: combined, timedOut });
-    });
-  });
+  execInProcessGroup(cmd, { cwd, timeoutMs, env: scrubbedEnv(process.env) });
 
 // --- the authorization gate ----------------------------------------------------------
 

@@ -311,8 +311,9 @@ modeli bağlayıcıdır:
   `DRY`, çıkış 0, diske hiçbir şey yazılmaz (`spec/evidence/` dizini bile oluşmaz).
   Tablo, `--yes` altında neyin koşacağının önizlemesidir.
 - **`--yes` açık onaydır.** Komutlar yalnız operatörün açık bayrağıyla yürütülür:
-  cwd spec köküdür, komut başına `--timeout-ms` (varsayılan 60000 ms) sonunda süreç
-  öldürülür.
+  cwd spec köküdür, komut başına `--timeout-ms` (varsayılan 60000 ms) sonunda
+  komutun İZOLE process group'unun TAMAMI öldürülür (SEC-005; aşağıdaki
+  "Yürütme izolasyonu" notuna bakın).
 - **Fail-closed yargı.** Beklenen çıkış kodu, `expect` açıklamasındaki İLK `exit N`
   eşleşmesidir. `exit N` bulunamayan expect → `UNPARSEABLE-EXPECT`: komut **hiç
   koşulmaz** ve başarısız sayılır (çıkış 1). Yargılanamayan bir şeyi koşmak başarı
@@ -354,15 +355,25 @@ modeli bağlayıcıdır:
 
 Operasyonel notlar:
 
-- **1 MB maxBuffer taşması TIMEOUT sayılır.** Üretim yürütücüsü `child_process.exec`
-  kullanır (Node varsayılanı maxBuffer 1 MB); sınırı aşan çıktı süreci öldürür ve
-  sonuç `TIMEOUT` ile yargılanır — fail-closed: geveze bir komut asla PASS olamaz.
-- **Sinyalle öldürme → TIMEOUT.** `killed`/`signal` ile biten bir sürece çıkış kodu
-  atanmaz (`exit: null`, `TIMEOUT`): öldürülmüş süreç, yargılanmış bir çıkış koduyla
-  karıştırılamaz.
-- **Torun süreçler zaman aşımından sonra hayatta kalabilir.** Node yalnız doğrudan
-  çocuğu (kabuğu) öldürür; komutunuzun sahnelediği arka süreçler yetim kalabilir —
-  doğrulama komutlarını kendi temizliğini yapacak şekilde yazın.
+- **Yürütme izolasyonu (SEC-005, POSIX).** Her komut kendi process group'unda
+  yürütülür ve süreç ağacının TAMAMI kapsanır: zaman aşımında, çıktı sınırı
+  aşımında VE normal bitişte grup önce `SIGTERM` alır; grace penceresi
+  (400 ms) sonunda hâlâ yaşayan üye varsa grup `SIGKILL` ile öldürülür.
+  Executor'ın kararı döndürmesi, grubun ölmüş (veya SIGKILL edilmiş) olması
+  anlamına gelir — bir `TIMEOUT` sonucu artık "işlem durdu"nun kanıtıdır ve
+  normal bitişte bile komutun sahneye koyduğu arka süreçler karardan sonra
+  çalışamaz. **stdin `/dev/null`'dur:** etkileşimli komutlar anında EOF görür,
+  zaman aşımını bekleyerek asla bekletmez. **Kapsam dürüstçe:** process
+  group'lar POSIX mekanizmasıdır — Windows (job object'ler gerektirir) kapsam
+  dışıdır; kendini yeni oturuma taşıyan (`setsid`) bir torun gruptan kaçar ve
+  yalnızca çekirdek düzeyinde izolasyon (cgroup/sandbox) kapsanabilir.
+- **1 MB çıktı sınırı taşması TIMEOUT sayılır.** Üretim yürütücüsü akış başına
+  1 MB'lık sınırla (exec'in maxBuffer varsayılanı ile aynı) çalışır; sınırı aşan
+  çıktı GRUBU öldürür ve sonuç `TIMEOUT` ile yargılanır — fail-closed: geveze
+  bir komut asla PASS olamaz.
+- **Sinyalle öldürme → TIMEOUT.** Sinyalle biten bir sürece çıkış kodu atanmaz
+  (`exit: null`, `TIMEOUT`): öldürülmüş süreç, yargılanmış bir çıkış koduyla
+  karıştırılamaz. Zombi bırakılmaz: kabuk, karara varılmadan önce reaped edilir.
 - Komutlar kasıtlı olarak kabukta koşar (TaskContract verification komutları kabuk
   dizgeleridir: `pnpm vitest run tests/x.test.ts`). Enjeksiyon yüzeyi tam olarak bu
   güvenlik modelinin yönettiği yüzeydir: varsayılan hiç-koşma + açık `--yes` onayı.
