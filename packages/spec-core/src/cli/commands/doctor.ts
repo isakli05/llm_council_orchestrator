@@ -280,7 +280,7 @@ export function checkMcpFlags(
   } else if (!isAbsolute(execRoot)) {
     parts.push(
       'LCO_MCP_EXEC_ROOT set but not an absolute path — the server RESOLVES a ' +
-        'relative pin against its own working directory at startup (the pin target ' +
+        'relative pin against its own working directory at the server boundary (the pin target ' +
         'then depends on where the server was spawned); use an absolute path for a ' +
         'predictable effective root',
     );

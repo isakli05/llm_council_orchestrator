@@ -107,7 +107,7 @@ publishes automatically. Details: [`packages/spec-core/README.md`](packages/spec
 ```text
 packages/
   spec-core/     # lco-spec — THE product (CLI, MCP server, schemas, compiler, eval)
-plans/           # design and experiment plans
+plans/           # design and experiment plans (pre-pivot ones are HISTORICAL — they reference the deleted legacy tree; see docs/legacy-archive.md)
 audit-output/    # audit evidence and reports
 docs/            # legacy archive record and project docs
 ```

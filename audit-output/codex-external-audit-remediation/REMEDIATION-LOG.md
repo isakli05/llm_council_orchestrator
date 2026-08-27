@@ -1,5 +1,28 @@
 # REMEDIATION-LOG — Codex Dış Denetimi 39 Bulgunun Kanıtlı Kapanışı
 
+> ## ══ KALINTI KAPANIŞ PROGRAMI (2026-08-27, dal feat/external-audit-residual-closure) ══
+>
+> Bağımsız hazırlık yeniden-değerlendirmesinin 5 kalıntısı + 2 komşu
+> doküman tutarsızlığı kapatıldı. Ayrıntılı kanıt:
+> `RESIDUAL-CLOSURE-REPORT.md`. Dal commit'leri: cd6760e (ARCH-001 silme)
+> → ab45b39 (graphify) → b537674 (SEC-003/006/PROD-003/doctor) → ac2e125
+> (kanıt dokümanları) → finalization commit'i.
+>
+> | Kalıntı | Durum | Özet kanıt |
+> |---|---|---|
+> | SEC-003 | **FIXED** (yeniden sınıflandırıldı: önceki "FIXED" opsiyonel politikaydı) | Bağlayıcı etkin-kök: pin yoksa realpath(cwd); 10 araçta zorunlu; çözülmeyen kökte tümü fail-closed; ret çekirdek çağrısından önce; bağımsız adversarial inceleme "genuinely closed" (ampirik symlink probları) |
+> | SEC-006 | **FIXED** (yeniden sınıflandırıldı) | Sessizlik yalnız id yokluğuyla; id'li notifications/* → -32601 + id yankısı; RPC + gerçek stdio zamanlayıcı düzeyinde pinli; geçersiz id asla yankılanmaz |
+> | ARCH-001 | **FIXED** (genişletildi: arşiv → silme) | 320 takipli dosya silindi (−159.805 satır); workspace = yalnız spec-core; `pnpm audit --prod` 66 uyarıdan → **0**; tag `legacy-archive-final` + `docs/legacy-archive.md` kurtarma kaydı |
+> | PROD-003 | **FIXED (deterministik)** + canlı kanıt **USER-GATED** | MENTIONS_TERMS → CONSTRAINT_TRACE (köklendirme zinciri + sayısal ilişki + yasak-icat; 9 adversarial vaka); korpus+eşik+rubrik-dosya-baytları sha256 kilidi `0024fef9…` (geçmiş zincirli, append-only); ön-kayıtlı signTest() kriteri kodda; canlı koşum ya sahibi tarafından yetkilendirilir ya da konsey-üstünlüğü iddiası emekli edilir (ACCEPTED-DOC) |
+> | SEC-001 | **USER-GATED** (depo tarafı FIXED) | Tüm doğrulamalar temiz (değer yok, purge kanıtlı, marker 92 çift); /tmp/lco-pre-purge.bundle 0644→**0600** düzeltildi; kapanış = U1 tarihli rotasyon taahhüdü + bundle tasfiye kararı |
+>
+> Komşu düzeltmeler: `lco doctor` adapter gerçeği (canlı HTTP varsayılan,
+> fail-closed; mock yalnız test/kütüphane) + etkin-kök raporlaması; U2
+> dokümanı YÜRÜTÜLDÜ kaydına döndü; DATA-002/003 bütünlük dili tutarlı
+> (semantik-drift, imza iddiası yok); Trusted Publishing "yapılandırıldı,
+> uçtan-uca kanıtlanmadı" çerçevesi tüm yüzeylerde; root README npm-0.1.0
+> bayatlığı giderildi. Süit: 75/1231 → **79/1304**, lint 0, packed smoke 0.
+
 > ## ══ PROGRAM KAPANDI (2026-08-27) — 39/39 ══
 >
 > **31 FIXED · 7 ACCEPTED-DOC · 1 USER-GATED (SEC-001: U1 rotasyon + U2
@@ -40,8 +63,9 @@
 >    sürümde doğal olarak gerçekleşir.
 >
 > Plan: plans/2026-08-26-codex-remediation.md · Süreç defteri:
-> .superpowers/sdd/2026-08-26-codex-remediation/progress.md (ruling'ler +
-> program-sonrası backlog kayıtlı). Bekleyen kullanıcı kapıları: U1/U2/U3/U4
+> .superpowers/sdd/2026-08-26-codex-remediation/progress.md — YEREL çalışma
+> kaydıdır (depoya işlenmedi; taze klonlarda yoktur; ruling'ler + program-
+> sonrası backlog orada yaşar). Bekleyen kullanıcı kapıları: U1/U2/U3/U4
 > (kapanış raporunda).
 
 Kanonik tablo. Durum değerleri: FIXED / ACCEPTED-DOC / USER-GATED / PENDING.

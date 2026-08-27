@@ -1,5 +1,6 @@
-# Scoped CI: this pipeline gates packages/spec-core ONLY. Root-wide
-# build/test stay intentionally broken (legacy apps are archived); the
+# Scoped CI: this pipeline gates packages/spec-core ONLY (the workspace root
+# defines no build/test targets — the legacy tree was removed 2026-08; see
+# docs/legacy-archive.md); the
 # workflow name `ci-spec-core` makes that scope visible in status checks
 # and the README badge. The badge URL is keyed on this FILE name (ci.yml),
 # so the workflow `name` can be scoped without breaking the badge.

@@ -43,15 +43,15 @@ the expected narrative exactly (no investigation trigger).
 ### SEC-003 — MCP allowed-root policy optional (MEDIUM)
 
 - End state (Lane B, implemented): binding effective root for every tool call = realpath(LCO_MCP_EXEC_ROOT) when pinned, else realpath(process.cwd()) — computed once per call at the RPC boundary from server state, never from request arguments. `checkMcpDir` now requires an `EffectiveMcpRoot` (no policy-free branch); root not resolving to an existing directory ⇒ every tool fails closed with a -32602 naming the root's origin. Non-existent creation targets resolve via nearest-existing-ancestor and stay checkable. Refusal precedes core invocation/adapter/spawn/write (pinned: outside `lco_generate` → 0 adapter calls; outside `lco_init` → nothing created; outside consenting `lco_check` → no execution). `consent.ts`/`stdio.ts` behaviorally unchanged.
-- Test evidence: RED-first (16 failures), then 75→78 files combined suite green; doctor reports the effective-root policy; README documents the binding policy.
-- Independent review: IN PROGRESS.
-- Status: FIXED (pending review confirmation).
+- Test evidence: RED-first (16 failures), then suite green through all waves (final: 79 files/1304 tests); doctor reports the effective-root policy; README documents the binding policy.
+- Independent review: CLOSED — adversarial reviewer (symlink/`..`/TOCTOU probes incl. empirical runs against dist) verdict: "SEC-003 residual: genuinely closed"; 3 Minor + 3 Nit filed, all closed (doctor relative-pin message corrected; session-level SEC-006 test added; README deployment caveat added; stale comments fixed; realpath-disclosure noted as accepted limitation).
+- Status: FIXED.
 
 ### SEC-006 — ID-bearing `notifications/*` silenced (LOW)
 
 - End state (Lane B): silence is defined ONLY by absence of id (JSON-RPC 2.0 envelope semantics). `if (!hasId) return null;` is the sole silence path; id-bearing `notifications/*` fall through to the switch → -32601 with id echoed. Envelope validation unchanged (invalid id never reflected; batch rejected; no-batch stance kept). Tests that pinned the old silence were replaced by their mandated inverses.
-- Independent review: IN PROGRESS.
-- Status: FIXED (pending review confirmation).
+- Independent review: CLOSED — same reviewer verdict: "SEC-006 residual: genuinely closed" (real stdio scheduler session verified: -32601 + id echo incl. explicit id:null, no in-flight-cap interaction, no deadlock).
+- Status: FIXED.
 
 ### ARCH-001 — legacy code inside active workspace/dependency surface (MEDIUM)
 
@@ -67,10 +67,11 @@ the expected narrative exactly (no investigation trigger).
 
 - Deterministic gate (Lane D, implemented): `CONSTRAINT_TRACE` replaces `MENTIONS_TERMS` — each greenfield intent declares machine-checkable constraints (anchor terms, numeric {operator,value}, forbidden-invention lists); grounding chain enforced: term in a real requirement STATEMENT (glossary/decision/task-instruction and intent echo never count) → requirement referenced by ≥1 task → task carries a related test case + judgeable exit-code verification; numeric relations reject wrong-side foreign numbers; failures structured (constraint+stage+detail).
 - Adversarial battery: 9/9 green, RED-first (term-dump, glossary-echo, untraced requirement, off-value/rescaled numerics, forbidden inventions, monotone blocking, mock honesty).
-- Corpus/threshold freeze: sha256 lock `sha256:e9c5e3b0f50953387df13ddad88907216ff99f5f230411233525e95d8b7fb523` (frozen 2026-08-27, BEFORE any live results); verified at every eval entrypoint — mismatch aborts (exit 2).
+- Corpus/threshold freeze: enforced sha256 lock `sha256:0024fef976487dfc464502e3d19c196682e25cbd0db7bbfe1099d9368d371c79` (history[1], frozen 2026-08-27, scope = corpus + thresholds + rubric-file-bytes [prompts/constraints/score], BEFORE any live results); original narrower freeze `sha256:e9c5e3b0…` preserved as history[0] via previous_hash. Verified at every eval entrypoint — mismatch aborts (exit 2).
 - Live-evidence decision: OUTSTANDING (owner gate). Pre-registration + cost envelope: `audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md` (3 repeats × 20 tasks × 2 variants; 240–540 max completions; 240–2160 HTTP attempts; worst-case wall ~110.5 h; input tokens ~1.41M min..≥5.09M worst; $/1M placeholders for owner pricing). Alternative: retire the council-advantage claim → ACCEPTED-DOC.
-- Independent review: IN PROGRESS.
-- Status: deterministic side FIXED; live-evidence side USER-GATED (authorize or retire).
+- Independent review: CLOSED — adversarial reviewer verified the lock hash, envelope math, and entrypoint wiring independently, then filed 5 Important + 4 Minor + 2 Nit findings; ALL closed by a dedicated fix wave (lock scope extended to rubric-file-bytes; pre-registered signTest() implemented in code with tests; sibling-sentence + unit-scoped numeric tightening; forbidden-list coverage honestly scoped to ET-01/02 + word-boundary matching; negation limitation named; render constant; regen thresholds; hash-chained history; SUPERSEDED banner; dead code removed). Post-fix: 79 files/1303→1304 tests green; mock eval PASS_DETERMINISTIC_ONLY with honesty labels intact.
+- Whole-branch cross-lane review: verdict "Ready for final gates" (0 Critical; 1 Important + 3 Minor doc findings, all closed in the finalization commit).
+- Status: deterministic side FIXED; live-evidence side USER-GATED (authorize the pre-registered repeated run OR retire the council-advantage claim → ACCEPTED-DOC).
 
 ### Adjacent corrections (root-owned)
 
