@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.17.1",
+  "_archival": "ARCH-001: legacy root targets removed 2026-08. apps/* and packages/shared-* are archived, broken by design, and deliberately not runnable from the root. The root offers one convenience alias (test:spec); CI and docs use the PATH-filtered form directly (see README 'Legacy (archived) — do not run').",
   "scripts": {
-    "_arch_note": "ARCH-001: legacy root targets removed 2026-08. apps/* and packages/shared-* are archived, broken by design, and deliberately not runnable from the root. The root offers one convenience alias; CI and docs use the PATH-filtered form directly (see README 'Legacy (archived) — do not run').",
     "test:spec": "pnpm --filter ./packages/spec-core test"
   },
   "workspaces": [
