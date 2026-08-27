@@ -4,17 +4,8 @@
   "private": true,
   "packageManager": "pnpm@10.17.1",
   "scripts": {
-    "dev": "pnpm run --parallel dev",
-    "start": "pnpm run --parallel start",
-    "build": "pnpm run --recursive build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "test:unit": "vitest run --dir apps --dir packages",
-    "test:integration": "vitest run --dir tests/integration",
-    "test:e2e": "vitest run --dir tests/e2e",
-    "test:property": "vitest run --grep 'Property-Based'",
-    "test:all": "pnpm test:unit && pnpm test:integration && pnpm test:e2e"
+    "_arch_note": "ARCH-001: legacy root targets removed 2026-08. apps/* and packages/shared-* are archived, broken by design, and deliberately not runnable from the root. The root offers one convenience alias; CI and docs use the PATH-filtered form directly (see README 'Legacy (archived) — do not run').",
+    "test:spec": "pnpm --filter ./packages/spec-core test"
   },
   "workspaces": [
     "apps/*",

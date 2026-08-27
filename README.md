@@ -103,11 +103,17 @@ council system (discovery, indexing, role-based analysis, synthesis). It predate
 the spec-core pivot and is kept only as source history:
 
 - **Broken by design.** Not maintained, and not expected to build or pass tests.
-  The former Docker quick start and per-service startup instructions were removed
-  from this README because the images' entrypoints reference scripts that no
-  longer exist.
-- **The root `pnpm build` / `pnpm test` are intentionally broken** after the
-  pivot — do not run them; use the PATH-filtered spec-core commands above.
+  The former Docker quick start, per-service Dockerfiles, compose files
+  (`docker-compose*.yml`), and the legacy `.env.example` were **removed** from
+  the repo (2026-08, ARCH-001): the images' entrypoints referenced scripts and
+  `dist/` files that do not exist, and the env file documented only the dead
+  services. Git history preserves them.
+- **The root offers no legacy targets.** Root `package.json` scripts were cut to
+  a single scoped alias, `pnpm test:spec`; `pnpm build` / `pnpm test` at the
+  root fail by design — use the PATH-filtered spec-core commands above.
+- Each archived directory carries an `ARCHIVED.md` label, and
+  [docs/legacy-salvage-list.md](docs/legacy-salvage-list.md) records the
+  per-subsystem go/no-go extraction verdicts (zero GO).
 - The provider variables this README used to document (`OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`, `INDEXER_*`, `EMBEDDING_*`, …) belonged to those archived
   services. lco-spec's real environment contract is the `LCO_LLM_*` table above.
