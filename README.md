@@ -1,6 +1,6 @@
 # lco-spec — local-first spec compiler (LLM Council Orchestrator monorepo)
 
-[![CI](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml)
+[![ci-spec-core](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/isakli05/llm_council_orchestrator/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-workspace-F69220?logo=pnpm&logoColor=white)](https://pnpm.io/)
@@ -14,7 +14,11 @@ cores:
 - **`lco`** — a 10-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
   `trace`, `plan`, `init`, `check`, `generate` (`lco --help` for usage,
   `lco <command> --help` per command)
-- **`lco-mcp`** — a stdio MCP server exposing 7 tools (`lco_compile` … `lco_check`)
+- **`lco-mcp`** — a stdio MCP server exposing 10 tools (`lco_compile` … `lco_change`).
+  The generation and execution tools are consent-gated env opt-ins — off unless
+  the server starts with `LCO_MCP_ALLOW_GENERATE=1` / `LCO_MCP_ALLOW_EXEC=1`;
+  `lco_generate` is a **paid** LLM call. Trust boundary:
+  [packages/spec-core/README.md](packages/spec-core/README.md).
 
 Everything except `generate` (and live eval runs) is local and deterministic — no
 API keys required.

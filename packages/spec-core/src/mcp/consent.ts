@@ -42,8 +42,10 @@ import type { SpecBundle } from '../schemas';
  *      inherited env — there the consenting human IS the environment owner.
  *
  * Optional 5th layer: `LCO_MCP_EXEC_ROOT=<abs path>` pins the workspace —
- * when set, consent is only honored for spec roots under that path. This is
- * consent-boundary pinning, NOT process isolation (P2-2/T16 owns sandboxes).
+ * when set, execution consent is only honored for spec roots under that path
+ * (`lco_generate` consent and its write target are not bound by this pin).
+ * This is consent-boundary pinning, NOT process isolation (P2-2/T16 owns
+ * sandboxes).
  *
  * T10 REUSABILITY (paid-call consent): layers 1, 3 and the refusal style are
  * not check-specific. `execOptInFromEnv`'s exactly-'1' semantics, the

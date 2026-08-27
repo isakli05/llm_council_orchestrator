@@ -53,7 +53,7 @@ A stdio MCP server whose logger writes JSON log lines straight to `stdout`
 (`apps/mcp_bridge/src/observability/Logger.ts:24-30`) corrupts the only
 transport it exists to serve — the exact failure class the audit flagged. It is
 a thin facade over the NO-GO orchestrator, and spec-core ships a tested
-replacement (`lco-mcp`, 7 tools, protocol-tested handshake in the packed
+replacement (`lco-mcp`, 10 tools, protocol-tested handshake in the packed
 smoke gate). Nothing unique to salvage.
 
 ## packages/shared-types — NO-GO
