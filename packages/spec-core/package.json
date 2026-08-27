@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Turn natural-language intent into schema-validated, lintable, freezable application specs — with an LLM council or a single model.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/isakli05/llm_council_orchestrator.git"
+  },
   "type": "commonjs",
   "main": "dist/schemas/index.js",
   "bin": {
@@ -26,7 +30,7 @@
     "smoke:packed": "sh scripts/packed-install-smoke.sh",
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "pnpm run test"
+    "prepublishOnly": "pnpm run test && node scripts/prepublish-check.js"
   },
   "dependencies": {
     "zod": "^3.22.0"

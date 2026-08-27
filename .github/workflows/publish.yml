@@ -1,0 +1,133 @@
+# P2-6: manual, provenance-carrying publish for packages/spec-core (lco-spec).
+#
+# SAFETY MODEL — the workflow as merged CANNOT publish:
+#   * trigger is workflow_dispatch ONLY (no push/tag ever starts it);
+#   * the dry_run input DEFAULTS TO TRUE — a dispatch that just clicks
+#     "Run workflow" runs the full gate and `npm publish --dry-run`, and
+#     never touches the registry;
+#   * a real publish additionally requires the NODE_AUTH_TOKEN repository
+#     secret, which must be added by the OWNER before first use (U4:
+#     publishing is forever a user-gated action — this workflow provides
+#     machinery and provenance, not an automated release).
+#
+# Provenance: `npm publish --provenance` attests the artifact to this
+# workflow run via GitHub OIDC (id-token: write below). The package.json
+# `repository` field is required for provenance and is present.
+#
+# Expected flow (documented in packages/spec-core/README.md "Yayın ve
+# Sahiplik"): bump version + changelog -> full gate green -> commit ->
+# `git tag vX.Y.Z && git push origin vX.Y.Z` -> dispatch THIS workflow
+# FROM THAT TAG with dry_run=true -> owner re-dispatches with dry_run=false.
+name: publish-spec-core
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version being released — must equal packages/spec-core/package.json AND the exact tag at the dispatched ref'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (safe default): full gate + pack, no upload. Set false to publish for real.'
+        required: false
+        default: true
+        type: boolean
+
+# Read for the checkout; id-token: write for npm provenance (OIDC).
+permissions:
+  contents: read
+  id-token: write
+
+# Serialize publishes — never cancel an in-flight one mid-upload.
+concurrency:
+  group: publish-spec-core
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so `git describe --tags --exact-match` can see the tag
+      # object for the dispatched ref.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Same double pin as ci.yml: root packageManager pins pnpm@10.17.1;
+      # this explicit version must agree with it. pnpm before setup-node
+      # so the pnpm store path resolves for caching.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+
+      # Node 22 = minimum supported major (engines >=22); the ci-spec-core
+      # matrix proves 22 and 24 on every push. registry-url wires
+      # NODE_AUTH_TOKEN (passed on the publish step) to the npm registry.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      # --- full ci-spec-core gate, mirrored (filter by path, not name) ---
+      - run: pnpm --filter ./packages/spec-core build
+
+      - name: Fail if generated schema artifact is stale
+        run: |
+          CHANGED=$(git status --porcelain -- packages/spec-core/generated/)
+          if [ -n "$CHANGED" ]; then
+            echo "::error::packages/spec-core/generated/spec-schema.json does not match what build regenerates from source."
+            echo "::error::Regenerate and commit: pnpm --filter ./packages/spec-core build && git add packages/spec-core/generated && git commit"
+            echo "$CHANGED"
+            exit 1
+          fi
+
+      - run: pnpm --filter ./packages/spec-core lint
+      - run: pnpm --filter ./packages/spec-core test
+      - run: pnpm --filter ./packages/spec-core smoke:packed
+
+      # --- release readiness: clean tree + exact tag == package version ---
+      # Same gate prepublishOnly enforces; run explicitly for a clear,
+      # attributable failure before any pack/publish step.
+      - name: Release readiness (clean tree, exact tag matching package.json)
+        run: node scripts/prepublish-check.js
+        working-directory: packages/spec-core
+
+      - name: Dispatched version must equal package.json version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          PKG=$(node -p "require('./packages/spec-core/package.json').version")
+          if [ "$INPUT_VERSION" != "$PKG" ]; then
+            echo "::error::Dispatched version '$INPUT_VERSION' != package.json version '$PKG'."
+            exit 1
+          fi
+          echo "Dispatched version matches: $PKG"
+
+      - name: Refuse real publish without owner token
+        if: ${{ inputs.dry_run == false }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::Real publish requested but the NODE_AUTH_TOKEN secret is not set."
+            echo "::error::Owner action (U4): create an npm access token (automation or granular, publish rights for lco-spec) and add it as the repository secret NODE_AUTH_TOKEN before the first real publish."
+            exit 1
+          fi
+
+      # Dry run: exercises prepublishOnly (test suite + readiness gate) and
+      # packs, but uploads nothing. Provenance is omitted here — it is a
+      # property of the real upload, attested by this run's OIDC token.
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run
+        working-directory: packages/spec-core
+
+      - name: Publish (real, with provenance)
+        if: ${{ inputs.dry_run == false }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: npm publish --provenance
+        working-directory: packages/spec-core

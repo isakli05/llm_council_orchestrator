@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (1067 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
+pnpm --filter ./packages/spec-core test    # vitest (1078 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe, yayın kapısı)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -44,11 +44,15 @@ sessizce atlanmaz, `run pnpm --filter ./packages/spec-core build before test` me
 artefakt testi ve CI'ı düşürür. Yeniden üretim: `pnpm --filter ./packages/spec-core build`
 sonra `git add packages/spec-core/generated && git commit`.
 
-**Publishing (maintainer):** paket npm'de `lco-spec` adıyla yayımlanır:
-`packages/spec-core` içinde `npm login` sonrası `npm publish`. `prepublishOnly`
-`pnpm run test` çağırır; `pretest` temizleyip derler (tek build, çift derleme yok) —
-PATH'te pnpm gerektirir. Yayınlama bir
-**kullanıcı eylemidir** — bu depodan otomatik publish yapılmaz.
+**Publishing (maintainer):** paket npm'de `lco-spec` adıyla yayımlanır. Tercih
+edilen akış **CI'dır** (bkz. ["Yayın ve Sahiplik"](#yayın-ve-sahiplik-p2-6)):
+etiketleyip `publish-spec-core` iş akımını çalıştır — `dry_run` girdisi
+**varsayılan olarak true**'dur, yani iş akımı tek başına asla yayımlamaz.
+Yerel yayın da aynı kapıya takılır: `prepublishOnly` =
+`pnpm run test && node scripts/prepublish-check.js` — kirli çalışma ağacı,
+etiketsiz HEAD veya etiket↔sürüm uyuşmazlığı REDDEDİLİR (`pretest` temizleyip
+derler, tek build — PATH'te pnpm gerektirir). Yayınlama bir
+**kullanıcı eylemidir** (U4) — bu depodan otomatik publish yapılmaz.
 
 ## CLI: `lco`
 
@@ -912,14 +916,100 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
   sırası) ve trim-refine'lı metin alanlarının baş/son boşluk değişiklikleri drift
   üretmez (turdaki tamper denemesi #1'in exit 0 çıkması tam olarak budur). Kasıtlı
   tasarım: bölüm-içeriği drift dedektörü, tamper kanıtı değildir (G2 kapsam notu).
+- **Manifest'in kendisi hash kapsamının DIŞINDADIR (DATA-002):** `verify`, bölüm
+  içeriğini manifest'te saklanan `artifact_hashes`'e karşı doğrular; ama
+  manifest'in KENDİSİ — proje kimliği, `spec_schema`/`spec_version` üstverisi,
+  sayaçlar (`unresolved_count`, `blocking_count`), `state`, `evidence_snapshot`,
+  `council_run`, zaman damgaları ve saklı `artifact_hashes`'in kendisi — hiçbir
+  hash tarafından kapsanmaz. Yeşil bir `verify` **bölüm-içeriği bütünlüğünü**
+  kanıtlar; **manifest'in özgünlüğünü kanıtlamaz** — bütünüyle elle uydurulmuş
+  bir manifest hâlâ temsil edilebilir (dondurmanın köken denetimi — v1 taslağının
+  hash taşımaması / v>1 taslağının önceki dondurmanın hash'lerini taşması
+  zorunluluğu — bunu daraltır, ortadan kaldırmaz). Kriptografik provenance
+  (imza / kök özet) BİLİNÇLİ olarak uygulanmamıştır ve yalnızca ticari bir
+  provenance iddiası gerekçe gösterilirse eklenir (denetim DATA-002'nin
+  önerilen yönü; mevcut kapsam notu: `verify.ts`).
 - **L03'ün etkin kapsamı:** `test_files` defteri `compile` sırasında görevlerden
   *türetilir*, dolayısıyla derlemeden gelen bundle'lar L03'ü asla tetikleyemez. Kural,
   modelin kendi test defterini yankılamak zorunda olduğu **doğrudan ayrıştırma / LLM
   yolunu** korur (runner, LLM çıktısını `compile` olmadan `SpecBundleSchema` ile
   ayrıştırır): `tasks[].tests[].file` ile `test_files` tutarsızsa orada yakalanır.
 
+## Yayın ve Sahiplik (P2-6)
+
+Yayın **CI tercih edilen akıştır** ve sonsuza dek kullanıcı-kapılıdır (U4): bu
+depo otomatik yayın yapmaz — makine yalnızca kapıyı ve provenance'ı sağlar.
+
+**CI akışı (tercih edilen):**
+
+1. Sürüm bump + Değişiklik Günlüğü girdisi + tam kapı yeşili → commit.
+2. `git tag v0.1.0 && git push origin v0.1.0`. Etiket `v<sürüm>` ya da çıplak
+   `<sürüm>` olabilir — `prepublish-check.js` iki biçimi de kabul eder.
+3. Actions → **`publish-spec-core`** iş akımını ETİKETLİ ref'ten çalıştır;
+   `version` girdisine sürümü yaz (package.json sürümüne eşit olmalı — eşit
+   değilse iş akımı reddedilir). `dry_run` girdisi **varsayılan olarak true**:
+   birleşen iş akımı tek başına ASLA yayımlamaz; tam kapıyı (build/tazelik/
+   lint/test/smoke) ve `npm publish --dry-run`'ı koşar, kayıt defterine
+   dokunmaz.
+4. Gerçek yayın yalnızca sahip `dry_run=false` seçtiğinde olur — ve o adım
+   `NODE_AUTH_TOKEN` sırrı eklenmedikçe açıklamalı bir hatayla reddedilir.
+   **Sırrı eklemek sahip eylemidir** (npm automation/granular token'ını repo
+   sırrı olarak tanımlamak; ilk gerçek yayından önce bir kez — U4'ün ta kendisi).
+5. Gerçek yayın `npm publish --provenance` ile yapılır: GitHub Actions OIDC'si
+   kayıt defterinde imzalı bir provenance deyimi üretir (package.json'daki
+   `repository` alanı bunun için zorunludur ve mevcuttur).
+
+**Kirli/etiketsiz yayın yasağı:** `prepublishOnly`, test takımının ardından
+`scripts/prepublish-check.js`'i çalıştırır. Karar çekirdeği test edilen
+`src/release/readiness.ts`'tir (karar tablosu orada sabitlenmiştir — saat,
+dosya sistemi, ortam erişimi yoktur; git durumu yalnızca sınır betiğinde
+okunur). Şu hallerde yayın REDDEDİLİR: kirli çalışma ağacı (`git status
+--porcelain` boş değilse — izlenmeyen dosyalar da kirli sayılır), HEAD etiketli
+değilse, etiket package.json sürümüyle eşleşmiyorsa. Yerel temiz-etiketli
+yayın teknik olarak mümkündür (yasak KİRLİ ve ETİKETSİZ yayındır) — ama CI
+akışı tercih edilir: provenance yalnızca CI'da üretilir ve `prepublishOnly`
+aynı kapıyı her iki yolda da uygular.
+
+**Geri alma (rollback):**
+
+- Sabit sürüme kilitlenmiş kullanıcılar (`"lco-spec": "0.1.0"`) bozuk bir YENİ
+  yayından etkilenmez — eski tarball kayıt defterinde kalır.
+- Gerçekten bozuk bir sürüm için npm'in **72 saatlik `npm unpublish` penceresi**
+  vardır; pencere mutlak bir hak değildir (başka paketler o sürüme bağımlıysa
+  unpublish engellenebilir; 72 saatten sonra yalnızca npm desteği).
+- **Aynı sürüm numarası asla yeniden yayımlanmaz:** bir sürüm yalnızca bir kez
+  etiketlenebilir, `prepublish-check`'in etiket↔sürüm eşleşmesi bunu yapısal
+  kılar (npm kayıt defteri de eski sürümün üzerine yazmayı zaten reddeder).
+  Onarımın yolu `git revert` + **patch sürümüdür**.
+
+**Platform / sağlayıcı matrisi (dürüst):**
+
+| Boyut | Durum | Kanıt |
+| --- | --- | --- |
+| Node 22, 24 | desteklenir | `ci-spec-core` matrisi her push'ta (build, tazelik, lint, test, smoke) |
+| Node 21 ve altı | desteklenmez | `engines: ">=22"`; CI'da denenmez |
+| Linux (POSIX) | desteklenir | CI (`ubuntu-latest`) |
+| macOS (POSIX) | hedeflenir, CI'da denenmez | POSIX hedefi; CI matrisinde yok (dürüstlük notu) |
+| Windows | **desteklenmez** | süreç-grubu yürütmesi POSIX mekanizmasıdır (T15/T16 ifşaları) |
+| LLM sağlayıcıları (`LCO_LLM_*`, OpenAI-uyumlu uçlar) | **yalnızca mock ile test edilir** | canlı sağlayıcı birlikteçalışabilirliği açıkça TEST EDİLMEMİŞTİR; canlı koşum kullanıcı yordamıdır (bkz. "live G4 yeniden koşum yordamı") |
+| npm kayıt defteri (registry.npmjs.org) | hedef yayın platformu | yayın yalnızca `publish-spec-core` iş akımından, dry-run varsayımıyla |
+
 ## Değişiklik Günlüğü
 
+**Disiplin:** birleşen her aşama/sürüm bu bölüme **tarihli** bir girdi ekler;
+kırıcı değişiklikler girdide açıkça işaretlenir; **test sayıları aynı
+commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
+izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
+birlikte yaşar (bkz. "Yayın ve Sahiplik").
+
+- **P2-6 (bu aşama):** yayın sahipliği/provenance — kirli/etiketsiz yayın
+  yasağı (test edilen karar çekirdeği `src/release/readiness.ts` + sınır betiği
+  `scripts/prepublish-check.js`, `prepublishOnly`'ye bağlı), manuel
+  `publish-spec-core` iş akımı (yalnızca `workflow_dispatch`; `dry_run`
+  VARSAYILAN true; OIDC `--provenance`; gerçek yayın `NODE_AUTH_TOKEN` sahip
+  sırrı olmadan reddedilir), rollback/platform-sağlayıcı matrisi/değişiklik
+  günlüğü disiplini bölümleri, DATA-002 manifest-özgünlüğü sınırlama notu —
+  1078 test.
 - **PROD-005 (bu aşama):** şema sürüm politikası (`src/schemas/version.ts` tek
   kaynak; ayrık/eyleme-dönük sürüm hataları: bozuk dize / yeni minor / başka major),
   legacy bloğu varsa-tam (strict-when-present), p-legacy/mode=legacy her yerde

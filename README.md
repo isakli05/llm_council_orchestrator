@@ -89,6 +89,15 @@ inside `packages/spec-core/generated/`), lint, full test suite, and a
 packed-install smoke (`npm pack` → install tarball → `lco init` → `lco-mcp`
 handshake).
 
+Publishing is manual and dry-run-by-default: the
+[`publish-spec-core`](.github/workflows/publish.yml) workflow (workflow_dispatch
+only) re-runs the full gate and refuses dirty/untagged/mismatched-tag publishes
+(`packages/spec-core/scripts/prepublish-check.js`); a real publish additionally
+requires the `NODE_AUTH_TOKEN` repository secret (owner action) and runs with
+npm provenance. Publishing is forever user-gated — the repo never publishes
+automatically. Details: [`packages/spec-core/README.md`](packages/spec-core/README.md)
+("Yayın ve Sahiplik").
+
 ## Repository layout
 
 ```text
