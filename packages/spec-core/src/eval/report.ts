@@ -415,13 +415,15 @@ export function renderGateReport(r: GateReportInput): string {
   if (!r.live) {
     lines.push(
       '- mock evidence: the G3 blocked outcomes are scripted plumbing (derived from must_be_blocked), not classification quality; live runs are the classification evidence.',
+      '- mock evidence: the greenfield intent-fidelity passes are CONSTRUCTED (the mock bundles are badged with their task\'s terms by badgeIntentConstraints), not model-fidelity evidence; live runs are that evidence.',
       '- mock evidence cannot substantiate G4 — the council-advantage claim is live-only by construction.',
       '- mock repeats are deterministic-by-construction (scripts cannot vary); the spread columns matter only for live runs.',
     );
   } else {
     lines.push(
       '- G4 is computed ONLY over intent-fidelity-passing runs with complete provider usage across all repeats; structural passes are excluded from the comparison.',
-      '- G4 does NOT establish: blinding (none — the model saw the intent verbatim knowing a spec was expected), human-verified design correctness (term assertions verify that named constraints are carried, not that the design is right), cross-provider or cross-model generalization, or stability beyond the observed repeats (see the per-task spread).',
+      '- G4 does NOT establish: blinding (none — the model saw the intent verbatim knowing a spec was expected), human-verified design correctness, cross-provider or cross-model generalization, or stability beyond the observed repeats (see the per-task spread).',
+      '- term assertions verify that named constraints are CARRIED into the bundle, not that they are USED in the design; a semantically-empty term dump (one sentence listing every term) can satisfy them — live fidelity requires the future tightening (each term resolving to a requirement statement / task instruction), which this rubric does not yet enforce.',
       '- mock-vs-live distinction: deterministic gates G1-G2 are identical either way; G3/G4 carry meaning only in this live report.',
     );
   }

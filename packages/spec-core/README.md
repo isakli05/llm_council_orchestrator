@@ -598,6 +598,12 @@ biçimler, limitler, durum kodları — `sqlite`, `jwt`, `--sep`, `429`, `09:00`
 bir `MENTIONS_TERMS` iddiası içerir. Üretilen bundle'ın gövde metni (requirements/tasks/
 tests/glossary/decision metinleri) bu terimlerin **hepsini** carry etmelidir; bundle'ın
 kendi `intent.statement` yankısı **aranmaz** (niyeti geri okumak, onu kodlamak değildir).
+**Bilinen sınır (term-dump):** terim iddiaları adlı kısıtların bundle'a **taşındığını**
+doğrular, tasarımda **kullanıldıklarını** değil — tek bir cümleyle tüm terimleri listeleyen
+anlamsız bir "term-dump" bu iddiayı geçebilir; canlı sadakat için terim başına bir
+requirement statement / task instruction'a çözünme gerektiren gelecek sıkılaştırma
+gerekir (bu rubrik henüz uygulamaz). Mock'un greenfield intent geçişleri de
+`badgeIntentConstraints` ile **üretilmiştir** — model sadakat kanıtı değildir.
 Skor iki etikete ayrılır: **yapısal geçiş** (MENTIONS_TERMS dışındaki tüm iddialar) ve
 **niyet-doğruluk geçişi** (MENTIONS_TERMS + BLOCKED + doğru bloklama). Yapısal olarak
 temiz ama niyete sadık olmayan jenerik bir bundle artık tam puan alamaz — ham fixture'lar

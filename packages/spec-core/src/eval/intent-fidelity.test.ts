@@ -466,10 +466,14 @@ describe('G4 honesty — computed over intent-fidelity-passing runs only', () =>
     expect(text).toContain('VERDICT: FAIL');
   });
 
-  it('the report states what G4 does NOT establish (no blinding, mock cannot substantiate)', () => {
+  it('the report states what G4 does NOT establish (no blinding, mock cannot substantiate, term-dump limitation named)', () => {
     const text = renderGateReport(passInput(1));
     expect(text).toContain('does NOT establish');
     expect(text.toLowerCase()).toContain('blind');
+    // the term-dump vector is named explicitly, not left for the reader to infer
+    expect(text).toContain('term dump');
+    expect(text).toContain('not that they are USED in the design');
+    expect(text).toContain('future tightening');
   });
 
   it('the report separates structural passes from intent-fidelity passes', () => {
@@ -480,11 +484,15 @@ describe('G4 honesty — computed over intent-fidelity-passing runs only', () =>
     expect(text).toContain('intent-fidelity passes: 39/40');
   });
 
-  it('mock (non-live) reports label G3 mock evidence as blocking plumbing, not classification quality', () => {
+  it('mock (non-live) reports label G3 mock evidence as blocking plumbing and intent passes as badge-constructed, not model fidelity', () => {
     const input = passInput(1, false);
     const text = renderGateReport(input);
     expect(text).toContain('PASS_DETERMINISTIC_ONLY');
     expect(text).toContain('plumbing');
+    // the mock greenfield intent passes derive from badgeIntentConstraints — the
+    // exact analog of the G3 scripting disclosure, named in the report
+    expect(text).toContain('badgeIntentConstraints');
+    expect(text).toContain('not model-fidelity evidence');
   });
 });
 
