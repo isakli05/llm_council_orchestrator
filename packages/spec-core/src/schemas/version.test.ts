@@ -98,6 +98,30 @@ describe('checkSpecSchemaVersion (PROD-005 policy validator)', () => {
       expect(v.message).toContain("exactly as 'lco-spec/1.0'");
     }
   });
+
+  it('non-canonical does NOT swallow the real verdict of a different version (review rider A)', () => {
+    // A misspelled FUTURE version is still a future version — it must not be
+    // told to "write it exactly as 'lco-spec/1.0'".
+    expect(checkSpecSchemaVersion('lco-spec/02.0')).toMatchObject({
+      ok: false,
+      kind: 'unsupported-major',
+    });
+    expect(checkSpecSchemaVersion('lco-spec/1.05')).toMatchObject({
+      ok: false,
+      kind: 'newer-minor',
+    });
+    // And the messages must carry the future version's own guidance.
+    const major = checkSpecSchemaVersion('lco-spec/02.0');
+    if (!major.ok) {
+      expect(major.message).toContain('lco-spec/02.0');
+      expect(major.message).not.toContain("exactly as 'lco-spec/1.0'");
+    }
+    const minor = checkSpecSchemaVersion('lco-spec/1.05');
+    if (!minor.ok) {
+      expect(minor.message).toContain('lco-spec/1.05');
+      expect(minor.message).toMatch(/upgrade/i);
+    }
+  });
 });
 
 describe('SpecSchemaVersionFieldSchema (zod wiring, single place)', () => {

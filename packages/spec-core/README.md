@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (936 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
+pnpm --filter ./packages/spec-core test    # vitest (1067 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -745,7 +745,7 @@ referanslarını denetler. `generate` ve `init` bu profili SEÇEMEZ (yalnızca
 `p-mini | p-standard`); legacy spec'in tek yolu elle yazılmış JSON'dur. Legacy bloğu
 **varsa tam olmalıdır** (`as_is_summary` + en az bir `preserve_change_drop` girdisi):
 `{}` veya yarım paket şema hatasıdır — "legacy paket yok" demenin tek yolu bloğu hiç
-yazmamaktır. Dönüşüm semantiği, bir pilot gerekçe göstermedikçe kalıcı olarak kapsam
+yazmamaktır. (Bilinçli erteleme: `p-legacy` profilini legacy bloğuna bağlayan bir lint kuralı eklenmedi — profil semantiği hiçbir profil için geliştirilmiş değil; şemadaki varsa-tam kuralı denetimin boş-`{}` başarısızlık senaryosunu zaten kapatıyor.) Dönüşüm semantiği, bir pilot gerekçe göstermedikçe kalıcı olarak kapsam
 dışındır (denetim P4).
 
 ## Kanıt Kapısı: G1–G4
@@ -929,7 +929,7 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
 - **PROD-003 (bu aşama):** niyet-doğruluk iddiaları (`MENTIONS_TERMS`), yapısal/niyet
   skor ayrımı, tekrarlı koşum + yayılım tablosu, tam-usage şartı (tekrarlar arasında),
   adversarial eval vakaları, G4'ün dürüst yeniden etiketlenmesi + live yeniden koşum
-  yordamı — 935 test.
+  yordamı — 1067 test (bu sayı sürüm politikası aşamasında güncellendi).
 - **2026-08-19 — bu dal:** strictness, change/trace/init/plan/check, `lco-mcp`,
   dokümantasyon — 552 test.
 - **2026-08-18 — evidence-gate dalı:** şemalar → eval → kapı; mock

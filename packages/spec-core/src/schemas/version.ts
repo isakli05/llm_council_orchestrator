@@ -89,19 +89,7 @@ export function checkSpecSchemaVersion(value: unknown): SpecSchemaVersionVerdict
     };
   }
 
-  // A rendering that PARSES to a known version but is not its canonical
-  // spelling (leading zeros, e.g. 'lco-spec/01.0') must be fixed, not
-  // silently normalized: frozen trees hash canonical JSON.
   const canonical = `lco-spec/${parsed.major}.${parsed.minor}`;
-  if (canonical !== value) {
-    return {
-      ok: false,
-      kind: 'non-canonical',
-      message:
-        `spec_schema '${value}' is a non-canonical rendering of '${canonical}'; ` +
-        `write it exactly as '${SPEC_SCHEMA_VERSION}'`,
-    };
-  }
 
   if (parsed.major !== SUPPORTED.major) {
     return {
@@ -124,6 +112,22 @@ export function checkSpecSchemaVersion(value: unknown): SpecSchemaVersionVerdict
         `compiler supports ('${SPEC_SCHEMA_VERSION}'); lco-spec/1.x is read-compatible, ` +
         `so a newer lco-spec reads this tree back — upgrade lco-spec ` +
         `(do not hand-edit spec_schema to force it through)`,
+    };
+  }
+
+  // Non-canonical — checked AFTER the real version verdicts, so it only fires
+  // for a rendering of THIS compiler's own version: a misspelling of a
+  // different/future version ('lco-spec/02.0', 'lco-spec/1.05') already got
+  // its proper verdict above and must not be told to "write 1.0". Leading
+  // zeros etc. are fixed, not silently normalized: frozen trees hash
+  // canonical JSON.
+  if (canonical === SPEC_SCHEMA_VERSION && value !== canonical) {
+    return {
+      ok: false,
+      kind: 'non-canonical',
+      message:
+        `spec_schema '${value}' is a non-canonical rendering of '${canonical}'; ` +
+        `write it exactly as '${SPEC_SCHEMA_VERSION}'`,
     };
   }
 
@@ -150,12 +154,14 @@ export function checkSpecSchemaVersion(value: unknown): SpecSchemaVersionVerdict
 export const SpecSchemaVersionFieldSchema = z
   .literal(SPEC_SCHEMA_VERSION, {
     errorMap: (_issue, ctx) => {
-      const verdict = checkSpecSchemaVersion(ctx.data);
-      return {
-        message: verdict.ok
-          ? `expected '${SPEC_SCHEMA_VERSION}'`
-          : verdict.message,
-      };
+      // The errorMap runs only on FAILURE — zod never consults it for a value
+      // the literal accepts — so the verdict here is always a rejection; the
+      // cast is that one guaranteed fact, not an escape hatch.
+      const verdict = checkSpecSchemaVersion(ctx.data) as Extract<
+        SpecSchemaVersionVerdict,
+        { ok: false }
+      >;
+      return { message: verdict.message };
     },
   })
   .describe(
