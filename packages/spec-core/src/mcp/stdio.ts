@@ -305,7 +305,10 @@ export class McpStdioServer {
     this.exit(this.closeReason === 'epipe' ? EXIT_CLIENT_GONE : EXIT_OK);
   }
 
-  /** Remove OUR listeners so a finished session never reacts again. */
+  /** Pause input only — the stream keeps its listeners, so "detach" stops
+   *  FEEDING the session rather than silencing it; a finished session never
+   *  reacts again because the `closing`/`exitCalled` guards refuse everything
+   *  downstream. */
   private detach(): void {
     this.input.pause();
   }

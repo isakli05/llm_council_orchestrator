@@ -27,6 +27,14 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
  *   one that existsSync-style checks miss) refuses the write with a
  *   structured error naming the link. Writes never follow symlinks.
  *
+ *   RESIDUAL (TOCTOU): the no-follow write gates are check-then-write — a
+ *   racing LOCAL writer that swaps an intermediate directory component (e.g.
+ *   `spec/evidence`) for a symlink between the gate and the staging/rename can
+ *   redirect the write; this is outside the threat model (static trees and
+ *   pre-planted symlinks are covered, an adversary with concurrent write
+ *   access to the tree is not) and cannot be closed portably in Node without
+ *   dirfd/O_NOFOLLOW-style APIs.
+ *
  * The MCP layer adds the allowed-root policy on top (checkMcpDir): the
  * server's `dir` is ALWAYS realpath-normalized, and when the operator pinned
  * the process with LCO_MCP_EXEC_ROOT the dir must RESOLVE inside the pin.

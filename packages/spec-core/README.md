@@ -355,7 +355,14 @@ modeli bağlayıcıdır:
   Yazma tarafı daha katıdır: `spec/`, `spec/evidence` veya bir bölüm dosyası
   sembolik bağlantıysa yazma, bağlantıyı ADLANDIRAN yapılandırılmış bir hatayla
   reddedilir — yazılar asla bağlantıyı takip etmez. (POSIX hedeflenir; Windows
-  junction davranışı kapsam dışıdır.)
+  junction davranışı kapsam dışıdır.) Bilinen kalıntı (TOCTOU): takip-etmeyen
+  yazma kapısı denetle-sonra-yaz biçiminde çalışır — kapı ile staging/rename
+  arasında bir ara dizin bileşenini (ör. `spec/evidence`) sembolik bağla
+  değiştiren YARIŞAN bir yerel yazıcı yazmayı başka bir yere yönlendirebilir;
+  bu tehdit modelinin dışındadır (statik ağaçlar ve önceden yerleştirilmiş
+  bağlar kapsanır; ağaca eşzamanlı yazma erişimi olan bir saldırgan kapsanmaz)
+  ve Node'da dirfd/O_NOFOLLOW API'leri olmadan taşınabilir biçimde
+  kapatılamaz.
 
 Operasyonel notlar:
 
@@ -1002,7 +1009,7 @@ commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
 izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
 birlikte yaşar (bkz. "Yayın ve Sahiplik").
 
-- **P2-6 (bu aşama):** yayın sahipliği/provenance — kirli/etiketsiz yayın
+- **2026-08-27 — P2-6 (bu aşama):** yayın sahipliği/provenance — kirli/etiketsiz yayın
   yasağı (test edilen karar çekirdeği `src/release/readiness.ts` + sınır betiği
   `scripts/prepublish-check.js`, `prepublishOnly`'ye bağlı), manuel
   `publish-spec-core` iş akımı (yalnızca `workflow_dispatch`; `dry_run`
@@ -1010,7 +1017,7 @@ birlikte yaşar (bkz. "Yayın ve Sahiplik").
   sırrı olmadan reddedilir), rollback/platform-sağlayıcı matrisi/değişiklik
   günlüğü disiplini bölümleri, DATA-002 manifest-özgünlüğü sınırlama notu —
   1078 test.
-- **PROD-005 (bu aşama):** şema sürüm politikası (`src/schemas/version.ts` tek
+- **2026-08-27 — PROD-005 (bu aşama):** şema sürüm politikası (`src/schemas/version.ts` tek
   kaynak; ayrık/eyleme-dönük sürüm hataları: bozuk dize / yeni minor / başka major),
   legacy bloğu varsa-tam (strict-when-present), p-legacy/mode=legacy her yerde
   DENEYSEL + yalnızca-şema etiketi (CLI help, şema açıklamaları, README), sürüm

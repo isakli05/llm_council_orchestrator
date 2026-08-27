@@ -309,10 +309,18 @@ export function execInProcessGroup(
       return teardown;
     };
     const finishTeardown = (): void => {
-      void teardownGroup().then(() => {
-        teardownDone = true;
-        settle();
-      });
+      void teardownGroup()
+        .then(() => {
+          teardownDone = true;
+          settle();
+        })
+        // Defensive durability: nothing in teardown throws today, but if it
+        // ever rejects the run must not wedge on teardownDone — force the
+        // flag so 'close' can still settle the verdict.
+        .catch(() => {
+          teardownDone = true;
+          settle();
+        });
     };
 
     const onChunk = (text: string, isStdout: boolean): void => {
