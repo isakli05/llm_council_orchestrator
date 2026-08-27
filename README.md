@@ -75,10 +75,15 @@ OpenAI-compatible endpoint and **fail closed** unless these are set explicitly:
 | `LCO_LLM_MAX_TOKENS` | no | Positive-integer generation cap |
 | `LCO_LLM_EXTRA_BODY` | no | JSON object merged last into the request body |
 
-## CI
+## CI (spec-core only)
 
-The [`ci`](.github/workflows/ci.yml) workflow builds, lints, and tests
-`packages/spec-core` on Node 22 and 24 (badge above).
+The [`ci-spec-core`](.github/workflows/ci.yml) workflow gates **`packages/spec-core`
+only** on Node 22 and 24 (badge above) — root build/test remain intentionally
+broken (legacy is archived). Gates per Node version: self-cleaning build,
+generated-schema freshness (regenerate + fail on `git status --porcelain`
+inside `packages/spec-core/generated/`), lint, full test suite, and a
+packed-install smoke (`npm pack` → install tarball → `lco init` → `lco-mcp`
+handshake).
 
 ## Repository layout
 

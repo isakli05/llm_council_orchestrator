@@ -27,19 +27,27 @@ npx lco --help
 ```sh
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
-pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (935 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
+pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
+pnpm --filter ./packages/spec-core test    # vitest (936 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
+pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
 
 **Sıra notu (fail-closed):** testler ÖNCE `build` gerektirir — MCP spawn entegrasyon
 testi `dist/mcp/server.js`'i gerçek bir süreç olarak ayağa kaldırır; dist yoksa bu test
 sessizce atlanmaz, `run pnpm --filter ./packages/spec-core build before test` mesajıyla
-**düşer**. CI/yerel akışta sıra: `lint → build → test`.
+**düşer**. CI/yerel akışta sıra: `lint → build → test`. `build` dist'i **önce siler**
+(TEST-002): silinmiş bir modülün bayat `dist/` kopyası pack'lenip yayımlanamaz.
+
+**Tazelik kapısı (TEST-002):** `generated/spec-schema.json` kaynak şemadan
+**bayt-bayt** yeniden üretilip karşılaştırılır (test + CI fail-on-diff); bayat
+artefakt testi ve CI'ı düşürür. Yeniden üretim: `pnpm --filter ./packages/spec-core build`
+sonra `git add packages/spec-core/generated && git commit`.
 
 **Publishing (maintainer):** paket npm'de `lco-spec` adıyla yayımlanır:
 `packages/spec-core` içinde `npm login` sonrası `npm publish`. `prepublishOnly`
-`pnpm run build && pnpm run test` çağırır — PATH'te pnpm gerektirir. Yayınlama bir
+`pnpm run test` çağırır; `pretest` temizleyip derler (tek build, çift derleme yok) —
+PATH'te pnpm gerektirir. Yayınlama bir
 **kullanıcı eylemidir** — bu depodan otomatik publish yapılmaz.
 
 ## CLI: `lco`

@@ -2,6 +2,7 @@
   "name": "llm_council_orchestrator",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.17.1",
   "scripts": {
     "dev": "pnpm run --parallel dev",
     "start": "pnpm run --parallel start",
