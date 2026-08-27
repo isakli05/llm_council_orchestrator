@@ -27,8 +27,9 @@ import type { SpecBundle } from '../schemas';
  *   2. CONTENT QUALITY — frozen + hash-verified + lint-clean. The bundle is
  *      loaded at validation level 'lint-clean' (T7's loadBundleAtLevel), then
  *      the verify core (verifyFrozen) must see manifest.state 'frozen' and
- *      zero drifted sections. A draft scaffold or post-freeze tamper refuses,
- *      naming what failed.
+ *      zero drifted sections. A draft scaffold, or post-freeze content whose
+ *      re-hash no longer matches (semantic drift), is refused naming what
+ *      failed.
  *   3. CONSENT BOUND TO A PREVIEW HASH — the request carries
  *      `consent.digest`, the digest of EXACTLY what will run (see
  *      checkPreviewDigest). The dry-run response advertises the digest; the
@@ -185,7 +186,8 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * The MCP-boundary Executor: the SAME isolated process-group machinery as the
  * runner's `execCommand` (SEC-005: the group is killed on timeout, output-cap
  * overflow and normal completion; stdin is EOF; never rejects; combined
- * stdout+stderr; a kill/signal/output-cap ending is a TIMEOUT), with the
+ * stdout+stderr; a kill-timer/signal ending is a TIMEOUT and an output-cap
+ * overflow is an OUTPUT-CAP — distinct labels), with the
  * SCRUBBED environment instead of the inherited one (SEC-002 layer 4). The
  * CLI keeps `execCommand` and its inherited env: --yes is human consent by
  * the environment's owner.

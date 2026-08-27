@@ -64,14 +64,18 @@ commands:
                                run TaskContract verification commands. DRY RUN by default:
                                without --yes NOTHING is executed (status DRY, exit 0, the
                                table previews what --yes would run). With --yes each command
-                               executes (cwd <dir>, killed at --timeout-ms, default 60000)
-                               and its exit code is compared to the first 'exit N' in the
-                               expect description — an expect without a judgeable 'exit N'
-                               is UNPARSEABLE-EXPECT and is never executed (fail-closed).
+                               executes (cwd <dir>, killed at --timeout-ms, default 60000,
+                               or at the 1 MiB per-stream output cap) and its exit code is
+                               compared to the first 'exit N' in the expect description —
+                               an expect without a judgeable 'exit N' is UNPARSEABLE-EXPECT
+                               and is never executed (fail-closed). A killed command is
+                               never judged on an exit code: timeout/signal death -> TIMEOUT,
+                               output-cap overflow -> OUTPUT-CAP (distinct labels, both
+                               fail-closed).
                                Evidence per task: spec/evidence/<TASK-ID>-check-<RUN>.json
                                (run-addressed, immutable, mode 0600; reruns never overwrite
                                earlier evidence; output tails are redacted best-effort).
-                               Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE
+                               Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/OUTPUT-CAP/UNPARSEABLE
   generate <dir> --intent <text> | --intent-file <path>
                                [--variant single|council] [--profile p-mini|p-standard]
                                [--max-attempts N] [--max-tokens N] [--max-wall-ms N]

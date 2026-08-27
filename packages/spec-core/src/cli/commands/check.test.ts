@@ -307,6 +307,24 @@ describe('cmdCheck --yes: real-process smokes', () => {
     expect(wall).toBeLessThan(10_000); // killed at the timeout, not left hanging
     expect((evidenceOf(root, 'TASK-0001').checks as Array<{ status: string }>)[0].status).toBe('TIMEOUT');
   });
+
+  it('production executor kill: >1 MiB of output -> OUTPUT-CAP (not TIMEOUT), exit 1, summary counts it', async () => {
+    const root = await initRoot('spec-core-check-smoke-outputcap-');
+    // 2M chars of stdout: overflows the per-stream cap well before finishing.
+    patchTask1Verification(root, [
+      { command: `head -c 2000000 /dev/zero | tr '\\0' x`, expect: 'exit 0' },
+    ]);
+
+    const result = await cmdCheck(root, { yes: true, timeoutMs: 10_000, nowIso: NOW });
+
+    expect(result.code).toBe(1);
+    // The explicit label in the table (with the killed marker), NOT TIMEOUT:
+    expect(result.output).toContain('\tOUTPUT-CAP');
+    expect(result.output).not.toContain('TIMEOUT');
+    // The failure breakdown names the cap class alongside timeout/unparseable.
+    expect(result.output).toContain('(0 timeout, 1 output-cap, 0 unparseable-expect)');
+    expect((evidenceOf(root, 'TASK-0001').checks as Array<{ status: string }>)[0].status).toBe('OUTPUT-CAP');
+  }, 15_000);
 });
 
 // --- runCli wiring -------------------------------------------------------------------

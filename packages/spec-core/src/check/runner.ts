@@ -32,9 +32,11 @@ export { parseExpect } from './expect';
  *     command is NOT executed — running something whose result cannot be
  *     judged would be success theater. The outcome is
  *     `UNPARSEABLE-EXPECT` and counts as a failure.
- *   - `TIMEOUT` (executor killed the process group: timeout, output-cap
- *     overflow, or death by signal) counts as a failure; a mismatched exit
- *     code is `FAIL`.
+ *   - `TIMEOUT` (executor killed the process group at the kill timer, or the
+ *     process died by signal) counts as a failure; `OUTPUT-CAP` is the
+ *     DISTINCT failure label for a stream crossing the 1 MiB output cap
+ *     (OPS-003: an operator reading TIMEOUT must be diagnosing a hang, not a
+ *     noisy command); a mismatched exit code is `FAIL`.
  *
  * Evidence: under `yes: true` ONE NEW run-addressed JSON file per task is
  * written to `<dir>/spec/evidence/<TASK-ID>-check-<RUN>.json` — `{task_id,
@@ -56,8 +58,8 @@ export { parseExpect } from './expect';
  * root. A refusal throws before anything is written.
  *
  * Exit-code mapping: every outcome PASS or DRY -> 0; any FAIL / TIMEOUT /
- * UNPARSEABLE-EXPECT (dry included) -> 1; an unknown `opts.task` id -> 2 with
- * no outcomes (the CLI prints the unknown-task message).
+ * OUTPUT-CAP / UNPARSEABLE-EXPECT (dry included) -> 1; an unknown `opts.task`
+ * id -> 2 with no outcomes (the CLI prints the unknown-task message).
  */
 
 export interface CheckOutcome {
@@ -66,7 +68,7 @@ export interface CheckOutcome {
   expect: string;
   expectedExit: number | null;
   actualExit: number | null;
-  status: 'PASS' | 'FAIL' | 'TIMEOUT' | 'UNPARSEABLE-EXPECT' | 'DRY';
+  status: 'PASS' | 'FAIL' | 'TIMEOUT' | 'OUTPUT-CAP' | 'UNPARSEABLE-EXPECT' | 'DRY';
   durationMs: number;
   outputTail: string;
 }
@@ -76,7 +78,7 @@ export interface CheckOutcome {
  * stdout+stderr text (the interface's single output channel); `exit` is the
  * process exit code, or null when none could be observed; `timedOut` is true
  * when the executor killed the command's process group (timeout, output-cap
- * overflow, or death by signal).
+ * overflow, or death by signal) — `killReason` says WHICH of those it was.
  */
 export type Executor = (
   cmd: string,
@@ -89,6 +91,15 @@ export interface ExecutorResult {
   exit: number | null;
   stdout: string;
   timedOut: boolean;
+  /**
+   * Present (production executor) only when `timedOut` — WHY the group was
+   * killed: 'timeout' = the kill timer fired, or the process died by signal;
+   * 'output-cap' = a stream crossed {@link MAX_BUFFER_BYTES}. OPS-003: the
+   * two must never share a label — overflow is judged OUTPUT-CAP, not
+   * TIMEOUT. Injected executors may omit it; omitted + timedOut reads as
+   * 'timeout' (the pre-OPS-003 contract).
+   */
+  killReason?: 'timeout' | 'output-cap';
 }
 
 export interface RunChecksOptions {
@@ -148,7 +159,15 @@ export function execCommand(cmd: string, cwd: string, timeoutMs: number): Promis
   return execInProcessGroup(cmd, { cwd, timeoutMs });
 }
 
-/** Per-stream output cap (exec parity, 1 MB): overflow kills the group. */
+/**
+ * Per-stream output cap (exec maxBuffer parity, 2^20 = 1 MiB): a stream
+ * crossing it kills the group and judges OUTPUT-CAP. COUNTING PARITY (T24
+ * deferred note): the cap counts UTF-16 CODE UNITS of the decoded utf8 text
+ * (`String.length`), not bytes — exactly what exec's maxBuffer compares under
+ * its default utf8 decoding. The _BYTES name is kept for the stable import
+ * surface; a 2-byte-per-unit payload (e.g. CJK) caps at ~512 KiB of bytes,
+ * an ASCII payload at 1 MiB — both exec-identical.
+ */
 export const MAX_BUFFER_BYTES = 1024 * 1024;
 
 /**
@@ -232,11 +251,15 @@ export interface ProcessGroupExecOptions {
  * stdin is /dev/null ('ignore'): interactive commands see EOF immediately
  * instead of occupying the full timeout waiting for input that never comes.
  *
- * Classification (unchanged semantics): exit code judged as-is; a death by
- * signal OR the timeout OR the output cap resolves { exit: null, timedOut:
- * true } → TIMEOUT (fail-closed: a killed process must not be conflated with
- * a judged exit code). Output-cap parity: exec's 1 MB maxBuffer killed the
- * child and classified TIMEOUT; this executor keeps the cap and the verdict.
+ * Classification: the exit code is judged as-is; a death by signal OR the
+ * kill timer resolves { exit: null, timedOut: true, killReason: 'timeout' }
+ * → TIMEOUT, and a stream crossing the output cap resolves { exit: null,
+ * timedOut: true, killReason: 'output-cap' } → OUTPUT-CAP (OPS-003: the
+ * verdict names the cap; a hang diagnosis must never be wasted on a noisy
+ * command). Both are fail-closed: a killed process is never conflated with a
+ * judged exit code. Cap parity with exec's maxBuffer is counting parity (see
+ * MAX_BUFFER_BYTES); the verdict is the one deliberate divergence — exec's
+ * overflow had no distinct label, this one does.
  *
  * Determinism note: the timers here (timeout, grace, poll) measure REAL
  * operating-system processes at the process boundary — an injected clock
@@ -275,7 +298,9 @@ export function execInProcessGroup(
     let errText = '';
     let exitCode: number | null = null;
     let exitSignal: string | null = null;
-    let killedByUs = false; // timeout or output cap (exec's err.killed analogue)
+    // WHY we killed (null: we didn't) — first cause wins: whichever of the
+    // timer / output cap fires first owns the verdict's killReason.
+    let killReason: 'timeout' | 'output-cap' | null = null;
     let spawnFailed = false;
     let settled = false;
     let streamsClosed = false;
@@ -331,6 +356,12 @@ export function execInProcessGroup(
           // A D-state leader's never-closing streams must not hold the
           // verdict hostage — settle() below clears this timer when 'close'
           // does arrive, so healthy paths never take the forced exit.
+          // Truncation bound (honest): a HEALTHY-but-slow close slower than
+          // FORCE_SETTLE_GRACE_MS (250 ms) would also be force-settled —
+          // silently, without its 'close'. The margin is ~2 orders of
+          // magnitude: 'close' trails the reap by the pipe drain, and
+          // draining even a full 64 KiB pipe buffer takes microseconds, so
+          // this bound is effectively reserved for the D-state case.
           if (!settled && forceTimer === undefined) {
             forceTimer = setTimeout(() => {
               forceTimer = undefined;
@@ -349,12 +380,13 @@ export function execInProcessGroup(
     };
 
     const onChunk = (text: string, isStdout: boolean): void => {
-      if (killedByUs) return; // already terminating; drop the tail (bounded memory)
+      if (killReason !== null) return; // already terminating; drop the tail (bounded memory)
       const held = isStdout ? (out += text) : (errText += text);
       if (held.length >= MAX_BUFFER_BYTES) {
-        // Output-cap parity with exec's maxBuffer: kill and judge TIMEOUT —
+        // Output-cap parity with exec's maxBuffer: kill the group —
         // fail-closed, a verbose command can never PASS on a truncated read.
-        killedByUs = true;
+        // OPS-003: the verdict names the cap (OUTPUT-CAP), never TIMEOUT.
+        killReason = 'output-cap';
         finishTeardown();
       }
     };
@@ -364,7 +396,7 @@ export function execInProcessGroup(
     child.stderr?.on('data', (d: string) => onChunk(d, false));
 
     const timer = setTimeout(() => {
-      killedByUs = true;
+      killReason ??= 'timeout';
       finishTeardown();
     }, opts.timeoutMs);
 
@@ -402,8 +434,12 @@ export function execInProcessGroup(
       const combined = `${out}${errText}`;
       if (spawnFailed) {
         resolve({ exit: null, stdout: combined, timedOut: false });
-      } else if (killedByUs || exitSignal !== null) {
-        resolve({ exit: null, stdout: combined, timedOut: true });
+      } else if (killReason !== null || exitSignal !== null) {
+        // Killed (by us at the timer/cap, or by an external signal): no exit
+        // code is judged. killReason defaults to 'timeout' for a signal death
+        // (classification parity: TIMEOUT) and for executors that predate the
+        // field; the output cap keeps its own distinct reason.
+        resolve({ exit: null, stdout: combined, timedOut: true, killReason: killReason ?? 'timeout' });
       } else {
         resolve({ exit: exitCode, stdout: combined, timedOut: false });
       }
@@ -473,8 +509,12 @@ export async function runChecks(
 
       const startedAt = Date.now();
       const result = await execFn(entry.command, dir, timeoutMs);
+      // OPS-003: overflow gets its own label; a REAL timeout (kill timer or
+      // death by signal — killReason 'timeout' or omitted) keeps TIMEOUT.
       const status: CheckOutcome['status'] = result.timedOut
-        ? 'TIMEOUT'
+        ? result.killReason === 'output-cap'
+          ? 'OUTPUT-CAP'
+          : 'TIMEOUT'
         : result.exit === expectedExit
           ? 'PASS'
           : 'FAIL';

@@ -55,7 +55,12 @@ interface FakeCall {
 
 /** Injectable fake Executor: records every call, answers from `plan`. */
 function fakeExec(
-  plan: (call: FakeCall, index: number) => { exit: number | null; stdout: string; timedOut: boolean },
+  plan: (call: FakeCall, index: number) => {
+    exit: number | null;
+    stdout: string;
+    timedOut: boolean;
+    killReason?: 'timeout' | 'output-cap';
+  },
 ): { calls: FakeCall[]; exec: Executor } {
   const calls: FakeCall[] = [];
   const exec: Executor = async (cmd, cwd, timeoutMs) => {
@@ -191,6 +196,42 @@ describe('runChecks --yes: outcome classification', () => {
     expect(result.code).toBe(1);
     expect(result.outcomes[0]).toMatchObject({ status: 'TIMEOUT', actualExit: null, outputTail: '...partial' });
     expect(JSON.parse(readFileSync(evidencePath(root, 'TASK-0001'), 'utf8')).checks[0].status).toBe('TIMEOUT');
+  });
+
+  // OPS-003: buffer overflow must NEVER wear the TIMEOUT label — an operator
+  // reading TIMEOUT is meant to be diagnosing a hang, not a noisy command.
+  it('timedOut + killReason "output-cap" -> OUTPUT-CAP (distinct label), code 1, evidence says OUTPUT-CAP', async () => {
+    const root = freshRoot('spec-core-check-outputcap-');
+    const bundle = bundleWith({
+      'TASK-0001': [{ command: 'verbose-suite', expect: 'exit 0' }],
+    });
+    const { exec } = fakeExec(() => ({
+      exit: null,
+      stdout: 'x'.repeat(600),
+      timedOut: true,
+      killReason: 'output-cap',
+    }));
+
+    const result = await runChecks(bundle, root, { yes: true, nowIso: NOW, exec });
+
+    expect(result.code).toBe(1);
+    // NOT generic FAIL (exit null vs 0), NOT TIMEOUT — the explicit cap label.
+    expect(result.outcomes[0]).toMatchObject({ status: 'OUTPUT-CAP', actualExit: null });
+    expect(result.outcomes[0].outputTail).toBe('x'.repeat(500)); // tail keeps its last 500 chars
+    expect(JSON.parse(readFileSync(evidencePath(root, 'TASK-0001'), 'utf8')).checks[0].status).toBe('OUTPUT-CAP');
+  });
+
+  it('killReason "timeout" — explicit OR omitted — keeps the TIMEOUT label (protected semantics)', async () => {
+    const bundle = bundleWith({
+      'TASK-0001': [{ command: 'sleep 30', expect: 'exit 0' }],
+    });
+    for (const killReason of ['timeout' as const, undefined]) {
+      const root = freshRoot('spec-core-check-timeout-reason-');
+      const { exec } = fakeExec(() => ({ exit: null, stdout: '', timedOut: true, killReason }));
+      const result = await runChecks(bundle, root, { yes: true, nowIso: NOW, exec });
+      expect(result.outcomes[0].status).toBe('TIMEOUT');
+      expect(result.code).toBe(1);
+    }
   });
 
   it('unparseable expect -> UNPARSEABLE-EXPECT and the command is NEVER executed (fail-closed)', async () => {
@@ -776,7 +817,7 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     expect(() => process.kill(-pid, 0)).toThrow();
   }, 10_000);
 
-  it('maxBuffer overflow still classifies TIMEOUT and the group cleanup runs on that path', async () => {
+  it('maxBuffer overflow classifies OUTPUT-CAP explicitly and the group cleanup runs on that path', async () => {
     const root = freshRoot('spec-core-sec005-overflow-');
     const marker = join(root, 'ov.txt');
     // >1MB of output overflows the buffer (fail-on-overflow preserved); the
@@ -798,7 +839,11 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
       nowIso: NOW,
     });
 
-    expect(result.outcomes[0].status).toBe('TIMEOUT'); // verbose output can never PASS
+    // OPS-003: the explicit cap label — never TIMEOUT (an operator reading
+    // TIMEOUT diagnoses a hang), never PASS (fail-closed on a truncated read).
+    expect(result.outcomes[0].status).toBe('OUTPUT-CAP');
+    expect(result.outcomes[0].actualExit).toBe(null);
+    expect(JSON.parse(readFileSync(evidencePath(root, 'TASK-0001'), 'utf8')).checks[0].status).toBe('OUTPUT-CAP');
     // T16 marker margin: 1.5s write + >=600ms cushion (1800ms was 300ms).
     await sleep(2100);
     expect(existsSync(marker)).toBe(false);

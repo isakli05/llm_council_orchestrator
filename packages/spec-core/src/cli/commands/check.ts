@@ -3,7 +3,7 @@ import { runChecks, type CheckOutcome, type Executor } from '../../check/runner'
 import type { SpecBundle } from '../../schemas';
 
 export interface CheckResult {
-  /** 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE-EXPECT, 2 compile/lint rejection or unknown task. */
+  /** 0 all PASS/DRY, 1 any FAIL/TIMEOUT/OUTPUT-CAP/UNPARSEABLE-EXPECT, 2 compile/lint rejection or unknown task. */
   code: number;
   output: string;
 }
@@ -53,7 +53,7 @@ export interface CheckOptions {
  *   TASK\tCOMMAND\tEXPECT\tEXPECTED→ACTUAL\tSTATUS
  *   TASK-0001\tnode --version\texit 0\t0 → 0\tPASS
  *   summary: 1 pass, 0 fail, 0 dry
- *   (0 timeout, 0 unparseable-expect)
+ *   (0 timeout, 0 output-cap, 0 unparseable-expect)
  *   evidence: <dir>/spec/evidence/TASK-0001-check-<RUN>.json <- only when --yes
  *     (RUN = run-addressed name from the runner: every check run writes a
  *      NEW immutable 0600 file; reruns never overwrite earlier evidence)
@@ -105,11 +105,14 @@ function renderReport(
 
   const pass = outcomes.filter((o) => o.status === 'PASS').length;
   const dry = outcomes.filter((o) => o.status === 'DRY').length;
-  const fail = outcomes.length - pass - dry; // FAIL + TIMEOUT + UNPARSEABLE-EXPECT
+  const fail = outcomes.length - pass - dry; // FAIL + TIMEOUT + OUTPUT-CAP + UNPARSEABLE-EXPECT
   const timeouts = outcomes.filter((o) => o.status === 'TIMEOUT').length;
+  // OPS-003: the cap is its own failure class in the breakdown — a noisy
+  // command must not read as a hang.
+  const outputCaps = outcomes.filter((o) => o.status === 'OUTPUT-CAP').length;
   const unparseable = outcomes.filter((o) => o.status === 'UNPARSEABLE-EXPECT').length;
   lines.push(`summary: ${pass} pass, ${fail} fail, ${dry} dry`);
-  lines.push(`(${timeouts} timeout, ${unparseable} unparseable-expect)`);
+  lines.push(`(${timeouts} timeout, ${outputCaps} output-cap, ${unparseable} unparseable-expect)`);
 
   if (yes && evidenceFiles.length > 0) {
     // The run-addressed files the runner actually wrote this run — the trail
@@ -122,7 +125,7 @@ function renderReport(
 /** `0 → 0` for judged runs; `? → -` when either side was never determined. */
 function expectedActual(o: CheckOutcome): string {
   const expected = o.expectedExit === null ? '?' : String(o.expectedExit);
-  const actual =
-    o.status === 'TIMEOUT' ? 'killed' : o.actualExit === null ? '-' : String(o.actualExit);
+  const killed = o.status === 'TIMEOUT' || o.status === 'OUTPUT-CAP';
+  const actual = killed ? 'killed' : o.actualExit === null ? '-' : String(o.actualExit);
   return `${expected} → ${actual}`;
 }

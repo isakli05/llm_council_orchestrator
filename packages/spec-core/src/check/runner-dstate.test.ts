@@ -77,7 +77,8 @@ describe('execInProcessGroup: D-state leader watchdog (T16 rider)', () => {
       const elapsed = Date.now() - startedAt;
 
       // The normal TIMEOUT verdict — never a hang, never a PASS by default.
-      expect(result).toEqual({ exit: null, stdout: '', timedOut: true });
+      // killReason 'timeout': the kill timer (not the output cap) fired.
+      expect(result).toEqual({ exit: null, stdout: '', timedOut: true, killReason: 'timeout' });
       // Bounded: far under this test's own timeout. (Against the pre-watchdog
       // code this await NEVER resolves — the test then dies on its timeout,
       // which is the RED demonstration for this exact scenario.)

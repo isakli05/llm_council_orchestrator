@@ -11,8 +11,8 @@ local-first spec compiler that turns natural-language intent into schema-validat
 lintable, freezable application specs. Two binaries share the same pure command
 cores:
 
-- **`lco`** — a 10-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
-  `trace`, `plan`, `init`, `check`, `generate` (`lco --help` for usage,
+- **`lco`** — an 11-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
+  `trace`, `plan`, `init`, `check`, `generate`, `doctor` (`lco --help` for usage,
   `lco <command> --help` per command)
 - **`lco-mcp`** — a stdio MCP server exposing 10 tools (`lco_compile` … `lco_change`).
   The generation and execution tools are consent-gated env opt-ins — off unless
@@ -40,7 +40,7 @@ npm install lco-spec
 npx lco --help
 npx lco init my-project      # scaffold a WORKING example spec/
 npx lco compile my-project   # compile + schema-validate it
-npx lco lint my-project      # 10 binding lint rules
+npx lco lint my-project      # 12 binding lint rules
 ```
 
 ### From source (this repo)
