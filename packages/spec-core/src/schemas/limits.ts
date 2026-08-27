@@ -34,6 +34,12 @@
  *                                      intent; the CLI input sanity ceiling
  *                                      is 1_000_000 chars)
  *
+ *   Deliberately UNBOUNDED residual fields (recorded boundary decision):
+ *   risk.note, decisions[].assumptions/alternatives,
+ *   requirements[].terms_used, test_files — each is bounded indirectly
+ *   (per-entry/whole-bundle ceilings, CLI input sanity) or feeds no
+ *   quadratic pass, so no direct max() is placed on them.
+ *
  * BREAKING TIGHTENING: bundles above a ceiling fail schema validation with an
  * error naming the limit and the remedy (split the spec / shorten the field).
  * The ceilings are a wall against hostile MCP and runaway LLM output, not a

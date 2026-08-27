@@ -30,6 +30,12 @@ export default defineConfig({
       // (coverage/ is gitignored as a second line of defense). For a local
       // HTML report: pnpm test:coverage -- --coverage.reporter=html
       reporter: ['text'],
+      // COVERAGE-FLAKE FOLLOW-UP (P3 final review, recorded not fixed):
+      // one red in ~5 coverage runs, unreproduced. Candidates = the
+      // time-bounded real-process assertions (check/runner.test.ts SEC-005
+      // walls, check/runner-dstate.test.ts elapsed, cli/commands/check.test.ts
+      // smoke wall). Next red coverage run: capture output UNFILTERED and
+      // widen the bound or isolate the file.
       thresholds: {
         statements: 91,
         branches: 89,

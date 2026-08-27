@@ -128,7 +128,7 @@ sunucusuna doctor aracı eklenmez (stdout JSON-RPC saflığı korunur).
 
 Aşağıdaki tur **gerçekten koşuldu** (2026-08-25, Node v24.14.0; çıktılar kırpılmış,
 çıkış kodları olduğu gibi). Repro için: `cd packages/spec-core` ve `pnpm --filter
-lco-spec build` yapılmış olmalı; komutlar `node dist/cli/index.js …` ile.
+./packages/spec-core build` yapılmış olmalı; komutlar `node dist/cli/index.js …` ile.
 
 **1) init — çalışan EXAMPLE iskelet** (`p-standard`: NFR OPS-0001 + TASK-0002 + kontrat):
 
@@ -553,7 +553,7 @@ JSON yapılandırma alternatifi (ör. `.mcp.json` veya kendi istemciniz):
 
 Notlar:
 
-- **Önce derleyin:** sunucu `dist/`den koşar — `pnpm --filter lco-spec build`
+- **Önce derleyin:** sunucu `dist/`den koşar — `pnpm --filter ./packages/spec-core build`
   (yukarıdaki test-sırası notuyla aynı gerekçe).
 - **stdout yalnız JSON-RPC** (bağlayıcı): stdout'a yalnız yanıt satırları yazılır; her
   tanılama stderr'e gider. Eski `mcp_bridge` hatasının (protokol akışına log karışması)
@@ -760,7 +760,7 @@ yaklaşıklık değil, TANIMLI bir desen dili üzerinde kesindir:
 - **Desen dili** (`permitted_scope` glob'ları): `/`-ayrılmış segment dizisi;
   segment içinde edebi karakter kendini, `?` TAM OLARAK BİR karakteri (`/` hariç),
   `*` SIFIR VEYA DAHA FAZLA karakteri (`/` hariç; ardışık yıldızlar tektir:
-  `a**b` = `a*b`), yanlızca `**` yazılan segment İSTENEN SAYIDA segmenti (sıfır
+  `a**b` = `a*b`), yalnızca `**` yazılan segment İSTENEN SAYIDA segmenti (sıfır
   dahil) eşler (`src/**` → `src` kendisi ve altındaki her şey). `\` `/`'ye
   normalize edilir; boş segmentler (`//`, sonaki `/`) atılır. Bu dilin dışındaki
   dizeler (karakter sınıfları, küme parantezleri) edebi kabul edilir.

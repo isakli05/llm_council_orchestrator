@@ -645,7 +645,20 @@ export function checkSchemaFreshness(
       remedy: 'rebuild and commit the artifact: pnpm --filter ./packages/spec-core build',
     };
   }
-  if (readFileSync(artifact, 'utf8') !== regenerated) {
+  let artifactText: string;
+  try {
+    artifactText = readFileSync(artifact, 'utf8');
+  } catch (err) {
+    // Read guard (P3 final review), mirroring checkBins': an unreadable
+    // artifact is a warn with a remedy, not a throw into the crash-guard.
+    return {
+      name: 'schema',
+      status: 'warn',
+      detail: `artifact unreadable: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`,
+      remedy: 'rebuild and commit the artifact: pnpm --filter ./packages/spec-core build',
+    };
+  }
+  if (artifactText !== regenerated) {
     return {
       name: 'schema',
       status: 'warn',

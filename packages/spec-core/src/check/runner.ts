@@ -376,6 +376,16 @@ export function execInProcessGroup(
         .catch(() => {
           teardownDone = true;
           settle();
+          // P3 final review — symmetry with the .then arm above: the catch
+          // path arms the SAME bounded force-settle window, so a rejecting
+          // teardown cannot re-open the hang this watchdog exists to close.
+          if (!settled && forceTimer === undefined) {
+            forceTimer = setTimeout(() => {
+              forceTimer = undefined;
+              streamsClosed = true; // forced: 'close' is never coming
+              settle();
+            }, FORCE_SETTLE_GRACE_MS);
+          }
         });
     };
 
