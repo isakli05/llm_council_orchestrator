@@ -25,16 +25,26 @@ import { createHttpLlm } from './llm/http';
  *       (freeze layer).
  *   G2: drift detection — the drift fixture is caught by verifyFrozen.
  *   G3: ambiguous/conflicting tasks blocked — all 8 must_be_blocked corpus
- *       tasks produced blocked outcomes in every run.
- *   G4: only when live runs are provided — council assertion total strictly
- *       greater than single AND council token cost <= 3x single. The cost
- *       half requires COMPLETE provider usage: any run with unknown usage
- *       fails it (UX-003 — unknown is not zero cost).
+ *       tasks produced blocked outcomes in every run (across all repeats).
+ *   G4: only when live runs are provided — computed ONLY over
+ *       intent-fidelity-passing runs (PROD-003): council assertion total
+ *       strictly greater than single AND council token cost <= 3x single,
+ *       with at least one faithful run on EACH side. The cost half requires
+ *       COMPLETE provider usage across every run of every repeat: any run
+ *       with unknown usage fails it (UX-003 — unknown is not zero cost).
+ *
+ * PROD-003 honesty labels: the report separates structural passes from
+ * intent-fidelity passes, aggregates per-task outcomes ACROSS repeats with
+ * spread (mean/min/max), lists named intent misses, carries an explicitly
+ * advisory (never gated) inventions section, and states what G4 does NOT
+ * establish.
  *
  * Determinism: the report is a pure function of its input — no clock, no
  * randomness, no environment reads on the mock path. `runEvalAll('live')` is
  * the sole place a clock is consulted (the runner's nowIso for live prompts);
- * the timestamp never reaches the rendered report.
+ * the timestamp never reaches the rendered report. Repeated runs with MOCK
+ * adapters are deterministic-by-construction (the scripts cannot vary); the
+ * repeats mechanism exists for LIVE runs, where run-to-run variance is real.
  */
 
 /** One captured fixtures/bad vector: did its expected gate layer reject it? */
@@ -52,6 +62,8 @@ export interface GateReportInput {
   unresolvedFreezeRejected?: boolean;
   /** G4 is rendered and enforced only when live runs are provided (mock evidence cannot substantiate G4). */
   live?: boolean;
+  /** PROD-003: repeats per (task, variant) the runs aggregate (derived from runs when omitted). */
+  repeats?: number;
 }
 
 export type GateVerdict = 'PASS' | 'FAIL' | 'PASS_DETERMINISTIC_ONLY';
@@ -133,6 +145,24 @@ function deriveBundle(task: EvalTask, base: SpecBundle): SpecBundle {
   return b;
 }
 
+/**
+ * PROD-003: badge a derived greenfield bundle with its task's named intent
+ * constraints (the MENTIONS_TERMS vocabulary) so the mock's final bundle faces
+ * the same intent-fidelity assertions a live model's output faces. This is
+ * honest plumbing, labeled as such: the mock cannot authored-be-faithful, it
+ * is CONSTRUCTED to satisfy the assertion — the discriminating power of the
+ * assertion itself is pinned by the adversarial tests (a raw unbadged fixture
+ * fails every task's MENTIONS_TERMS) and by live runs.
+ */
+function badgeIntentConstraints(task: EvalTask, b: SpecBundle): SpecBundle {
+  const terms = task.assertions
+    .filter((a): a is Extract<EvalTask['assertions'][number], { type: 'MENTIONS_TERMS' }> => a.type === 'MENTIONS_TERMS')
+    .flatMap((a) => a.terms);
+  if (terms.length === 0) return b;
+  b.tasks[0]!.instructions += ` Intent constraints honored verbatim: ${terms.join(', ')}.`;
+  return b;
+}
+
 /** Blocked-path bundle: one UNRESOLVED decision + unresolved_count 1 → L08 fires → the runner blocks. */
 function unresolvedBundle(task: EvalTask, base: SpecBundle): SpecBundle {
   const b = deriveBundle(task, base);
@@ -149,8 +179,10 @@ export interface MockEvalScripts {
 /**
  * Mock scripts for the whole corpus. Both variants return the SAME final
  * bundle for a task — the point of the mock runs is exercising the scoring
- * machinery and the exact call-count accounting (single = 1 call, council =
- * classifier + proposal A + proposeB/judge = 3 calls), not model quality.
+ * machinery (now INCLUDING the PROD-003 intent assertions: greenfield finals
+ * carry their task's named constraints via badgeIntentConstraints) and the
+ * exact call-count accounting (single = 1 call, council = classifier +
+ * proposal A + proposeB/judge = 3 calls), not model quality.
  */
 export function buildMockScripts(): MockEvalScripts {
   const single: MockScript = { byTaskId: {} };
@@ -158,11 +190,12 @@ export function buildMockScripts(): MockEvalScripts {
 
   EVAL_TASKS.forEach((task, i) => {
     const base = loadGoodFixture(fixtureNameFor(task, i));
-    const finalBundle = task.must_be_blocked ? unresolvedBundle(task, base) : deriveBundle(task, base);
+    const greenfieldBundle = badgeIntentConstraints(task, deriveBundle(task, base));
+    const finalBundle = task.must_be_blocked ? unresolvedBundle(task, base) : greenfieldBundle;
 
     // Council's intermediate proposal A: the same derivation, distinguishable
     // via its council_run stamp (embedded verbatim into call 3's prompt).
-    const proposalA = deriveBundle(task, base);
+    const proposalA = badgeIntentConstraints(task, deriveBundle(task, base));
     proposalA.manifest.council_run = {
       run_id: `mock-${task.id}-proposal-a`,
       config_fingerprint: 'mock-eval',
@@ -199,15 +232,24 @@ function finishEvidence(runs: RunScore[]): EvalEvidence {
   return { runs, badFixtureResults, driftCaught, unresolvedFreezeRejected };
 }
 
-/** Run all 20 tasks x {single, council} through the real runner with mock adapters. Deterministic, no env, no clock. */
-export async function runMockEval(): Promise<EvalEvidence> {
+/**
+ * Run all 20 tasks x {single, council} through the real runner with mock
+ * adapters, `repeats` times per (task, variant). Deterministic, no env, no
+ * clock. PROD-003: mock repeats are deterministic-by-construction (the script
+ * cannot vary between repeats) — the mechanism (per-repeat scoring, spread,
+ * aggregate gating) is what matters and is exercised identically by live runs.
+ */
+export async function runMockEval(opts: { repeats?: number } = {}): Promise<EvalEvidence> {
+  const repeats = Math.max(1, opts.repeats ?? 1);
   const scripts = buildMockScripts();
   const runs: RunScore[] = [];
   for (const task of EVAL_TASKS) {
     for (const variant of ['single', 'council'] as PipelineVariant[]) {
-      const llm = createMockLlm(scripts[variant], task.id);
-      const outcome = await runPipeline(task, variant, llm, MOCK_NOW);
-      runs.push(scoreRun(task, outcome, outcome.usage));
+      for (let rep = 1; rep <= repeats; rep += 1) {
+        const llm = createMockLlm(scripts[variant], task.id); // fresh cursor per repeat
+        const outcome = await runPipeline(task, variant, llm, MOCK_NOW);
+        runs.push(scoreRun(task, outcome, outcome.usage, rep));
+      }
     }
   }
   return finishEvidence(runs);
@@ -215,18 +257,22 @@ export async function runMockEval(): Promise<EvalEvidence> {
 
 /**
  * Live run: one shared createHttpLlm() adapter (it throws here if the
- * LCO_LLM_* env is unset — fail-closed, caller's responsibility to set it).
+ * LCO_LLM_* env is unset — fail-closed, caller's responsibility to set it),
+ * `repeats` times per (task, variant) — live models DO vary run to run, so
+ * the report aggregates per-task pass-rates with spread instead of one-shots.
  * The only clock read in the whole eval driver lives here: live prompts get a
  * real nowIso; the rendered report never sees it.
  */
-async function runLiveEval(): Promise<EvalEvidence> {
+async function runLiveEval(repeats: number): Promise<EvalEvidence> {
   const llm = createHttpLlm();
   const nowIso = new Date().toISOString();
   const runs: RunScore[] = [];
   for (const task of EVAL_TASKS) {
     for (const variant of ['single', 'council'] as PipelineVariant[]) {
-      const outcome = await runPipeline(task, variant, llm, nowIso);
-      runs.push(scoreRun(task, outcome, outcome.usage));
+      for (let rep = 1; rep <= repeats; rep += 1) {
+        const outcome = await runPipeline(task, variant, llm, nowIso);
+        runs.push(scoreRun(task, outcome, outcome.usage, rep));
+      }
     }
   }
   return finishEvidence(runs);
@@ -240,12 +286,21 @@ interface GateCalcs {
   blockedCount: number;
   blockedTotal: number;
   g3Pass: boolean;
+  /** PROD-003: structural-validity passes across all runs. */
+  structuralPasses: number;
+  /** PROD-003: intent-fidelity passes across all runs. */
+  intentPasses: number;
+  runsTotal: number;
+  /** Faithful (intentPassed) runs per variant — G4's only contributors. */
+  councilFaithfulRuns: number;
+  singleFaithfulRuns: number;
   councilAssertions: number;
   singleAssertions: number;
   councilCost: number;
   singleCost: number;
   usageUnknownRuns: number;
   costKnown: boolean;
+  g4Comparable: boolean;
   g4CostOk: boolean;
   g4Pass: boolean;
   detPass: boolean;
@@ -271,25 +326,32 @@ function calcs(r: GateReportInput): GateCalcs {
   const blockedTotal = mustBlock.length;
   const g3Pass = blockedCount === blockedTotal;
 
-  const councilAssertions = r.runs
-    .filter((x) => x.variant === 'council')
-    .reduce((a, x) => a + x.assertionsPassed, 0);
-  const singleAssertions = r.runs
-    .filter((x) => x.variant === 'single')
-    .reduce((a, x) => a + x.assertionsPassed, 0);
-  const councilCost = r.runs
-    .filter((x) => x.variant === 'council')
-    .reduce((a, x) => a + x.inTokens + x.outTokens, 0);
-  const singleCost = r.runs
-    .filter((x) => x.variant === 'single')
-    .reduce((a, x) => a + x.inTokens + x.outTokens, 0);
+  const structuralPasses = r.runs.filter((x) => x.structuralPassed).length;
+  const intentPasses = r.runs.filter((x) => x.intentPassed).length;
+  const runsTotal = r.runs.length;
+
+  // PROD-003: the council-advantage comparison is computed ONLY over
+  // intent-fidelity-passing runs — a council that scores structural assertions
+  // on unfaithful bundles is not "more correct", it is more verbose. Costs are
+  // likewise summed over the faithful subsets, while complete usage is demanded
+  // across EVERY run of every repeat (UX-003): an unknown anywhere makes the
+  // whole comparison unevaluable. An empty faithful subset on either side is
+  // NOT an advantage — there is nothing comparable.
+  const faithful = (v: PipelineVariant) => r.runs.filter((x) => x.variant === v && x.intentPassed);
+  const councilFaithful = faithful('council');
+  const singleFaithful = faithful('single');
+  const councilAssertions = councilFaithful.reduce((a, x) => a + x.assertionsPassed, 0);
+  const singleAssertions = singleFaithful.reduce((a, x) => a + x.assertionsPassed, 0);
+  const councilCost = councilFaithful.reduce((a, x) => a + x.inTokens + x.outTokens, 0);
+  const singleCost = singleFaithful.reduce((a, x) => a + x.inTokens + x.outTokens, 0);
   // UX-003: a provider that reports no usage leaves the token sums PARTIAL —
   // "council 0 <= 3x single 0" is not cost evidence, so the cost half of G4
   // fails with a named reason when ANY contributing run has unknown usage.
   const usageUnknownRuns = r.runs.filter((x) => x.usageKnown === false).length;
   const costKnown = usageUnknownRuns === 0;
-  const g4CostOk = costKnown && councilCost <= 3 * singleCost;
-  const g4Pass = councilAssertions > singleAssertions && g4CostOk;
+  const g4Comparable = councilFaithful.length > 0 && singleFaithful.length > 0;
+  const g4CostOk = costKnown && g4Comparable && councilCost <= 3 * singleCost;
+  const g4Pass = g4Comparable && councilAssertions > singleAssertions && g4CostOk;
 
   const detPass = g1Pass && g2Pass && g3Pass;
   const verdict: GateVerdict = !r.live
@@ -302,8 +364,10 @@ function calcs(r: GateReportInput): GateCalcs {
 
   return {
     g1Caught, g1Total, g1Pass, g2Pass, blockedCount, blockedTotal, g3Pass,
+    structuralPasses, intentPasses, runsTotal,
+    councilFaithfulRuns: councilFaithful.length, singleFaithfulRuns: singleFaithful.length,
     councilAssertions, singleAssertions, councilCost, singleCost,
-    usageUnknownRuns, costKnown, g4CostOk, g4Pass,
+    usageUnknownRuns, costKnown, g4Comparable, g4CostOk, g4Pass,
     detPass, verdict,
   };
 }
@@ -319,20 +383,46 @@ export function renderGateReport(r: GateReportInput): string {
   const yn = (b: boolean) => (b ? 'pass' : 'fail');
   const lines: string[] = [];
 
+  const repeatsOf = (variant: 'single' | 'council'): number =>
+    Math.max(1, r.runs.filter((x) => x.variant === variant && x.taskId === r.runs[0]?.taskId).length);
+  const repeats = r.repeats ?? repeatsOf('single');
+
   lines.push('# Spec-Core Evidence Gate Report', '');
   lines.push(
     `- G1: bad-fixture capture ${c.g1Caught}/${c.g1Total} (required ${G1_REQUIRED_TOTAL})`,
   );
   lines.push(`- G2: drift caught: ${r.driftCaught}`);
-  lines.push(`- G3: ambiguous/conflicting tasks blocked: ${c.blockedCount}/${c.blockedTotal}`);
+  lines.push(`- G3: ambiguous/conflicting tasks blocked: ${c.blockedCount}/${c.blockedTotal} (every run of every repeat)`);
+  lines.push(`- structural passes: ${c.structuralPasses}/${c.runsTotal} runs (PROD-003: validity, not fidelity)`);
+  lines.push(`- intent-fidelity passes: ${c.intentPasses}/${c.runsTotal} runs`);
   if (r.live) {
     const costCell = c.costKnown
       ? `council cost ${c.councilCost} <= 3x single cost ${c.singleCost}: ${yn(c.g4CostOk)}`
       : `council cost unknown <= 3x single cost unknown: ${yn(c.g4CostOk)} ` +
         `(${c.usageUnknownRuns} run(s) without provider usage)`;
     lines.push(
-      `- G4: council assertions ${c.councilAssertions} > single ${c.singleAssertions}: ${yn(c.councilAssertions > c.singleAssertions)}; ` +
+      `- G4 (intent-fidelity-passing runs only): council assertions ${c.councilAssertions} > single ${c.singleAssertions}: ${yn(c.g4Comparable && c.councilAssertions > c.singleAssertions)}; ` +
         costCell,
+    );
+    lines.push(
+      `  - faithful runs contributing: council ${c.councilFaithfulRuns}, single ${c.singleFaithfulRuns} ` +
+        `(of ${c.runsTotal} total runs across ${repeats} repeat(s))`,
+    );
+  }
+  lines.push('');
+
+  lines.push('Scope notes (what this report does and does NOT establish):');
+  if (!r.live) {
+    lines.push(
+      '- mock evidence: the G3 blocked outcomes are scripted plumbing (derived from must_be_blocked), not classification quality; live runs are the classification evidence.',
+      '- mock evidence cannot substantiate G4 — the council-advantage claim is live-only by construction.',
+      '- mock repeats are deterministic-by-construction (scripts cannot vary); the spread columns matter only for live runs.',
+    );
+  } else {
+    lines.push(
+      '- G4 is computed ONLY over intent-fidelity-passing runs with complete provider usage across all repeats; structural passes are excluded from the comparison.',
+      '- G4 does NOT establish: blinding (none — the model saw the intent verbatim knowing a spec was expected), human-verified design correctness (term assertions verify that named constraints are carried, not that the design is right), cross-provider or cross-model generalization, or stability beyond the observed repeats (see the per-task spread).',
+      '- mock-vs-live distinction: deterministic gates G1-G2 are identical either way; G3/G4 carry meaning only in this live report.',
     );
   }
   lines.push('');
@@ -358,9 +448,27 @@ export function renderGateReport(r: GateReportInput): string {
       }
     }
   }
+  // PROD-003: every failed intent run is named with its missing terms — the
+  // operator can see exactly which constraints the bundle failed to carry.
+  for (const run of r.runs) {
+    if (!run.intentPassed && run.missingTerms.length > 0) {
+      misses.push(
+        `- intent: ${run.taskId}/${run.variant} rep ${run.repeat} missing named constraints: ${run.missingTerms.join(', ')}`,
+      );
+    } else if (!run.intentPassed && run.missingTerms.length === 0 && run.blockedCorrectly === false) {
+      misses.push(`- intent: ${run.taskId}/${run.variant} rep ${run.repeat} blocked-incorrectly`);
+    }
+  }
   if (r.live && !c.g4Pass) {
-    if (!(c.councilAssertions > c.singleAssertions)) {
-      misses.push(`- G4: council assertions ${c.councilAssertions} not > single ${c.singleAssertions}`);
+    if (!c.g4Comparable) {
+      if (c.councilFaithfulRuns === 0) {
+        misses.push('- G4: no intent-fidelity-passing council runs to compare (an empty comparison is not an advantage)');
+      }
+      if (c.singleFaithfulRuns === 0) {
+        misses.push('- G4: no intent-fidelity-passing single runs to compare (an empty comparison is not an advantage)');
+      }
+    } else if (!(c.councilAssertions > c.singleAssertions)) {
+      misses.push(`- G4: council assertions ${c.councilAssertions} not > single ${c.singleAssertions} (faithful runs only)`);
     }
     if (!c.costKnown) {
       // UX-003: unknown usage is NOT zero — the cost half fails with the reason named.
@@ -368,7 +476,7 @@ export function renderGateReport(r: GateReportInput): string {
         `- G4: token cost not evaluable — ${c.usageUnknownRuns} run(s) report unknown usage ` +
           '(the provider sent no token counts; unknown is not zero cost)',
       );
-    } else if (!(c.councilCost <= 3 * c.singleCost)) {
+    } else if (c.g4Comparable && !(c.councilCost <= 3 * c.singleCost)) {
       misses.push(`- G4: council cost ${c.councilCost} exceeds 3x single cost ${c.singleCost}`);
     }
   }
@@ -376,9 +484,29 @@ export function renderGateReport(r: GateReportInput): string {
     lines.push('Misses:', ...misses, '');
   }
 
+  // PROD-003: per-task outcomes ACROSS repeats — a one-shot table hides
+  // run-to-run variance; this is the honest per-task view.
+  lines.push(`## Per-task outcomes across repeats (${repeats} per task/variant)`, '');
+  lines.push('| task | variant | repeats | full-pass | intent-pass | mean assertions | min | max |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
+  for (const t of EVAL_TASKS) {
+    for (const variant of ['single', 'council'] as PipelineVariant[]) {
+      const rs = r.runs.filter((x) => x.taskId === t.id && x.variant === variant);
+      if (rs.length === 0) continue;
+      const full = rs.filter((x) => x.assertionsPassed === x.assertionsTotal).length;
+      const intent = rs.filter((x) => x.intentPassed).length;
+      const scores = rs.map((x) => x.assertionsPassed);
+      const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+      lines.push(
+        `| ${t.id} | ${variant} | ${rs.length} | ${full}/${rs.length} | ${intent}/${rs.length} | ${mean.toFixed(1)} | ${Math.min(...scores)} | ${Math.max(...scores)} |`,
+      );
+    }
+  }
+  lines.push('');
+
   lines.push(`## Runs (${r.runs.length})`, '');
-  lines.push('| task | variant | assertions | blocked-correct | in-tokens | out-tokens | calls | attempts | council-leg |');
-  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+  lines.push('| task | variant | rep | assertions | intent | blocked-correct | in-tokens | out-tokens | calls | attempts | council-leg |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const run of r.runs) {
     const blocked = run.blockedCorrectly === null ? 'n/a' : run.blockedCorrectly ? 'yes' : 'no';
     // UX-003: token columns show unknown (never a partial sum dressed as 0).
@@ -388,7 +516,7 @@ export function renderGateReport(r: GateReportInput): string {
     // a degraded council output is not a full council result.
     const leg = run.variant === 'single' ? '-' : run.councilDegraded ? 'DEGRADED' : 'ok';
     lines.push(
-      `| ${run.taskId} | ${run.variant} | ${run.assertionsPassed}/${run.assertionsTotal} | ${blocked} | ${inCell} | ${outCell} | ${run.calls} | ${run.attempts} | ${leg} |`,
+      `| ${run.taskId} | ${run.variant} | ${run.repeat} | ${run.assertionsPassed}/${run.assertionsTotal} | ${run.intentPassed ? 'ok' : 'FAIL'} | ${blocked} | ${inCell} | ${outCell} | ${run.calls} | ${run.attempts} | ${leg} |`,
     );
   }
   lines.push('');
@@ -396,10 +524,21 @@ export function renderGateReport(r: GateReportInput): string {
   const degradedLegs = r.runs.filter((x) => x.councilDegraded);
   if (degradedLegs.length > 0) {
     lines.push(
-      `degraded council legs: ${degradedLegs.length} (${degradedLegs.map((x) => x.taskId).join(', ')}) — ` +
+      `degraded council legs: ${degradedLegs.length} (${degradedLegs.map((x) => `${x.taskId} rep ${x.repeat}`).join(', ')}) — ` +
         'proposal A failed schema validation after retry; the final bundle came from the judge alone (BACK-008)',
       '',
     );
+  }
+
+  // PROD-003 advisory inventions: explicitly NOT a gate — a faithful spec in
+  // the other language legitimately renames concepts; these are review hints.
+  const advisory = r.runs.filter((x) => x.advisoryInventions.length > 0);
+  if (advisory.length > 0) {
+    lines.push('## Advisory — unmentioned first-class concepts (NOT gated)', '');
+    for (const run of advisory) {
+      lines.push(`- ${run.taskId}/${run.variant} rep ${run.repeat}: ${run.advisoryInventions.join(', ')}`);
+    }
+    lines.push('');
   }
 
   lines.push(`VERDICT: ${c.verdict}`);
@@ -407,17 +546,21 @@ export function renderGateReport(r: GateReportInput): string {
 }
 
 /**
- * Drive the full evidence gate: all 20 tasks x both variants, fixture capture,
- * gate computation, optional markdown report file. Mock mode is fully
- * deterministic (PASS_DETERMINISTIC_ONLY when G1-G3 hold); live mode requires
- * the LCO_LLM_* env (createHttpLlm throws otherwise — never invented).
+ * Drive the full evidence gate: all 20 tasks x both variants x `repeats`,
+ * fixture capture, gate computation, optional markdown report file. Mock mode
+ * is fully deterministic (PASS_DETERMINISTIC_ONLY when G1-G3 hold; mock
+ * repeats are deterministic-by-construction — the spread mechanism is for live
+ * runs); live mode requires the LCO_LLM_* env (createHttpLlm throws otherwise
+ * — never invented).
  */
 export async function runEvalAll(opts: {
   variant: 'mock' | 'live';
+  repeats?: number;
   reportPath?: string;
 }): Promise<GateVerdict> {
-  const evidence = opts.variant === 'live' ? await runLiveEval() : await runMockEval();
-  const input: GateReportInput = { ...evidence, live: opts.variant === 'live' };
+  const repeats = Math.max(1, opts.repeats ?? 1);
+  const evidence = opts.variant === 'live' ? await runLiveEval(repeats) : await runMockEval({ repeats });
+  const input: GateReportInput = { ...evidence, repeats, live: opts.variant === 'live' };
 
   if (opts.reportPath !== undefined) {
     const dir = dirname(opts.reportPath);

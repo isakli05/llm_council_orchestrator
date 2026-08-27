@@ -40,14 +40,25 @@ function blockedOutcome(variant: PipelineOutcome['variant'] = 'single'): Pipelin
 
 const U = { in: 10, out: 5, calls: 1 };
 
-describe('scoreRun — arithmetic over all six assertion types', () => {
-  it('greenfield ET-01 with a clean spec outcome scores 3/3 and blockedCorrectly true', () => {
+describe('scoreRun — arithmetic over all assertion types', () => {
+  // PROD-003 note: baseBundle() is the pet-clinic fixture re-profiled — it is
+  // STRUCTURALLY clean but does NOT carry ET-01's named constraints
+  // (shorten/stats/resolve), so every greenfield expectation below accounts
+  // for the MENTIONS_TERMS assertion failing on it. That is the point of the
+  // finding: this bundle used to score full marks.
+
+  it('greenfield ET-01 with a clean spec outcome scores 3/4: structural pass, intent fail (the generic fixture)', () => {
     const s = scoreRun(task('ET-01'), specOutcome(baseBundle()), U);
     expect(s).toEqual({
       taskId: 'ET-01',
       variant: 'single',
       assertionsPassed: 3,
-      assertionsTotal: 3,
+      assertionsTotal: 4,
+      repeat: 1,
+      structuralPassed: true,
+      intentPassed: false,
+      missingTerms: ['shorten', 'resolve'],
+      advisoryInventions: expect.any(Array),
       blockedCorrectly: true,
       councilDegraded: false,
       inTokens: 10,
@@ -65,6 +76,11 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
       variant: 'single',
       assertionsPassed: 2,
       assertionsTotal: 2,
+      repeat: 1,
+      structuralPassed: true,
+      intentPassed: true,
+      missingTerms: [],
+      advisoryInventions: [],
       blockedCorrectly: true,
       councilDegraded: false,
       inTokens: 10,
@@ -75,7 +91,7 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
     });
   });
 
-  it('(e) ET-01 blocked by a garbage mock → blockedCorrectly false, 0/3 assertions', async () => {
+  it('(e) ET-01 blocked by a garbage mock → blockedCorrectly false, 0/4 assertions', async () => {
     const garbage: LlmAdapter = {
       complete: async () => ({ text: 'garbage, not json' }),
     };
@@ -83,8 +99,8 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
     const s = scoreRun(task('ET-01'), out, out.usage);
 
     expect(s.blockedCorrectly).toBe(false);
-    expect(s.assertionsTotal).toBe(3);
-    expect(s.assertionsPassed).toBe(0); // HAS_REQUIREMENTS / ACYCLIC / VERIFICATION all need a spec
+    expect(s.assertionsTotal).toBe(4);
+    expect(s.assertionsPassed).toBe(0); // HAS_REQUIREMENTS / ACYCLIC / VERIFICATION / MENTIONS all need a spec
   });
 
   it('BLOCKED assertion fails when a must-be-blocked task yields a spec', () => {
@@ -94,6 +110,9 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
     expect(s.assertionsTotal).toBe(2);
     expect(s.assertionsPassed).toBe(1);
     expect(s.blockedCorrectly).toBe(false);
+    // the under-block is an INTENT failure (BLOCKED is an intent assertion), not a structural one
+    expect(s.structuralPassed).toBe(true);
+    expect(s.intentPassed).toBe(false);
   });
 
   it('STATE_IS_DRAFT_OR_BLOCKED fails on a spec whose manifest state is reviewed', () => {
@@ -105,9 +124,10 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
 
   it('HAS_REQUIREMENTS fails below min (ET-07 needs 4, bundle has 3)', () => {
     // ET-07 (p-standard): HAS_REQUIREMENTS min 4 fails, TASKS_ACYCLIC and
-    // TASKS_HAVE_VERIFICATION pass, TRACE_REQ_TASK_COVERED passes (3/3 reqs covered).
+    // TASKS_HAVE_VERIFICATION pass, TRACE_REQ_TASK_COVERED passes (3/3 reqs covered),
+    // MENTIONS_TERMS fails (jwt/postgresql never carried by pet-clinic).
     const s = scoreRun(task('ET-07'), specOutcome(baseBundle()), U);
-    expect(s.assertionsTotal).toBe(4);
+    expect(s.assertionsTotal).toBe(5);
     expect(s.assertionsPassed).toBe(3);
     expect(s.blockedCorrectly).toBe(true);
   });
@@ -134,8 +154,9 @@ describe('scoreRun — arithmetic over all six assertion types', () => {
     const t3 = b.tasks.find((t) => t.task_id === 'TASK-0003')!;
     t3.refs.requirements = []; // REQ-0003 loses its only covering task
     const s = scoreRun(task('ET-08'), specOutcome(b), U);
-    // ET-08: HAS_REQUIREMENTS(min 4, have 3) false, ACYCLIC true, VERIFICATION true, TRACE false
-    expect(s.assertionsTotal).toBe(4);
+    // ET-08: HAS_REQUIREMENTS(min 4, have 3) false, ACYCLIC true, VERIFICATION true,
+    // TRACE false, MENTIONS_TERMS(30/transfer) false
+    expect(s.assertionsTotal).toBe(5);
     expect(s.assertionsPassed).toBe(2);
   });
 

@@ -14,10 +14,12 @@ import { runEvalAll } from './report';
  * run half-configured rather than falling back to mock).
  */
 
-const USAGE = `usage: run-eval [--variant mock|live] [--report <path>]
+const USAGE = `usage: run-eval [--variant mock|live] [--repeats <n>] [--report <path>]
 
 options:
   --variant mock|live  eval variant (default: mock; mock reads no env, no keys)
+  --repeats <n>        runs per (task, variant), >= 1 (default: 1; mock repeats
+                       are deterministic-by-construction — spread matters live)
   --report <path>      gate report path (default: <repo>/audit-output/spec-core-gate-report.md)
 
 exit codes: 0 PASS or PASS_DETERMINISTIC_ONLY, 1 FAIL, 2 usage or configuration error`;
@@ -38,10 +40,13 @@ export const DEFAULT_REPORT_PATH = resolve(
   'spec-core-gate-report.md',
 );
 
-type ParsedArgs = { error: string } | { variant: 'mock' | 'live'; reportPath: string };
+type ParsedArgs =
+  | { error: string }
+  | { variant: 'mock' | 'live'; repeats: number; reportPath: string };
 
 export function parseArgs(argv: string[]): ParsedArgs {
   let variant: 'mock' | 'live' = 'mock';
+  let repeats = 1;
   let reportPath: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -58,6 +63,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
       }
       variant = value;
       i += 1;
+    } else if (arg === '--repeats') {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--') || !/^\d+$/.test(value)) {
+        return { error: `--repeats expects an integer >= 1, got: ${value ?? 'nothing'}` };
+      }
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 1) {
+        return { error: `--repeats expects an integer >= 1, got: ${value}` };
+      }
+      repeats = n;
+      i += 1;
     } else if (arg === '--report') {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('--')) {
@@ -70,7 +86,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
   }
 
-  return { variant, reportPath: reportPath ?? DEFAULT_REPORT_PATH };
+  return { variant, repeats, reportPath: reportPath ?? DEFAULT_REPORT_PATH };
 }
 
 /** Which of the three live-mode env vars are missing/blank (names only; values never leave here). */
@@ -113,7 +129,11 @@ export async function runEvalCli(
 
   // Live with env present lets createHttpLlm throw naturally inside
   // runEvalAll on any deeper misconfiguration — never swallowed here.
-  const verdict = await runEvalAll({ variant: parsed.variant, reportPath: parsed.reportPath });
+  const verdict = await runEvalAll({
+    variant: parsed.variant,
+    repeats: parsed.repeats,
+    reportPath: parsed.reportPath,
+  });
 
   console.log(`VERDICT: ${verdict}`);
   console.log(`report: ${parsed.reportPath}`);

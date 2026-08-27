@@ -80,6 +80,19 @@ const intentBlock = (intent: string, profile: EvalTaskProfile): string =>
   [`USER INTENT (verbatim):`, '"""', intent, '"""', `EXPECTED COMPLEXITY PROFILE: ${profile}`].join('\n');
 
 /**
+ * PROD-003: constraint fidelity is a SCORED property — every concrete
+ * constraint the intent names (commands, flags, technologies, formats, limits,
+ * status codes, proper nouns) must be carried verbatim into the bundle body
+ * that implements it. Paraphrasing "PostgreSQL" into "a relational database"
+ * loses the constraint and fails the intent-fidelity assertions.
+ */
+const CONSTRAINT_FIDELITY = [
+  'CONSTRAINT FIDELITY (scored):',
+  '- Every concrete constraint the user intent names — commands, flags, technologies, formats, ports, quotas, limits, status codes, proper nouns — must appear VERBATIM in the requirements/tasks/tests/glossary text that implements it.',
+  '- Do not paraphrase named values away ("PostgreSQL" is not "a relational database"); do not invent first-class entities or behaviors the intent never mentioned.',
+].join('\n');
+
+/**
  * Council call 1 — classifier. Given the intent and the expected profile,
  * decide whether the request must be blocked. Output: ONLY
  * `{"profile":"p-mini"|"p-standard"|...,"must_be_blocked":boolean}`.
@@ -112,6 +125,7 @@ export function propose(intent: string, profile: EvalTaskProfile): string {
     PITFALLS,
     CLASSIFY_RULES,
     JSON_ONLY,
+    CONSTRAINT_FIDELITY,
     'TASK: produce the SpecBundle as a single JSON value. Every requirement must be covered by at least one task (refs.requirements), every task must carry tests and a verification command, and manifest.state must be "draft" or, if you marked anything UNRESOLVED, "blocked".',
     intentBlock(intent, profile),
   ].join('\n\n');
@@ -146,6 +160,7 @@ export function proposeB(
       '3. Where A and your draft conflict on a high-impact point and the intent\'s evidence cannot resolve the conflict, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
     ].join('\n'),
     JSON_ONLY,
+    CONSTRAINT_FIDELITY,
     'TASK: output ONLY the final merged SpecBundle as a single JSON value.',
     intentBlock(intent, profile),
     `PROPOSAL A (verbatim, from the other council member):`,
@@ -174,6 +189,7 @@ export function proposeBDegraded(intent: string, profile: EvalTaskProfile): stri
       '2. Where the intent is ambiguous or self-conflicting on a high-impact point and its evidence cannot resolve it, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
     ].join('\n'),
     JSON_ONLY,
+    CONSTRAINT_FIDELITY,
     'TASK: output ONLY the final SpecBundle as a single JSON value.',
     intentBlock(intent, profile),
   ].join('\n\n');
@@ -203,6 +219,7 @@ export function judgeMerge(
       '2. Where A and B conflict on a high-impact point and the intent\'s evidence cannot resolve the conflict, do NOT pick a winner silently: emit a decision with status "UNRESOLVED" for that point, set manifest.unresolved_count to the number of such decisions, and set manifest.state to "blocked".',
     ].join('\n'),
     JSON_ONLY,
+    CONSTRAINT_FIDELITY,
     'TASK: output ONLY the final merged SpecBundle as a single JSON value.',
     intentBlock(intent, profile),
     `PROPOSAL A (verbatim):`,
@@ -229,6 +246,7 @@ export function classifyAndProposeSingle(intent: string, profile: EvalTaskProfil
     PITFALLS,
     CLASSIFY_RULES,
     JSON_ONLY,
+    CONSTRAINT_FIDELITY,
     'TASK: apply the classification silently and produce the SpecBundle as a single JSON value. If your classification would set must_be_blocked=true, mark the affected points as UNRESOLVED decisions (manifest.unresolved_count accordingly, manifest.state "blocked") instead of inventing resolutions; otherwise manifest.state is "draft". The final output is ONLY the bundle JSON — no separate classification object.',
     intentBlock(intent, profile),
   ].join('\n\n');

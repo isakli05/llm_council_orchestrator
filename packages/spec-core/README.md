@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (899 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
+pnpm --filter ./packages/spec-core test    # vitest (935 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 ```
 
@@ -586,11 +586,31 @@ Kapı, `packages/spec-core` iddialarını dört ölçütle sınar. **G1–G3 det
 | **G1** | Kötü-fixture yakalama oranı: 12 L-vektör dizisi + `schema-invalid` + `drift` + `unresolved`, her biri beklenen katmanda (lint / şema / freeze / verify) reddedilmeli | **15/15** |
 | **G2** | Bölüm-içeriği drift saptama: 8 içerik bölümünün (intent…tasks) ve varsa `legacy`'nin özeti `verifyFrozen` ile yeniden hesaplanıp `manifest.artifact_hashes` ile karşılaştırılır | **doğru** |
 | **G3** | Belirsiz/çelişkili görevler: 8 `must_be_blocked` eval görevi her koşuda bloklanmış çıkmalı | **8/8** |
-| **G4** | Konsey › tek ajan: konsey toplam onaylaması tek ajandan **kesin büyük** VE konsey token maliyeti tek ajanın **≤ 3 katı** | yalnız live |
+| **G4** | Konsey › tek ajan: **yalnızca niyet-doğruluk-geçen (intent-fidelity) koşular üzerinden** konsey toplam onaylaması tek ajandan **kesin büyük** VE konsey token maliyeti tek ajanın **≤ 3 katı** VE her iki tarafta en az bir doğrun koşu; maliyet yarısı **tüm tekrarların tamamında** usage bilinmesini ister (bilinmeyen ≠ sıfır) | yalnız live |
 
 Karar verme: G1–G3 sağlanırsa mock koşu **`PASS_DETERMINISTIC_ONLY`** verir (mock kanıtı
 G4'ü temellendiremez — bu bilinçli bir dürüstlük sınırdır). Live koşuda G1–G3 **ve** G4
 sağlanırsa **`PASS`**, aksi halde **`FAIL`**.
+
+**PROD-003 — niyet-doğruluk (intent-fidelity) iddiaları:** her greenfield eval görevi,
+niyet metninde **adıyla** geçen somut kısıtları (komutlar, bayraklar, teknolojiler,
+biçimler, limitler, durum kodları — `sqlite`, `jwt`, `--sep`, `429`, `09:00` …) taşıyan
+bir `MENTIONS_TERMS` iddiası içerir. Üretilen bundle'ın gövde metni (requirements/tasks/
+tests/glossary/decision metinleri) bu terimlerin **hepsini** carry etmelidir; bundle'ın
+kendi `intent.statement` yankısı **aranmaz** (niyeti geri okumak, onu kodlamak değildir).
+Skor iki etikete ayrılır: **yapısal geçiş** (MENTIONS_TERMS dışındaki tüm iddialar) ve
+**niyet-doğruluk geçişi** (MENTIONS_TERMS + BLOCKED + doğru bloklama). Yapısal olarak
+temiz ama niyete sadık olmayan jenerik bir bundle artık tam puan alamaz — ham fixture'lar
+hiçbir görevin terim kümesini karşılamaz (korpus testi bunu sabitler). İcatlar
+(intent'in adını anmadığı glossary/kavramlar) **danışma listesidir, kapı değildir**:
+başka dilde yazılmış dürüst bir spec kavramları yeniden adlandırabilir, sert kural dürüst
+spekleri düşürürdü.
+
+**Tekrarlı koşum + belirsizlik:** `--repeats N`, (görev, varyant) başına N koşum yapar;
+rapor görev başına **tekrar-arası geçiş oranı + ortalama/min/max yayılım** tablosu verir.
+Mock adapter'lar yapıları gereği deterministirdir (tekrarlar arasında değişemezler);
+yayılım sütunları **live** koşum için anlamlıdır. Usage'u bilinmeyen TEK bir koşum,
+maliyet karşılaştırmasını tümüyle geçersiz kılar (adı anılarak).
 
 **G2 kapsam notu (abartısız garanti):** G2'nin kapsamı *bölüm içeriği* drift tespitidir —
 "dondurulmuş bundle'daki herhangi bir değişiklik yakalanır" **değildir**. Yalnızca 8 içerik
@@ -607,8 +627,8 @@ dahil tüm dosyayı yeniden yazabilen bir saldırgan bu mekanizmayla yakalanamaz
 # mock: 20 görev × {tek ajan, konsey} = 40 koşu + fixture yakalama; hiç env/anahtar okunmaz
 node packages/spec-core/dist/eval/run-eval.js --variant mock
 
-# rapor hedefini değiştirmek için
-node packages/spec-core/dist/eval/run-eval.js --variant mock --report /abs/yol/rapor.md
+# tekrarlı koşum (yukarıdaki belirsizlik tablosu için) + rapor hedefi
+node packages/spec-core/dist/eval/run-eval.js --variant mock --repeats 3 --report /abs/yol/rapor.md
 ```
 
 Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md`'ye yazılır
@@ -619,6 +639,9 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 
 - **mock** (`--variant mock`): LLM çağrıları deterministik scripted adapter'a gider.
   Ortam değişkeni ve API anahtarı **hiç okunmaz**; rapor bayt-bayt tekrar üretilebilir.
+  Mock kanıtın sınırları raporda adıyla yazılıdır: G3 bloklamaları **scripted plumbing**
+  'dir (sınıflandırma kalitesi değildir), mock tekrarlar yapıları gereği deterministirdir,
+  ve mock kanıt G4'ü temellendiremez.
 - **live** (`--variant live`): OpenAI-uyumlu gerçek uç nokta. Üç env değişkeni
   **kullanıcı tarafından** açıkça sağlanmalıdır; biri eksikse betik yarım yapılandırılmayla
   devam etmez, açık mesajla **exit 2** verir:
@@ -628,6 +651,28 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
     node packages/spec-core/dist/eval/run-eval.js --variant live
   ```
 
+### Live G4 yeniden koşum yordamı (kullanıcı çalıştırır; testler asla live çağrı yapmaz)
+
+Eski `audit-output/g4-live-report.md` (2026-08-18) **tek koşumludur ve PROD-003
+niyet-doğruluk rubrikinden ÖNCE ölçülmüştür** — "konsey daha doğru" başlığı için artık
+kanıt olarak okunmamalıdır. Yeniden ölçüm için:
+
+1. Ortamı hazırla (değerler yalnız senin kabuğunda kalır; betik adları dışında bir şey
+   loglamaz):
+   `LCO_LLM_BASE_URL=<openai-uyumlu uç> LCO_LLM_API_KEY=<anahtar> LCO_LLM_MODEL=<model>`
+2. Paketi derle: `pnpm --filter ./packages/spec-core build`
+3. Tekrarlı live koşumu çalıştır (≥ 3 tekrar önerilir — tek koşum belirsizliğini
+   göstermek istemezsen bile rapor yayılım sütunlarını dürüstçe doldurur):
+   ```sh
+   LCO_LLM_BASE_URL=... LCO_LLM_API_KEY=... LCO_LLM_MODEL=... \
+     node packages/spec-core/dist/eval/run-eval.js --variant live --repeats 3 \
+       --report audit-output/g4-live-report.md
+   ```
+4. Rapor `audit-output/g4-live-report.md`'ye düşer (denetim izi olarak commit edilir).
+   G4 satırı yalnızca niyet-doğruluk-geçen koşuları sayar; usage'u bilinmeyen tek bir
+   koşum maliyet karşılaştırmasını adıyla düşürür. Rapor, G4'ün **kurmadığını** da
+   yazar: körleme yok, insan doğrulaması yok, sağlayıcılar-arası genellenebilirlik yok.
+
 ## Dürüst Durum Bildirimi
 
 - **Yüzey tamamlandı:** CLI 10 komut (compile, lint, freeze, verify, change, trace,
@@ -636,12 +681,15 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
   çekirdeklere `nowIso` olarak enjekte edilir.
 - **Deterministik kapı geçiyor**: G1 15/15, G2 doğru, G3 8/8 →
   karar `PASS_DETERMINISTIC_ONLY` (bkz. `audit-output/spec-core-gate-report.md`).
-- **Live G4 kanıtı ölçüldü** (`audit-output/g4-live-report.md`): konsey onaylaması
-  **36 > 26** tek ajan; konsey token maliyeti tek ajanın **2.13 katı** (≤ 3× eşiği)
-  → kapı **PASS**. Şu dürüst uyarılar geçerliliğini korur (kanıt zinciriyle birlikte
-  e4f4a00 commit mesajında kayıtlı — raporun kendisi yalnız ham tablo + VERDICT
-  içerir): tek koşu (sign-test p≈0.23, etki ~2×), p-standard ET-07..10'nun her iki
-  varyantça da çözülmemiş olması. Mock koşudan G4 çıkarımı yapılmaz ilkesi değişmez.
+  Rapor artık **yapısal geçişi (28/40)** ile **niyet-doğruluk geçişini (40/40)** ayrı
+  listeler ve mock kanıtın sınırlarını adıyla yazar.
+- **Eski live G4 raporu (2026-08-18) historiktir** (`audit-output/g4-live-report.md`):
+  o koşum tek tekrarlıydı ve niyet-doğruluk iddiaları İÇERMEZDİ — o sayılara
+  (36 > 26, maliyet 2.13×, o zamanki rubrikle PASS) dayanarak "konsey daha doğru"
+  iddia edilmez. Yeni rubrikte G4 yalnızca niyet-doğruluk-geçen koşular üzerinden
+  hesaplanır, tekrarlı koşum ister ve usage'u bilinmeyen koşumu geçirmez; yeniden
+  ölçüm için yukarıdaki **live G4 yeniden koşum yordamı**'nı izleyin (kullanıcı
+  env'i ile). Mock koşudan G4 çıkarımı yapılmaz ilkesi değişmez.
 
 ## Bilinen Sınırlar (dürüstlük)
 
@@ -687,6 +735,10 @@ Rapor varsayılan olarak depo kökündeki `audit-output/spec-core-gate-report.md
 
 ## Değişiklik Günlüğü
 
+- **PROD-003 (bu aşama):** niyet-doğruluk iddiaları (`MENTIONS_TERMS`), yapısal/niyet
+  skor ayrımı, tekrarlı koşum + yayılım tablosu, tam-usage şartı (tekrarlar arasında),
+  adversarial eval vakaları, G4'ün dürüst yeniden etiketlenmesi + live yeniden koşum
+  yordamı — 935 test.
 - **2026-08-19 — bu dal:** strictness, change/trace/init/plan/check, `lco-mcp`,
   dokümantasyon — 552 test.
 - **2026-08-18 — evidence-gate dalı:** şemalar → eval → kapı; mock

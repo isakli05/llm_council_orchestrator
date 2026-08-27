@@ -43,13 +43,13 @@ const FAKE_LIVE_ENV = {
 } as const;
 
 describe('runEvalCli: argument parsing and defaults', () => {
-  it('no arguments -> mock variant with the default report path', async () => {
+  it('no arguments -> mock variant, 1 repeat, default report path', async () => {
     mockRunEvalAll.mockResolvedValue('PASS_DETERMINISTIC_ONLY');
 
     await expect(runEvalCli([])).resolves.toBe(0);
 
     expect(mockRunEvalAll).toHaveBeenCalledTimes(1);
-    expect(mockRunEvalAll).toHaveBeenCalledWith({ variant: 'mock', reportPath: DEFAULT_REPORT_PATH });
+    expect(mockRunEvalAll).toHaveBeenCalledWith({ variant: 'mock', repeats: 1, reportPath: DEFAULT_REPORT_PATH });
     expect(stdout()).toContain('VERDICT: PASS_DETERMINISTIC_ONLY');
     expect(stdout()).toContain(DEFAULT_REPORT_PATH);
   });
@@ -59,8 +59,25 @@ describe('runEvalCli: argument parsing and defaults', () => {
 
     await expect(runEvalCli(['--variant', 'mock', '--report', '/tmp/gate.md'])).resolves.toBe(0);
 
-    expect(mockRunEvalAll).toHaveBeenCalledWith({ variant: 'mock', reportPath: '/tmp/gate.md' });
+    expect(mockRunEvalAll).toHaveBeenCalledWith({ variant: 'mock', repeats: 1, reportPath: '/tmp/gate.md' });
     expect(stdout()).toContain('report: /tmp/gate.md');
+  });
+
+  it('--repeats <n> is forwarded (PROD-003: repeated runs for live uncertainty)', async () => {
+    mockRunEvalAll.mockResolvedValue('PASS');
+
+    await expect(runEvalCli(['--variant', 'live', '--repeats', '3'], { ...FAKE_LIVE_ENV })).resolves.toBe(0);
+
+    expect(mockRunEvalAll).toHaveBeenCalledWith({ variant: 'live', repeats: 3, reportPath: DEFAULT_REPORT_PATH });
+  });
+
+  it('--repeats rejects non-integers and values below 1 with exit 2', async () => {
+    await expect(runEvalCli(['--repeats', 'abc'])).resolves.toBe(2);
+    expect(stderr()).toContain('--repeats expects an integer >= 1');
+    await expect(runEvalCli(['--repeats', '0'])).resolves.toBe(2);
+    await expect(runEvalCli(['--repeats', '-2'])).resolves.toBe(2);
+    await expect(runEvalCli(['--repeats'])).resolves.toBe(2);
+    expect(mockRunEvalAll).not.toHaveBeenCalled();
   });
 
   it('default report path is the repo-root audit-output target (absolute)', () => {
@@ -94,7 +111,7 @@ describe('runEvalCli: live variant env guard (never half-configured)', () => {
     await expect(runEvalCli(['--variant', 'live'], { ...FAKE_LIVE_ENV })).resolves.toBe(0);
 
     expect(mockRunEvalAll).toHaveBeenCalledTimes(1);
-    expect(mockRunEvalAll).toHaveBeenCalledWith({ variant: 'live', reportPath: DEFAULT_REPORT_PATH });
+    expect(mockRunEvalAll).toHaveBeenCalledWith({ variant: 'live', repeats: 1, reportPath: DEFAULT_REPORT_PATH });
   });
 
   it('live with no env -> exit 2, runEvalAll never called, all three names listed', async () => {
@@ -153,17 +170,23 @@ describe('runEvalCli: usage errors (exit 2)', () => {
 
 describe('parseArgs: pure argument parsing', () => {
   it('returns defaults for an empty argv', () => {
-    expect(parseArgs([])).toEqual({ variant: 'mock', reportPath: DEFAULT_REPORT_PATH });
+    expect(parseArgs([])).toEqual({ variant: 'mock', repeats: 1, reportPath: DEFAULT_REPORT_PATH });
   });
 
-  it('accepts both flags in any order', () => {
-    expect(parseArgs(['--report', '/r.md', '--variant', 'live'])).toEqual({
+  it('accepts all flags in any order', () => {
+    expect(parseArgs(['--report', '/r.md', '--repeats', '5', '--variant', 'live'])).toEqual({
       variant: 'live',
+      repeats: 5,
       reportPath: '/r.md',
     });
   });
 
   it('rejects positional arguments', () => {
     expect(parseArgs(['extra'])).toEqual({ error: 'unknown argument: extra' });
+  });
+
+  it('rejects a --repeats value that is not a plain integer', () => {
+    expect(parseArgs(['--repeats', '2.5'])).toEqual({ error: '--repeats expects an integer >= 1, got: 2.5' });
+    expect(parseArgs(['--repeats', '1e3'])).toEqual({ error: '--repeats expects an integer >= 1, got: 1e3' });
   });
 });

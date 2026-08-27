@@ -14,6 +14,16 @@
  * Intents are written in Turkish (the product's target language) as realistic
  * 3-8 sentence user requests. They are the eval set itself — treat every edit
  * as a change of exam questions, not of copy.
+ *
+ * PROD-003: every greenfield task also carries ONE MENTIONS_TERMS assertion —
+ * the concrete constraints its intent names verbatim (commands, flags,
+ * technologies, formats, limits, proper nouns). A structurally valid bundle
+ * that never carries those terms FAILS the task: structural validity alone no
+ * longer scores. Terms are deliberately script/tech literals (SQLite, JWT,
+ * --sep, 429, 09:00), not Turkish prose, so a faithful spec in any language
+ * satisfies them by carrying the constraint values. The corpus test pins that
+ * every term literally appears in its own intent and that no raw good fixture
+ * satisfies any task's full term set.
  */
 
 export type EvalTaskId =
@@ -36,7 +46,16 @@ export type DeterministicAssertion =
   | { type: 'TASKS_HAVE_VERIFICATION' }
   | { type: 'TRACE_REQ_TASK_COVERED' }
   | { type: 'STATE_IS_DRAFT_OR_BLOCKED' }
-  | { type: 'BLOCKED' };
+  | { type: 'BLOCKED' }
+  /**
+   * PROD-003 intent fidelity: every listed term must appear (normalized,
+   * case-insensitive) in the produced bundle's searchable body text — the
+   * requirements/tasks/tests/glossary/decision prose that implements the
+   * intent. The bundle's own `intent.statement` echo is deliberately NOT
+   * searchable: quoting the intent back is not encoding it. Greenfield tasks
+   * only — a blocked task has no bundle; its fidelity is the BLOCKED assertion.
+   */
+  | { type: 'MENTIONS_TERMS'; terms: string[] };
 
 export interface EvalTask {
   /** 'ET-01'..'ET-20', unique across the corpus. */
@@ -66,6 +85,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
+      { type: 'MENTIONS_TERMS', terms: ['sqlite', 'shorten', 'resolve'] },
     ],
   },
   {
@@ -79,6 +99,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
+      { type: 'MENTIONS_TERMS', terms: ['markdown', 'html'] },
     ],
   },
   {
@@ -92,6 +113,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
+      { type: 'MENTIONS_TERMS', terms: ['100', 'ansi'] },
     ],
   },
   {
@@ -105,6 +127,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
+      { type: 'MENTIONS_TERMS', terms: ['csv', 'json', '--sep'] },
     ],
   },
   {
@@ -118,6 +141,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
+      { type: 'MENTIONS_TERMS', terms: ['todo', 'remove'] },
     ],
   },
   {
@@ -131,6 +155,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
+      { type: 'MENTIONS_TERMS', terms: ['--length', '--no-symbols'] },
     ],
   },
 
@@ -147,6 +172,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
+      { type: 'MENTIONS_TERMS', terms: ['jwt', 'postgresql'] },
     ],
   },
   {
@@ -161,6 +187,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
+      { type: 'MENTIONS_TERMS', terms: ['30', 'transfer'] },
     ],
   },
   {
@@ -175,6 +202,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
+      { type: 'MENTIONS_TERMS', terms: ['jpeg', 'png', '413', 'cdn'] },
     ],
   },
   {
@@ -189,6 +217,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
+      { type: 'MENTIONS_TERMS', terms: ['09:00', 'istanbul'] },
     ],
   },
   {
@@ -203,6 +232,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
+      { type: 'MENTIONS_TERMS', terms: ['weather', '429'] },
     ],
   },
   {
@@ -217,6 +247,7 @@ export const EVAL_TASKS: EvalTask[] = [
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
+      { type: 'MENTIONS_TERMS', terms: ['48', '14'] },
     ],
   },
 

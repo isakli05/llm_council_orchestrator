@@ -1,5 +1,6 @@
 import { lintBundle } from '../lint/engine';
 import { buildTrace } from '../lint/trace';
+import type { SpecBundle } from '../schemas';
 import type { EvalTask, DeterministicAssertion } from './tasks';
 import type { PipelineOutcome, PipelineVariant } from './runner';
 
@@ -8,13 +9,111 @@ import type { PipelineOutcome, PipelineVariant } from './runner';
  * (Task 10 binding). No LLM judge anywhere: every assertion is a pure check
  * over the outcome (and, for spec outcomes, the bundle the runner already
  * schema-validated and lint-gated).
+ *
+ * PROD-003 splits every score into STRUCTURAL validity (every assertion except
+ * MENTIONS_TERMS) and INTENT fidelity (the MENTIONS_TERMS assertions plus
+ * blocked-correctness). A structurally valid but unfaithful bundle — the audit's
+ * "generic good fixture" — now scores structuralPassed=true, intentPassed=false,
+ * with the missing intent terms named.
  */
+
+/**
+ * Normalize text for term matching (PROD-003): case-folded, Unicode combining
+ * marks stripped (Turkish İ/i̇ vs I/i), interior whitespace collapsed — so
+ * "Europe /  Istanbul" matches "europe istanbul" and "İstanbul" matches
+ * "Istanbul". Deterministic, locale-free (NFKD is a pure data transform).
+ */
+export function normalizeForTermMatch(text: string): string {
+  return text
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * The bundle's searchable body: every free-text field a faithful spec would
+ * carry a named constraint in. DELIBERATELY EXCLUDES `intent.statement`,
+ * `intent.normalized`, and `manifest` — a bundle that quotes the intent back at
+ * itself has not encoded anything (the PROD-003 echo cheat).
+ */
+export function searchableBundleText(bundle: SpecBundle): string {
+  const parts: string[] = [
+    ...bundle.glossary.flatMap((g) => [g.term, g.definition]),
+    ...bundle.assumptions.flatMap((a) => [a.statement, a.impact_if_wrong]),
+    ...bundle.evidence.map((e) => e.source),
+    ...bundle.requirements.flatMap((r) => [r.statement, ...r.terms_used]),
+    ...bundle.decisions.flatMap((d) => [
+      d.decision,
+      d.rationale,
+      ...d.assumptions,
+      ...d.alternatives.flatMap((x) => [x.option, x.rejected_because]),
+    ]),
+    ...bundle.contracts.flatMap((c) => [c.symbol, c.definition]),
+    ...bundle.tasks.flatMap((t) => [
+      t.title,
+      t.purpose,
+      t.instructions,
+      ...t.preconditions,
+      ...t.permitted_scope,
+      ...t.protected,
+      ...t.invariants,
+      ...t.acceptance,
+      t.rollback,
+      t.risk.note,
+      ...t.interface_changes.flatMap((i) => [i.symbol, i.file]),
+      ...t.tests.flatMap((x) => [x.file, ...x.cases]),
+      ...t.verification.flatMap((v) => [v.command, v.expect]),
+    ]),
+  ];
+  return parts.join('\n');
+}
+
+/** ADVISORY (never gated, PROD-003): first-class concepts (glossary terms +
+ * requirement terms_used) the task intent never named — plausible inventions,
+ * surfaced for human review rather than failed on: a faithful spec in the other
+ * language legitimately renames concepts (intent "kısa kod" → glossary "Short
+ * Code"), so a hard rule would fail honest specs. */
+export function advisoryInventions(task: EvalTask, outcome: PipelineOutcome): string[] {
+  if (outcome.kind !== 'spec') return [];
+  const intentText = normalizeForTermMatch(task.intent);
+  const concepts = new Set<string>([
+    ...outcome.bundle.glossary.map((g) => g.term),
+    ...outcome.bundle.requirements.flatMap((r) => r.terms_used),
+  ]);
+  return [...concepts]
+    .filter((c) => !intentText.includes(normalizeForTermMatch(c)))
+    .sort();
+}
 
 export interface RunScore {
   taskId: string;
   variant: PipelineVariant;
   assertionsPassed: number;
   assertionsTotal: number;
+  /**
+   * PROD-003: 1-based repeat ordinal (runs may be repeated per task/variant to
+   * expose variance; mock repeats are deterministic-by-construction, the
+   * mechanism matters for live runs).
+   */
+  repeat: number;
+  /**
+   * PROD-003: every assertion EXCEPT MENTIONS_TERMS passed — the bundle is
+   * structurally valid. True for a generic-but-clean fixture; that is exactly
+   * what the label is for.
+   */
+  structuralPassed: boolean;
+  /**
+   * PROD-003: every MENTIONS_TERMS assertion passed AND blockedCorrectly is
+   * true (for must-be-blocked tasks the block itself is the fidelity). G4's
+   * council-advantage comparison counts ONLY intentPassed runs.
+   */
+  intentPassed: boolean;
+  /** Named intent terms the bundle failed to carry (spec outcomes; on blocked outcomes with a greenfield task, all of them). */
+  missingTerms: string[];
+  /** ADVISORY inventions (never gated): unmentioned first-class concepts. */
+  advisoryInventions: string[];
   /**
    * Did the pipeline's blocked/not-blocked behavior match the task's
    * expectation (`must_be_blocked`)? `null` is reserved for future outcome
@@ -79,6 +178,10 @@ export interface RunUsage {
  *   req-task edge (via buildTrace) / total requirements; passes iff every
  *   requirement is covered. An empty requirement set is NOT covered — the
  *   evidence gate demands positive traceability.
+ * - MENTIONS_TERMS (PROD-003): spec outcome whose searchable body text carries
+ *   every named term (normalized). The bundle's own intent echo is not
+ *   searchable. A blocked outcome fails it: a bundle that never existed
+ *   carried nothing.
  */
 function assertionPasses(
   assertion: DeterministicAssertion,
@@ -116,25 +219,67 @@ function assertionPasses(
       );
       return bundle.requirements.every((r) => covered.has(r.id));
     }
+    case 'MENTIONS_TERMS': {
+      if (outcome.kind !== 'spec') return false;
+      const text = normalizeForTermMatch(searchableBundleText(outcome.bundle));
+      return assertion.terms.every((term) => text.includes(normalizeForTermMatch(term)));
+    }
   }
 }
 
-/** Score one outcome: assertion arithmetic + blocked-correctness + usage passthrough. */
-export function scoreRun(task: EvalTask, outcome: PipelineOutcome, usage: RunUsage): RunScore {
-  const assertionsPassed = task.assertions.filter((a) =>
-    assertionPasses(a, task, outcome),
-  ).length;
+/**
+ * Score one outcome: assertion arithmetic + the PROD-003 structural/intent
+ * split + blocked-correctness + usage passthrough.
+ *
+ * The split (which side an assertion belongs to is a recorded decision):
+ * - INTENT assertions: MENTIONS_TERMS (the named constraints were carried) and
+ *   BLOCKED (the intent's demand to be blocked was honored). Both ask "did the
+ *   outcome faithfully honor what the intent asked for".
+ * - STRUCTURAL assertions: everything else (HAS_REQUIREMENTS, TASKS_ACYCLIC,
+ *   TASKS_HAVE_VERIFICATION, TRACE_REQ_TASK_COVERED, STATE_IS_DRAFT_OR_BLOCKED)
+ *   — "is the artifact well-formed". A generic clean bundle is structurally
+ *   fine; the split exists precisely to expose that it may still be unfaithful.
+ * - intentPassed = every intent assertion passes AND blockedCorrectly is true.
+ *   For must-be-blocked tasks that reduces to blockedCorrectly — blocking an
+ *   ambiguous intent IS fidelity to it. For greenfield tasks it reduces to
+ *   carried-constraints AND not-over-blocked.
+ */
+export function scoreRun(
+  task: EvalTask,
+  outcome: PipelineOutcome,
+  usage: RunUsage,
+  repeat = 1,
+): RunScore {
+  const isIntentAssertion = (a: DeterministicAssertion): boolean =>
+    a.type === 'MENTIONS_TERMS' || a.type === 'BLOCKED';
+  const structuralAssertions = task.assertions.filter((a) => !isIntentAssertion(a));
+  const intentAssertions = task.assertions.filter(isIntentAssertion);
+
+  const structuralPassed = structuralAssertions.every((a) => assertionPasses(a, task, outcome));
+  const intentTermsPassed = intentAssertions.every((a) => assertionPasses(a, task, outcome));
 
   const blockedCorrectly =
     outcome.kind === 'blocked' || outcome.kind === 'spec'
       ? (outcome.kind === 'blocked') === task.must_be_blocked
       : null;
 
+  const bodyText =
+    outcome.kind === 'spec' ? normalizeForTermMatch(searchableBundleText(outcome.bundle)) : '';
+  const missingTerms = task.assertions
+    .filter((a): a is Extract<DeterministicAssertion, { type: 'MENTIONS_TERMS' }> => a.type === 'MENTIONS_TERMS')
+    .flatMap((a) => a.terms)
+    .filter((term) => !bodyText.includes(normalizeForTermMatch(term)));
+
   return {
     taskId: task.id,
     variant: outcome.variant,
-    assertionsPassed,
+    assertionsPassed: task.assertions.filter((a) => assertionPasses(a, task, outcome)).length,
     assertionsTotal: task.assertions.length,
+    repeat,
+    structuralPassed,
+    intentPassed: intentTermsPassed && blockedCorrectly === true,
+    missingTerms,
+    advisoryInventions: advisoryInventions(task, outcome),
     blockedCorrectly,
     councilDegraded: outcome.councilDegraded === true,
     inTokens: usage.in,
