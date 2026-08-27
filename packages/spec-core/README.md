@@ -1060,10 +1060,11 @@ depo otomatik yayın yapmaz — makine yalnızca kapıyı ve provenance'ı sağl
    birleşen iş akımı tek başına ASLA yayımlamaz; tam kapıyı (build/tazelik/
    lint/test/smoke) ve `npm publish --dry-run`'ı koşar, kayıt defterine
    dokunmaz.
-4. Gerçek yayın yalnızca sahip `dry_run=false` seçtiğinde olur — ve o adım
-   `NODE_AUTH_TOKEN` sırrı eklenmedikçe açıklamalı bir hatayla reddedilir.
-   **Sırrı eklemek sahip eylemidir** (npm automation/granular token'ını repo
-   sırrı olarak tanımlamak; ilk gerçek yayından önce bir kez — U4'ün ta kendisi).
+4. Gerçek yayın yalnızca sahip `dry_run=false` seçtiğinde olur. Kimlik
+   doğrulaması npm Trusted Publishing iledir: GitHub Actions OIDC token'ı,
+   npm üzerinde bu depo + `publish.yml` için yapılandırılmış güven
+   ilişkisiyle kısa ömürlü yayınlama yetkisi alınır — **depoda saklı npm
+   sırrı (NODE_AUTH_TOKEN vb.) YOKTUR ve oluşturulmaz**.
 5. Gerçek yayın `npm publish --provenance` ile yapılır: GitHub Actions OIDC'si
    kayıt defterinde imzalı bir provenance deyimi üretir (package.json'daki
    `repository` alanı bunun için zorunludur ve mevcuttur).
@@ -1135,10 +1136,10 @@ birlikte yaşar (bkz. "Yayın ve Sahiplik").
   yasağı (test edilen karar çekirdeği `src/release/readiness.ts` + sınır betiği
   `scripts/prepublish-check.js`, `prepublishOnly`'ye bağlı), manuel
   `publish-spec-core` iş akımı (yalnızca `workflow_dispatch`; `dry_run`
-  VARSAYILAN true; OIDC `--provenance`; gerçek yayın `NODE_AUTH_TOKEN` sahip
-  sırrı olmadan reddedilir), rollback/platform-sağlayıcı matrisi/değişiklik
-  günlüğü disiplini bölümleri, DATA-002 manifest-özgünlüğü sınırlama notu —
-  1078 test.
+  VARSAYILAN true; OIDC `--provenance`; kimlik doğrulaması npm Trusted
+  Publishing — depoda npm sırrı yok), rollback/platform-sağlayıcı
+  matrisi/değişiklik günlüğü disiplini bölümleri, DATA-002
+  manifest-özgünlüğü sınırlama notu — 1078 test.
 - **2026-08-27 — PROD-005 (bu aşama):** şema sürüm politikası (`src/schemas/version.ts` tek
   kaynak; ayrık/eyleme-dönük sürüm hataları: bozuk dize / yeni minor / başka major),
   legacy bloğu varsa-tam (strict-when-present), p-legacy/mode=legacy her yerde

@@ -4,15 +4,20 @@
 #   * trigger is workflow_dispatch ONLY (no push/tag ever starts it);
 #   * the dry_run input DEFAULTS TO TRUE — a dispatch that just clicks
 #     "Run workflow" runs the full gate and `npm publish --dry-run`, and
-#     never touches the registry;
-#   * a real publish additionally requires the NODE_AUTH_TOKEN repository
-#     secret, which must be added by the OWNER before first use (U4:
-#     publishing is forever a user-gated action — this workflow provides
-#     machinery and provenance, not an automated release).
+#     never touches the registry.
+#
+# AUTHENTICATION — npm Trusted Publishing (OIDC), NO STORED SECRETS:
+#   * npm obtains short-lived credentials by exchanging this run's GitHub
+#     OIDC token (id-token: write below); the trust relationship is
+#     configured on npm for THIS repository + THIS file (publish.yml);
+#   * there is no NODE_AUTH_TOKEN / NPM_TOKEN repository secret and none
+#     should be created — long-lived npm tokens are deliberately absent;
+#   * npm >= 11.15 is installed on the runner below (Node 22's bundled
+#     npm 10.x predates trusted publishing).
 #
 # Provenance: `npm publish --provenance` attests the artifact to this
-# workflow run via GitHub OIDC (id-token: write below). The package.json
-# `repository` field is required for provenance and is present.
+# workflow run via the same OIDC identity. The package.json `repository`
+# field is required for provenance and is present.
 #
 # Expected flow (documented in packages/spec-core/README.md "Yayın ve
 # Sahiplik"): bump version + changelog -> full gate green -> commit ->
@@ -61,13 +66,19 @@ jobs:
           version: 10.17.1
 
       # Node 22 = minimum supported major (engines >=22); the ci-spec-core
-      # matrix proves 22 and 24 on every push. registry-url wires
-      # NODE_AUTH_TOKEN (passed on the publish step) to the npm registry.
+      # matrix proves 22 and 24 on every push. registry-url configures the
+      # publish target registry (no token is wired — auth comes from OIDC).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing (OIDC) requires npm >= 11.5 on the runner; Node
+      # 22 bundles npm 10.x. Install the validated CLI (matches the
+      # npm@^11.15 used to configure the trust relationship).
+      - name: Use npm with Trusted Publishing support
+        run: npm install -g npm@^11.15
 
       - run: pnpm install --frozen-lockfile
 
@@ -106,17 +117,6 @@ jobs:
           fi
           echo "Dispatched version matches: $PKG"
 
-      - name: Refuse real publish without owner token
-        if: ${{ inputs.dry_run == false }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::error::Real publish requested but the NODE_AUTH_TOKEN secret is not set."
-            echo "::error::Owner action (U4): create an npm access token (automation or granular, publish rights for lco-spec) and add it as the repository secret NODE_AUTH_TOKEN before the first real publish."
-            exit 1
-          fi
-
       # Dry run: exercises prepublishOnly (test suite + readiness gate) and
       # packs, but uploads nothing. Provenance is omitted here — it is a
       # property of the real upload, attested by this run's OIDC token.
@@ -125,9 +125,11 @@ jobs:
         run: npm publish --dry-run
         working-directory: packages/spec-core
 
-      - name: Publish (real, with provenance)
+      # Real publish: npm authenticates via Trusted Publishing — it
+      # exchanges this run's OIDC token for a short-lived credential bound
+      # to (repository, workflow file) = (isakli05/llm_council_orchestrator,
+      # publish.yml). No stored secret is involved.
+      - name: Publish (real, trusted publishing + provenance)
         if: ${{ inputs.dry_run == false }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: npm publish --provenance
         working-directory: packages/spec-core
