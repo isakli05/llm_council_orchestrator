@@ -1,4 +1,4 @@
-import type { LintRule } from '../engine';
+import type { LintRule } from '../types';
 import type { LintFinding } from '../types';
 import { lifecycleStateFindings } from '../../compiler/lifecycle';
 

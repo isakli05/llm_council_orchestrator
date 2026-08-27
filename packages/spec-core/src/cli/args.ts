@@ -1,0 +1,420 @@
+/**
+ * Pure CLI parsing/usage layer (split from index.ts, T23): the USAGE text,
+ * the command grammar, and parseArgs — all pure functions of argv with no
+ * process access (no env reads, no clock, no I/O). index.ts stays the thin
+ * entry: env/file reads at the boundary, runCli dispatch, error wrapping.
+ */
+import {
+  DEFAULT_GENERATE_VARIANT,
+  normalizeIntent,
+  MAX_INTENT_CHARS,
+  MAX_INTENT_FILE_CHARS,
+} from './commands/generate';
+import {
+  MAX_COMPLETIONS,
+  worstCaseAttempts,
+  DEFAULT_WALL_SLACK_MS,
+} from '../eval/budget';
+import {
+  HTTP_MAX_ATTEMPTS_PER_COMPLETION,
+  HTTP_REQUEST_TIMEOUT_MS,
+  HTTP_BACKOFF_TOTAL_MS,
+} from '../eval/llm/http';
+import type { RunBudgetSpec } from '../eval/budget';
+
+const USAGE = `usage: lco <command> <dir> [args]
+       lco --help | -h | --version | <command> --help
+
+options:
+  --help, -h       print this overview (or the command's own help, with
+                   \`lco <command> --help\`) to stdout and exit 0
+  --version        print the lco-spec package version to stdout and exit 0
+
+commands:
+  compile <dir>                compile and validate the spec/ tree under <dir>
+  lint <dir>                   compile + lint; prints a rule/severity/path/message table
+  freeze <dir>                 gate-checked freeze; rewrites spec/manifest.json on success
+  verify <dir>                 re-hash frozen sections and compare with manifest.artifact_hashes
+  change <dir> <changeset.json>
+                               apply a changeset to a FROZEN spec: validates the complete
+                               candidate (compile + lint) BEFORE persisting, then bumps
+                               spec_version, returns the spec to state draft and atomically
+                               rewrites the changed spec/ sections — a lint-invalid change
+                               exits 1 with NOTHING written (the frozen spec is untouched
+                               and the same changeset stays retryable)
+  trace <dir>                  traceability report (informational, exit 0): per-edge-kind
+                               counts, per-requirement task links (TASK ✓test / ✗no-test-link),
+                               orphan requirements (the L02 view), and coverage summary
+  plan <dir> [--json]          topological execution plan (level-wise Kahn; ties within a
+                               level broken lexicographically by task_id): numbered rows with
+                               complexity, depends_on, verification, permitted_scope, and a
+                               ready-now line of level-0 tasks. Requires a lint-clean
+                               bundle: cyclic dependencies -> exit 1 with the unresolvable
+                               tasks listed; any other lint error refuses (exit 2) — an
+                               unknown depends_on reference is named in the refusal (run
+                               \`lco lint\`); --json emits machine-readable
+                               {"order":[...],"tasks":{id:{title,complexity,depends_on,
+                               verification,permitted_scope}}}
+  init <dir> [--profile p-mini|p-standard] [--name <name>]
+                               scaffold a WORKING minimal EXAMPLE spec/ under <dir> (defaults:
+                               p-mini, my-project) — it compiles, lints clean, and freezes
+                               as-is; replace the EXAMPLE content with your own. Refuses
+                               (exit 2) if <dir>/spec already exists
+  check <dir> [--task TASK-0001] [--yes] [--timeout-ms 60000]
+                               run TaskContract verification commands. DRY RUN by default:
+                               without --yes NOTHING is executed (status DRY, exit 0, the
+                               table previews what --yes would run). With --yes each command
+                               executes (cwd <dir>, killed at --timeout-ms, default 60000)
+                               and its exit code is compared to the first 'exit N' in the
+                               expect description — an expect without a judgeable 'exit N'
+                               is UNPARSEABLE-EXPECT and is never executed (fail-closed).
+                               Evidence per task: spec/evidence/<TASK-ID>-check-<RUN>.json
+                               (run-addressed, immutable, mode 0600; reruns never overwrite
+                               earlier evidence; output tails are redacted best-effort).
+                               Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE
+  generate <dir> --intent <text> | --intent-file <path>
+                               [--variant single|council] [--profile p-mini|p-standard]
+                               [--max-attempts N] [--max-tokens N] [--max-wall-ms N]
+                               compile a natural-language intent into a spec/ draft via
+                               a live LLM (requires LCO_LLM_BASE_URL, LCO_LLM_API_KEY and
+                               LCO_LLM_MODEL env vars; fails closed without them).
+                               Defaults: variant ${DEFAULT_GENERATE_VARIANT}, profile
+                               p-standard — council is explicit (--variant council).
+                               COST ENVELOPE (an HTTP attempt is a request, NOT a
+                               completion): each completion may cost up to
+                               ${HTTP_MAX_ATTEMPTS_PER_COMPLETION} attempts (${HTTP_REQUEST_TIMEOUT_MS / 1000}s timeout each,
+                               ${HTTP_BACKOFF_TOTAL_MS / 1000}s total backoff). Worst case: single
+                               ${MAX_COMPLETIONS.single} completions x ${HTTP_MAX_ATTEMPTS_PER_COMPLETION} = ${worstCaseAttempts('single')} requests,
+                               council ${MAX_COMPLETIONS.council} x ${HTTP_MAX_ATTEMPTS_PER_COMPLETION} = ${worstCaseAttempts('council')}. Run budgets abort the run
+                               with BUDGET_EXCEEDED (nothing written) when total attempts,
+                               tokens (in+out, provider-reported), or wall time cross the
+                               cap; defaults are the envelope worst case (attempts +0,
+                               wall +${DEFAULT_WALL_SLACK_MS / 1000}s) — override with --max-attempts,
+                               --max-tokens, --max-wall-ms or LCO_GENERATE_MAX_ATTEMPTS,
+                               LCO_GENERATE_MAX_TOKENS, LCO_GENERATE_MAX_WALL_MS. --intent
+                               is trimmed and rejected when blank or over ${MAX_INTENT_CHARS}
+                               chars BEFORE any paid call; --intent-file is the long-intent
+                               path (trim + blank check + a ${MAX_INTENT_FILE_CHARS}-char
+                               sanity ceiling, no inline cap). The evidence
+                               gate decides: blocked intent -> exit 1 with reasons, nothing
+                               written; lint-clean spec -> spec/ section files written,
+                               exit 0. Refuses (exit 2) if <dir>/spec already exists;
+                               --intent and --intent-file are mutually exclusive.
+  doctor [dir] [--json]        runtime environment diagnostics (field tool; CLI-only,
+                               no MCP tool): one line per check —
+                               [name] ok/warn/fail/skip: detail — remedy: ... — and
+                               NEVER an env VALUE or length, only set/unset. Checks:
+                               node version (engines >=22), LCO_LLM_* provider env
+                               (presence + validity; mock is the default adapter),
+                               LCO_MCP_* consent flags (exactly '1' opts in),
+                               LCO_GENERATE_MAX_* budget env, write/lock/atomic-
+                               rename probe in <dir> (default: the current directory;
+                               a probe file is created and removed — nothing else is
+                               touched), spec/ compile summary when <dir>/spec exists,
+                               dist bin self-check (shebang + exec mode; skipped
+                               without dist/), generated/spec-schema.json freshness
+                               (warn only). FAIL = broken capability (unwritable dir,
+                               broken bins, non-compiling spec) -> exit 1; WARN =
+                               unconfigured optional (live LLM env, budget overrides)
+                               -> exit 0; --json emits {"checks":[{name,status,
+                               detail,remedy?}...],"healthy":bool}
+
+changeset template (all three lists are optional; patch keys are strict — typos are rejected):
+  {
+    "id": "CP-0001",
+    "rationale": "why this change is needed",
+    "modified_tasks": [
+      { "task_id": "TASK-0001", "patch": { "title": "Updated title" } }
+    ],
+    "removed_task_ids": ["TASK-0003"],
+    "added_requirements": [
+      { "id": "REQ-0009", "statement": "The system shall ...", "priority": "must",
+        "evidence": ["E-0001"], "acceptance_refs": ["TST-0001"] }
+    ]
+  }
+
+profiles: p-mini and p-standard are the only selectable profiles. The schema's
+  p-legacy (and p-critical) are EXPERIMENTAL, schema-only declarations: no
+  transformation semantics exist, generate/init cannot select them, and the
+  only path to a legacy spec is a hand-authored COMPLETE spec/legacy.json
+  (an empty or partial legacy block is a schema error). Schema version
+  policy: a spec/manifest.json spec_schema other than 'lco-spec/1.0' is
+  rejected with a distinct error naming the fix — see the README section
+  "Şema Sürümü ve Uyumluluk Politikası (lco-spec/1.x)"
+
+exit codes: 0 success, 1 lint/freeze/drift/check/gate failure, 2 usage or schema error`;
+
+const COMMANDS = [
+  'compile',
+  'lint',
+  'freeze',
+  'verify',
+  'change',
+  'trace',
+  'plan',
+  'init',
+  'check',
+  'generate',
+  'doctor',
+] as const;
+type Command = (typeof COMMANDS)[number];
+type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate' | 'doctor'>;
+type InitProfile = 'p-mini' | 'p-standard';
+type GenerateVariant = 'single' | 'council';
+
+export type ParseResult =
+  | { error: string }
+  | { help: true }
+  | { version: true }
+  | { commandHelp: Command }
+  | { command: SingleDirCommand; dir: string }
+  | { command: 'change'; dir: string; changesetPath: string }
+  | { command: 'plan'; dir: string; json: boolean }
+  | { command: 'doctor'; dir: string; json: boolean }
+  | { command: 'init'; dir: string; profile: InitProfile; name: string }
+  | { command: 'check'; dir: string; task?: string; yes: boolean; timeoutMs?: number }
+  | {
+      command: 'generate';
+      dir: string;
+      /** Exactly one of intent/intentFile is present (parseArgs enforces it). */
+      intent?: string;
+      intentFile?: string;
+      variant: GenerateVariant;
+      profile: InitProfile;
+      /** Budget flag overrides (validated positive ints); env vars resolve at the runCli boundary. */
+      budget?: RunBudgetSpec;
+    };
+
+export function parseArgs(argv: string[]): ParseResult {
+  if (argv.length === 0) {
+    return { error: 'missing command' };
+  }
+  const [command, ...rest] = argv;
+  if (command === '--help' || command === '-h') {
+    return { help: true };
+  }
+  if (command === '--version') {
+    return { version: true };
+  }
+  if (!(COMMANDS as readonly string[]).includes(command)) {
+    return { error: `unknown command: ${command}` };
+  }
+  // UX-002: --help/-h after a KNOWN command wins over everything else and is
+  // checked BEFORE any validation of that command's arguments — `lco init
+  // --help` prints help and exits 0; the flag is never consumed as a <dir>
+  // name (the old behavior literally scaffolded a spec into ./--help/).
+  // An unknown command still falls through to the usage error above.
+  if (rest.includes('--help') || rest.includes('-h')) {
+    // Same cast idiom as the SingleDirCommand return below: COMMANDS.includes
+    // above guarantees the literal, but does not narrow `string` for TS.
+    return { commandHelp: command as Command };
+  }
+  // doctor is the one command whose <dir> is OPTIONAL (defaults to the
+  // current directory) — every other command keeps the missing-dir error.
+  if (rest.length === 0 && command !== 'doctor') {
+    return { error: `missing <dir> argument for '${command}'` };
+  }
+  if (command === 'change') {
+    if (rest.length === 1) {
+      return { error: "missing <changeset.json> argument for 'change'" };
+    }
+    if (rest.length > 2) {
+      return {
+        error: `unexpected extra arguments after <changeset.json>: ${rest.slice(2).join(' ')}`,
+      };
+    }
+    return { command: 'change', dir: rest[0], changesetPath: rest[1] };
+  }
+  if (command === 'plan') {
+    const [dir, ...flags] = rest;
+    let json = false;
+    for (const flag of flags) {
+      if (flag === '--json') {
+        json = true;
+      } else {
+        return { error: `unexpected argument for 'plan': ${flag}` };
+      }
+    }
+    return { command: 'plan', dir, json };
+  }
+  if (command === 'doctor') {
+    // `lco doctor` (cwd), `lco doctor <dir>`, `lco doctor --json`, and the
+    // combinations; anything else is a usage error. A leading '--' token is
+    // never taken as a directory name.
+    let dir: string | undefined;
+    let json = false;
+    for (const arg of rest) {
+      if (arg === '--json') {
+        json = true;
+      } else if (dir === undefined && !arg.startsWith('--')) {
+        dir = arg;
+      } else {
+        return { error: `unexpected argument for 'doctor': ${arg}` };
+      }
+    }
+    return { command: 'doctor', dir: dir ?? '.', json };
+  }
+  if (command === 'init') {
+    const [dir, ...flags] = rest;
+    let profile: InitProfile = 'p-mini';
+    let name = 'my-project';
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i];
+      if (flag === '--profile') {
+        const value = flags[++i];
+        if (value !== 'p-mini' && value !== 'p-standard') {
+          return {
+            error: `invalid --profile ${String(value)}: expected p-mini or p-standard`,
+          };
+        }
+        profile = value;
+      } else if (flag === '--name') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --name' };
+        }
+        name = value;
+      } else {
+        return { error: `unexpected argument for 'init': ${flag}` };
+      }
+    }
+    return { command: 'init', dir, profile, name };
+  }
+  if (command === 'check') {
+    const [dir, ...flags] = rest;
+    let task: string | undefined;
+    let yes = false;
+    let timeoutMs: number | undefined;
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i];
+      if (flag === '--task') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --task' };
+        }
+        task = value;
+      } else if (flag === '--yes') {
+        yes = true;
+      } else if (flag === '--timeout-ms') {
+        const value = flags[++i];
+        const n = Number(value);
+        if (!Number.isInteger(n) || n <= 0) {
+          return {
+            error: `invalid --timeout-ms ${String(value)}: expected a positive integer`,
+          };
+        }
+        timeoutMs = n;
+      } else {
+        return { error: `unexpected argument for 'check': ${flag}` };
+      }
+    }
+    return { command: 'check', dir, task, yes, timeoutMs };
+  }
+  if (command === 'generate') {
+    const [dir, ...flags] = rest;
+    let intent: string | undefined;
+    let intentFile: string | undefined;
+    // UX-001 ruling: single is the conservative default; the constant lives
+    // in commands/generate.ts — the ONE place the default is chosen.
+    let variant: GenerateVariant = DEFAULT_GENERATE_VARIANT;
+    let profile: InitProfile = 'p-standard';
+    const budget: RunBudgetSpec = {};
+    let sawBudgetFlag = false;
+    const budgetFlag = (name: 'maxAttempts' | 'maxTokens' | 'maxWallMs', raw: string | undefined, flag: string): string | null => {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        return `invalid ${flag} ${String(raw)}: expected a positive integer`;
+      }
+      budget[name] = n;
+      return null;
+    };
+    for (let i = 0; i < flags.length; i++) {
+      const flag = flags[i];
+      if (flag === '--intent') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --intent' };
+        }
+        // UX-004 preflight: normalize (trim, parity with --intent-file) and
+        // refuse blank/oversized intents at PARSE time — before any IO, env
+        // access, or adapter construction. A bad invocation costs nothing.
+        const normalized = normalizeIntent(value);
+        if (!normalized.ok) {
+          return { error: `--intent ${normalized.error}` };
+        }
+        intent = normalized.intent;
+      } else if (flag === '--intent-file') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --intent-file' };
+        }
+        intentFile = value;
+      } else if (flag === '--variant') {
+        const value = flags[++i];
+        if (value !== 'single' && value !== 'council') {
+          return { error: `invalid --variant ${String(value)}: expected single or council` };
+        }
+        variant = value;
+      } else if (flag === '--profile') {
+        const value = flags[++i];
+        if (value !== 'p-mini' && value !== 'p-standard') {
+          return {
+            error: `invalid --profile ${String(value)}: expected p-mini or p-standard`,
+          };
+        }
+        profile = value;
+      } else if (flag === '--max-attempts' || flag === '--max-tokens' || flag === '--max-wall-ms') {
+        sawBudgetFlag = true;
+        const name = flag === '--max-attempts' ? 'maxAttempts' : flag === '--max-tokens' ? 'maxTokens' : 'maxWallMs';
+        const err = budgetFlag(name, flags[++i], flag);
+        if (err) return { error: err };
+      } else {
+        return { error: `unexpected argument for 'generate': ${flag}` };
+      }
+    }
+    if (intent !== undefined && intentFile !== undefined) {
+      return { error: '--intent and --intent-file are mutually exclusive: pass exactly one' };
+    }
+    if (intent === undefined && intentFile === undefined) {
+      return { error: 'missing intent: pass --intent <text> or --intent-file <path>' };
+    }
+    return {
+      command: 'generate',
+      dir,
+      intent,
+      intentFile,
+      variant,
+      profile,
+      ...(sawBudgetFlag ? { budget } : {}),
+    };
+  }
+  if (rest.length > 1) {
+    return { error: `unexpected extra arguments after <dir>: ${rest.slice(1).join(' ')}` };
+  }
+  return { command: command as SingleDirCommand, dir: rest[0] };
+}
+
+/**
+ * Command-specific help (UX-002): the command's own block, extracted from
+ * USAGE at run time — USAGE stays the single hand-written source of truth,
+ * so the per-command text can never drift from the overview. A block starts
+ * at `  <command> ` and runs through its continuation lines (indented 7+
+ * spaces); the next command's line, a section header, or a blank line ends it.
+ */
+export function commandHelp(command: Command): string {
+  const lines = USAGE.split('\n');
+  const start = lines.findIndex((line) => line.startsWith(`  ${command} `));
+  if (start === -1) {
+    return USAGE; // defensive: USAGE lost the entry — fall back to the overview
+  }
+  let end = start + 1;
+  while (end < lines.length && /^ {7,}\S/.test(lines[end])) {
+    end++;
+  }
+  return (
+    `usage: lco ${lines.slice(start, end).join('\n').trimStart()}\n\n` +
+    '(run `lco --help` for the full command overview)'
+  );
+}
+
+export { USAGE };
