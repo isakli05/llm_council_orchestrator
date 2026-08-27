@@ -25,6 +25,8 @@ describe('schema barrel', () => {
   it('exports every schema named in the W1 contract', () => {
     const expected = [
       'SPEC_SCHEMA_VERSION',
+      'checkSpecSchemaVersion',
+      'SpecSchemaVersionFieldSchema',
       'SpecStateSchema',
       'ImpactLevelSchema',
       'ComplexityProfileSchema',

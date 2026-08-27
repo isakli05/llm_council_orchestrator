@@ -10,6 +10,7 @@ import {
   GlossaryEntrySchema,
   IntentSchema,
   RequirementSchema,
+  SPEC_SCHEMA_VERSION,
 } from '../../schemas';
 import { acquireSpecRootLock, createDirAtomically } from '../../storage/revision';
 import { assertNotSymlink } from '../../storage/paths';
@@ -122,7 +123,7 @@ function buildSections(profile: 'p-mini' | 'p-standard', name: string, nowIso: s
   const standard = profile === 'p-standard';
 
   const manifest: Manifest = {
-    spec_schema: 'lco-spec/1.0',
+    spec_schema: SPEC_SCHEMA_VERSION,
     spec_version: 1,
     project: { name, mode: 'greenfield' },
     complexity_profile: profile,

@@ -108,6 +108,58 @@ describe('compileSpecDir', () => {
     expect(result.errors.some((e) => e.message.includes('Expected number'))).toBe(true);
   });
 
+  // --- PROD-005: spec_schema version errors are DISTINCT and actionable at
+  // the compile boundary (the single reader every command shares). -----------
+
+  it('manifest declaring a future MAJOR -> distinct major-version error at manifest.spec_schema', async () => {
+    const fixture = loadBundle('good/pet-clinic/bundle.json');
+    const mutated = structuredClone(fixture) as Record<string, unknown>;
+    const manifest = mutated.manifest as Record<string, unknown>;
+    manifest.spec_schema = 'lco-spec/2.0';
+    const root = makeSpecRoot(mutated);
+
+    const result = await compileSpecDir(root);
+
+    expect(result.ok).toBe(false);
+    const err = result.errors.find((e) => e.path === 'manifest.spec_schema');
+    expect(err).toBeDefined();
+    expect(err!.message).toMatch(/major/i);
+    expect(err!.message).toMatch(/1\.x/);
+    expect(err!.message).toMatch(/migration tool/i);
+  });
+
+  it('manifest declaring a newer 1.x minor -> distinct upgrade/read-compat error', async () => {
+    const fixture = loadBundle('good/pet-clinic/bundle.json');
+    const mutated = structuredClone(fixture) as Record<string, unknown>;
+    const manifest = mutated.manifest as Record<string, unknown>;
+    manifest.spec_schema = 'lco-spec/1.2';
+    const root = makeSpecRoot(mutated);
+
+    const result = await compileSpecDir(root);
+
+    expect(result.ok).toBe(false);
+    const err = result.errors.find((e) => e.path === 'manifest.spec_schema');
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('lco-spec/1.2');
+    expect(err!.message).toMatch(/upgrade/i);
+  });
+
+  it('manifest with a malformed version string -> expected-form error, not a generic literal error', async () => {
+    const fixture = loadBundle('good/pet-clinic/bundle.json');
+    const mutated = structuredClone(fixture) as Record<string, unknown>;
+    const manifest = mutated.manifest as Record<string, unknown>;
+    manifest.spec_schema = 'version one please';
+    const root = makeSpecRoot(mutated);
+
+    const result = await compileSpecDir(root);
+
+    expect(result.ok).toBe(false);
+    const err = result.errors.find((e) => e.path === 'manifest.spec_schema');
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('lco-spec/<major>.<minor>');
+    expect(err!.message).not.toContain('Invalid literal value');
+  });
+
   it('unparseable JSON in a section file -> ok:false, never a crash', async () => {
     const fixture = loadBundle('good/pet-clinic/bundle.json');
     const root = makeSpecRoot(fixture, { raw: { tasks: '{not valid json' } });

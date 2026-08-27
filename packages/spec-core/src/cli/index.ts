@@ -124,6 +124,15 @@ changeset template (all three lists are optional; patch keys are strict — typo
     ]
   }
 
+profiles: p-mini and p-standard are the only selectable profiles. The schema's
+  p-legacy (and p-critical) are EXPERIMENTAL, schema-only declarations: no
+  transformation semantics exist, generate/init cannot select them, and the
+  only path to a legacy spec is a hand-authored COMPLETE spec/legacy.json
+  (an empty or partial legacy block is a schema error). Schema version
+  policy: a spec/manifest.json spec_schema other than 'lco-spec/1.0' is
+  rejected with a distinct error naming the fix — see the README section
+  "Şema Sürümü ve Uyumluluk Politikası (lco-spec/1.x)"
+
 exit codes: 0 success, 1 lint/freeze/drift/check/gate failure, 2 usage or schema error`;
 
 const COMMANDS = [

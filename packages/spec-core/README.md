@@ -700,6 +700,54 @@ Bilinmeyen anahtar **her yerde reddedilir**, sessizce silinmez:
   JSON Şema reddeder" yüzey farkı, tamamlama planının şema-sıkılaştırma göreviyle
   kapatıldı.)
 
+## Şema Sürümü ve Uyumluluk Politikası (`lco-spec/1.x`)
+
+**PROD-005.** `manifest.spec_schema` alanı, ağacın yazıldığı şema sürümünü bildirir.
+Tek kaynak `src/schemas/version.ts` içindeki `SPEC_SCHEMA_VERSION` sabitidir (şu an
+`lco-spec/1.0`); manifest şeması bu sabiti birebir zorunlu kılar ve `init` iskeleti
+aynı sabiti yazar — literal kodda başka hiçbir yerde tekrarlanmaz.
+
+Politika:
+
+- **`1.0` bugüne dek çıkarılmış TEK şema sürümüdür**; şemaların minor-sürüm kavramı
+  henüz yoktur. Aşağıdaki kurallar GELECEK minor'ları yönetir — bugün
+  `lco-spec/1.0`'dan başka okunabilir sürüm yoktur ve bu politika kendisi için
+  minor makineleri icat etmez.
+- **Okuma uyumluluğu (read-compat):** major 1 içinde YENİ derleyiciler ESKİ 1.x
+  donmuş ağaçlarını okumak ZORUNDADIR — bir frozen artifact'ın dayandığı garanti
+  budur. Bir `1.1` çıkarsa, 1.1 derleyicisi `lco-spec/1.0` ağaçlarını da okur;
+  kabul edilen sürüm kümesi `checkSpecSchemaVersion` içindeki işaretli büyüme
+  noktasında BİLİNÇLİ olarak büyütülür.
+- **Kendinden yeni minor bildiren spec:** derleyicinin bildiğinden YENİ bir 1.x
+  minor'u bildiren ağaç (`lco-spec/1.2` gibi) okunmaz — bilinmeyen bir şemayı 1.0
+  şekliyle okumak sessiz yanlış-ayrıştırma olur, tahmin yürütülmez. Hata "derleyiciyi
+  yükselt" diye yönlendirir; 1.x okuma-uyumlu olduğundan ağacınız yeni derleyicide
+  geçerli kalır. `spec_schema`'yı elle geri yazdırmayın.
+- **Major = okuma kırılması:** başka bir major bildiren ağaç (`lco-spec/2.0` gibi)
+  bu derleyicide ASLA okunmaz (ayrı, adı konmuş hata). Göç aracı major ile BİRLİKTE
+  gelir (2.x'in kendisiyle); bugün böyle bir araç YOKTUR ve tarihe vaat edilmez.
+- **Hata ayrımı:** `spec_schema` hatası üç ayrı mesajla yüzeye çıkar — bozuk/biçimsiz
+  dize (`lco-spec/<major>.<minor>` biçimi öğretilir), bilinmeyen YENİ minor
+  (yükseltme yönlendirmesi), başka major (major kırılması + göç aracının kapsamı).
+  Derleme çıktısı bu mesajları `manifest.spec_schema` yolunda taşır; politika tek
+  yerde durur (`src/schemas/version.ts`).
+- **Geri alma dürüstlüğü:** donmuş ağaçlar salt JSON dosyalarıdır; geri alma hikâyesi
+  **git geçmişidir** — `spec/` bölüm dosyalarını eski bir commit'e döndürmek tüm
+  ağacı geri alır. Derleyicinin otomatik geri-alma/rollback komutu YOKTUR; donmuş
+  bir spec'i ileriye taşımanın tek desteklenen yolu `lco change`'dir.
+
+### Legacy modu: DENEYSEL, yalnızca-şema
+
+`mode: "legacy"`, `complexity_profile: "p-legacy"` ve `spec/legacy.json` **DENEYSELDİR
+ve yalnızca şema yüzeyidir**: hiçbir dönüşüm/analiz semantiği yoktur — derleyici
+legacy paketini pass-through taşır, closure yalnızca `preserve_change_drop[].evidence`
+referanslarını denetler. `generate` ve `init` bu profili SEÇEMEZ (yalnızca
+`p-mini | p-standard`); legacy spec'in tek yolu elle yazılmış JSON'dur. Legacy bloğu
+**varsa tam olmalıdır** (`as_is_summary` + en az bir `preserve_change_drop` girdisi):
+`{}` veya yarım paket şema hatasıdır — "legacy paket yok" demenin tek yolu bloğu hiç
+yazmamaktır. Dönüşüm semantiği, bir pilot gerekçe göstermedikçe kalıcı olarak kapsam
+dışındır (denetim P4).
+
 ## Kanıt Kapısı: G1–G4
 
 Kapı, `packages/spec-core` iddialarını dört ölçütle sınar. **G1–G3 deterministiktir**
@@ -833,6 +881,13 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
   başına şema). Eski `GLS-NNNN` id'li saklı spec'ler **artık derlenmez** (şema
   hatası); `lco change` ile yeniden üretin veya `GLS-` id'lerini elle `REQ-`'ye
   çevirin.
+- **Göç notu — legacy bloğu artık varsa tam olmalı (PROD-005):** `legacy`
+  bölümü eskiden `.partial()`'dı; `{}` veya yalnız-`as_is_summary` paketi şema-geçerli
+  kabul ediliyordu (denetimin de bulduğu gibi: anlamsız bir boş paket). Artık blok
+  VARSA tam olmalıdır; yarım/boş legacy bloğu taşıyan saklı spec'ler derlenmez —
+  bloğu tamamlayın ya da tamamen kaldırın (kaldırmak "legacy paket yok" demenin tek
+  yoludur). Legacy modunun kendisi DENEYSEL/yalnızca-şema kalır (bkz. sürüm
+  politikası bölümü).
 - **Changeset'ler TST referanslarını kendiliğinden yeniden demirlemez (bilinen
   sınır):** `ChangeSetSchema`'da `modified_requirements` op'u yoktur. Bir
   changeset bir görevin testlerini değiştiriyorsa/kaldırıyorsa,
@@ -865,6 +920,12 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
 
 ## Değişiklik Günlüğü
 
+- **PROD-005 (bu aşama):** şema sürüm politikası (`src/schemas/version.ts` tek
+  kaynak; ayrık/eyleme-dönük sürüm hataları: bozuk dize / yeni minor / başka major),
+  legacy bloğu varsa-tam (strict-when-present), p-legacy/mode=legacy her yerde
+  DENEYSEL + yalnızca-şema etiketi (CLI help, şema açıklamaları, README), sürüm
+  uyumluluk/geri-alma politikası bölümü — 1.x okuma uyumluluğu, major = okuma
+  kırılması, rollback = git geçmişi.
 - **PROD-003 (bu aşama):** niyet-doğruluk iddiaları (`MENTIONS_TERMS`), yapısal/niyet
   skor ayrımı, tekrarlı koşum + yayılım tablosu, tam-usage şartı (tekrarlar arasında),
   adversarial eval vakaları, G4'ün dürüst yeniden etiketlenmesi + live yeniden koşum
