@@ -141,7 +141,21 @@ const BIN_FILES = ['dist/cli/index.js', 'dist/mcp/server.js'] as const;
 // node
 // ---------------------------------------------------------------------------
 
-export function checkNodeVersion(nodeVersion: string, enginesFloor = FALLBACK_ENGINES_FLOOR): DoctorCheck {
+/**
+ * Where the engines floor came from — shown in the [node] detail (T22 rider,
+ * TEST-003): 'package.json' when the CLI boundary parsed engines.node at
+ * runtime, 'fallback' when the compiled-in FALLBACK_ENGINES_FLOOR applied.
+ * One word of provenance so a mispublished/unreadable package.json is
+ * diagnosable from the doctor output alone.
+ */
+export type EnginesFloorSource = 'package.json' | 'fallback';
+
+export function checkNodeVersion(
+  nodeVersion: string,
+  enginesFloor = FALLBACK_ENGINES_FLOOR,
+  floorSource: EnginesFloorSource = 'fallback',
+): DoctorCheck {
+  const source = floorSource === 'package.json' ? 'read from package.json' : 'compiled-in fallback';
   const match = /^v(\d+)\./.exec(nodeVersion);
   if (!match) {
     return {
@@ -155,13 +169,13 @@ export function checkNodeVersion(nodeVersion: string, enginesFloor = FALLBACK_EN
     return {
       name: 'node',
       status: 'ok',
-      detail: `node ${nodeVersion} meets the package engines floor (>=${enginesFloor})`,
+      detail: `node ${nodeVersion} meets the package engines floor (>=${enginesFloor}, ${source})`,
     };
   }
   return {
     name: 'node',
     status: 'warn',
-    detail: `node ${nodeVersion} is below the package engines floor (>=${enginesFloor}) — unsupported runtime`,
+    detail: `node ${nodeVersion} is below the package engines floor (>=${enginesFloor}, ${source}) — unsupported runtime`,
     remedy: `upgrade Node to >= ${enginesFloor}`,
   };
 }
@@ -671,7 +685,13 @@ export async function cmdDoctor(dir: string, opts: DoctorOptions): Promise<Docto
     }
   };
 
-  await run('node', () => checkNodeVersion(opts.nodeVersion, opts.enginesFloor ?? FALLBACK_ENGINES_FLOOR));
+  await run('node', () =>
+    checkNodeVersion(
+      opts.nodeVersion,
+      opts.enginesFloor ?? FALLBACK_ENGINES_FLOOR,
+      opts.enginesFloor !== undefined ? 'package.json' : 'fallback',
+    ),
+  );
   await run('provider-env', () => checkProviderEnv(opts.env));
   await run('mcp-flags', () => checkMcpFlags(opts.env, (p) => existsSync(p)));
   await run('budget-env', () => checkBudgetEnv(opts.env));

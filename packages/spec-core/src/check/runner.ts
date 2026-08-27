@@ -161,6 +161,18 @@ export const GROUP_KILL_GRACE_MS = 400;
 /** How often group teardown polls for the group to die. */
 const GROUP_KILL_POLL_MS = 25;
 
+/**
+ * Final force-settle window (T16 rider, TEST-003): after group teardown has
+ * run its full course (including the destroy() backstop), 'close' gets this
+ * long to arrive on its own; past that the verdict is settled WITHOUT it.
+ * Covers the D-state leader — a process killed by neither SIGTERM nor
+ * SIGKILL in wall-clock terms never reaps, so its 'close' may never come,
+ * and the promise must resolve regardless (the verdict data is already
+ * fixed by then; only the streams gate can still hang). Resolution is thus
+ * bounded by timeoutMs + 2×graceMs + this window in the worst case.
+ */
+export const FORCE_SETTLE_GRACE_MS = 250;
+
 // --- active-group registry (OPS-001 shutdown containment) ---------------------------
 //
 // The MCP server tracks in-flight REQUESTS, but a request may currently be
@@ -268,6 +280,7 @@ export function execInProcessGroup(
     let settled = false;
     let streamsClosed = false;
     let teardownDone = false;
+    let forceTimer: NodeJS.Timeout | undefined; // the second watchdog, if armed
 
     const groupAlive = (): boolean => {
       if (pgid === undefined) return false;
@@ -313,6 +326,18 @@ export function execInProcessGroup(
         .then(() => {
           teardownDone = true;
           settle();
+          // Second watchdog (T16): one final bounded window past the kill
+          // deadline for 'close' to arrive on its own; past it, force-settle.
+          // A D-state leader's never-closing streams must not hold the
+          // verdict hostage — settle() below clears this timer when 'close'
+          // does arrive, so healthy paths never take the forced exit.
+          if (!settled && forceTimer === undefined) {
+            forceTimer = setTimeout(() => {
+              forceTimer = undefined;
+              streamsClosed = true; // forced: 'close' is never coming
+              settle();
+            }, FORCE_SETTLE_GRACE_MS);
+          }
         })
         // Defensive durability: nothing in teardown throws today, but if it
         // ever rejects the run must not wedge on teardownDone — force the
@@ -366,6 +391,13 @@ export function execInProcessGroup(
     function settle(): void {
       if (settled || !teardownDone || !streamsClosed) return;
       settled = true;
+      // Resolved: nothing later may act on this child — kill the pending
+      // timeout/force-settle timers so they cannot hold the event loop.
+      clearTimeout(timer);
+      if (forceTimer !== undefined) {
+        clearTimeout(forceTimer);
+        forceTimer = undefined;
+      }
       if (pgid !== undefined) activeProcessGroups.delete(pgid);
       const combined = `${out}${errText}`;
       if (spawnFailed) {
@@ -481,11 +513,24 @@ function tail(text: string): string {
  * zero-padded counter bumped while the name is taken. Deterministic from the
  * injected clock + task id + directory state — no wall clock, no randomness
  * (the repo-wide boundary-clock contract).
+ *
+ * SEQ WIDTH (T15, TEST-003): seq 1..999 keeps the historical 3-digit
+ * zero-padded form BYTE-IDENTICAL (existing evidence files and every pinned
+ * name test stay stable). From 1000 on, the tail switches to `x` + 6-digit
+ * padding: 'x' (0x78) sorts after every digit (0x30–0x39), so overflow
+ * names sort after ALL historical names, and the fixed 6-digit width keeps
+ * lexicographic = numeric order within the overflow range up to 999,999
+ * same-timestamp runs (each run is a locked, fsynced file write; past that
+ * count the name still succeeds — only the ordering guarantee lapses).
  */
 function evidenceRunName(evidenceDir: string, taskId: string, nowIso: string): string {
   const compactIso = nowIso.replace(/[-:.]/g, '');
   for (let seq = 1; ; seq++) {
-    const name = `${taskId}-check-${compactIso}-${String(seq).padStart(3, '0')}.json`;
+    const tail =
+      seq <= 999
+        ? String(seq).padStart(3, '0')
+        : `x${String(seq).padStart(6, '0')}`;
+    const name = `${taskId}-check-${compactIso}-${tail}.json`;
     if (!existsSync(join(evidenceDir, name))) return name;
   }
 }

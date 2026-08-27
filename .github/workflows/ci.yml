@@ -65,7 +65,11 @@ jobs:
           fi
 
       - run: pnpm --filter ./packages/spec-core lint
-      - run: pnpm --filter ./packages/spec-core test
+      # TEST-003 coverage gate: the same suite, run with v8 coverage and
+      # threshold enforcement (ratchet configured in vitest.config.ts, a few
+      # points under measured). Local `pnpm test` stays coverage-free for a
+      # fast inner loop; CI pays the ~3s overhead once per matrix leg.
+      - run: pnpm --filter ./packages/spec-core test:coverage
 
       # TEST-002 packed-install gate: build -> npm pack -> install the REAL
       # tarball into a throwaway project -> run installed `lco init`,

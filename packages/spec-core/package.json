@@ -27,6 +27,7 @@
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node scripts/make-bins-executable.js && node dist/schemas/export-json-schema.js",
     "pretest": "pnpm run build",
     "test": "vitest run",
+    "test:coverage": "pnpm run build && vitest run --coverage",
     "smoke:packed": "sh scripts/packed-install-smoke.sh",
     "test:watch": "vitest",
     "lint": "tsc -p tsconfig.json --noEmit",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "typescript": "^5.3.3",
     "vitest": "^2.1.0",
     "zod-to-json-schema": "^3.23"

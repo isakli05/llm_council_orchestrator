@@ -195,6 +195,20 @@ describe('acquireSpecRootLock: stale-break policy (injected time only)', () => {
     expect(() => acquireSpecRootLock(root, NOW)).toThrow(LockHeldError);
     rmSync(join(root, LOCK_FILE));
   });
+
+  // T22 rider (TEST-003 carry list): the holder branch already refused an
+  // unparseable CLOCK ('unknown age: refuse to guess') — the mtime branch
+  // computed NaN ageMs and fell through `NaN < staleMs` (false) to UNLINK.
+  // A garbage clock must never authorize breaking someone else's lock.
+  it('garbage lock content + unparseable injected clock (NaN age) -> REFUSE to break (T22)', () => {
+    const root = freshRoot('spec-core-lock-nan-clock-');
+    const lockPath = join(root, LOCK_FILE);
+    writeFileSync(lockPath, 'not json at all', 'utf8');
+
+    expect(() => acquireSpecRootLock(root, 'not-a-timestamp')).toThrow(LockHeldError);
+    // The lock — and its diagnostic value — is untouched.
+    expect(readFileSync(lockPath, 'utf8')).toBe('not json at all');
+  });
 });
 
 describe('createDirAtomically: whole-directory creation (init/generate)', () => {

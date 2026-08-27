@@ -265,9 +265,9 @@ describe('glob subset: full-path overlap table (tricky cases)', () => {
  * against false negatives). If segmentsOverlap ever disagrees with "exists a
  * common witness string", this fails with the counterexample in hand.
  */
-describe('segment overlap engine vs brute-force enumeration', () => {
-  /** Reference matcher: does segment pattern p match string s? (?, *) semantics. */
-  function refMatch(p: string, s: string): boolean {
+
+/** Reference matcher: does segment pattern p match string s? (?, *) semantics. */
+function refMatch(p: string, s: string): boolean {
     // dp[i][j]: p[i..] matches s[j..]
     const dp: boolean[][] = Array.from({ length: p.length + 1 }, () =>
       new Array<boolean>(s.length + 1).fill(false),
@@ -280,8 +280,9 @@ describe('segment overlap engine vs brute-force enumeration', () => {
       }
     }
     return dp[0][0];
-  }
+}
 
+describe('segment overlap engine vs brute-force enumeration', () => {
   const alphabet = ['a', 'b', 't', 's', 'm', 'd', '.'];
   function allStrings(maxLen: number): string[] {
     // ACCUMULATE every length 0..maxLen — replacing instead of accumulating
@@ -315,5 +316,105 @@ describe('segment overlap engine vs brute-force enumeration', () => {
         expect(segmentsOverlap(p, q), `counterexample: ${p} vs ${q}`).toBe(brute);
       }
     }
+  });
+});
+
+/**
+ * T21 rider (TEST-003): the SAME exhaustive cross-check lifted one layer —
+ * from segment strings to whole-path SEGMENT SEQUENCES, so the `**` branches
+ * of globsOverlap (zero-segment match / absorb-other's-segment) get the
+ * exhaustive agreement the segment engine already had.
+ *
+ * Universe design (bounded, and closed under the patterns' witnesses):
+ *   PATTERN paths — every 1..3-segment sequence over
+ *     {a, b, *, ?, **}  (5 kinds → 5+25+125 = 155 patterns)
+ *   LITERAL paths — every 1..6-segment sequence over {a, b} (126 paths)
+ *
+ * Why this is witness-closed: every pattern segment is a pure literal, a
+ * pure '?', a pure '*', or '**', so any common witness segment of two
+ * pattern segments is a 1-char string ('a'/'b') — differing literals have
+ * no witness, matching literals are themselves. And a MINIMAL common
+ * witness never needs more segments than (non-** segments in P) + (non-**
+ * segments in Q) ≤ 3+3 = 6: a witness segment that advanced only '**'
+ * positions on both sides could be deleted and both would still match. (A
+ * first draft with 3-segment literal paths missed the pattern pair
+ * {a, a, StarStar} vs {StarStar, b, a}, whose minimal witness is the
+ * 4-segment a/a/b/a.)
+ */
+describe('path overlap engine vs brute-force enumeration (T21)', () => {
+  /** Reference whole-path matcher: does segment-pattern P match path S? */
+  function refPathMatch(p: string[], s: string[]): boolean {
+    // dp[i][j]: P[i..] matches S[j..]; '**' spans any number of segments.
+    const dp: boolean[][] = Array.from({ length: p.length + 1 }, () =>
+      new Array<boolean>(s.length + 1).fill(false),
+    );
+    dp[p.length][s.length] = true;
+    for (let i = p.length; i >= 0; i--) {
+      for (let j = s.length; j >= 0; j--) {
+        if (i === p.length && j === s.length) continue;
+        if (i < p.length && p[i] === '**') {
+          dp[i][j] = dp[i + 1][j] || (j < s.length && dp[i][j + 1]);
+        } else if (i < p.length && j < s.length) {
+          dp[i][j] = refMatch(p[i]!, s[j]!) && dp[i + 1][j + 1];
+        } else {
+          dp[i][j] = false;
+        }
+      }
+    }
+    return dp[0][0];
+  }
+
+  const segKinds = ['a', 'b', '*', '?', '**'];
+  const literals = ['a', 'b'];
+
+  const sequences = (kinds: string[], maxLen: number): string[][] => {
+    const out: string[][] = [];
+    let frontier: string[][] = [[]];
+    for (let len = 1; len <= maxLen; len++) {
+      frontier = frontier.flatMap((seq) => kinds.map((k) => [...seq, k]));
+      out.push(...frontier);
+    }
+    return out;
+  };
+
+  it('globsOverlap(P, Q) === exists path matched by both (exhaustive patterns<=3 segs)', () => {
+    const patterns = sequences(segKinds, 3); // 155 segment sequences
+    const paths = sequences(literals, 6); // 126 literal witness paths
+
+    // Each pattern's language ONCE as a Set of joined paths (not per pair).
+    const langs = new Map<string, Set<string>>(
+      patterns.map((p) => {
+        const key = p.join('/');
+        return [key, new Set(paths.filter((s) => refPathMatch(p, s)).map((s) => s.join('/')))];
+      }),
+    );
+
+    // Non-vacuity: every pattern must match SOME path in the universe — an
+    // empty language would make its rows 'pass' vacuously against false
+    // negatives. ('**' alone matches every path; '?'/'*' segments are
+    // satisfiable by 'a'.)
+    for (const [key, lang] of langs) {
+      expect(lang.size, `pattern ${key} must match something in the universe`).toBeGreaterThan(0);
+    }
+
+    let checked = 0;
+    for (const [pk, plang] of langs) {
+      for (const [qk, qlang] of langs) {
+        const [small, big] = plang.size <= qlang.size ? [plang, qlang] : [qlang, plang];
+        const brute = [...small].some((s) => big.has(s));
+        expect(globsOverlap(pk, qk), `counterexample: ${pk} vs ${qk}`).toBe(brute);
+        checked++;
+      }
+    }
+    // Sanity: this really is the full quadratic, `**` branches included.
+    expect(checked).toBe(patterns.length * patterns.length);
+    // And the named `**` behaviors hold inside the enumerated set.
+    expect(globsOverlap('**/b', 'a/b')).toBe(true); // ** zero-match (matches 'b' itself)
+    expect(globsOverlap('**/a', 'a/b')).toBe(false); // 'a/b' ends in 'b' — no witness
+    expect(globsOverlap('a/**', 'a/b/c')).toBe(true); // ** absorb
+    expect(globsOverlap('a/**/b', 'a/x/y/b')).toBe(true); // ** absorbs several
+    // The witness-length lesson, pinned: two 3-segment '**' patterns whose
+    // common witness needs FOUR segments (a/a/b/a).
+    expect(globsOverlap('a/a/**', '**/b/a')).toBe(true);
   });
 });

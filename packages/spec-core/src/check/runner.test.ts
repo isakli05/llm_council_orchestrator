@@ -479,6 +479,41 @@ describe('runChecks --yes: SEC-004 evidence hardening', () => {
     );
   });
 
+  // T15 rider (TEST-003 carry list): padStart(3) broke lexicographic order at
+  // the 999/1000 boundary ('1000' < '999' as text). The same injected
+  // timestamp 1001 times in a row forces the counter past 999; the file list
+  // (readdir/sort order — how every consumer orders evidence) must stay in
+  // numeric run order across the boundary.
+  it('1001 same-timestamp runs: lexicographic file order stays numeric past seq 999 (T15)', async () => {
+    const root = freshRoot('spec-core-check-seq999-');
+    const bundle = bundleWith({ 'TASK-0001': [{ command: 'echo x', expect: 'exit 0' }] });
+    const { exec } = fakeExec(() => ({ exit: 0, stdout: '', timedOut: false }));
+    const RUNS = 1001;
+    for (let i = 0; i < RUNS; i++) {
+      await runChecks(bundle, root, { task: 'TASK-0001', yes: true, nowIso: NOW, exec });
+    }
+
+    const files = evidenceFilesFor(root, 'TASK-0001'); // sorted lexicographically
+    expect(files).toHaveLength(RUNS);
+    // seq tail: 3-digit historical form, or the x-prefixed overflow form.
+    const seqOf = (f: string): number => {
+      const m = /-(x?\d+)\.json$/.exec(f);
+      if (!m) throw new Error(`unparseable evidence name: ${f}`);
+      return m[1]!.startsWith('x') ? Number(m[1]!.slice(1)) : Number(m[1]);
+    };
+    const seqs = files.map(seqOf);
+    for (let i = 1; i < seqs.length; i++) {
+      expect(seqs[i], `file ${i} (${files[i]}) must follow ${files[i - 1]}`).toBe(seqs[i - 1]! + 1);
+    }
+    // Names up to 999 are byte-identical to the historical form (protected).
+    expect(files[0]).toBe('TASK-0001-check-20260825T120000Z-001.json');
+    expect(files[998]).toBe('TASK-0001-check-20260825T120000Z-999.json');
+    // The 1000th run crosses the boundary: the overflow form sorts AFTER every
+    // 3-digit name (digits sort before 'x' in UTF-16).
+    expect(files[999]).toBe('TASK-0001-check-20260825T120000Z-x001000.json');
+    expect(files[1000]).toBe('TASK-0001-check-20260825T120000Z-x001001.json');
+  }, 180_000);
+
   it('a later run with a DIFFERENT nowIso sorts after the earlier one', async () => {
     const root = freshRoot('spec-core-check-chrono-');
     const bundle = bundleWith({});
@@ -657,7 +692,9 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     expect(result.outcomes.map((o) => o.status)).toEqual(['PASS', 'PASS']);
     expect(result.outcomes[0].durationMs).toBeLessThan(1500); // did not wait for the grandchild
     // Past the grandchild's would-be write time: nothing survived the verdict.
-    await sleep(1600);
+    // (T16 marker margin: 1.2s write + a >=600ms cushion for CI scheduler
+    // jitter — 1600ms was only 400ms and flaked under load.)
+    await sleep(2000);
     expect(existsSync(marker)).toBe(false);
   }, 10_000);
 
@@ -762,7 +799,8 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     });
 
     expect(result.outcomes[0].status).toBe('TIMEOUT'); // verbose output can never PASS
-    await sleep(1800);
+    // T16 marker margin: 1.5s write + >=600ms cushion (1800ms was 300ms).
+    await sleep(2100);
     expect(existsSync(marker)).toBe(false);
   }, 15_000);
 
@@ -799,7 +837,7 @@ describe('execCommand / SEC-005: process-group containment (real processes)', ()
     // Death by our signal ⇒ TIMEOUT classification (T16 semantics preserved).
     expect(result.timedOut).toBe(true);
     expect(result.exit).toBeNull();
-    await sleep(1500); // past the would-be write time: nothing survived
+    await sleep(1800); // T16 marker margin: 1.2s write + >=600ms cushion (was 1500/300ms)
     expect(existsSync(marker)).toBe(false);
     expect(killActiveProcessGroups()).toBe(0); // registry cleaned at settle
   }, 15_000);

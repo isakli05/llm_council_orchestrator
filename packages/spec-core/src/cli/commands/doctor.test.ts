@@ -197,6 +197,31 @@ describe('check: node version', () => {
     expect(result.output).toContain('[node] warn:');
     expect(result.output).toContain('>=24');
   });
+
+  // T22 rider (TEST-003 carry list): the [node] line must say WHERE the floor
+  // came from — package.json (read at the CLI boundary) or the compiled-in
+  // fallback — so a mispublished package is diagnosable from the output alone.
+  it('the [node] detail names the floor SOURCE: fallback when not injected', async () => {
+    const check = checkNodeVersion('v22.0.0'); // direct core call: no injected floor
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain('fallback');
+    expect(check.detail).not.toContain('package.json');
+
+    const root = tmpRoot('floor-src-fallback');
+    const result = await cmdDoctor(root, { ...BASE_OPTS }); // enginesFloor omitted
+    expect(result.output).toMatch(/\[node\] ok: .*fallback/);
+  });
+
+  it('the [node] detail names the floor SOURCE: package.json when injected', async () => {
+    const check = checkNodeVersion('v22.0.0', 22, 'package.json');
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain('package.json');
+    expect(check.detail).not.toContain('fallback');
+
+    const root = tmpRoot('floor-src-pkg');
+    const result = await cmdDoctor(root, { ...BASE_OPTS, enginesFloor: 22 });
+    expect(result.output).toMatch(/\[node\] ok: .*package\.json/);
+  });
 });
 
 describe('engines floor source (review fix 2)', () => {

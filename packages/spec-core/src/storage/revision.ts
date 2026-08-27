@@ -196,7 +196,10 @@ function readHolder(lockPath: string): LockIdentity | null {
  * Staleness is decided ONLY from injected time: the recorded acquiredAt for
  * parseable content, and the file's mtime for unparseable content (covers
  * the microsecond gap between a holder's O_EXCL create and its identity
- * write — such a lock has a fresh mtime and is treated as live).
+ * write — such a lock has a fresh mtime and is treated as live). An age
+ * that cannot be computed (NaN clock, either branch) is UNKNOWN, not stale:
+ * the lock is never broken on a guess (T22 rider — the mtime branch used
+ * to fall through `NaN < staleMs`, which is false, straight to unlink).
  */
 function breakStaleLock(lockPath: string, nowIso: string, staleMs: number): boolean {
   const nowMs = Date.parse(nowIso); // parses the INJECTED clock; never reads one
@@ -213,7 +216,7 @@ function breakStaleLock(lockPath: string, nowIso: string, staleMs: number): bool
       return false; // vanished meanwhile: let the retry loop re-run
     }
   }
-  if (ageMs < staleMs) return false; // live
+  if (Number.isNaN(ageMs) || ageMs < staleMs) return false; // live OR unknown age: never break on a guess
   try {
     unlinkSync(lockPath);
   } catch {
