@@ -1,56 +1,51 @@
-# U2 — History Purge Runbook (PREPARED — NOT EXECUTED)
+# U2 — History Purge (EXECUTED 2026-08-27)
 
 Finding: SEC-001 (HIGH). The exposed key (env var `ZAI_API_KEY`) was committed
-and pushed; `origin/main` history still contains it even after the HEAD-side
-containment. This runbook prepares a `git filter-repo` purge. **It has NOT been
-run.** Execution is USER-gated: run it yourself, at a moment you choose.
+and pushed. Repository-side containment alone left the value reachable in
+`origin/main` history, so the history was rewritten.
 
-No key values appear below; the replacement file is created by you at run time.
+**Status: EXECUTED 2026-08-27.** This document is now the execution record,
+not a runbook. No key values appear below.
 
-## When to run
+## What was executed
 
-Recommended: after the P0 remediation phase merges, so all remediation commits
-land on purged history and a single rewrite covers everything. Every commit
-added after a purge forces repeating the rewrite.
+- `git filter-repo --replace-text` with a replacement file created by the
+  owner at run time (`<exposed-value>==>REDACTED-SEC-001` semantics; the
+  rewritten blobs carry the literal `[REDACTED-SEC-001]`). The replacement
+  file was kept outside the repo and deleted after the rewrite — as of
+  2026-08-27 no `replacements*.txt` exists under `/tmp` (verified by name).
+- All branches and tags were rewritten; every commit SHA downstream of the
+  introducing commit changed. Pre-rewrite SHAs are invalidated — e.g. the old
+  containment commit `9ee0f2c` no longer resolves; its rewritten counterpart
+  is `af8421b`. The rewritten introducing commit is `bf1fd09`, whose
+  `.env.test` line 1 reads `ZAI_API_KEY=[REDACTED-SEC-001]`.
+- `origin` was re-added (`git@github.com:isakli05/llm_council_orchestrator.git`)
+  and `main` + 4 branches were force-pushed.
+- A full pre-purge backup bundle was kept: `/tmp/lco-pre-purge.bundle`
+  (2,562,906 bytes, owner `isa:isa`). It contains the OLD history, including
+  the exposed value. Permission on 2026-08-27 was found `0644` (world-readable)
+  and corrected to `0600` the same day; treat any future copy of this bundle
+  as secret until deleted.
 
-## Steps (executed by USER)
+## Verification (execution day, per REMEDIATION-LOG SEC-001)
 
-1. Install git-filter-repo (outside the repo):
+- Pickaxe for the exposed value: 0 hits.
+- `git grep` of the value across all refs: 0 hits.
+- Force-push confirmed for `main` + 4 branches.
 
-       pip install git-filter-repo
+## Independent re-verification 2026-08-27 (Lane A)
 
-   (or the distro package). Requires a fresh clone or `--force` on a repo with
-   local state — prefer a fresh clone of the full repo.
+Full command/evidence record: `SEC001-VERIFICATION-2026-08-27.md`. Summary:
 
-2. Create a replacements file at run time. You create it interactively and it
-   must contain the actual exposed key value, which this document intentionally
-   does not carry:
-
-       # create replacements.txt with exactly one line of the form:
-       <PASTE-THE-EXPOSED-KEY-VALUE>==>[REDACTED-SEC-001]
-
-   Keep the file outside the repo (e.g. /tmp) and delete it immediately after
-   the rewrite.
-
-3. Run the rewrite from the repo root:
-
-       git filter-repo --replace-text /tmp/replacements.txt
-
-   Effects to expect:
-   - Rewrites ALL branches and tags, changing every commit SHA downstream of
-     the introducing commit.
-   - Removes the `origin` remote as a safety measure — re-add it afterwards:
-
-         git remote add origin <origin-url>
-
-4. Verify locally: `git log -S'<key value prefix>' --all` returns nothing, and
-   `git grep` across all refs finds no copy (search by the value you still have
-   in the replacements file before deleting it).
-
-5. Force-push ALL refs (USER-gated; coordinate with everyone first):
-
-       git push origin --force --all
-       git push origin --force --tags
+- All-rev grep for the marker `REDACTED-SEC-001`: present in rewritten
+  history where the value used to live (`.env.test` across its 44-commit
+  tracked lifetime; `plans-out/PRODUCTION_HARDENING_COMPLETE.md`), confirming
+  the replace-text rewrite is reachable from current refs.
+- All-rev assignment scan (`ZAI_API_KEY[=:]` followed by a 16+ char token):
+  161 hits, all placeholder-shaped (documentation placeholder and
+  `.env.example` template text); zero hexonly/key-shaped values.
+- No `replacements*.txt` or other purge artifact remains under `/tmp` or the
+  repo (name/metadata scan only).
 
 ## Warnings
 
@@ -62,3 +57,12 @@ added after a purge forces repeating the rewrite.
   un-leak the key, and history purge without rotation is theater.
 - Anyone with local work must rebase onto the rewritten history
   (`git fetch && git reset --hard origin/<branch>` or re-clone).
+- The backup bundle at `/tmp/lco-pre-purge.bundle` intentionally preserves
+  the pre-purge history; it must stay `0600` (or be deleted once rotation is
+  attested and the owner accepts the loss of the pre-rewrite record).
+
+## Remaining owner-gated actions
+
+None for U2 itself — executed and re-verified. Separate and still open: the
+U1 provider-console rotation attestation (`U1-KEY-ROTATION.md`), and the
+optional GitHub-side unreachable-object purge via support.

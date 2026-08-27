@@ -8,7 +8,7 @@
 
 Scope notes (what this report does and does NOT establish):
 - mock evidence: the G3 blocked outcomes are scripted plumbing (derived from must_be_blocked), not classification quality; live runs are the classification evidence.
-- mock evidence: the greenfield intent-fidelity passes are CONSTRUCTED (the mock bundles are badged with their task's terms by badgeIntentConstraints), not model-fidelity evidence; live runs are that evidence.
+- mock evidence: the greenfield intent-fidelity passes are CONSTRUCTED (the mock bundles are grounded on their task's frozen constraint trace by groundIntentConstraints), not model-fidelity evidence; live runs are that evidence.
 - mock evidence cannot substantiate G4 — the council-advantage claim is live-only by construction.
 - mock repeats are deterministic-by-construction (scripts cannot vary); the spread columns matter only for live runs.
 
