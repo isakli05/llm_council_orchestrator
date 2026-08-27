@@ -1,4 +1,2 @@
 packages:
-  - "apps/*"
-  - "!apps/vscode_extension"
   - "packages/*"

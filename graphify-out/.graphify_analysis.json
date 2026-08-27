@@ -2757,63 +2757,7 @@
       "degree": 27
     }
   ],
-  "surprises": [
-    {
-      "source": "IndexerConfig",
-      "target": "LogLevel",
-      "source_files": [
-        "apps/indexer/src/main.ts",
-        "packages/shared-config/src/index.ts"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories; bridges separate communities; peripheral node `IndexerConfig` unexpectedly reaches hub `LogLevel`"
-    },
-    {
-      "source": "IndexResult",
-      "target": "ApiError",
-      "source_files": [
-        "apps/orchestrator/src/indexer/types.ts",
-        "packages/shared-types/src/errors.ts"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories; bridges separate communities"
-    },
-    {
-      "source": "AggregationResult",
-      "target": "ApiError",
-      "source_files": [
-        "apps/orchestrator/src/aggregation/types.ts",
-        "packages/shared-types/src/errors.ts"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories; bridges separate communities"
-    },
-    {
-      "source": "ConfigController",
-      "target": "ArchitectConfig",
-      "source_files": [
-        "apps/orchestrator/src/api/ConfigController.ts",
-        "packages/shared-config/src/configLoader.ts"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "references",
-      "why": "connects across different repos/directories; bridges separate communities"
-    },
-    {
-      "source": "Logger",
-      "target": "BaseLogger",
-      "source_files": [
-        "apps/indexer/src/observability/Logger.ts",
-        "packages/shared-utils/src/logger/BaseLogger.ts"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "inherits",
-      "why": "connects across different repos/directories; bridges separate communities"
-    }
-  ],
+  "surprises": [],
   "questions": [
     {
       "type": "bridge_node",
