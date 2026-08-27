@@ -238,6 +238,13 @@ function releaseLock(lockPath: string, identity: LockIdentity): void {
 export interface StagedFile {
   name: string;
   content: unknown;
+  /**
+   * Creation mode for the staged (and, after the rename, live) file — default
+   * is the process default. Evidence files pass 0o600 (SEC-004): output tails
+   * may carry secrets, so they are owner-only from creation; section files
+   * keep the default (they are the shared, committable spec).
+   */
+  mode?: number;
 }
 
 /** The on-disk serialization every spec writer shares (2-space JSON, utf8) —
@@ -262,8 +269,8 @@ function fsyncDir(dir: string): void {
 }
 
 /** Write one file to `path` with exclusive create, fsync before close. */
-function writeTempFile(path: string, content: unknown): void {
-  const fd = openSync(path, 'wx');
+function writeTempFile(path: string, content: unknown, mode?: number): void {
+  const fd = openSync(path, 'wx', mode ?? 0o666);
   try {
     const buf = Buffer.from(serialize(content), 'utf8');
     let offset = 0;
@@ -328,7 +335,8 @@ export function swapFilesAtomically(targetDir: string, files: StagedFile[]): voi
 
   try {
     // --- 1. stage everything (no live file is touched yet) -------------------
-    for (const { name, content } of files) {
+    for (const staged of files) {
+      const { name, content } = staged;
       const temp = join(targetDir, `.${name}.lco-tmp-${suffix}`);
       // Register the temp BEFORE writing it: writeTempFile opens with 'wx'
       // and can fail AFTER the file exists (writeSync ENOSPC mid-buffer,
@@ -336,7 +344,7 @@ export function swapFilesAtomically(targetDir: string, files: StagedFile[]): voi
       // map — an unregistered temp would survive as residue, breaking the
       // byte-identity contract this function promises.
       temps.set(name, temp);
-      writeTempFile(temp, content);
+      writeTempFile(temp, content, staged.mode);
       backups.set(name, backupPathFor(targetDir, name, suffix));
     }
 

@@ -106,19 +106,26 @@ if [ "$VERSION_OUT" != "$EXPECTED_VERSION" ]; then
 fi
 say "lco --help ok (usage on stdout); lco --version ok: $VERSION_OUT (matches installed package.json)"
 
-# --- 5. installed `lco-mcp` initialize handshake ---------------------------------------
-say "== phase 5: lco-mcp initialize handshake over stdio =="
+# --- 5. installed `lco-mcp` initialize handshake + protocol pins ----------------------
+say "== phase 5: lco-mcp handshake over stdio (initialize, notification silence, parse error) =="
 MCP_OUT="$WORK/mcp-initialize.out"
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | run "$LCO_MCP" > "$MCP_OUT"
+# Three lines: a request (must be answered), a VALID notification (must stay
+# SILENT — OPS-001/SEC-006 protocol pins through the packed bin), and a
+# malformed line (must get the id:null -32700 parse error).
+printf '%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"id":7, broken json' | run "$LCO_MCP" > "$MCP_OUT"
 # The server must exit 0 on stdin EOF (set -e already aborts otherwise) and
-# answer with exactly one parseable JSON-RPC response carrying our serverInfo.
+# answer with exactly two parseable JSON-RPC responses: the initialize result
+# carrying our serverInfo, and the parse error with id null.
 node -e '
 const lines = require("node:fs")
   .readFileSync(process.argv[1], "utf8")
   .split("\n")
   .filter((l) => l.trim() !== "");
-if (lines.length !== 1) {
-  console.error("smoke: expected exactly 1 JSON-RPC response line, got " + lines.length + ": " + lines.join(" | "));
+if (lines.length !== 2) {
+  console.error("smoke: expected exactly 2 JSON-RPC response lines (notification must be silent), got " + lines.length + ": " + lines.join(" | "));
   process.exit(1);
 }
 const res = JSON.parse(lines[0]);
@@ -126,7 +133,12 @@ if (res.id !== 1 || res.jsonrpc !== "2.0" || !res.result || res.result.serverInf
   console.error("smoke: bad initialize response: " + lines[0]);
   process.exit(1);
 }
-console.log("smoke: initialize response ok: serverInfo=" + JSON.stringify(res.result.serverInfo));
+const err = JSON.parse(lines[1]);
+if (err.id !== null || err.error?.code !== -32700) {
+  console.error("smoke: bad parse-error response: " + lines[1]);
+  process.exit(1);
+}
+console.log("smoke: initialize ok: serverInfo=" + JSON.stringify(res.result.serverInfo) + "; notification silent; parse error -32700 id null");
 ' "$MCP_OUT"
 
 say "PASS — packed-install smoke: pack -> install -> lco init -> lco-mcp handshake all green"

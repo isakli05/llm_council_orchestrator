@@ -54,7 +54,9 @@ export interface CheckOptions {
  *   TASK-0001\tnode --version\texit 0\t0 → 0\tPASS
  *   summary: 1 pass, 0 fail, 0 dry
  *   (0 timeout, 0 unparseable-expect)
- *   evidence: <dir>/spec/evidence/TASK-0001-check.json      <- only when --yes
+ *   evidence: <dir>/spec/evidence/TASK-0001-check-<RUN>.json <- only when --yes
+ *     (RUN = run-addressed name from the runner: every check run writes a
+ *      NEW immutable 0600 file; reruns never overwrite earlier evidence)
  */
 export async function cmdCheck(dir: string, opts: CheckOptions): Promise<CheckResult> {
   let compiledBundle: SpecBundle;
@@ -80,7 +82,7 @@ export async function cmdCheck(dir: string, opts: CheckOptions): Promise<CheckRe
 
   return {
     code: run.code,
-    output: renderReport(compiledBundle.manifest.project.name, run.outcomes, dir, opts.yes),
+    output: renderReport(compiledBundle.manifest.project.name, run.outcomes, run.evidenceFiles, opts.yes),
   };
 }
 
@@ -88,7 +90,7 @@ export async function cmdCheck(dir: string, opts: CheckOptions): Promise<CheckRe
 function renderReport(
   projectName: string,
   outcomes: CheckOutcome[],
-  dir: string,
+  evidenceFiles: string[],
   yes: boolean,
 ): string {
   const lines: string[] = [];
@@ -109,13 +111,10 @@ function renderReport(
   lines.push(`summary: ${pass} pass, ${fail} fail, ${dry} dry`);
   lines.push(`(${timeouts} timeout, ${unparseable} unparseable-expect)`);
 
-  if (yes && outcomes.length > 0) {
-    // Under --yes every outcome belongs to an executed/skipped check whose
-    // task got an evidence file — name them so the trail is copy-pasteable.
-    const files = [...new Set(outcomes.map((o) => o.taskId))].map(
-      (taskId) => `${dir}/spec/evidence/${taskId}-check.json`,
-    );
-    lines.push(`evidence: ${files.join(', ')}`);
+  if (yes && evidenceFiles.length > 0) {
+    // The run-addressed files the runner actually wrote this run — the trail
+    // is copy-pasteable and points at THIS run's evidence, never a stale name.
+    lines.push(`evidence: ${evidenceFiles.join(', ')}`);
   }
   return lines.join('\n');
 }

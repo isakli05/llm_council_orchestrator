@@ -5,7 +5,19 @@ export type SpecState = z.infer<typeof SpecStateSchema>;
 
 export const ImpactLevelSchema = z.enum(['low', 'medium', 'high']);
 
-export const ComplexityProfileSchema = z.enum(['p-mini', 'p-standard', 'p-legacy', 'p-critical']);
+/**
+ * Selectable profiles are p-mini and p-standard (the only values init/generate
+ * accept). p-legacy and p-critical are EXPERIMENTAL, schema-only declarations
+ * (PROD-005): no transformation or verification semantics attach to them, and
+ * no generator can select them — a p-legacy spec is hand-authored JSON.
+ */
+export const ComplexityProfileSchema = z
+  .enum(['p-mini', 'p-standard', 'p-legacy', 'p-critical'])
+  .describe(
+    'complexity profile; p-mini and p-standard are the selectable profiles — ' +
+      'p-legacy and p-critical are EXPERIMENTAL schema-only declarations with no ' +
+      'attached semantics; generate/init cannot select them',
+  );
 export type ComplexityProfile = z.infer<typeof ComplexityProfileSchema>;
 
 export const Sha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/);

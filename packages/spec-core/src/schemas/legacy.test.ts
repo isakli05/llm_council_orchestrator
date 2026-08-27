@@ -25,11 +25,19 @@ describe('LegacyPackageSchema', () => {
       })).toBeTruthy();
     }
   });
-  it('accepts an empty object (schema optional; p-legacy obligation is derived elsewhere)', () => {
-    expect(LegacyPackageSchema.parse({})).toBeTruthy();
+  it('rejects an empty legacy block: presence requires the COMPLETE package (PROD-005 strict-when-present)', () => {
+    // The audit's failure scenario: hand-author `legacy: {}` and get a
+    // schema-valid meaningless package. An empty block is noise — absence is
+    // the only "no legacy package" spelling.
+    expect(() => LegacyPackageSchema.parse({})).toThrow();
   });
-  it('accepts partial package with only as_is_summary', () => {
-    expect(LegacyPackageSchema.parse({ as_is_summary: 'x' })).toBeTruthy();
+  it('rejects a partial package (as_is_summary alone)', () => {
+    expect(() => LegacyPackageSchema.parse({ as_is_summary: 'x' })).toThrow();
+  });
+  it('rejects a partial package (preserve_change_drop alone, no as_is_summary)', () => {
+    expect(() => LegacyPackageSchema.parse({
+      preserve_change_drop: validLegacy.preserve_change_drop,
+    })).toThrow();
   });
   it('still validates present fields: empty preserve_change_drop rejected (fail-closed)', () => {
     expect(() => LegacyPackageSchema.parse({ ...validLegacy, preserve_change_drop: [] })).toThrow();

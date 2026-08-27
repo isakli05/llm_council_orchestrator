@@ -1,15 +1,22 @@
 import { z } from 'zod';
 import { ComplexityProfileSchema, Sha256Schema, SpecStateSchema } from './common';
+import { SpecSchemaVersionFieldSchema } from './version';
 
 export const ManifestSchema = z
   .object({
-    spec_schema: z.literal('lco-spec/1.0'),
+    spec_schema: SpecSchemaVersionFieldSchema,
     /** 1'den başlar, changeset ++ eder */
     spec_version: z.number().int().positive(),
     project: z
       .object({
         name: z.string().min(1),
-        mode: z.enum(['greenfield', 'legacy']),
+        mode: z
+          .enum(['greenfield', 'legacy'])
+          .describe(
+            "project mode; 'legacy' is EXPERIMENTAL and schema-only — no transformation " +
+              'semantics exist, the only path to a legacy spec is hand-authored JSON, and ' +
+              'generate/init cannot select it',
+          ),
       })
       .strict(),
     complexity_profile: ComplexityProfileSchema,

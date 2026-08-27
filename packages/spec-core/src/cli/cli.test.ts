@@ -245,6 +245,16 @@ describe('runCli: help and version (UX-002)', () => {
     expect(stderr()).toContain('unknown command');
   });
 
+  it('--help labels p-legacy EXPERIMENTAL schema-only and never selectable (PROD-005)', async () => {
+    // The audit finding: nothing may imply p-legacy is a usable capability.
+    // The overview help must say plainly what it is (experimental, schema-only,
+    // hand-authored-only) and that generate/init cannot select it.
+    await expect(runCli(['--help'])).resolves.toBe(0);
+    expect(stdout()).toContain('p-legacy');
+    expect(stdout()).toContain('EXPERIMENTAL');
+    expect(stdout()).toMatch(/schema-only/i);
+  });
+
   it('unknown flag on a known command stays a usage error -> exit 2', async () => {
     await expect(runCli(['init', '/tmp/lco-never-written', '--halp'])).resolves.toBe(2);
     expect(stderr()).toContain('unexpected argument');
@@ -471,6 +481,17 @@ describe('runCli init', () => {
     tmpDirs.push(root);
 
     await expect(runCli(['init', root, '--profile', 'p-huge'])).resolves.toBe(2);
+    expect(stderr()).toContain('p-mini or p-standard');
+    expect(existsSync(join(root, 'spec'))).toBe(false);
+  });
+
+  it("p-legacy is NOT selectable from init (EXPERIMENTAL schema-only, PROD-005)", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'spec-core-cli-init-nolegacy-'));
+    tmpDirs.push(root);
+
+    // The profile exists in the SCHEMA enum only; selecting it from the CLI
+    // must stay a usage error — the CLI must never imply it is usable.
+    await expect(runCli(['init', root, '--profile', 'p-legacy'])).resolves.toBe(2);
     expect(stderr()).toContain('p-mini or p-standard');
     expect(existsSync(join(root, 'spec'))).toBe(false);
   });

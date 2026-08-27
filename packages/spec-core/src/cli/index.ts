@@ -77,7 +77,9 @@ commands:
                                and its exit code is compared to the first 'exit N' in the
                                expect description — an expect without a judgeable 'exit N'
                                is UNPARSEABLE-EXPECT and is never executed (fail-closed).
-                               Evidence per task: spec/evidence/<TASK-ID>-check.json.
+                               Evidence per task: spec/evidence/<TASK-ID>-check-<RUN>.json
+                               (run-addressed, immutable, mode 0600; reruns never overwrite
+                               earlier evidence; output tails are redacted best-effort).
                                Exit 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE
   generate <dir> --intent <text> | --intent-file <path>
                                [--variant single|council] [--profile p-mini|p-standard]
@@ -121,6 +123,15 @@ changeset template (all three lists are optional; patch keys are strict — typo
         "evidence": ["E-0001"], "acceptance_refs": ["TST-0001"] }
     ]
   }
+
+profiles: p-mini and p-standard are the only selectable profiles. The schema's
+  p-legacy (and p-critical) are EXPERIMENTAL, schema-only declarations: no
+  transformation semantics exist, generate/init cannot select them, and the
+  only path to a legacy spec is a hand-authored COMPLETE spec/legacy.json
+  (an empty or partial legacy block is a schema error). Schema version
+  policy: a spec/manifest.json spec_schema other than 'lco-spec/1.0' is
+  rejected with a distinct error naming the fix — see the README section
+  "Şema Sürümü ve Uyumluluk Politikası (lco-spec/1.x)"
 
 exit codes: 0 success, 1 lint/freeze/drift/check/gate failure, 2 usage or schema error`;
 

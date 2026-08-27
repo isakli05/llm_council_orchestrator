@@ -10,8 +10,9 @@ import { ContractSchema } from './contracts';
 import { TaskContractSchema } from './tasks';
 import { LegacyPackageSchema } from './legacy';
 
-export const SPEC_SCHEMA_VERSION = 'lco-spec/1.0' as const;
-
+// SPEC_SCHEMA_VERSION and the version policy live in ./version (PROD-005):
+// the single place the literal exists; re-exported here for the public API.
+export * from './version';
 export * from './common';
 export * from './manifest';
 export * from './intent';

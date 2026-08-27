@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { handleRpcLine } from './server';
-import { generateConsentDigest } from './consent';
+import { generateConsentDigest, EXEC_ROOT_ENV } from './consent';
 import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 
 const FIXTURES = join(__dirname, '../../fixtures');
@@ -443,6 +444,114 @@ describe('handleRpcLine: protocol errors', () => {
   it('request missing a method -> -32600 invalid request', async () => {
     const res = await rpc('{"jsonrpc":"2.0","id":5,"params":{}}');
     expect(res.id).toBe(5);
+    expect(res.error.code).toBe(-32600);
+  });
+});
+
+// --- SEC-006: full JSON-RPC 2.0 envelope validation (conformance battery) ----------
+//
+// The audit's confirmed defects were the RED cases here: a "1.0" runtime
+// version was ACCEPTED (and dispatched), an object id was ECHOED, and params /
+// unknown fields / batches were never considered. Every case below pins the
+// envelope gate BEFORE dispatch — a nonconformant envelope must never reach a
+// tool, and an invalid id must never be reflected back (amplification).
+
+describe('handleRpcLine: JSON-RPC 2.0 envelope conformance (SEC-006)', () => {
+  it('jsonrpc MUST be exactly "2.0": "1.0" is refused, never dispatched (-32600)', async () => {
+    const res = await rpc('{"jsonrpc":"1.0","id":1,"method":"initialize","params":{}}');
+    expect(res.id).toBe(1);
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('2.0');
+  });
+
+  it('missing jsonrpc field is refused (-32600), not silently treated as 2.0', async () => {
+    const res = await rpc('{"id":2,"method":"initialize","params":{}}');
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('jsonrpc');
+  });
+
+  it('jsonrpc as a NUMBER (2.0) is refused — the field is the string "2.0"', async () => {
+    const res = await rpc('{"jsonrpc":2.0,"id":3,"method":"tools/list"}');
+    expect(res.error.code).toBe(-32600);
+  });
+
+  it('OBJECT id is refused (-32600) and NEVER echoed: the response id is null', async () => {
+    const evil = { inject: 'amplify-me' };
+    const res = await rpc(
+      `{"jsonrpc":"2.0","id":${JSON.stringify(evil)},"method":"initialize","params":{}}`,
+    );
+    expect(res.error.code).toBe(-32600);
+    expect(res.id).toBeNull(); // the object is not echoed
+    expect(JSON.stringify(res)).not.toContain('amplify-me');
+  });
+
+  it('ARRAY id and BOOLEAN id are refused (-32600), id null, never echoed', async () => {
+    const arr = await rpc('{"jsonrpc":"2.0","id":[1,2],"method":"initialize","params":{}}');
+    expect(arr.error.code).toBe(-32600);
+    expect(arr.id).toBeNull();
+
+    const bool = await rpc('{"jsonrpc":"2.0","id":true,"method":"initialize","params":{}}');
+    expect(bool.error.code).toBe(-32600);
+    expect(bool.id).toBeNull();
+  });
+
+  it('valid id types pass the gate: string, integer, and explicit null are echoed', async () => {
+    const str = await rpc('{"jsonrpc":"2.0","id":"abc","method":"tools/list"}');
+    expect(str.id).toBe('abc');
+    expect(str.result).toBeTruthy();
+
+    const float = await rpc('{"jsonrpc":"2.0","id":1.5,"method":"tools/list"}');
+    expect(float.id).toBe(1.5);
+    expect(float.result).toBeTruthy();
+
+    const nil = await rpc('{"jsonrpc":"2.0","id":null,"method":"tools/list"}');
+    expect(nil.id).toBeNull();
+    expect(nil.result).toBeTruthy();
+  });
+
+  it('params must be an OBJECT when present (MCP named-parameters stance): array/string -> -32600', async () => {
+    const arr = await rpc('{"jsonrpc":"2.0","id":7,"method":"initialize","params":[1,2]}');
+    expect(arr.error.code).toBe(-32600);
+    expect(arr.error.message).toContain('params');
+
+    const str = await rpc('{"jsonrpc":"2.0","id":8,"method":"initialize","params":"x"}');
+    expect(str.error.code).toBe(-32600);
+  });
+
+  it('unknown top-level envelope fields are refused (-32600), never ignored', async () => {
+    const res = await rpc('{"jsonrpc":"2.0","id":9,"method":"initialize","params":{},"extra":1}');
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('extra');
+  });
+
+  it('batches are refused with a SINGLE invalid-request error naming the no-batch stance', async () => {
+    const res = await rpc(
+      '[{"jsonrpc":"2.0","id":1,"method":"initialize"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]',
+    );
+    expect(res.id).toBeNull();
+    expect(res.error.code).toBe(-32600);
+    expect(res.error.message).toContain('batch');
+  });
+
+  it('invalid envelope WITHOUT an id still gets the id:null error (only VALID notifications are silent)', async () => {
+    // A notification (silent) requires a VALID envelope; this one has no method.
+    const res = await rpc('{"jsonrpc":"2.0","params":{}}');
+    expect(res.id).toBeNull();
+    expect(res.error.code).toBe(-32600);
+  });
+
+  it('a VALID notification stays silent — unknown method, no id -> null', async () => {
+    expect(await handleRpcLine('{"jsonrpc":"2.0","method":"resources/list"}')).toBeNull();
+  });
+
+  it('notifications/* WITH an id stays silent (documented convention, pinned)', async () => {
+    expect(
+      await handleRpcLine('{"jsonrpc":"2.0","id":5,"method":"notifications/initialized"}'),
+    ).toBeNull();
+  });
+
+  it('empty-string method with an id -> -32600', async () => {
+    const res = await rpc('{"jsonrpc":"2.0","id":11,"method":"","params":{}}');
     expect(res.error.code).toBe(-32600);
   });
 });
@@ -1418,7 +1527,11 @@ describe('handleRpcLine: lco_check execution consent (SEC-002)', () => {
     expect(res.result.isError).toBe(false);
     expect(res.result.content[0].text).toContain('PASS');
     expect(existsSync(join(root, 'EXECUTED.txt'))).toBe(true);
-    expect(existsSync(join(root, 'spec', 'evidence', 'TASK-0001-check.json'))).toBe(true);
+    // SEC-004: run-addressed immutable evidence (never the overwritten name).
+    const evidence = readdirSync(join(root, 'spec', 'evidence')).filter((f) =>
+      f.startsWith('TASK-0001-check-'),
+    );
+    expect(evidence).toHaveLength(1);
   });
 
   it('consent digest binds the task selection: an all-tasks digest does not authorize a --task run', async () => {
@@ -1471,8 +1584,12 @@ describe('handleRpcLine: lco_check execution consent (SEC-002)', () => {
     );
 
     expect(res.result.isError).toBe(false); // unpinned: full chain executes
-    expect(pinned.result.isError).toBe(true); // pinned elsewhere: refused
-    expect(pinned.result.content[0].text).toContain('LCO_MCP_EXEC_ROOT');
+    // pinned elsewhere: refused. SEC-003 moved the refusal UP to the dir
+    // policy at the server boundary — a pin that does not resolve fails
+    // closed as -32602 before the tool core (or the consent gate) ever runs.
+    expect(pinned.error).toBeDefined();
+    expect(pinned.error.code).toBe(-32602);
+    expect(pinned.error.message).toContain('LCO_MCP_EXEC_ROOT');
   });
 
   it('every consent refusal stays off stdout (purity) and off the crash path', async () => {
@@ -1574,9 +1691,13 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () =
       expect(text).toMatch(/printenv LCO_MCP_ALLOW_EXEC\t.*\t1 → 1\tPASS/);
       expect(text).toMatch(/printenv PATH\t.*\t0 → 0\tPASS/);
       // The server's own secret never reached the children — and the evidence
-      // file records the judged outcome for the audit trail.
+      // file records the judged outcome for the audit trail (run-addressed
+      // name since SEC-004; the server's own secret stays redacted/absent).
+      const evidenceDir = join(root, 'spec', 'evidence');
+      const evidenceName = readdirSync(evidenceDir).find((f) => f.startsWith('TASK-0001-check-'));
+      expect(evidenceName).toBeDefined();
       const evidence = JSON.parse(
-        readFileSync(join(root, 'spec', 'evidence', 'TASK-0001-check.json'), 'utf8'),
+        readFileSync(join(evidenceDir, evidenceName!), 'utf8'),
       ) as Record<string, any>;
       expect(evidence.checks).toHaveLength(2);
       expect(evidence.checks.every((c: any) => c.status === 'PASS')).toBe(true);
@@ -1584,6 +1705,99 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () =
     },
     30_000,
   );
+});
+
+// --- integration: OPS-001 graceful EPIPE over real stdio ---------------------------
+//
+// Spawn the BUILT server, start a REAL execution (consent chain, `sleep`)
+// and kill the client's read end mid-run. The server must: (1) keep serving
+// the in-flight mutation to completion (bounded drain), (2) exit NONZERO
+// (work/responses were abandoned mid-stream — never the old exit 0), (3)
+// leave every stdout line it did deliver complete and parseable (no torn
+// writes). A second scenario pins the fast path: EPIPE with nothing truly
+// in flight still exits nonzero.
+
+describe('integration: spawn dist/mcp/server.js — EPIPE (OPS-001)', () => {
+  it(
+    'client dies mid-check-execution: server waits for the work, then exits nonzero; delivered lines all parse',
+    async () => {
+      const serverJs = join(__dirname, '../../dist/mcp/server.js');
+      if (!existsSync(serverJs)) {
+        throw new Error('dist/mcp/server.js not found — run the build first (fail-closed)');
+      }
+      const root = makeSpecRoot(
+        inlineWithVerification([{ command: 'sleep 2', expect: 'exit 0' }]),
+      );
+      const frozen = await rpc(
+        `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_freeze","arguments":{"dir":${JSON.stringify(root)}}}}`,
+        { allowExec: true },
+      );
+      expect(frozen.result.isError).toBe(false);
+      const dry = await rpc(
+        `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify({ dir: root })}}}`,
+        { allowExec: true },
+      );
+      const digest = digestFromDry(dry.result.content[0].text);
+
+      const child = spawn(process.execPath, [serverJs], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, LCO_MCP_ALLOW_EXEC: '1' },
+      });
+      const delivered: Buffer[] = [];
+      child.stdout.on('data', (c: Buffer) => delivered.push(c));
+      child.stderr.on('data', () => {});
+      child.stdin.write(
+        `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lco_check","arguments":${JSON.stringify(
+          { dir: root, consent: { digest } },
+        )}}}\n`,
+      );
+      // The execution is now in flight (the sleep runs ~2s). Kill the read
+      // end of the server's stdout — its response write will EPIPE.
+      child.stdout.destroy();
+
+      // The server must NOT exit while the check still runs (graceful drain),
+      // and must NOT exit 0 afterwards (work was abandoned mid-stream).
+      const exited = new Promise<number | null>((resolveExit) => {
+        child.on('close', (code: number | null) => resolveExit(code));
+      });
+      // At 0.7s the 2s sleep is still running: the process must still be alive.
+      await new Promise((r) => setTimeout(r, 700));
+      expect(child.exitCode).toBeNull(); // still draining in-flight work
+      expect(child.killed).toBe(false);
+
+      const code = await exited;
+      // The documented client-gone code: work was abandoned mid-stream.
+      expect(code).toBe(3); // EXIT_CLIENT_GONE — never the old silent 0
+      // No torn writes: every complete stdout line delivered before the pipe
+      // died parses as JSON-RPC.
+      const text = Buffer.concat(delivered).toString('utf8');
+      const lines = text.split('\n').filter((l) => l.trim() !== '');
+      for (const line of lines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+    },
+    30_000,
+  );
+
+  it('EPIPE with no work left: exits nonzero immediately (never the old silent 0)', async () => {
+    const serverJs = join(__dirname, '../../dist/mcp/server.js');
+    if (!existsSync(serverJs)) {
+      throw new Error('dist/mcp/server.js not found — run the build first (fail-closed)');
+    }
+    const child = spawn(process.execPath, [serverJs], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    child.stderr.on('data', () => {});
+    child.stdin.write('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n');
+    // Let the first response flush, then kill the read end; the response to
+    // the SECOND request writes into the dead pipe -> EPIPE -> nonzero exit.
+    await new Promise((r) => setTimeout(r, 300));
+    child.stdout.destroy();
+    child.stdin.write('{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
+    child.stdin.end();
+    const [code] = await once(child, 'close');
+    expect(code).toBe(3); // EXIT_CLIENT_GONE, immediately — nothing to drain
+  }, 15_000);
 });
 
 // --- integration: spawn with LCO_MCP_ALLOW_GENERATE=1 but NO LCO_LLM_* env ----------
@@ -1654,4 +1868,91 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_GENERATE=1', 
     },
     30_000,
   );
+});
+
+// --- SEC-003: dir argument policy at the server boundary ----------------------------
+//
+// Every tool's `dir` is REALPATH-NORMALIZED before the core runs (a root
+// reached through symlinked parents works), and when the operator pinned the
+// server with LCO_MCP_EXEC_ROOT the dir must RESOLVE inside the pin — the pin
+// now governs every tool's workspace, not only execution consent.
+
+describe('tools/call: MCP dir policy (SEC-003)', () => {
+  it('dir reached through a symlinked parent is normalized and the tool still works', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const holder = freshRoot('spec-core-mcp-dirlink-');
+    const link = join(holder, 'workspace');
+    symlinkSync(root, link);
+
+    const res = await callTool('lco_compile', { dir: link });
+    expect(res.result.isError).toBe(false);
+    expect(text(res)).toContain('compiled');
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + dir inside the pin -> accepted', async () => {
+    const pin = freshRoot('spec-core-mcp-pin-');
+    const root = makeSpecRoot(inlineConforming());
+    rmSync(root, { recursive: true, force: true });
+    // Rebuild the spec INSIDE the pin.
+    const inside = join(pin, 'work');
+    mkdirSync(inside);
+    const spec = join(inside, 'spec');
+    mkdirSync(spec);
+    const bundle = inlineConforming();
+    for (const name of [...SECTION_FILES, 'legacy'] as const) {
+      if (bundle[name] === undefined) continue;
+      writeFileSync(join(spec, `${name}.json`), JSON.stringify(bundle[name], null, 2));
+    }
+
+    const res = await callTool('lco_compile', { dir: inside }, { env: { [EXEC_ROOT_ENV]: pin } });
+    expect(res.result.isError).toBe(false);
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + dir OUTSIDE the pin -> -32602 naming the pin (every tool)', async () => {
+    const pin = freshRoot('spec-core-mcp-pin2-');
+    const root = makeSpecRoot(inlineConforming());
+
+    const res = await callTool('lco_compile', { dir: root }, { env: { [EXEC_ROOT_ENV]: pin } });
+    expect(res.error).toBeDefined();
+    expect(res.error.code).toBe(-32602);
+    expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + dir escaping the pin THROUGH A SYMLINK -> -32602 (realpath, not prefix)', async () => {
+    const pin = freshRoot('spec-core-mcp-pin3-');
+    const elsewhere = freshRoot('spec-core-mcp-elsewhere-');
+    symlinkSync(elsewhere, join(pin, 'escape')); // lexical: pin/escape — resolves: elsewhere
+
+    const res = await callTool('lco_compile', { dir: join(pin, 'escape') }, { env: { [EXEC_ROOT_ENV]: pin } });
+    expect(res.error).toBeDefined();
+    expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('LCO_MCP_EXEC_ROOT set + not-yet-existing dir INSIDE the pin -> accepted (init/generate creation path)', async () => {
+    const pin = freshRoot('spec-core-mcp-pin4-');
+    const res = await callTool(
+      'lco_init',
+      { dir: join(pin, 'fresh'), profile: 'p-mini', name: 'mcp-app' },
+      { env: { [EXEC_ROOT_ENV]: pin } },
+    );
+    expect(res.result.isError).toBe(false);
+    expect(existsSync(join(pin, 'fresh', 'spec'))).toBe(true);
+  });
+
+  it('LCO_MCP_EXEC_ROOT set but the pin path does not exist -> fail closed (-32602)', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const res = await callTool(
+      'lco_compile',
+      { dir: root },
+      { env: { [EXEC_ROOT_ENV]: join(tmpdir(), 'lco-no-such-pin-xyz') } },
+    );
+    expect(res.error).toBeDefined();
+    expect(res.error.message).toContain('LCO_MCP_EXEC_ROOT');
+  });
+
+  it('no pin: a dir outside any workspace still works (local-trust boundary documented in README)', async () => {
+    const root = makeSpecRoot(inlineConforming());
+    const res = await callTool('lco_compile', { dir: root });
+    expect(res.result.isError).toBe(false);
+  });
 });

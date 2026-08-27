@@ -9,7 +9,8 @@
           "properties": {
             "spec_schema": {
               "type": "string",
-              "const": "lco-spec/1.0"
+              "const": "lco-spec/1.0",
+              "description": "schema version this tree was written for; this compiler reads 'lco-spec/1.0' (1.x is read-compatible: newer compilers read older 1.x frozen trees; a different major is a read break and its migration tool ships with that major, not before it)"
             },
             "spec_version": {
               "type": "integer",
@@ -27,7 +28,8 @@
                   "enum": [
                     "greenfield",
                     "legacy"
-                  ]
+                  ],
+                  "description": "project mode; 'legacy' is EXPERIMENTAL and schema-only — no transformation semantics exist, the only path to a legacy spec is hand-authored JSON, and generate/init cannot select it"
                 }
               },
               "required": [
@@ -43,7 +45,8 @@
                 "p-standard",
                 "p-legacy",
                 "p-critical"
-              ]
+              ],
+              "description": "complexity profile; p-mini and p-standard are the selectable profiles — p-legacy and p-critical are EXPERIMENTAL schema-only declarations with no attached semantics; generate/init cannot select them"
             },
             "evidence_snapshot": {
               "type": "object",
@@ -726,7 +729,12 @@
               "minItems": 1
             }
           },
-          "additionalProperties": false
+          "required": [
+            "as_is_summary",
+            "preserve_change_drop"
+          ],
+          "additionalProperties": false,
+          "description": "EXPERIMENTAL schema-only legacy package (no transformation semantics; hand-authored JSON is the only path). Strict-when-present: if present it must be COMPLETE — an empty or partial block is a schema error; omit the block entirely for a non-legacy spec"
         }
       },
       "required": [

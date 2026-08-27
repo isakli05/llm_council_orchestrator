@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (936 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe)
+pnpm --filter ./packages/spec-core test    # vitest (1078 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe, yayın kapısı)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -44,11 +44,15 @@ sessizce atlanmaz, `run pnpm --filter ./packages/spec-core build before test` me
 artefakt testi ve CI'ı düşürür. Yeniden üretim: `pnpm --filter ./packages/spec-core build`
 sonra `git add packages/spec-core/generated && git commit`.
 
-**Publishing (maintainer):** paket npm'de `lco-spec` adıyla yayımlanır:
-`packages/spec-core` içinde `npm login` sonrası `npm publish`. `prepublishOnly`
-`pnpm run test` çağırır; `pretest` temizleyip derler (tek build, çift derleme yok) —
-PATH'te pnpm gerektirir. Yayınlama bir
-**kullanıcı eylemidir** — bu depodan otomatik publish yapılmaz.
+**Publishing (maintainer):** paket npm'de `lco-spec` adıyla yayımlanır. Tercih
+edilen akış **CI'dır** (bkz. ["Yayın ve Sahiplik"](#yayın-ve-sahiplik-p2-6)):
+etiketleyip `publish-spec-core` iş akımını çalıştır — `dry_run` girdisi
+**varsayılan olarak true**'dur, yani iş akımı tek başına asla yayımlamaz.
+Yerel yayın da aynı kapıya takılır: `prepublishOnly` =
+`pnpm run test && node scripts/prepublish-check.js` — kirli çalışma ağacı,
+etiketsiz HEAD veya etiket↔sürüm uyuşmazlığı REDDEDİLİR (`pretest` temizleyip
+derler, tek build — PATH'te pnpm gerektirir). Yayınlama bir
+**kullanıcı eylemidir** (U4) — bu depodan otomatik publish yapılmaz.
 
 ## CLI: `lco`
 
@@ -277,14 +281,14 @@ TASK-0001	node --version	exit 0	0 → 0	PASS
 TASK-0002	node --version	exit 0	0 → 0	PASS
 summary: 2 pass, 0 fail, 0 dry
 (0 timeout, 0 unparseable-expect)
-evidence: /tmp/lco-tour/spec/evidence/TASK-0001-check.json, /tmp/lco-tour/spec/evidence/TASK-0002-check.json
+evidence: /tmp/lco-tour/spec/evidence/TASK-0001-check-20260825T170456Z-001.json, /tmp/lco-tour/spec/evidence/TASK-0002-check-20260825T170456Z-001.json
 # exit 0
 ```
 
-Kanıt dosyası (görev başına biri; `--yes` altında yazılır):
+Kanıt dosyası (koşum başına YENİ bir dosya; `--yes` altında yazılır — SEC-004):
 
 ```sh
-$ cat /tmp/lco-tour/spec/evidence/TASK-0001-check.json
+$ cat /tmp/lco-tour/spec/evidence/TASK-0001-check-20260825T170456Z-001.json
 {
   "task_id": "TASK-0001",
   "checkedAt": "2026-08-25T17:04:56.607Z",
@@ -311,29 +315,76 @@ modeli bağlayıcıdır:
   `DRY`, çıkış 0, diske hiçbir şey yazılmaz (`spec/evidence/` dizini bile oluşmaz).
   Tablo, `--yes` altında neyin koşacağının önizlemesidir.
 - **`--yes` açık onaydır.** Komutlar yalnız operatörün açık bayrağıyla yürütülür:
-  cwd spec köküdür, komut başına `--timeout-ms` (varsayılan 60000 ms) sonunda süreç
-  öldürülür.
+  cwd spec köküdür, komut başına `--timeout-ms` (varsayılan 60000 ms) sonunda
+  komutun İZOLE process group'unun TAMAMI öldürülür (SEC-005; aşağıdaki
+  "Yürütme izolasyonu" notuna bakın).
 - **Fail-closed yargı.** Beklenen çıkış kodu, `expect` açıklamasındaki İLK `exit N`
   eşleşmesidir. `exit N` bulunamayan expect → `UNPARSEABLE-EXPECT`: komut **hiç
   koşulmaz** ve başarısız sayılır (çıkış 1). Yargılanamayan bir şeyi koşmak başarı
   tiyatrosu olurdu.
-- **Kanıt dosyaları.** `--yes` altında görev başına `spec/evidence/<TASK-ID>-check.json`
-  yazılır: `{task_id, checkedAt, checks:[…]}` — her komut için
-  command/expect/expectedExit/actualExit/status/durationMs/outputTail (birleşik
+- **Kanıt dosyaları (SEC-004 ile sertleştirildi).** `--yes` altında görev başına,
+  KOŞUM başına YENİ bir dosya yazılır: `spec/evidence/<TASK-ID>-check-<RUN>.json`
+  (`{task_id, checkedAt, checks:[…]}` — her komut için
+  command/expect/expectedExit/actualExit/status/durationMs/outputTail; birleşik
   stdout+stderr'nin son 500 karakteri). Atlanan (`UNPARSEABLE-EXPECT`) girdiler de
   kayda girer: dosya `--yes`'in ne yaptığının **ve** neyi atladığının denetim izidir.
+  Sertleştirme:
+  - **Run-addressed + immutable:** `<RUN>`, enjekte edilen `nowIso` + task id +
+    çarpışma sayacından üretilen deterministik bir koşum kimliğidir. Her koşum
+    YENİ bir dosya yazar — sonraki bir koşum öncekinin izini ASLA ezmez (geç bir
+    PASS, erken bir FAIL'in kaydını silemez).
+  - **Mod 0600:** kanıt dosyaları yalnız sahibince okunur (çıktı kuyrukları sır
+    taşıyabilir — aşağıdaki redaksiyon notuna bakın).
+  - **Redaksiyon (en iyi çaba, garanti DEĞİL):** yakalanan çıktı kalıcı hale
+    gelmeden ÖNCE bilinen gizli desenlerden geçer — bearer token'lar, `sk-`/`zai-`
+    önekli API anahtarları, `PASSWORD=`/`TOKEN=` tarzı atamalar ve JWT şekilleri
+    `[REDACTED:<tür>]` ile değiştirilir. Eşleştirme kasıtlı olarak muhafazakârdır
+    (olağan test çıktısını bozmaz); bu EN İYİ ÇABA'dır, garanti değildir — başka
+    şekilde yazılmış bir sır değiştirilmeden kalır.
+  - **Retention/commit önerisi (dürüst):** kanıt dosyaları redaksiyondan sonra
+    bile hassas kuyruklar taşıyabilir. Repoya commitlemeden önce gözden geçirin
+    ya da `spec/evidence/` için gitignore deseni kullanın:
+    `printf 'spec/evidence/\n' >> .gitignore`. Denetim izini repoda tutmak
+    istiyorsanız commit öncesi insan incelemesini süreçlerinize ekleyin.
+- **Yol güvenliği (SEC-003).** Spec kökü realpath ile çözülür; sabit bölüm
+  yolları (`spec/<bölüm>.json`) ve `spec/evidence` dizini çözülen kökün İÇİNDE
+  kalmak zorundadır (realpath karşılaştırması; önek-dizgesi karşılaştırması
+  değil). Okuma kapısı derleme (compile) sınırındadır: kökün dışına çözülen
+  sembolik bağlantılı bir bölüm veya `spec/` dizini derleme hatası olarak
+  reddedilir; kökün içinde kalan bağlantılar yasal kalır (meşru reorganizasyon).
+  Yazma tarafı daha katıdır: `spec/`, `spec/evidence` veya bir bölüm dosyası
+  sembolik bağlantıysa yazma, bağlantıyı ADLANDIRAN yapılandırılmış bir hatayla
+  reddedilir — yazılar asla bağlantıyı takip etmez. (POSIX hedeflenir; Windows
+  junction davranışı kapsam dışıdır.) Bilinen kalıntı (TOCTOU): takip-etmeyen
+  yazma kapısı denetle-sonra-yaz biçiminde çalışır — kapı ile staging/rename
+  arasında bir ara dizin bileşenini (ör. `spec/evidence`) sembolik bağla
+  değiştiren YARIŞAN bir yerel yazıcı yazmayı başka bir yere yönlendirebilir;
+  bu tehdit modelinin dışındadır (statik ağaçlar ve önceden yerleştirilmiş
+  bağlar kapsanır; ağaca eşzamanlı yazma erişimi olan bir saldırgan kapsanmaz)
+  ve Node'da dirfd/O_NOFOLLOW API'leri olmadan taşınabilir biçimde
+  kapatılamaz.
 
 Operasyonel notlar:
 
-- **1 MB maxBuffer taşması TIMEOUT sayılır.** Üretim yürütücüsü `child_process.exec`
-  kullanır (Node varsayılanı maxBuffer 1 MB); sınırı aşan çıktı süreci öldürür ve
-  sonuç `TIMEOUT` ile yargılanır — fail-closed: geveze bir komut asla PASS olamaz.
-- **Sinyalle öldürme → TIMEOUT.** `killed`/`signal` ile biten bir sürece çıkış kodu
-  atanmaz (`exit: null`, `TIMEOUT`): öldürülmüş süreç, yargılanmış bir çıkış koduyla
-  karıştırılamaz.
-- **Torun süreçler zaman aşımından sonra hayatta kalabilir.** Node yalnız doğrudan
-  çocuğu (kabuğu) öldürür; komutunuzun sahnelediği arka süreçler yetim kalabilir —
-  doğrulama komutlarını kendi temizliğini yapacak şekilde yazın.
+- **Yürütme izolasyonu (SEC-005, POSIX).** Her komut kendi process group'unda
+  yürütülür ve süreç ağacının TAMAMI kapsanır: zaman aşımında, çıktı sınırı
+  aşımında VE normal bitişte grup önce `SIGTERM` alır; grace penceresi
+  (400 ms) sonunda hâlâ yaşayan üye varsa grup `SIGKILL` ile öldürülür.
+  Executor'ın kararı döndürmesi, grubun ölmüş (veya SIGKILL edilmiş) olması
+  anlamına gelir — bir `TIMEOUT` sonucu artık "işlem durdu"nun kanıtıdır ve
+  normal bitişte bile komutun sahneye koyduğu arka süreçler karardan sonra
+  çalışamaz. **stdin `/dev/null`'dur:** etkileşimli komutlar anında EOF görür,
+  zaman aşımını bekleyerek asla bekletmez. **Kapsam dürüstçe:** process
+  group'lar POSIX mekanizmasıdır — Windows (job object'ler gerektirir) kapsam
+  dışıdır; kendini yeni oturuma taşıyan (`setsid`) bir torun gruptan kaçar ve
+  yalnızca çekirdek düzeyinde izolasyon (cgroup/sandbox) kapsanabilir.
+- **1 MB çıktı sınırı taşması TIMEOUT sayılır.** Üretim yürütücüsü akış başına
+  1 MB'lık sınırla (exec'in maxBuffer varsayılanı ile aynı) çalışır; sınırı aşan
+  çıktı GRUBU öldürür ve sonuç `TIMEOUT` ile yargılanır — fail-closed: geveze
+  bir komut asla PASS olamaz.
+- **Sinyalle öldürme → TIMEOUT.** Sinyalle biten bir sürece çıkış kodu atanmaz
+  (`exit: null`, `TIMEOUT`): öldürülmüş süreç, yargılanmış bir çıkış koduyla
+  karıştırılamaz. Zombi bırakılmaz: kabuk, karara varılmadan önce reaped edilir.
 - Komutlar kasıtlı olarak kabukta koşar (TaskContract verification komutları kabuk
   dizgeleridir: `pnpm vitest run tests/x.test.ts`). Enjeksiyon yüzeyi tam olarak bu
   güvenlik modelinin yönettiği yüzeydir: varsayılan hiç-koşma + açık `--yes` onayı.
@@ -469,6 +520,15 @@ Notlar:
   tanılama stderr'e gider. Eski `mcp_bridge` hatasının (protokol akışına log karışması)
   tekrarı yasaktır ve test-enforcelıdır: entegrasyon testi spawn edilen sürecin
   stdout'undaki **her satırı** `JSON.parse` ile doğrular.
+- **`dir` argümanı her çağrıda realpath ile normalize edilir** (bağlantılı üst
+  dizinlerden ulaşlanan bir kök yasaldır ve gerçek yoluna çözülür) ve
+  `LCO_MCP_EXEC_ROOT` ayarlıysa çözülen yolun pinin içinde kalması zorunludur
+  (SEC-003, izinli-kök politikası — her araca, `lco_generate`'ın yazma hedefine
+  kadar; dışarıdaki/red dışındaki `dir` `-32602` ile reddedilir, pinin kendisi
+  çözülemiyorsa her çağrı fail-closed reddedilir). Pin AYARLI DEĞİLSE yol
+  politikası yoktur: bu, BELGELİ yerel-güven sınırıdır — pinsiz sunucu,
+  istemcisine yerel yollarla çalışmayı açıkça emanet eden operatördür. Güvenilir
+  olmayan bir istemciye açarken `LCO_MCP_EXEC_ROOT` kullanın.
 - **`lco_check` aracı varsayılan olarak SADECE önizleme yapar** (DRY) — `yes` parametresi
   MCP yüzeyinden kaldırıldı (SEC-002); yürütme rızası için aşağıdaki Yürütme Rızası
   bölümüne bakın.
@@ -483,6 +543,69 @@ Notlar:
   `tools/call lco_check {dir}` → `isError: false`, ilk satır `DRY RUN — no commands
   executed; pass --yes to execute`. Bildirimler (`notifications/*`) yanıt almaz;
   bozuk satır `-32700` (id `null`); bilinmeyen araç `-32602`; bilinmeyen metod `-32601`.
+
+### Dayanıklılık ve Protokol Sınırları (OPS-001, SEC-006)
+
+Sunucu tek bir stdio oturumunu sınırlarla yönetir (`src/mcp/stdio.ts`); hiçbir
+girdi türü süreci sınırsız belleğe, sınırsız eşzamanlı işe veya sessiz bir
+yarıda kesintiye (truncated exit) götüremez:
+
+- **Frame sınırı — 1 MiB/satır.** stdin parça parça (chunk) okunur ve satırlar
+  bir BAYT bütçesi altında birleştirilir; sınırı aşan satır ASLA tamamen
+  tamponlanmaz: taşan baytlar sonraki newline'a kadar atılır, istemciye bir
+  kez `-32600 Request too large` (id `null`) yanıtı verilir, stderr'e tanılama
+  düşer ve bağlantı AÇIK kalır — bir sonraki düzgün satır normal hizmet görür.
+  Meşru MCP frameleri küçüktür (en büyük argüman 10k karakterlik inline
+  intent'tir); 1 MiB %100 pay demektir. (Node `readline` satırı tamponlamadan
+  sınırlayamaz — bu yüzden assembler sunucunun kendisindedir.)
+- **Eşzamanlı iş sınırı — 16 in-flight istek.** Bir istek kabul anından yanıtın
+  yazılmasına kadar "in-flight" sayılır. 17.'si anında yapılandırılmış bir
+  `-32000 Server busy` hatası alır (kendi id'si yankılanır) — sıraya girmez,
+  bekletilmez. Bildirimler ve bozuk satırlar iş başlatmadığı için bu sınıra
+  takılmaz. Sınır, bir istemcinin aynı anda ayakta tutabileceği araç koşusunu,
+  mutasyonu ve çocuk süreci sınırlar.
+- **Mutasyon serileştirme.** Aynı kökteki mutasyonlar depolama katmanının
+  kök-başına kilidiyle zaten serileşir (T6; sunucu düzeyinde de sabitlenmiştir);
+  farklı kökler in-flight sınırına kadar eşzamanlı ilerler. Ek kural
+  (bilinçli karar): **aynı kök için ikinci bir `lco_generate` ilk uçarken**
+  anında yapılandırılmış reddetme alır (`isError`, SIFIR LLM çağrısı). Önce
+  her ikisi de rızadan geçip ücretli boru hattını İKİ KEZ koşturuyordu (yazma
+  no-clobber ile güvenliydi ama harcama ikileydi); ücretli olan tek araç için
+  in-flight tekrar-reddi ucuz ve dürüsttür. `lco_init`/`lco_change` yerel ve
+  ücretsizdir — onlar kilit semantiğinde kalır (T10 exactly-one-winner).
+  Dedup anahtarı istenen `dir`'in sözcüksel çözümüdür (`path.resolve`);
+  sembolik bağlantı takma adlarını yakalamaz — doğruluk yededi her zaman
+  kilitken bu yalnızca harcama dedup'idir.
+- **stdout backpressure.** Yanıtlar `Writable.write`'tan geçer; `false`
+  döndüğünde stdin okuma DURUR ve akış `drain` olana kadar durur. Duraklatılmış
+  girdi yeni satır üretmediği için yazma kuyruğu yapısal olarak sınırlıdır
+  (in-flight ≤ 16 yanıt + duraklatılmış boru) — sınırsız tampon büyümesi yoktur.
+- **Kapanış semantiği ve çıkış kodları.** stdin EOF (düzenli kapanış): yeni
+  satır alınmaz, in-flight işin bitmesi ve bekleyen yazımların boşalması
+  beklenir, çıkış `0`. stdout EPIPE (istemci öldü): yeni satır alınmaz, artık
+  yazılmaz (ölü bora yanıt yazılmaz — yarım satır oluşmaz), in-flight işin
+  bitmesi **10 saniyelik drain penceresi** içinde beklenir (başlamış disk
+  yazımları ve çocuk yaşam döngüleri bitsin diye), sonra çıkış `3` — iş
+  ortada bırakıldı, sessiz `0` asla değil. Drain penceresi aşılırsa hâlâ
+  koşan doğrulama süreç grupları SIGKILL edilir (ölü bir süreç onları
+  reap edemez — OPS-001/SEC-005 kapsama) ve çıkış `4` olur. EOF yolunda
+  yapay zamanlayıcı YOKTUR: araçların kendi iç bütçeleri vardır (UX-003 wall
+  budget, check timeout'ları). Kapanış zamanlayıcısı süreç sınırında
+  duvar-saatlidir — T16 gerekçesiyle aynı: gerçek bir stdio oturumunun gerçek
+  kapanışını yönetir, deterministik çekirdeğin parçası değildir (testlerde
+  enjekte edilebilir).
+- **JSON-RPC 2.0 zarfı (SEC-006).** Dispatch'ten ÖNCE tam doğrulama:
+  `jsonrpc` tam olarak `"2.0"` olmalı (`"1.0"`, `2.0` sayısı, eksik → `-32600`);
+  `method` boş olmayan dize; `id` varsa dize/sayı/`null` — nesne/dizi/boolean
+  id reddedilir ve ASLA yankılanmaz (yanıtın id'si `null`; JSON-RPC 2.0 §5.1
+  id-saptama kuralı); `params` varsa nesne olmalı (MCP adlandırılmış
+  parametre kullanır; konumsal dizi reddedilir); zarf dışı bilinmeyen alan
+  reddedilir (`additionalProperties:false` sıkılaştırma politikasının zarf
+  uzantısı); **batch** (dizi gövde) tek bir `-32600` hatasıyla reddedilir —
+  sunucu tasarımı gereği satır-başına-tek-istektir (stdio-MCP batch'e ihtiyaç
+  duymaz; belgelenmiş no-batch tavrı). Yalnızca GEÇERLİ bildirimler sessizdir:
+  idsiz her geçerli istek ve `notifications/*` (id'li olsa bile, belgelenmiş
+  uzantı) yanıt almaz; geçersiz zarf id'siz olsa bile `id:null` hatası alır.
 
 ### Yürütme Rızası: `lco_check` ve `LCO_MCP_ALLOW_EXEC` (SEC-002)
 
@@ -513,8 +636,12 @@ rızasının vekili DEĞİLDİR** — dört katman, hepsi birlikte zorunlu:
    bayrakları çocuk süreçlere ASLA geçmez.
 
 İsteğe bağlı 5. katman: `LCO_MCP_EXEC_ROOT=/abs/yol` çalışma alanını sabitler —
-ayarlandığında rıza yalnız o yol altındaki spec kökleri için geçerlidir (bu bir
-rıza-sınırı sabitlemesidir; süreç izolasyonu P2-2 kapsamındadır).
+ayarlandığında rıza yalnız o yolun (realpath ile çözülmüş) altına RESOLVE EDEN
+spec kökleri için geçerlidir (SEC-003: sözcüksel olarak pin altında görünen ama
+sembolik bağlantıyla dışarı kaçan bir yol reddedilir). Aynı pin sunucu sınırında
+HER aracın `dir` argümanına da uygulanır (aşağıdaki izinli-kök politikası) —
+`lco_generate`'ın yazma hedefi dahil. Bu bir rıza-sınırı sabitlemesidir; süreç
+izolasyonu P2-2 kapsamındadır.
 
 **CLI asimetrisi (bilinçli):** `lco check --yes` miras alınan tam ortamla koşar —
 orada rızayı veren insan, ortamın da sahibidir. MCP yolunda rızayı veren
@@ -583,6 +710,54 @@ Bilinmeyen anahtar **her yerde reddedilir**, sessizce silinmez:
   (`additionalProperties: false`) hizalıdır. (Bu paketin eski sürümündeki "zod siler /
   JSON Şema reddeder" yüzey farkı, tamamlama planının şema-sıkılaştırma göreviyle
   kapatıldı.)
+
+## Şema Sürümü ve Uyumluluk Politikası (`lco-spec/1.x`)
+
+**PROD-005.** `manifest.spec_schema` alanı, ağacın yazıldığı şema sürümünü bildirir.
+Tek kaynak `src/schemas/version.ts` içindeki `SPEC_SCHEMA_VERSION` sabitidir (şu an
+`lco-spec/1.0`); manifest şeması bu sabiti birebir zorunlu kılar ve `init` iskeleti
+aynı sabiti yazar — literal kodda başka hiçbir yerde tekrarlanmaz.
+
+Politika:
+
+- **`1.0` bugüne dek çıkarılmış TEK şema sürümüdür**; şemaların minor-sürüm kavramı
+  henüz yoktur. Aşağıdaki kurallar GELECEK minor'ları yönetir — bugün
+  `lco-spec/1.0`'dan başka okunabilir sürüm yoktur ve bu politika kendisi için
+  minor makineleri icat etmez.
+- **Okuma uyumluluğu (read-compat):** major 1 içinde YENİ derleyiciler ESKİ 1.x
+  donmuş ağaçlarını okumak ZORUNDADIR — bir frozen artifact'ın dayandığı garanti
+  budur. Bir `1.1` çıkarsa, 1.1 derleyicisi `lco-spec/1.0` ağaçlarını da okur;
+  kabul edilen sürüm kümesi `checkSpecSchemaVersion` içindeki işaretli büyüme
+  noktasında BİLİNÇLİ olarak büyütülür.
+- **Kendinden yeni minor bildiren spec:** derleyicinin bildiğinden YENİ bir 1.x
+  minor'u bildiren ağaç (`lco-spec/1.2` gibi) okunmaz — bilinmeyen bir şemayı 1.0
+  şekliyle okumak sessiz yanlış-ayrıştırma olur, tahmin yürütülmez. Hata "derleyiciyi
+  yükselt" diye yönlendirir; 1.x okuma-uyumlu olduğundan ağacınız yeni derleyicide
+  geçerli kalır. `spec_schema`'yı elle geri yazdırmayın.
+- **Major = okuma kırılması:** başka bir major bildiren ağaç (`lco-spec/2.0` gibi)
+  bu derleyicide ASLA okunmaz (ayrı, adı konmuş hata). Göç aracı major ile BİRLİKTE
+  gelir (2.x'in kendisiyle); bugün böyle bir araç YOKTUR ve tarihe vaat edilmez.
+- **Hata ayrımı:** `spec_schema` hatası üç ayrı mesajla yüzeye çıkar — bozuk/biçimsiz
+  dize (`lco-spec/<major>.<minor>` biçimi öğretilir), bilinmeyen YENİ minor
+  (yükseltme yönlendirmesi), başka major (major kırılması + göç aracının kapsamı).
+  Derleme çıktısı bu mesajları `manifest.spec_schema` yolunda taşır; politika tek
+  yerde durur (`src/schemas/version.ts`).
+- **Geri alma dürüstlüğü:** donmuş ağaçlar salt JSON dosyalarıdır; geri alma hikâyesi
+  **git geçmişidir** — `spec/` bölüm dosyalarını eski bir commit'e döndürmek tüm
+  ağacı geri alır. Derleyicinin otomatik geri-alma/rollback komutu YOKTUR; donmuş
+  bir spec'i ileriye taşımanın tek desteklenen yolu `lco change`'dir.
+
+### Legacy modu: DENEYSEL, yalnızca-şema
+
+`mode: "legacy"`, `complexity_profile: "p-legacy"` ve `spec/legacy.json` **DENEYSELDİR
+ve yalnızca şema yüzeyidir**: hiçbir dönüşüm/analiz semantiği yoktur — derleyici
+legacy paketini pass-through taşır, closure yalnızca `preserve_change_drop[].evidence`
+referanslarını denetler. `generate` ve `init` bu profili SEÇEMEZ (yalnızca
+`p-mini | p-standard`); legacy spec'in tek yolu elle yazılmış JSON'dur. Legacy bloğu
+**varsa tam olmalıdır** (`as_is_summary` + en az bir `preserve_change_drop` girdisi):
+`{}` veya yarım paket şema hatasıdır — "legacy paket yok" demenin tek yolu bloğu hiç
+yazmamaktır. (Bilinçli erteleme: `p-legacy` profilini legacy bloğuna bağlayan bir lint kuralı eklenmedi — profil semantiği hiçbir profil için geliştirilmiş değil; şemadaki varsa-tam kuralı denetimin boş-`{}` başarısızlık senaryosunu zaten kapatıyor.) Dönüşüm semantiği, bir pilot gerekçe göstermedikçe kalıcı olarak kapsam
+dışındır (denetim P4).
 
 ## Kanıt Kapısı: G1–G4
 
@@ -717,6 +892,13 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
   başına şema). Eski `GLS-NNNN` id'li saklı spec'ler **artık derlenmez** (şema
   hatası); `lco change` ile yeniden üretin veya `GLS-` id'lerini elle `REQ-`'ye
   çevirin.
+- **Göç notu — legacy bloğu artık varsa tam olmalı (PROD-005):** `legacy`
+  bölümü eskiden `.partial()`'dı; `{}` veya yalnız-`as_is_summary` paketi şema-geçerli
+  kabul ediliyordu (denetimin de bulduğu gibi: anlamsız bir boş paket). Artık blok
+  VARSA tam olmalıdır; yarım/boş legacy bloğu taşıyan saklı spec'ler derlenmez —
+  bloğu tamamlayın ya da tamamen kaldırın (kaldırmak "legacy paket yok" demenin tek
+  yoludur). Legacy modunun kendisi DENEYSEL/yalnızca-şema kalır (bkz. sürüm
+  politikası bölümü).
 - **Changeset'ler TST referanslarını kendiliğinden yeniden demirlemez (bilinen
   sınır):** `ChangeSetSchema`'da `modified_requirements` op'u yoktur. Bir
   changeset bir görevin testlerini değiştiriyorsa/kaldırıyorsa,
@@ -741,18 +923,110 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
   sırası) ve trim-refine'lı metin alanlarının baş/son boşluk değişiklikleri drift
   üretmez (turdaki tamper denemesi #1'in exit 0 çıkması tam olarak budur). Kasıtlı
   tasarım: bölüm-içeriği drift dedektörü, tamper kanıtı değildir (G2 kapsam notu).
+- **Manifest'in kendisi hash kapsamının DIŞINDADIR (DATA-002):** `verify`, bölüm
+  içeriğini manifest'te saklanan `artifact_hashes`'e karşı doğrular; ama
+  manifest'in KENDİSİ — proje kimliği, `spec_schema`/`spec_version` üstverisi,
+  sayaçlar (`unresolved_count`, `blocking_count`), `state`, `evidence_snapshot`,
+  `council_run`, zaman damgaları ve saklı `artifact_hashes`'in kendisi — hiçbir
+  hash tarafından kapsanmaz. Yeşil bir `verify` **bölüm-içeriği bütünlüğünü**
+  kanıtlar; **manifest'in özgünlüğünü kanıtlamaz** — bütünüyle elle uydurulmuş
+  bir manifest hâlâ temsil edilebilir (dondurmanın köken denetimi — v1 taslağının
+  hash taşımaması / v>1 taslağının önceki dondurmanın hash'lerini taşması
+  zorunluluğu — bunu daraltır, ortadan kaldırmaz). Kriptografik provenance
+  (imza / kök özet) BİLİNÇLİ olarak uygulanmamıştır ve yalnızca ticari bir
+  provenance iddiası gerekçe gösterilirse eklenir (denetim DATA-002'nin
+  önerilen yönü; mevcut kapsam notu: `verify.ts`).
 - **L03'ün etkin kapsamı:** `test_files` defteri `compile` sırasında görevlerden
   *türetilir*, dolayısıyla derlemeden gelen bundle'lar L03'ü asla tetikleyemez. Kural,
   modelin kendi test defterini yankılamak zorunda olduğu **doğrudan ayrıştırma / LLM
   yolunu** korur (runner, LLM çıktısını `compile` olmadan `SpecBundleSchema` ile
   ayrıştırır): `tasks[].tests[].file` ile `test_files` tutarsızsa orada yakalanır.
 
+## Yayın ve Sahiplik (P2-6)
+
+Yayın **CI tercih edilen akıştır** ve sonsuza dek kullanıcı-kapılıdır (U4): bu
+depo otomatik yayın yapmaz — makine yalnızca kapıyı ve provenance'ı sağlar.
+
+**CI akışı (tercih edilen):**
+
+1. Sürüm bump + Değişiklik Günlüğü girdisi + tam kapı yeşili → commit.
+2. `git tag v0.1.0 && git push origin v0.1.0`. Etiket `v<sürüm>` ya da çıplak
+   `<sürüm>` olabilir — `prepublish-check.js` iki biçimi de kabul eder.
+3. Actions → **`publish-spec-core`** iş akımını ETİKETLİ ref'ten çalıştır;
+   `version` girdisine sürümü yaz (package.json sürümüne eşit olmalı — eşit
+   değilse iş akımı reddedilir). `dry_run` girdisi **varsayılan olarak true**:
+   birleşen iş akımı tek başına ASLA yayımlamaz; tam kapıyı (build/tazelik/
+   lint/test/smoke) ve `npm publish --dry-run`'ı koşar, kayıt defterine
+   dokunmaz.
+4. Gerçek yayın yalnızca sahip `dry_run=false` seçtiğinde olur — ve o adım
+   `NODE_AUTH_TOKEN` sırrı eklenmedikçe açıklamalı bir hatayla reddedilir.
+   **Sırrı eklemek sahip eylemidir** (npm automation/granular token'ını repo
+   sırrı olarak tanımlamak; ilk gerçek yayından önce bir kez — U4'ün ta kendisi).
+5. Gerçek yayın `npm publish --provenance` ile yapılır: GitHub Actions OIDC'si
+   kayıt defterinde imzalı bir provenance deyimi üretir (package.json'daki
+   `repository` alanı bunun için zorunludur ve mevcuttur).
+
+**Kirli/etiketsiz yayın yasağı:** `prepublishOnly`, test takımının ardından
+`scripts/prepublish-check.js`'i çalıştırır. Karar çekirdeği test edilen
+`src/release/readiness.ts`'tir (karar tablosu orada sabitlenmiştir — saat,
+dosya sistemi, ortam erişimi yoktur; git durumu yalnızca sınır betiğinde
+okunur). Şu hallerde yayın REDDEDİLİR: kirli çalışma ağacı (`git status
+--porcelain` boş değilse — izlenmeyen dosyalar da kirli sayılır), HEAD etiketli
+değilse, etiket package.json sürümüyle eşleşmiyorsa. Yerel temiz-etiketli
+yayın teknik olarak mümkündür (yasak KİRLİ ve ETİKETSİZ yayındır) — ama CI
+akışı tercih edilir: provenance yalnızca CI'da üretilir ve `prepublishOnly`
+aynı kapıyı her iki yolda da uygular.
+
+**Geri alma (rollback):**
+
+- Sabit sürüme kilitlenmiş kullanıcılar (`"lco-spec": "0.1.0"`) bozuk bir YENİ
+  yayından etkilenmez — eski tarball kayıt defterinde kalır.
+- Gerçekten bozuk bir sürüm için npm'in **72 saatlik `npm unpublish` penceresi**
+  vardır; pencere mutlak bir hak değildir (başka paketler o sürüme bağımlıysa
+  unpublish engellenebilir; 72 saatten sonra yalnızca npm desteği).
+- **Aynı sürüm numarası asla yeniden yayımlanmaz:** bir sürüm yalnızca bir kez
+  etiketlenebilir, `prepublish-check`'in etiket↔sürüm eşleşmesi bunu yapısal
+  kılar (npm kayıt defteri de eski sürümün üzerine yazmayı zaten reddeder).
+  Onarımın yolu `git revert` + **patch sürümüdür**.
+
+**Platform / sağlayıcı matrisi (dürüst):**
+
+| Boyut | Durum | Kanıt |
+| --- | --- | --- |
+| Node 22, 24 | desteklenir | `ci-spec-core` matrisi her push'ta (build, tazelik, lint, test, smoke) |
+| Node 21 ve altı | desteklenmez | `engines: ">=22"`; CI'da denenmez |
+| Linux (POSIX) | desteklenir | CI (`ubuntu-latest`) |
+| macOS (POSIX) | hedeflenir, CI'da denenmez | POSIX hedefi; CI matrisinde yok (dürüstlük notu) |
+| Windows | **desteklenmez** | süreç-grubu yürütmesi POSIX mekanizmasıdır (T15/T16 ifşaları) |
+| LLM sağlayıcıları (`LCO_LLM_*`, OpenAI-uyumlu uçlar) | **yalnızca mock ile test edilir** | canlı sağlayıcı birlikteçalışabilirliği açıkça TEST EDİLMEMİŞTİR; canlı koşum kullanıcı yordamıdır (bkz. "live G4 yeniden koşum yordamı") |
+| npm kayıt defteri (registry.npmjs.org) | hedef yayın platformu | yayın yalnızca `publish-spec-core` iş akımından, dry-run varsayımıyla |
+
 ## Değişiklik Günlüğü
 
+**Disiplin:** birleşen her aşama/sürüm bu bölüme **tarihli** bir girdi ekler;
+kırıcı değişiklikler girdide açıkça işaretlenir; **test sayıları aynı
+commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
+izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
+birlikte yaşar (bkz. "Yayın ve Sahiplik").
+
+- **2026-08-27 — P2-6 (bu aşama):** yayın sahipliği/provenance — kirli/etiketsiz yayın
+  yasağı (test edilen karar çekirdeği `src/release/readiness.ts` + sınır betiği
+  `scripts/prepublish-check.js`, `prepublishOnly`'ye bağlı), manuel
+  `publish-spec-core` iş akımı (yalnızca `workflow_dispatch`; `dry_run`
+  VARSAYILAN true; OIDC `--provenance`; gerçek yayın `NODE_AUTH_TOKEN` sahip
+  sırrı olmadan reddedilir), rollback/platform-sağlayıcı matrisi/değişiklik
+  günlüğü disiplini bölümleri, DATA-002 manifest-özgünlüğü sınırlama notu —
+  1078 test.
+- **2026-08-27 — PROD-005 (bu aşama):** şema sürüm politikası (`src/schemas/version.ts` tek
+  kaynak; ayrık/eyleme-dönük sürüm hataları: bozuk dize / yeni minor / başka major),
+  legacy bloğu varsa-tam (strict-when-present), p-legacy/mode=legacy her yerde
+  DENEYSEL + yalnızca-şema etiketi (CLI help, şema açıklamaları, README), sürüm
+  uyumluluk/geri-alma politikası bölümü — 1.x okuma uyumluluğu, major = okuma
+  kırılması, rollback = git geçmişi.
 - **PROD-003 (bu aşama):** niyet-doğruluk iddiaları (`MENTIONS_TERMS`), yapısal/niyet
   skor ayrımı, tekrarlı koşum + yayılım tablosu, tam-usage şartı (tekrarlar arasında),
   adversarial eval vakaları, G4'ün dürüst yeniden etiketlenmesi + live yeniden koşum
-  yordamı — 935 test.
+  yordamı — 1067 test (bu sayı sürüm politikası aşamasında güncellendi).
 - **2026-08-19 — bu dal:** strictness, change/trace/init/plan/check, `lco-mcp`,
   dokümantasyon — 552 test.
 - **2026-08-18 — evidence-gate dalı:** şemalar → eval → kapı; mock

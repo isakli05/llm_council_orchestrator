@@ -25,6 +25,36 @@ describe('ManifestSchema', () => {
   it('rejects wrong spec_schema literal', () => {
     expect(() => ManifestSchema.parse({ ...validManifest, spec_schema: 'lco-spec/2.0' })).toThrow();
   });
+  it('rejects a future MAJOR with the DISTINCT version-policy error (PROD-005)', () => {
+    const r = ManifestSchema.safeParse({ ...validManifest, spec_schema: 'lco-spec/2.0' });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0].path).toEqual(['spec_schema']);
+      // Distinct + actionable: names the major break, the range this
+      // compiler reads, and scopes the migration tool to the future major.
+      expect(r.error.issues[0].message).toMatch(/major/i);
+      expect(r.error.issues[0].message).toMatch(/1\.x/);
+      expect(r.error.issues[0].message).toMatch(/migration tool/i);
+      expect(r.error.issues[0].message).not.toContain('Invalid literal value');
+    }
+  });
+  it('rejects a newer 1.x minor with the upgrade/read-compat error', () => {
+    const r = ManifestSchema.safeParse({ ...validManifest, spec_schema: 'lco-spec/1.2' });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0].message).toContain('lco-spec/1.2');
+      expect(r.error.issues[0].message).toMatch(/upgrade/i);
+      expect(r.error.issues[0].message).not.toContain('Invalid literal value');
+    }
+  });
+  it('rejects a malformed version string with the expected-form error', () => {
+    const r = ManifestSchema.safeParse({ ...validManifest, spec_schema: 'nonsense' });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0].message).toContain('lco-spec/<major>.<minor>');
+      expect(r.error.issues[0].message).not.toContain('Invalid literal value');
+    }
+  });
   it('rejects spec_version below 1', () => {
     expect(() => ManifestSchema.parse({ ...validManifest, spec_version: 0 })).toThrow();
   });

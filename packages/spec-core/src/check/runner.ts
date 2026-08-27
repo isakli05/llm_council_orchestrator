@@ -1,9 +1,11 @@
-import { exec } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../schemas';
 import { acquireSpecRootLock, swapFilesAtomically } from '../storage/revision';
+import { assertNoSymlinkBelow, isInside, PathEscapeError } from '../storage/paths';
 import { parseExpect } from './expect';
+import { redactSecrets } from './redact';
 
 // The expect grammar is defined ONCE in ./expect (BACK-004) and shared with
 // lint L14; re-exported here for the existing import surface.
@@ -21,22 +23,37 @@ export { parseExpect } from './expect';
  *     Only judgeable entries are labeled `DRY`; a dry exit 0 certifies that
  *     every contract is judgeable.
  *   - `yes: true` executes each TaskContract verification command via the
- *     injected Executor (production: child_process.exec, cwd = the spec root,
- *     killed at `timeoutMs`, default 60s).
+ *     injected Executor (production: an isolated POSIX process group —
+ *     {@link execInProcessGroup} — cwd = the spec root, the WHOLE group killed
+ *     at `timeoutMs`, default 60s, stdin at EOF; SEC-005).
  *   - Fail-closed judgement: the expected exit code is ONLY what the first
  *     `exit N` match in the `expect` description yields (the shared
  *     ./expect grammar). If `parseExpect` cannot produce a number, the
  *     command is NOT executed — running something whose result cannot be
  *     judged would be success theater. The outcome is
  *     `UNPARSEABLE-EXPECT` and counts as a failure.
- *   - `TIMEOUT` (executor killed the process) counts as a failure; a mismatched
- *     exit code is `FAIL`.
+ *   - `TIMEOUT` (executor killed the process group: timeout, output-cap
+ *     overflow, or death by signal) counts as a failure; a mismatched exit
+ *     code is `FAIL`.
  *
- * Evidence: under `yes: true` one JSON file per task is written to
- * `<dir>/spec/evidence/<TASK-ID>-check.json` — `{task_id, checkedAt, checks:
- * [...]}` with one entry per verification command (executed or skipped:
- * a skipped entry is recorded with status UNPARSEABLE-EXPECT, because the
- * file is the audit trail of what `--yes` did). DRY writes nothing, ever.
+ * Evidence: under `yes: true` ONE NEW run-addressed JSON file per task is
+ * written to `<dir>/spec/evidence/<TASK-ID>-check-<RUN>.json` — `{task_id,
+ * checkedAt, checks: [...]}` with one entry per verification command
+ * (executed or skipped: a skipped entry is recorded with status
+ * UNPARSEABLE-EXPECT, because the file is the audit trail of what `--yes`
+ * did). DRY writes nothing, ever.
+ *
+ * EVIDENCE HARDENING (SEC-004): `<RUN>` is a deterministic run id built from
+ * the INJECTED nowIso + the task id + a collision counter, so each check run
+ * writes a NEW file and a rerun can never erase the previous audit trail;
+ * files are created with mode 0600 (owner-only — output tails may carry
+ * secrets); and every captured output passes the best-effort redaction pass
+ * in ./redact BEFORE it is kept in memory or on disk.
+ *
+ * WRITE CONTAINMENT (SEC-003): the evidence write refuses a `spec/` or
+ * `spec/evidence/` that is a symlink (writes never follow symlinks below the
+ * spec root) and requires the evidence dir to resolve inside the resolved
+ * root. A refusal throws before anything is written.
  *
  * Exit-code mapping: every outcome PASS or DRY -> 0; any FAIL / TIMEOUT /
  * UNPARSEABLE-EXPECT (dry included) -> 1; an unknown `opts.task` id -> 2 with
@@ -58,13 +75,21 @@ export interface CheckOutcome {
  * Runs one command and reports how it ended. `stdout` carries the COMBINED
  * stdout+stderr text (the interface's single output channel); `exit` is the
  * process exit code, or null when none could be observed; `timedOut` is true
- * only when the process was killed by the timeout.
+ * when the executor killed the command's process group (timeout, output-cap
+ * overflow, or death by signal).
  */
 export type Executor = (
   cmd: string,
   cwd: string,
   timeoutMs: number,
-) => Promise<{ exit: number | null; stdout: string; timedOut: boolean }>;
+) => Promise<ExecutorResult>;
+
+/** What every Executor resolves with — the production executor never rejects. */
+export interface ExecutorResult {
+  exit: number | null;
+  stdout: string;
+  timedOut: boolean;
+}
 
 export interface RunChecksOptions {
   /** Restrict the run to one task id (unknown id -> { code: 2, outcomes: [] }). */
@@ -75,7 +100,7 @@ export interface RunChecksOptions {
   timeoutMs?: number;
   /** Timestamp stamped into evidence files (injected — the core reads no clock). */
   nowIso: string;
-  /** Executor override (tests inject fakes; default: the child_process wrapper). */
+  /** Executor override (tests inject fakes; default: the process-group executor). */
   exec?: Executor;
 }
 
@@ -83,13 +108,21 @@ export interface RunChecksResult {
   /** 0 all PASS/DRY, 1 any FAIL/TIMEOUT/UNPARSEABLE-EXPECT, 2 unknown --task. */
   code: number;
   outcomes: CheckOutcome[];
+  /**
+   * Absolute paths of the evidence files THIS run wrote (`--yes` only, in
+   * task order; empty for dry runs and the unknown-task refusal).
+   */
+  evidenceFiles: string[];
 }
 
 /** Kill hanging verification commands after this long (per command). */
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
-/** outputTail length — the tail of the combined output kept as evidence. */
+/** outputTail length — the tail of the combined (redacted) output kept as evidence. */
 export const OUTPUT_TAIL_LIMIT = 500;
+
+/** Evidence file mode (SEC-004): owner-only — tails may carry secrets. */
+export const EVIDENCE_FILE_MODE = 0o600;
 
 /**
  * Extract the expected exit code from an `expect` description — the shared
@@ -100,36 +133,249 @@ export const OUTPUT_TAIL_LIMIT = 500;
  */
 
 /**
- * The production Executor: child_process.exec with a hard timeout, never
- * rejecting — every ending (success, nonzero exit, spawn error, timeout kill)
- * resolves to the Executor result so judgement stays in runChecks.
+ * The production Executor: a shell launched in its OWN PROCESS GROUP and killed
+ * as a tree, never rejecting — every ending (success, nonzero exit, spawn
+ * error, timeout kill, output-cap kill) resolves to the Executor result so
+ * judgement stays in runChecks. See {@link execInProcessGroup}.
  *
- * exec (a shell) is deliberate: TaskContract verification commands are shell
- * command strings by schema design (`pnpm vitest run tests/x.test.ts`). The
- * injection surface is exactly what the security model governs — a DRY RUN
- * default where nothing executes, and explicit `--yes` as the operator's
- * opt-in to run the spec's own commands.
+ * A shell is deliberate: TaskContract verification commands are shell command
+ * strings by schema design (`pnpm vitest run tests/x.test.ts`). The injection
+ * surface is exactly what the security model governs — a DRY RUN default where
+ * nothing executes, and explicit `--yes` as the operator's opt-in to run the
+ * spec's own commands.
  */
-export function execCommand(
+export function execCommand(cmd: string, cwd: string, timeoutMs: number): Promise<ExecutorResult> {
+  return execInProcessGroup(cmd, { cwd, timeoutMs });
+}
+
+/** Per-stream output cap (exec parity, 1 MB): overflow kills the group. */
+export const MAX_BUFFER_BYTES = 1024 * 1024;
+
+/**
+ * Group-teardown escalation window: after SIGTERM, a group still alive this
+ * long is SIGKILLed. Wall-clock at the process boundary — see the note in
+ * {@link execInProcessGroup}.
+ */
+export const GROUP_KILL_GRACE_MS = 400;
+
+/** How often group teardown polls for the group to die. */
+const GROUP_KILL_POLL_MS = 25;
+
+// --- active-group registry (OPS-001 shutdown containment) ---------------------------
+//
+// The MCP server tracks in-flight REQUESTS, but a request may currently be
+// running verification commands through this executor. If the server must
+// exit while such work is still in flight (drain timeout after the client
+// vanished), its own timeout timers die with the process — the registry lets
+// the exit path SIGKILL every still-running group so no descendant outlives
+// the abandoned session. Groups register at spawn and unregister when the
+// executor resolves (by the SEC-005 invariant, resolution ⇒ group dead).
+
+const activeProcessGroups = new Set<number>();
+
+/** SIGKILL (or `sig`) every still-registered process group; returns how many. */
+export function killActiveProcessGroups(sig: NodeJS.Signals = 'SIGKILL'): number {
+  let killed = 0;
+  for (const pgid of [...activeProcessGroups]) {
+    try {
+      process.kill(-pgid, sig);
+      killed += 1;
+    } catch {
+      // ESRCH etc.: the group is already gone — nothing to signal.
+    }
+  }
+  return killed;
+}
+
+export interface ProcessGroupExecOptions {
+  cwd: string;
+  timeoutMs: number;
+  /** Child environment (default: inherit the parent's, exactly like exec). */
+  env?: NodeJS.ProcessEnv;
+  /** SIGTERM→SIGKILL escalation window override (defaults to GROUP_KILL_GRACE_MS). */
+  graceMs?: number;
+}
+
+/**
+ * Execute `cmd` in an isolated POSIX process group and guarantee the group is
+ * DEAD (or SIGKILLed past recovery) by the time the promise resolves (SEC-005).
+ *
+ * Group lifecycle:
+ *
+ *   spawn(cmd, shell, detached)  →  child.pid IS the pgid (group leader)
+ *   ── run: timeout / output-cap / shell exit / spawn error ──
+ *   → SIGTERM the whole group (-pid)
+ *   → poll up to graceMs for the group to die (fast path: empty group ⇒ no wait)
+ *   → SIGKILL the group if anything remains, poll again
+ *   → resolve only once the shell is reaped (no zombies: the 'exit' event IS
+ *     the reap) AND the stdio streams closed AND teardown finished
+ *
+ * Why the group is killed on EVERY path, not just the timeout: a command whose
+ * shell exited can still leave descendants running (background workers); a
+ * verdict that leaves work behind is success theater (the audit's finding — a
+ * TIMEOUT result must mean the verification work stopped). Killing the group
+ * on normal completion is also what unblocks output collection: lingering
+ * descendants hold the stdout/stderr pipes open.
+ *
+ * stdin is /dev/null ('ignore'): interactive commands see EOF immediately
+ * instead of occupying the full timeout waiting for input that never comes.
+ *
+ * Classification (unchanged semantics): exit code judged as-is; a death by
+ * signal OR the timeout OR the output cap resolves { exit: null, timedOut:
+ * true } → TIMEOUT (fail-closed: a killed process must not be conflated with
+ * a judged exit code). Output-cap parity: exec's 1 MB maxBuffer killed the
+ * child and classified TIMEOUT; this executor keeps the cap and the verdict.
+ *
+ * Determinism note: the timers here (timeout, grace, poll) measure REAL
+ * operating-system processes at the process boundary — an injected clock
+ * cannot kill a real process group, so wall-clock timers are unavoidable and
+ * consistent with the repo's boundary-clock precedent (runChecks itself
+ * measures durationMs with Date.now() at this same boundary). The core's
+ * judgement inputs (exit code, output text) remain fully deterministic.
+ *
+ * POSIX scope: process groups and kill(-pid) are POSIX. On Windows `detached`
+ * creates a new console, negative-pid kills are unsupported, and containing a
+ * tree requires job objects — out of scope, documented in the README.
+ */
+export function execInProcessGroup(
   cmd: string,
-  cwd: string,
-  timeoutMs: number,
-): Promise<{ exit: number | null; stdout: string; timedOut: boolean }> {
+  opts: ProcessGroupExecOptions,
+): Promise<ExecutorResult> {
+  const graceMs = opts.graceMs ?? GROUP_KILL_GRACE_MS;
   return new Promise((resolve) => {
-    exec(cmd, { cwd, timeout: timeoutMs }, (err, stdout, stderr) => {
-      const combined = `${stdout ?? ''}${stderr ?? ''}`;
-      if (!err) {
-        resolve({ exit: 0, stdout: combined, timedOut: false });
-        return;
+    let child: ChildProcess;
+    try {
+      child = spawn(cmd, {
+        cwd: opts.cwd,
+        shell: true,
+        detached: true, // POSIX: own process group; child.pid doubles as the pgid
+        stdio: ['ignore', 'pipe', 'pipe'], // stdin /dev/null: readers see EOF
+        env: opts.env ?? process.env,
+      });
+    } catch (err) {
+      resolve({ exit: null, stdout: `${err}`, timedOut: false });
+      return;
+    }
+
+    const pgid = child.pid;
+    if (pgid !== undefined) activeProcessGroups.add(pgid);
+    let out = '';
+    let errText = '';
+    let exitCode: number | null = null;
+    let exitSignal: string | null = null;
+    let killedByUs = false; // timeout or output cap (exec's err.killed analogue)
+    let spawnFailed = false;
+    let settled = false;
+    let streamsClosed = false;
+    let teardownDone = false;
+
+    const groupAlive = (): boolean => {
+      if (pgid === undefined) return false;
+      try {
+        process.kill(-pgid, 0);
+        return true;
+      } catch {
+        return false; // ESRCH: no member of the group remains
       }
-      // Node kills the child itself when the timeout fires (error.killed).
-      // A kill by any signal is treated as TIMEOUT: under this runner the
-      // timeout is the only kill source, and conflating a killed process
-      // with a judged exit code would be fail-open.
-      const timedOut = err.killed === true || typeof err.signal === 'string';
-      const exit = timedOut || typeof err.code !== 'number' ? null : err.code;
-      resolve({ exit, stdout: combined, timedOut });
+    };
+    const signalGroup = (sig: NodeJS.Signals): void => {
+      if (pgid === undefined) return;
+      try {
+        process.kill(-pgid, sig);
+      } catch {
+        // ESRCH etc.: the group is already gone — nothing to signal.
+      }
+    };
+    const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+    // Fire-once group teardown: SIGTERM → grace poll → SIGKILL → poll → force
+    // the streams closed (a D-state writer could otherwise hold them forever).
+    let teardown: Promise<void> | undefined;
+    const teardownGroup = (): Promise<void> => {
+      teardown ??= (async () => {
+        if (!groupAlive()) return; // fast path: nothing to kill, no grace wait
+        signalGroup('SIGTERM');
+        let deadline = Date.now() + graceMs;
+        while (groupAlive() && Date.now() < deadline) await wait(GROUP_KILL_POLL_MS);
+        if (!groupAlive()) return;
+        signalGroup('SIGKILL');
+        deadline = Date.now() + graceMs;
+        while (groupAlive() && Date.now() < deadline) await wait(GROUP_KILL_POLL_MS);
+        // Backstop: a group member stuck in unrecoverable I/O cannot hold the
+        // verdict hostage — force the pipes closed and resolve without it.
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      })();
+      return teardown;
+    };
+    const finishTeardown = (): void => {
+      void teardownGroup()
+        .then(() => {
+          teardownDone = true;
+          settle();
+        })
+        // Defensive durability: nothing in teardown throws today, but if it
+        // ever rejects the run must not wedge on teardownDone — force the
+        // flag so 'close' can still settle the verdict.
+        .catch(() => {
+          teardownDone = true;
+          settle();
+        });
+    };
+
+    const onChunk = (text: string, isStdout: boolean): void => {
+      if (killedByUs) return; // already terminating; drop the tail (bounded memory)
+      const held = isStdout ? (out += text) : (errText += text);
+      if (held.length >= MAX_BUFFER_BYTES) {
+        // Output-cap parity with exec's maxBuffer: kill and judge TIMEOUT —
+        // fail-closed, a verbose command can never PASS on a truncated read.
+        killedByUs = true;
+        finishTeardown();
+      }
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (d: string) => onChunk(d, true));
+    child.stderr?.on('data', (d: string) => onChunk(d, false));
+
+    const timer = setTimeout(() => {
+      killedByUs = true;
+      finishTeardown();
+    }, opts.timeoutMs);
+
+    child.on('exit', (code, signal) => {
+      // The 'exit' event IS the reap — arriving here means no zombie remains.
+      exitCode = code;
+      exitSignal = signal;
+      clearTimeout(timer);
+      // Kill the group on EVERY ending (SEC-005): on normal completion the
+      // descendants must not outlive the verdict; on timeout the escalation
+      // chain (already started) continues to its SIGKILL backstop.
+      finishTeardown();
     });
+    child.on('close', () => {
+      streamsClosed = true;
+      settle();
+    });
+    child.on('error', (err) => {
+      // Spawn failure (e.g. no shell): exec parity — exit null, NOT a timeout.
+      spawnFailed = typeof (err as NodeJS.ErrnoException).code === 'string';
+      finishTeardown();
+    });
+
+    function settle(): void {
+      if (settled || !teardownDone || !streamsClosed) return;
+      settled = true;
+      if (pgid !== undefined) activeProcessGroups.delete(pgid);
+      const combined = `${out}${errText}`;
+      if (spawnFailed) {
+        resolve({ exit: null, stdout: combined, timedOut: false });
+      } else if (killedByUs || exitSignal !== null) {
+        resolve({ exit: null, stdout: combined, timedOut: true });
+      } else {
+        resolve({ exit: exitCode, stdout: combined, timedOut: false });
+      }
+    }
   });
 }
 
@@ -149,12 +395,13 @@ export async function runChecks(
 ): Promise<RunChecksResult> {
   const selected = opts.task ? bundle.tasks.filter((t) => t.task_id === opts.task) : bundle.tasks;
   if (opts.task !== undefined && selected.length === 0) {
-    return { code: 2, outcomes: [] };
+    return { code: 2, outcomes: [], evidenceFiles: [] };
   }
 
   const execFn = opts.exec ?? execCommand;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const outcomes: CheckOutcome[] = [];
+  const evidenceFiles: string[] = [];
 
   for (const task of selected) {
     const taskOutcomes: CheckOutcome[] = [];
@@ -207,18 +454,19 @@ export async function runChecks(
         actualExit: result.exit,
         status,
         durationMs: Date.now() - startedAt,
-        outputTail: tail(result.stdout),
+        // SEC-004: redact BEFORE keeping — memory and disk share one trail.
+        outputTail: tail(redactSecrets(result.stdout)),
       });
     }
     outcomes.push(...taskOutcomes);
 
     if (opts.yes && taskOutcomes.length > 0) {
-      await writeEvidence(dir, task.task_id, opts.nowIso, taskOutcomes);
+      evidenceFiles.push(await writeEvidence(dir, task.task_id, opts.nowIso, taskOutcomes));
     }
   }
 
   const anyFailure = outcomes.some((o) => o.status !== 'PASS' && o.status !== 'DRY');
-  return { code: anyFailure ? 1 : 0, outcomes };
+  return { code: anyFailure ? 1 : 0, outcomes, evidenceFiles };
 }
 
 /** Last {@link OUTPUT_TAIL_LIMIT} chars of the combined output. */
@@ -227,26 +475,71 @@ function tail(text: string): string {
 }
 
 /**
- * One JSON evidence file per task: {task_id, checkedAt, checks: [...]}.
+ * The run id in an evidence file name: `<task>-check-<compact ISO>-<seq>.json`
+ * where `<compact ISO>` is the INJECTED nowIso with `-.:` stripped (so the
+ * name sorts chronologically and stays filesystem-clean) and `<seq>` is a
+ * zero-padded counter bumped while the name is taken. Deterministic from the
+ * injected clock + task id + directory state — no wall clock, no randomness
+ * (the repo-wide boundary-clock contract).
+ */
+function evidenceRunName(evidenceDir: string, taskId: string, nowIso: string): string {
+  const compactIso = nowIso.replace(/[-:.]/g, '');
+  for (let seq = 1; ; seq++) {
+    const name = `${taskId}-check-${compactIso}-${String(seq).padStart(3, '0')}.json`;
+    if (!existsSync(join(evidenceDir, name))) return name;
+  }
+}
+
+/**
+ * Write ONE run's evidence for one task and return the file path.
+ *
+ * IMMUTABLE + RUN-ADDRESSED (SEC-004): every call writes a NEW file (a fresh
+ * name picked under the per-root lock) — a rerun never overwrites the
+ * previous audit trail, so a later PASS cannot erase an earlier failure.
+ *
+ * MODE 0600 (SEC-004): created owner-only (see EVIDENCE_FILE_MODE) — output
+ * tails may contain secrets even after redaction (best-effort, not a
+ * guarantee).
+ *
+ * CONTAINMENT (SEC-003): `spec` and `spec/evidence` must be REAL directories
+ * (a symlink refuses the write, naming the link) and the evidence dir must
+ * resolve inside the resolved spec root. Checked BEFORE any directory is
+ * created, so a hostile tree sees zero writes.
  *
  * ATOMICITY (DATA-001): the file is staged and swapped into place with a
- * rename under the per-root revision lock — a rerun can never truncate a
- * live evidence file to zero bytes mid-crash, and a failed swap leaves the
- * previous evidence byte-identical.
+ * rename under the per-root revision lock — the write is all-or-nothing.
  */
 async function writeEvidence(
   dir: string,
   taskId: string,
   nowIso: string,
   outcomes: CheckOutcome[],
-): Promise<void> {
+): Promise<string> {
+  // SEC-003, in order: verify spec/ and evidence/ BEFORE creating anything
+  // through them. The pre-mkdir walk catches a DANGLING evidence symlink
+  // (mkdir recursive would otherwise create the target through the link);
+  // the post-mkdir walk catches a link to an existing directory.
+  assertNoSymlinkBelow(dir, ['spec']);
   const evidenceDir = join(dir, 'spec', 'evidence');
+  assertNoSymlinkBelow(dir, ['spec', 'evidence']);
   mkdirSync(evidenceDir, { recursive: true });
+  assertNoSymlinkBelow(dir, ['spec', 'evidence']);
+  const rootReal = realpathSync(dir);
+  const evidenceReal = realpathSync(evidenceDir);
+  if (!isInside(rootReal, evidenceReal)) {
+    throw new PathEscapeError(
+      evidenceDir,
+      `resolves to ${evidenceReal}, outside the spec root ${rootReal}`,
+    );
+  }
+
   const lock = acquireSpecRootLock(dir, nowIso);
   try {
+    const name = evidenceRunName(evidenceDir, taskId, nowIso);
     swapFilesAtomically(evidenceDir, [
       {
-        name: `${taskId}-check.json`,
+        name,
+        mode: EVIDENCE_FILE_MODE,
         content: {
           task_id: taskId,
           checkedAt: nowIso,
@@ -262,6 +555,7 @@ async function writeEvidence(
         },
       },
     ]);
+    return join(evidenceDir, name);
   } finally {
     lock.release();
   }
