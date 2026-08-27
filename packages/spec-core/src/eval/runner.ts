@@ -50,6 +50,13 @@ export interface PipelineUsage {
   callsWithoutUsage: number;
   /** False when at least one contributing response lacked usage (UX-003). */
   usageKnown: boolean;
+  /**
+   * Sum of the UTF-8 byte lengths of every prompt sent (PERF-001) — measured
+   * locally by the runner, so it is exact and known even when the provider
+   * reports no token usage. Retries repeat the full prompt (schema embed
+   * included); this counter makes that repetition visible instead of guessed.
+   */
+  promptBytes: number;
 }
 
 /**
@@ -241,6 +248,7 @@ export async function runPipeline(
     attempts: 0,
     callsWithoutUsage: 0,
     usageKnown: true,
+    promptBytes: 0,
   };
 
   // UX-001: one completion = one logical call; transport attempts are the
@@ -260,6 +268,7 @@ export async function runPipeline(
       budget?.chargeAttempts(1);
     }
     usage.calls += 1;
+    usage.promptBytes += new TextEncoder().encode(prompt).length;
     usage.attempts += attempts;
     if (res.usage) {
       usage.in += res.usage.in_tokens;
@@ -279,6 +288,7 @@ export async function runPipeline(
     attempts: usage.attempts,
     callsWithoutUsage: usage.callsWithoutUsage,
     usageKnown: usage.usageKnown,
+    promptBytes: usage.promptBytes,
   });
 
   const blocked = (reasons: string[], degraded = false): PipelineOutcome => ({

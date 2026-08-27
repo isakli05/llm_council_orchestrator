@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (1078 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe, yayın kapısı)
+pnpm --filter ./packages/spec-core test    # vitest (1158 test: şema, derleyici, lint, eval, CLI, check, MCP, bütçe, yayın kapısı, ölçek-tavanı)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -431,11 +431,17 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
   değer exit 2). İptal temizdir: boru hattı sıkı sıkıya sıralıdır, ödenememiş
   promise bırakmaz; HTTP adaptörü bütçe defterini deneme BAŞINA şarj eder, cap
   dolunca bir sonraki istek hiç gönderilmez.
-- **Kullanım muhasebesi (UX-001 + UX-003):** özetler tamamlama ve HTTP denemesini
-  ayrı ayrı gösterir (`N LLM call(s) / M HTTP attempt(s)` — zaman aşımına uğrayan
-  denemeler dahil). Sağlayıcı usage BİLDİRMEDİĞİNDE token sayıları `unknown`
+- **Kullanım muhasebesi (UX-001 + UX-003 + PERF-001):** özetler tamamlama ve HTTP
+  denemesini ayrı ayrı gösterir (`N LLM call(s) / M HTTP attempt(s)` — zaman aşımına
+  uğrayan denemeler dahil). Sağlayıcı usage BİLDİRMEDİĞİNDE token sayıları `unknown`
   görünür — asla `0 in / 0 out` değil; G4 maliyet koşulu da unknown'ı geçmez
-  (`0 <= 3×0` kanıt değildir).
+  (`0 <= 3×0` kanıt değildir). Ayrıca koşunun gönderdiği **prompt baytları**
+  (`K prompt bytes`) koşucu tarafından YEREL olarak ölçülür ve her durumda raporlanır —
+  gömülü şema (~21 KiB) bundle üreten her çağrıda ve her doğrulama-retry'inde
+  tekrarlanır; bu maliyet tahmin edilmez, sayılır. Prompt önbellekleme/BJM
+  referanslama BİLİNÇLİ olarak ertelenmiştir: sağlayıcılar önbellek anahtarı ve
+  isabet raporlaması açısından farklıdır, koşucu sağlayıcı-agnostiktir; ölçüm önce
+  gelir, önbellekleme ölçülen bir maliyeti gerekçelendirdiğinde eklenir.
 - **Env sözleşmesi (fail-closed):** `LCO_LLM_BASE_URL`, `LCO_LLM_API_KEY` ve
   `LCO_LLM_MODEL` kullanıcı tarafından açıkça sağlanmalıdır; biri eksikse komut yarım
   yapılandırmayla devam etmez, exit 2 verir. İsteğe bağlı: `LCO_LLM_MAX_TOKENS`
@@ -710,6 +716,63 @@ Bilinmeyen anahtar **her yerde reddedilir**, sessizce silinmez:
   (`additionalProperties: false`) hizalıdır. (Bu paketin eski sürümündeki "zod siler /
   JSON Şema reddeder" yüzey farkı, tamamlama planının şema-sıkılaştırma göreviyle
   kapatıldı.)
+
+## L12 Kapsam-Örtüşme Semantiği (BACK-007)
+
+`L12_SCOPE_OVERLAP` bir ERROR'dur ve dondurma kapısıdır; bu yüzden örtüşme modeli
+yaklaşıklık değil, TANIMLI bir desen dili üzerinde kesindir:
+
+- **Desen dili** (`permitted_scope` glob'ları): `/`-ayrılmış segment dizisi;
+  segment içinde edebi karakter kendini, `?` TAM OLARAK BİR karakteri (`/` hariç),
+  `*` SIFIR VEYA DAHA FAZLA karakteri (`/` hariç; ardışık yıldızlar tektir:
+  `a**b` = `a*b`), yanlızca `**` yazılan segment İSTENEN SAYIDA segmenti (sıfır
+  dahil) eşler (`src/**` → `src` kendisi ve altındaki her şey). `\` `/`'ye
+  normalize edilir; boş segmentler (`//`, sonaki `/`) atılır. Bu dilin dışındaki
+  dizeler (karakter sınıfları, küme parantezleri) edebi kabul edilir.
+- **Örtüşme tanımı:** iki glob, İKİSİNİ de sağlayan bir dosya yolu VARsa örtüşür.
+  Bu alt küme için kesin hesaplanır (segment-birleşim + `**`-farkındalıklı yol DP;
+  `src/lint/rules/l12.ts` — birim-test edilmiş saf fonksiyonlar, tablo + kaba-kuvvet
+  çapraz denetim ile). Sonuç: `src/*.ts` ile `src/*.md` KANITLANARAK ayrıktır
+  (uzantı farkı tanık gerektirir), `src/*.ts` ile `src/*.t?` kanıtlanarak örtüşür
+  (`src/a.ts` tanığı), `*` asla `/` geçmez.
+- **Sıralama semantiği:** çakışma, iki görev arasında bir `depends_on` YOLU
+  (geçişli kapanış; A←B←C zinciri de dahil) VARSA bastırılır — doğrudan kenar
+  yeterli ama gerekli değildir. Kayıtlı gerekçe: zincir de aynı şekilde serileştirir,
+  tavlama denetimin adını verdiği yanlış-pozitif sınıfıydı; kapanış girdi
+  tavanlarındaki boyutlarda ucuzdur (iteratif DFS; derin zincillerde yığın taşması
+  yok); döngü içindeki her çift "sıralı" sayılır ama döngü zaten L04'ün hatasıdır.
+  Elmas ortası (B ve C ikisi de A'ya bağlı, aralarında yol YOK) hâlâ işaretlenir —
+  gerçekten paralel koşabilirler.
+- Hata mesajı çareyi adlandırır: görevler arasına `depends_on` yolu ekle YA DA
+  kapsamları ayır.
+
+## Girdi Tavanları (PERF-001)
+
+Şema, kareli lint/hash işlerinin KoşMASINDAN ÖNCE girdiyi sınırlar (düşmanca MCP
+girdisi ve başıboş LLM çıktısı için bir duvar — seyyar tripwire değil). Tavanlar
+fixture/eval bünyesindeki en büyük gözlemlenen kullanımın ~10x+ üstünde seçildi
+(ölçüm önce yapıldı; tam tablo `src/schemas/limits.ts` başlığında):
+
+| Alan | Ölçülen max | Tavan |
+| --- | --- | --- |
+| görev / bundle | 4 | 100 |
+| requirement / karar / kanıt / sözlük / varsayım / sözleşme | 1–4 | 100 (her biri) |
+| `refs.*`, `depends_on`, `permitted_scope`, `protected` (görev başına) | 0–2 | 50 |
+| `tests`, `verification` (görev başına) | 1 | 20 |
+| test case sayısı (test başına) | 2 | 50 |
+| `title` | 25 krk | 500 |
+| `purpose` / `rollback` | 63–73 krk | 4.000 |
+| `instructions` | 111 krk | 20.000 |
+| liste öğesi / komut / dosya-yolu | ≤83 krk | 1.000–2.000 |
+| `intent.statement` | 111 krk | 100.000 (niyet yankısı uzun olabilir) |
+
+**KIRICI SIKILAŞTIRMA:** tavanan aşan bundle şema hatasıyla reddedilir ve hata
+limiti + çareyi adlandırır (`bundle exceeds 100 tasks — split the spec into
+separately frozen bundles`). Ölçek regresyonu `src/scale-benchmark.test.ts` ile
+korumalıdır: 10/100/1000 görevlik deterministik sentetik bundle'lar üzerinde
+L12 + kapanış + lint + hash + derleme, cömert (~10x) tavanların altında
+kalmalıdır (turuncu değil kırmızı bir sınır — aşıldığında mertibe regresyonu var
+demektir).
 
 ## Şema Sürümü ve Uyumluluk Politikası (`lco-spec/1.x`)
 
@@ -1009,6 +1072,13 @@ commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
 izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
 birlikte yaşar (bkz. "Yayın ve Sahiplik").
 
+- **2026-08-27 — P3-1 (bu aşama):** L12 kapsam-örtüşme semantiği (BACK-007) — tanımlı
+  glob alt kümesi (edebi/`?`/`*`/segment-`**`), kesin örtüşme modeli (tablo +
+  kaba-kuvvet çapraz denetimli saf fonksiyonlar; `src/*.ts` vs `src/*.md` artık
+  kanıtlanarak ayrık), bağımlılık-yolu (geçişli) sıralama semantiği; PERF-001 —
+  girdi tavanları (`src/schemas/limits.ts`; kırıcı sıkılaştırma), prompt-bayt
+  ölçümü kullanım satırında, Set-tabanlı test-dosya dedupe, 10/100/1000-görev
+  ölçek-tavanı testi — 1158 test.
 - **2026-08-27 — P2-6 (bu aşama):** yayın sahipliği/provenance — kirli/etiketsiz yayın
   yasağı (test edilen karar çekirdeği `src/release/readiness.ts` + sınır betiği
   `scripts/prepublish-check.js`, `prepublishOnly`'ye bağlı), manuel

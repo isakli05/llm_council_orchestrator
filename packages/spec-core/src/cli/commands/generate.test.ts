@@ -300,6 +300,9 @@ describe('cmdGenerate — spec outcome', () => {
     expect(result.output).toContain('single');
     expect(result.output).toContain('1');
     expect(result.output).toContain('10 in / 5 out tokens');
+    // PERF-001: prompt cost is MEASURED, not estimated — the usage line names
+    // the exact UTF-8 prompt bytes the run sent (schema embed included).
+    expect(result.output).toMatch(/\d+ prompt bytes/);
     expect(result.output).toContain('state: draft');
     expect(result.output).toContain('lco lint');
 
