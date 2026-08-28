@@ -149,6 +149,7 @@ export function createHttpLlm(budget?: BudgetLedger): LlmAdapter {
 
         if (attempt > 1) await sleep(BACKOFF_MS[attempt - 2]);
 
+        const attemptStart = Date.now();
         let res: Response;
         try {
           res = await fetch(endpoint, {
@@ -162,7 +163,21 @@ export function createHttpLlm(budget?: BudgetLedger): LlmAdapter {
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          lastError = new Error(`LLM HTTP request to ${endpoint} failed: ${msg}`);
+          // TRANSPORT DIAGNOSTIC (2026-08-28): fetch-level TypeErrors hide the
+          // syscall cause (ECONNRESET / ETIMEDOUT / ENETUNREACH / TimeoutError
+          // …); surface it in the error text and per-attempt on stderr so a
+          // failing live run leaves a fingerprint instead of a bare
+          // 'fetch failed'. No secrets — codes and timings only.
+          const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+          const causePart = cause
+            ? ` [cause: ${cause.code ?? 'unknown'}${cause.message ? ` ${cause.message.slice(0, 80)}` : ''}]`
+            : '';
+          lastError = new Error(
+            `LLM HTTP request to ${endpoint} failed: ${msg}${causePart}`,
+          );
+          console.error(
+            `[live-transport] attempt ${attempt}/${MAX_ATTEMPTS} failed after ${Date.now() - attemptStart}ms: ${err instanceof Error ? err.name : typeof err}: ${msg}${causePart}`,
+          );
           continue; // transport error → retry
         }
 
