@@ -357,3 +357,24 @@ The live variant requires the owner's explicit authorization and the
 `LCO_LLM_*` environment (the CLI refuses to run half-configured); it is out
 of scope for this pre-registration document to authorize and unperformed as
 of the freeze date.
+
+## Planned post-run change (v3 — registered BEFORE the v2 run's results are viewed)
+
+The owner asked (2026-08-29, during the v2 run) for a prompt instruction
+steering technology-stack assumptions toward current stable versions. It is
+NOT applied to the running experiment (prompts.ts is inside the enforced
+lock; a mid-run edit would halt repeats 2-3 at verification and produce
+mixed-protocol data). The planned v3 prompt delta, to be appended to the
+PITFALLS block under a NEW lock entry only after the v2 run completes:
+
+  '- When the intent does not name a technology and you must ASSUME a stack
+     for verification executability, prefer the newest current-stable/LTS
+     line you know (e.g. the newest Node.js LTS), name the exact version,
+     and record the choice as an assumption with impact_if_wrong — never
+     an EOL or near-EOL line.'
+
+Rationale: stack choice is assumption-domain (intents name no stack), both
+variants receive the same prompt, so the steering cannot bias the
+council-vs-single comparison. The stronger alternative — naming the stack
+IN an intent, making it an intent-named constraint the checker enforces
+verbatim — remains available for any future corpus revision.
