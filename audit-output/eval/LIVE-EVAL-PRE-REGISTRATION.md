@@ -182,10 +182,24 @@ must-block):
 | dimension | minimum | worst case |
 | --- | --- | --- |
 | logical completions | 240 | 540 |
-| HTTP attempts | 240 | 2,160 |
-| wall time (sequential) | >= 240 requests' latency | 110.5h (540 x 737s) |
+| HTTP attempts | 240 | 4,320 |
+| wall time (sequential) | >= 240 requests' latency | 286.8h (540 x 1912s) |
 | input tokens (bytes/4 heuristic) | ~ 1.38M (each call at its own min size) | >= 5,085,180 |
 | output tokens | provider-default cap x 240 | provider-default cap x 540 |
+
+> **Transport hardening note (2026-08-28, BEFORE any live unit completed):**
+> the first launch attempt failed with `fetch failed (after 4 attempts)` —
+> diagnosed as a multi-minute edge-IP brownout on the provider endpoint
+> (multi-POP DNS; one POP intermittently unreachable from this network). The
+> transport retry ceiling in `src/eval/llm/http.ts` (OUTSIDE the frozen rubric
+> lock — transport, not scoring) was raised from 4 attempts x 2/5/10s backoff
+> to 8 attempts x 2/5/15/30/60/120/240s backoff. This changes NO experiment
+> semantics: identical-request retries on infrastructure failures, no partial
+> answers kept, and the logical completions / token envelope is unchanged —
+> only the failure-path attempt ceiling (worst-case HTTP attempts 2,160 →
+> 4,320; per-completion worst wall 737s → 1912s) and hence the sequential
+> wall-time ceiling (110.5h → 286.8h). The first attempt emitted ZERO units
+> (no data exists), so nothing about the registered exam changed.
 
 Measured prompt sizes over the frozen 2026-08-28 corpus (the real templates
 the runner sends; UTF-8 bytes):

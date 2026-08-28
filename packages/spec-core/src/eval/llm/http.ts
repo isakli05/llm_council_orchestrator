@@ -20,8 +20,13 @@ import type { BudgetLedger } from '../budget';
  *
  * TRANSPORT RETRY (live-run robustness): transport-level failures (fetch
  * 'fetch failed', timeouts) and transient statuses (429, 5xx) are retried up
- * to HTTP_MAX_ATTEMPTS_PER_COMPLETION=4 total attempts with 2s/5s/10s backoff
- * and a 180s per-request timeout. Retrying the IDENTICAL request on
+ * to HTTP_MAX_ATTEMPTS_PER_COMPLETION=8 total attempts with
+ * 2s/5s/15s/30s/60s/120s/240s backoff and a 180s per-request timeout.
+ * (2026-08-28: raised from 4×[2/5/10s] after the first live run hit a
+ * multi-minute edge-IP brownout — api.z.ai resolves to several edge POPs and
+ * one of them flapped to unreachable from this network; a ~6-minute black
+ * window exhausted the old 4-attempt budget. Longer spacing rides out
+ * brownouts; success cost is zero.) Retrying the IDENTICAL request on
  * infrastructure errors does not alter experiment results (no partial answers
  * are kept); non-retryable 4xx fails immediately — auth/protocol errors are
  * never hammered. A 2xx with unparseable/missing payload still fails closed
@@ -36,11 +41,11 @@ import type { BudgetLedger } from '../budget';
  */
 
 /** Total HTTP attempts one complete() may make (transport retry ceiling). */
-export const HTTP_MAX_ATTEMPTS_PER_COMPLETION = 4;
-const BACKOFF_MS = [2_000, 5_000, 10_000];
+export const HTTP_MAX_ATTEMPTS_PER_COMPLETION = 8;
+const BACKOFF_MS = [2_000, 5_000, 15_000, 30_000, 60_000, 120_000, 240_000];
 /** Per-request timeout (every attempt gets its own). */
 export const HTTP_REQUEST_TIMEOUT_MS = 180_000;
-/** Total backoff sleep between the 4 attempts of one exhausted completion. */
+/** Total backoff sleep between the 8 attempts of one exhausted completion. */
 export const HTTP_BACKOFF_TOTAL_MS = BACKOFF_MS.reduce((a, b) => a + b, 0);
 
 const MAX_ATTEMPTS = HTTP_MAX_ATTEMPTS_PER_COMPLETION;

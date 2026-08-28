@@ -39,18 +39,18 @@ function et01Bundle(): SpecBundle {
 // --- envelope math (from code constants) ----------------------------------
 
 describe('request envelope — derived from code constants', () => {
-  it('worst-case attempts = max completions x HTTP attempts per completion (12 single / 24 council)', () => {
-    expect(HTTP_MAX_ATTEMPTS_PER_COMPLETION).toBe(4);
+  it('worst-case attempts = max completions x HTTP attempts per completion (24 single / 48 council, 2026-08-28 transport hardening)', () => {
+    expect(HTTP_MAX_ATTEMPTS_PER_COMPLETION).toBe(8);
     expect(MAX_COMPLETIONS.single).toBe(3);
     expect(MAX_COMPLETIONS.council).toBe(6);
-    expect(worstCaseAttempts('single')).toBe(3 * 4);
-    expect(worstCaseAttempts('council')).toBe(6 * 4);
+    expect(worstCaseAttempts('single')).toBe(3 * 8);
+    expect(worstCaseAttempts('council')).toBe(6 * 8);
   });
 
-  it('worst-case wall = completions x (4 x 180s timeout + 17s total backoff)', () => {
+  it('worst-case wall = completions x (8 x 180s timeout + 472s total backoff)', () => {
     expect(HTTP_REQUEST_TIMEOUT_MS).toBe(180_000);
-    expect(HTTP_BACKOFF_TOTAL_MS).toBe(2_000 + 5_000 + 10_000);
-    const perCompletion = 4 * 180_000 + 17_000; // 737s
+    expect(HTTP_BACKOFF_TOTAL_MS).toBe(2_000 + 5_000 + 15_000 + 30_000 + 60_000 + 120_000 + 240_000);
+    const perCompletion = 8 * 180_000 + 472_000; // 1912s
     expect(worstCaseWallMs('single')).toBe(3 * perCompletion);
     expect(worstCaseWallMs('council')).toBe(6 * perCompletion);
   });

@@ -17,40 +17,40 @@ describe('computeCostEnvelope — per-task envelope (UX-001 parity)', () => {
     expect(e.mustBlock).toBe(8);
   });
 
-  it('pins the UX-001 envelope: single 1..3 completions / 4..12 attempts, council 3..6 / 12..24 per task', () => {
+  it('pins the transport-hardened envelope (2026-08-28: 8 attempts/completion): single 1..3 completions / 8..24 attempts, council 3..6 / 24..48 per task', () => {
     const single = e.perVariant.find((v) => v.variant === 'single')!;
     const council = e.perVariant.find((v) => v.variant === 'council')!;
     expect(single.minCompletionsPerTask).toBe(1);
     expect(single.maxCompletionsPerTask).toBe(3);
     expect(single.minAttemptsPerTask).toBe(1);
-    expect(single.maxAttemptsPerTask).toBe(12); // UX-001's documented worst case
+    expect(single.maxAttemptsPerTask).toBe(24); // 3 completions x 8 transport attempts
     expect(council.minCompletionsPerTask).toBe(3);
     expect(council.maxCompletionsPerTask).toBe(6);
     expect(council.minAttemptsPerTask).toBe(3);
-    expect(council.maxAttemptsPerTask).toBe(24); // UX-001's documented worst case
+    expect(council.maxAttemptsPerTask).toBe(48); // 6 completions x 8 transport attempts
   });
 
-  it('per-completion worst wall = 4 x 180s + 17s backoff = 737s', () => {
-    expect(e.httpMaxAttemptsPerCompletion).toBe(4);
+  it('per-completion worst wall = 8 x 180s + 472s backoff = 1912s (2026-08-28 transport hardening)', () => {
+    expect(e.httpMaxAttemptsPerCompletion).toBe(8);
     expect(e.httpRequestTimeoutSeconds).toBe(180);
-    expect(e.perCompletionWorstWallSeconds).toBe(737);
+    expect(e.perCompletionWorstWallSeconds).toBe(1912);
   });
 });
 
 describe('computeCostEnvelope — full corpus at 3 repeats', () => {
   const e = computeCostEnvelope(3);
 
-  it('completions 240..540 and attempts 240..2160 (both variants, 20 tasks, 3 repeats)', () => {
+  it('completions 240..540 and attempts 240..4320 (both variants, 20 tasks, 3 repeats)', () => {
     // min: single 1 + council 3 = 4 completions / 4 attempts per task per repeat
     expect(e.fullCorpus.minCompletions).toBe(20 * 3 * (1 + 3)).toBe(240);
-    // max: 3 + 6 = 9 completions; attempts 12 + 24 = 36
+    // max: 3 + 6 = 9 completions; attempts 24 + 48 = 72
     expect(e.fullCorpus.maxCompletions).toBe(20 * 3 * (3 + 6)).toBe(540);
     expect(e.fullCorpus.minAttempts).toBe(240);
-    expect(e.fullCorpus.maxAttempts).toBe(20 * 3 * (12 + 24)).toBe(2160);
+    expect(e.fullCorpus.maxAttempts).toBe(20 * 3 * (24 + 48)).toBe(4320);
   });
 
-  it('worst-case wall = 540 completions x 737s = 397,980s ≈ 110.6h', () => {
-    expect(e.fullCorpus.worstCaseWallSeconds).toBe(540 * 737);
+  it('worst-case wall = 540 completions x 1912s = 1,032,480s ≈ 286.8h', () => {
+    expect(e.fullCorpus.worstCaseWallSeconds).toBe(540 * 1912);
   });
 
   it('prompt sizes are measured, positive, and the bundle-producing templates dominate (schema embed)', () => {
@@ -80,10 +80,10 @@ describe('renderCostEnvelopeTable', () => {
   it('emits the dimensions the pre-registration table cites', () => {
     const text = renderCostEnvelopeTable(computeCostEnvelope(3));
     expect(text).toContain('| logical completions per task | 1..3 | 3..6 |');
-    expect(text).toContain('| HTTP attempts per task | 1..12 | 3..24 |');
+    expect(text).toContain('| HTTP attempts per task | 1..24 | 3..48 |');
     expect(text).toContain('logical completions: 240..540');
-    expect(text).toContain('HTTP attempts: 240..2160');
-    expect(text).toContain(`worst-case wall time: ${(397_980 / 3600).toFixed(1)}h`);
+    expect(text).toContain('HTTP attempts: 240..4320');
+    expect(text).toContain(`worst-case wall time: ${(1_032_480 / 3600).toFixed(1)}h`);
     expect(text).toContain('bytes/4 heuristic');
   });
 });

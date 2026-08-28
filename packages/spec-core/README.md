@@ -442,13 +442,15 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
 - **Dürüst maliyet zarfı (UX-001):** "3 çağrı" değil, gerçek en-kötü-case zarf —
   **HTTP denemesi (attempt) ≠ tamamlama (completion)**. Doğrulama-informed
   retry'ler tamamlama sayısını, transport retry'ler deneme sayısını büyütür. Her
-  tamamlama en fazla 4 HTTP denemesi yapabilir (her deneme 180 s zaman aşımı,
-  tükenen denemeler arası toplam 17 s backoff: 2+5+10):
+  tamamlama en fazla 8 HTTP denemesi yapabilir (her deneme 180 s zaman aşımı,
+  tükenen denemeler arası toplam 472 s backoff: 2+5+15+30+60+120+240 —
+  2026-08-28 transport sıkılaştırması, çok-dakikalık kenar-IP karartmalarına
+  karşı; başarılı isteklerde ek maliyet sıfır):
 
   | variant | tamamlama (iyi → en kötü) | HTTP denemesi (en kötü) | en-kötü duvar süresi |
   | --- | --- | --- | --- |
-  | single | 1 → 3 | 3 × 4 = **12** istek | 3 × (4×180 s + 17 s) = 2211 saniye (~36,9 dk) |
-  | council | 3 → 6 | 6 × 4 = **24** istek | 6 × (4×180 s + 17 s) = 4422 saniye (~73,7 dk) |
+  | single | 1 → 3 | 3 × 8 = **24** istek | 3 × (8×180 s + 472 s) = 5736 saniye (~95,6 dk) |
+  | council | 3 → 6 | 6 × 8 = **48** istek | 6 × (8×180 s + 472 s) = 11472 saniye (~191,2 dk) |
 
   (Sayılar kod sabitlerinden türetilir — `eval/budget.ts`; `budget.test.ts`
   README'yi bu sabitlere sabitler, doküman kayarsa test düşer.)
