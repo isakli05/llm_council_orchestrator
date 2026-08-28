@@ -214,6 +214,24 @@ must-block):
 > (`setDefaultResultOrder('ipv4first')` in the transport module). Transport
 > only; corpus, constraints, prompts, scoring, thresholds, and the lock hash
 > `4d63a82b…` are untouched.
+>
+> **Transport note v3 (2026-08-28, still before any aggregated result):** with
+> the POP pinned, the next invocation produced the decisive fingerprint:
+> `[live-transport] attempt 1/8 failed after 180005ms: TimeoutError` — the
+> connection SURVIVES minutes of silent generation; the adapter's own 180s
+> per-request ceiling was killing healthy non-streaming completions (the
+> reasoning model legitimately holds ~30KB-prompt completions open for
+> minutes). Changes, all transport/config, all before any unit has ever been
+> aggregated: (a) per-request timeout 180s → 600s; (b) the endpoint host is
+> pinned to a single healthy edge POP via a marked, temporary /etc/hosts
+> entry (removed after the run) because resolver round-robin between edge
+> POPs intermittently produced fast connect ETIMEDOUT; (c) the owner-visible
+> config knob `LCO_LLM_MAX_TOKENS=16000` bounds output size (far above any
+> spec the corpus needs; prevents runaway generations only). Thinking/reasoning
+> stays ENABLED — the exam tests the model as configured by its provider.
+> Corpus, constraints, prompts, scoring, thresholds, and the lock hash
+> `4d63a82b…` remain untouched; each failed invocation was discarded whole
+> under the registered crash-resilience rule.
 
 Measured prompt sizes over the frozen 2026-08-28 corpus (the real templates
 the runner sends; UTF-8 bytes):

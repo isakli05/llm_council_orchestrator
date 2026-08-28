@@ -47,10 +47,10 @@ describe('request envelope — derived from code constants', () => {
     expect(worstCaseAttempts('council')).toBe(6 * 8);
   });
 
-  it('worst-case wall = completions x (8 x 180s timeout + 472s total backoff)', () => {
-    expect(HTTP_REQUEST_TIMEOUT_MS).toBe(180_000);
+  it('worst-case wall = completions x (8 x 600s timeout + 472s total backoff)', () => {
+    expect(HTTP_REQUEST_TIMEOUT_MS).toBe(600_000);
     expect(HTTP_BACKOFF_TOTAL_MS).toBe(2_000 + 5_000 + 15_000 + 30_000 + 60_000 + 120_000 + 240_000);
-    const perCompletion = 8 * 180_000 + 472_000; // 1912s
+    const perCompletion = 8 * 600_000 + 472_000; // 5272s (2026-08-28: 600s request ceiling)
     expect(worstCaseWallMs('single')).toBe(3 * perCompletion);
     expect(worstCaseWallMs('council')).toBe(6 * perCompletion);
   });

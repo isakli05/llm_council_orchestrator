@@ -438,9 +438,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/llm/http.ts": {
-    "mtime": 1787931861.9363165,
-    "seen": 1787931907.3472903,
-    "ast_hash": "adc85f45ff8c4dd5fec2b09a90d04bbb",
+    "mtime": 1787932751.322332,
+    "seen": 1787932966.9678726,
+    "ast_hash": "e9c690719b9eddeb099e89148e42cb9e",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/llm/mock.test.ts": {

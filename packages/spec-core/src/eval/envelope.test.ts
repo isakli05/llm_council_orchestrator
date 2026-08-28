@@ -30,10 +30,10 @@ describe('computeCostEnvelope — per-task envelope (UX-001 parity)', () => {
     expect(council.maxAttemptsPerTask).toBe(48); // 6 completions x 8 transport attempts
   });
 
-  it('per-completion worst wall = 8 x 180s + 472s backoff = 1912s (2026-08-28 transport hardening)', () => {
+  it('per-completion worst wall = 8 x 600s + 472s backoff = 5272s (2026-08-28 transport hardening, 600s ceiling)', () => {
     expect(e.httpMaxAttemptsPerCompletion).toBe(8);
-    expect(e.httpRequestTimeoutSeconds).toBe(180);
-    expect(e.perCompletionWorstWallSeconds).toBe(1912);
+    expect(e.httpRequestTimeoutSeconds).toBe(600);
+    expect(e.perCompletionWorstWallSeconds).toBe(5272);
   });
 });
 
@@ -49,8 +49,8 @@ describe('computeCostEnvelope — full corpus at 3 repeats', () => {
     expect(e.fullCorpus.maxAttempts).toBe(20 * 3 * (24 + 48)).toBe(4320);
   });
 
-  it('worst-case wall = 540 completions x 1912s = 1,032,480s ≈ 286.8h', () => {
-    expect(e.fullCorpus.worstCaseWallSeconds).toBe(540 * 1912);
+  it('worst-case wall = 540 completions x 5272s = 2,846,880s ≈ 790.8h', () => {
+    expect(e.fullCorpus.worstCaseWallSeconds).toBe(540 * 5272);
   });
 
   it('prompt sizes are measured, positive, and the bundle-producing templates dominate (schema embed)', () => {
@@ -83,7 +83,7 @@ describe('renderCostEnvelopeTable', () => {
     expect(text).toContain('| HTTP attempts per task | 1..24 | 3..48 |');
     expect(text).toContain('logical completions: 240..540');
     expect(text).toContain('HTTP attempts: 240..4320');
-    expect(text).toContain(`worst-case wall time: ${(1_032_480 / 3600).toFixed(1)}h`);
+    expect(text).toContain(`worst-case wall time: ${(2_846_880 / 3600).toFixed(1)}h`);
     expect(text).toContain('bytes/4 heuristic');
   });
 });
