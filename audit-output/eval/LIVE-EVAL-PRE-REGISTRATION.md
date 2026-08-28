@@ -1,16 +1,45 @@
 # Live-Eval Pre-Registration (RESIDUAL PROD-003)
 
-Status: PRE-REGISTERED, NO RESULTS. This document records the pass criteria,
-the frozen corpus/threshold/rubric identity, the model identity, and the
-deterministic run/cost envelope for a FUTURE owner-authorized live eval run.
-**No live run is authorized or performed by this document.** No live results
-have been viewed under the corpus frozen here.
+Status: **RUN v1 EXECUTED AND STOPPED BY OWNER DECISION (2026-08-28/29); v2
+REGISTERED BELOW FOR THE RE-RUN.** The pass criteria, the statistic, and the
+claim rule are UNCHANGED from v1 to v2; the only delta is the prompt-contract
+fix recorded here. This document records the full chain.
 
-- Frozen (enforced entry): **2026-08-28**, branch `feat/external-audit-residual-closure`
+## Run v1 outcome (executed 2026-08-28 evening, stopped at 31/120 units by owner decision after a 100%-consistent pattern)
+
+- Every greenfield unit (24/24 across ET-01..ET-12, both variants) was BLOCKED
+  at the generation lifecycle gate with the identical fingerprint: the model
+  produced schema-VALID bundles whose `manifest.state` was `'reviewed'` and
+  whose `manifest.artifact_hashes` were filled — i.e. a freshly-FREEZED-looking
+  bundle instead of a fresh DRAFT. The gate rejected every one (correct
+  behavior; 0 escapes).
+- Every must-block unit reaching completion (ET-13..ET-15, both variants) was
+  blocked CORRECTLY.
+- Usage accounting complete on all emitted units (`usageKnown: true`).
+- Partial data archived at `eval-live-output/v1-partial/` (31 units + log);
+  never aggregated; **no claim is drawn from v1** — under v1 zero greenfield
+  intent-fidelity-passing runs exist, so the paired statistic has zero pairs:
+  the v1 claim outcome is simply "not measurable", reported as such.
+- v1's enforced lock was `4d63a82b…` (history entry 3).
+
+## v2 re-registration (the only change: prompt contract)
+
+- Delta: two LIFECYCLE CONTRACT lines added to the shared PITFALLS block of
+  `src/eval/prompts.ts` (fresh DRAFT state only — never reviewed/frozen;
+  `artifact_hashes` must be `{}`; `frozen_at` absent), a direct response to
+  the v1 fingerprint. Corpus, constraints, scoring, thresholds, statistic,
+  and claim rule are byte-identical in effect. prompts.ts is INSIDE the lock,
+  so this change is recorded as a new history entry — it could not have been
+  made silently.
+- v2 enforced lock hash (verified on every eval entrypoint — mismatch aborts):
+  **`sha256:15884058855bca962648a4393c1c7e1ff1f7bfe137a831ca48c45b8b0ce0d5aa`**
+  (history entry 4, dated 2026-08-28 UTC — the re-registration ran after local midnight; note in the lock file; chain behind it:
+  e9c5e3b0 → 0024fef9 → 4d63a82b → 15884058).
+- Frozen (enforced entry): **2026-08-28 (UTC; local 2026-08-29 early morning)**, branch `feat/external-audit-residual-closure`
 - Corpus + threshold + rubric lock: `packages/spec-core/src/eval/corpus-lock.json`
 - Enforced lock hash (verified on every eval entrypoint — mismatch aborts the run):
-  **`sha256:4d63a82b3449382398f558484ea4763e485f9de988e6e4ed49ef72c18e2ee321`**
-  (history entry 3, dated 2026-08-28; the append-only chain behind it is
+  **`sha256:15884058855bca962648a4393c1c7e1ff1f7bfe137a831ca48c45b8b0ce0d5aa`**
+  (history entry 4; the append-only chain behind it is
   history entry 1 — the original 2026-08-27 pre-registration freeze,
   `sha256:e9c5e3b0f50953387df13ddad88907216ff99f5f230411233525e95d8b7fb523` —
   and history entry 2 — the same-day rubric-triple scope extension,

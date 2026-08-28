@@ -23,6 +23,12 @@
       "hash": "sha256:4d63a82b3449382398f558484ea4763e485f9de988e6e4ed49ef72c18e2ee321",
       "note": "owner-directed real-workload corpus substitution; anonymized; registered before any live run (2026-08-28): ET-01..ET-12 replaced with anonymized technical paraphrases of an owner-provided B2B requirements workload — source identity withheld; blocked tasks ET-13..ET-20, gate thresholds, and rubric triple unchanged; no live results exist under any freeze",
       "previous_hash": "sha256:0024fef976487dfc464502e3d19c196682e25cbd0db7bbfe1099d9368d371c79"
+    },
+    {
+      "frozen_at": "2026-08-28",
+      "hash": "sha256:15884058855bca962648a4393c1c7e1ff1f7bfe137a831ca48c45b8b0ce0d5aa",
+      "note": "prompt-contract v2: LIFECYCLE CONTRACT pitfall lines added (fresh draft, empty artifact_hashes, no frozen_at) after the v1 live run blocked 24/24 greenfield outputs at the lifecycle gate; claim criterion unchanged; registered before the v2 run",
+      "previous_hash": "sha256:4d63a82b3449382398f558484ea4763e485f9de988e6e4ed49ef72c18e2ee321"
     }
   ],
   "hashed_rubric_files": [

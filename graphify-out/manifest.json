@@ -438,9 +438,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/llm/http.ts": {
-    "mtime": 1787932751.322332,
-    "seen": 1787932966.9678726,
-    "ast_hash": "e9c690719b9eddeb099e89148e42cb9e",
+    "mtime": 1787933426.3526719,
+    "seen": 1787933519.7496557,
+    "ast_hash": "3d976f2f935a9b21ba4015df70c3a584",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/llm/mock.test.ts": {
@@ -984,9 +984,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/budget.test.ts": {
-    "mtime": 1787930079.9914124,
-    "seen": 1787930174.3555603,
-    "ast_hash": "50f310be4af193403849c37b5ccbb166",
+    "mtime": 1787933467.4352863,
+    "seen": 1787933519.749643,
+    "ast_hash": "b3835699c57ffb6c3b8d657b0814dec3",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/budget.ts": {
@@ -1158,9 +1158,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/envelope.test.ts": {
-    "mtime": 1787929912.3477595,
-    "seen": 1787930174.355566,
-    "ast_hash": "faf640fb527b8cb0f4077c1768115b1f",
+    "mtime": 1787933467.439456,
+    "seen": 1787933519.749649,
+    "ast_hash": "2675a0eb362c5af83e40ddac326f99ad",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/envelope.ts": {

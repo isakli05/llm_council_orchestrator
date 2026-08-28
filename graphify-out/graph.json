@@ -1990,7 +1990,7 @@
       "file_type": "code",
       "norm_label": "httpchatresponse",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L74"
+      "source_location": "L78"
     },
     {
       "id": "packages_spec_core_src_eval_llm_mock_mockscript",
@@ -4386,7 +4386,7 @@
       "file_type": "code",
       "norm_label": "createhttpllm()",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L79"
+      "source_location": "L83"
     },
     {
       "id": "packages_spec_core_src_eval_llm_http_createhttpllm_parsesuccess",
@@ -4398,7 +4398,7 @@
       "file_type": "code",
       "norm_label": "parsesuccess()",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L202"
+      "source_location": "L206"
     },
     {
       "id": "packages_spec_core_src_eval_llm_mock_createmockllm",
@@ -7410,7 +7410,7 @@
       "file_type": "code",
       "norm_label": "isretryablestatus()",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L65"
+      "source_location": "L69"
     },
     {
       "id": "packages_spec_core_src_eval_llm_http_sleep",
@@ -7422,7 +7422,7 @@
       "file_type": "code",
       "norm_label": "sleep()",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L69"
+      "source_location": "L73"
     },
     {
       "id": "packages_spec_core_src_cli_commands_compile_compilefailedoutput",
@@ -7729,7 +7729,7 @@
       "file_type": "code",
       "norm_label": "http_backoff_total_ms",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L60"
+      "source_location": "L64"
     },
     {
       "id": "packages_spec_core_src_eval_llm_http_http_max_attempts_per_completion",
@@ -7740,7 +7740,7 @@
       "file_type": "code",
       "norm_label": "http_max_attempts_per_completion",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L55"
+      "source_location": "L59"
     },
     {
       "id": "packages_spec_core_src_eval_llm_http_http_request_timeout_ms",
@@ -7751,7 +7751,7 @@
       "file_type": "code",
       "norm_label": "http_request_timeout_ms",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L58"
+      "source_location": "L62"
     },
     {
       "id": "packages_spec_core_src_check_redact",
@@ -12536,7 +12536,7 @@
       "file_type": "code",
       "norm_label": "backoff_ms",
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L56"
+      "source_location": "L60"
     },
     {
       "id": "packages_spec_core_src_eval_llm_mock",
@@ -37660,7 +37660,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L55",
+      "source_location": "L59",
       "weight": 1.0
     },
     {
@@ -37671,7 +37671,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L56",
+      "source_location": "L60",
       "weight": 1.0
     },
     {
@@ -37682,7 +37682,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L58",
+      "source_location": "L62",
       "weight": 1.0
     },
     {
@@ -37693,7 +37693,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L60",
+      "source_location": "L64",
       "weight": 1.0
     },
     {
@@ -37704,7 +37704,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L65",
+      "source_location": "L69",
       "weight": 1.0
     },
     {
@@ -37715,7 +37715,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L69",
+      "source_location": "L73",
       "weight": 1.0
     },
     {
@@ -37726,7 +37726,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L74",
+      "source_location": "L78",
       "weight": 1.0
     },
     {
@@ -37737,7 +37737,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L79",
+      "source_location": "L83",
       "weight": 1.0
     },
     {
@@ -37748,7 +37748,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/llm/http.ts",
-      "source_location": "L202",
+      "source_location": "L206",
       "weight": 1.0
     },
     {
@@ -42872,5 +42872,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "232c2f7db8a8cecd337f713869cb311e2f5e08f6"
+  "built_at_commit": "5feb2f1e4b7455ce797f1571a91e322732c31a43"
 }

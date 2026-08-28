@@ -66,6 +66,8 @@ const PITFALLS = [
   '- Give every tasks[].tests[] entry an id: "TST-0001" style, unique across the whole bundle — requirements[].acceptance_refs resolve against those test ids, and an unresolvable acceptance_ref is a lint error (L13).',
   '- tasks[].verification[].expect MUST state the expected exit code as "exit N" (e.g. "exit 0", "exit 1") — the first "exit N" in the string is the contract the checker judges. Prose like "exit code 0, all cases pass" is unparseable: it is a lint error (L14) and it can never be judged or executed.',
   '- manifest.evidence_snapshot.pack_hash must look like "sha256:" followed by exactly 64 hex characters.',
+  '- LIFECYCLE CONTRACT (observed 2026-08-28 live run: 24/24 greenfield outputs arrived as a FRESHLY-FREEZED-looking bundle and every one was correctly rejected — do not repeat it): manifest.state MUST be exactly "draft" — or "blocked" ONLY if you marked UNRESOLVED items. NEVER "reviewed", "frozen", or any other value: generation produces a FRESH DRAFT only; review and freezing are separate LATER steps the engine performs, never you.',
+  '- manifest.artifact_hashes MUST be the empty object {} — never compute, guess, or fill any hash (the engine pins hashes at freeze time). manifest.frozen_at MUST be absent. A bundle that arrives pre-hashed or pre-frozen is rejected before anything else is looked at.',
 ].join('\n');
 
 /** Classification guidance shared by classifySingle and the merged single-variant template. */
