@@ -114,8 +114,8 @@ Scope notes (what this report does and does NOT establish):
 - ET-04/council rep 1: Appointment, Owner, Vaccination Record
 - ET-05/single rep 1: Chunk, Embedding
 - ET-05/council rep 1: Chunk, Embedding
-- ET-06/single rep 1: Appointment, Owner, Vaccination Record
-- ET-06/council rep 1: Appointment, Owner, Vaccination Record
+- ET-06/single rep 1: Appointment, Vaccination Record
+- ET-06/council rep 1: Appointment, Vaccination Record
 - ET-07/single rep 1: Denylist, Session
 - ET-07/council rep 1: Denylist, Session
 - ET-08/single rep 1: Deadline, Notification, Todo List

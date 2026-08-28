@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (1304 test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz)
+pnpm --filter ./packages/spec-core test    # vitest (1329 test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -898,11 +898,13 @@ doğrulaması** taşımalıdır; sayısal kısıtlar beyan edilen **operator+de�
 ilişki denetimi, köklü requirement'ın **tüm çapa cümlelerini** kapsar (kardeş cümlede
 birimi yinelyip yanlış-yönde yabancı sayı yazmak — "under 300 ms. Bursts may take up
 to 5000 ms." — ihlaldir) ve intent'in adlandırdığı bir sayı yalnızca intent'te **aynı
-birim bağlamında** geçiyorsa muaf sayılır (ET-07'nin "500 bağlantı"sı "500 ms"
-rezilini kurtarmaz). **Yasak-icat listeleri yalnızca ET-01/ET-02'de vardır** (ör.
-REST-API kararı, HTTP glossary terimi, axios — sözcük-sınırı eşleşmesiyle: 'rest'
-"restores"a, 'http' "https"in içine denk gelmez); diğer görevlerde icatlar
-**danışmaktır** (asla kapılanmaz). Terim-dökme, glossary-eko, iz'siz requirement,
+birim bağlamında** geçiyorsa muaf sayılır. **Yasak-icat listeleri yalnızca ET-02
+(`asorti` — zorunlu beden-asortisi icadı) ve ET-12'de (`POS`, `payment gateway` —
+kaynağın açıkça dışladığı ödeme-altyapısı icadı) vardır** — sözcük-sınırı
+eşleşmesiyle: 'POS' "deposit"in içine denk gelmez; diğer görevlerde icatlar
+**danışmaktır** (asla kapılanmaz). Sayısal örnekler: ET-04 `customization ≥ 150`,
+ET-06 `pool ≥ 150`, ET-07 `stock == 70`, ET-12 `proforma ≥ 35` / `receipt ≥ 65`.
+Terim-dökme, glossary-eko, iz'siz requirement,
 ilişkisiz/ölçek dışı sayı ve icat yüzeyleri **adversarial test pilisi**yle
 sabitlenmiştir (`src/eval/constraint-trace.test.ts`; 9 gerekli vaka + 2026-08-27
 inceleme vektörleri). Skor iki etikete ayrılır: **yapısal geçiş** (CONSTRAINT_TRACE
@@ -912,8 +914,10 @@ doğru bloklama). Mock'un greenfield intent geçişleri `groundIntentConstraints
 dondurması:** sha256 kilidi tam olarak {model, 20 görev, tüm kısıt beyanları, eşikler
 (G1=15, G4 çarpanı=3) ve **rubrik üçlüsünün dosya baytları** (`src/eval/prompts.ts`,
 `src/eval/constraints.ts`, `src/eval/score.ts`)} üzerinedir (`src/eval/corpus-lock.json`;
-kapsam kilit içinde `hashed_rubric_files` olarak makine-okunur; donma 2026-08-27,
-ek kilit girdisi rubrik kapsamıyla — geçmiş girdi `previous_hash` zinciriyle korunur).
+kapsam kilit içinde `hashed_rubric_files` olarak makine-okunur; ilk donma 2026-08-27,
+rubrik-kapsam genişletmesi ve **sahip-yönlendirmeli gerçek-iş korpusu (anonim
+parafrazlar) ile yeniden kayıt 2026-08-28** — geçmiş girdiler `previous_hash`
+zinciriyle korunur).
 Her eval girişi kilidi doğrular — uyumsuzluk KOŞUYU DURDURUR: **kilitli dosyalardaki
 sessiz sonuç-sonrası değişiklik koşuyu düşürür**; kilit DIŞINDAKİ dosyaların
 (gate/render/report/runner, CLI) değişikliği kilidi tetiklemez ve yalnızca git
@@ -1145,6 +1149,16 @@ commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
 izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
 birlikte yaşar (bkz. "Yayın ve Sahiplik").
 
+- **2026-08-28 — canlı deney ön-hazırlığı (sahip-yönlendirmeli):** korpusun 12
+  greenfield görevi, sahibin sağladığı gerçek-iş gereksinim belgesinden türetilmiş
+  **anonim teknik parafrazlarla** yeniden kaydedildi (kaynak kimliği gizli; 8 belirsiz
+  görev ve eşikler değişmedi); kilit geçmişe eklenen üçüncü girdiyle yeniden
+  mühürlendi (`sha256:4d63a82b…`). Canlı deney araçları: `live-experiment.js`
+  (çökmeye dayanıklı --emit-dir birim çıktıları + --aggregate toplama) ve saf
+  `signTest()` kararının üç tekrarın üzerinden hesaplanması. Ön-kayıt güncellendi:
+  model `glm-5.3` (GLM Coding Plan OpenAI-uyumlu uç), 3 tekrar × 20 görev × 2
+  varyant, koşum komutları ve anonim rapor kuralı dahil. Yayımlanan hiçbir yüzey
+  kaynak belgeyi, iş adlarını veya kişisel ayrıntıyı içermez — 1329 test.
 - **2026-08-27 — dış-denetim kalıntı kapanış programı:** SEC-003 — MCP izinli-kök
   politikası BAĞLAYICI hale geldi: etkin kök = realpath(`LCO_MCP_EXEC_ROOT`) ya da
   (pin yoksa) realpath(sunucu çalışma dizini); "politika yok" modu kaldırıldı,

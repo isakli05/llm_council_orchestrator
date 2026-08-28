@@ -1086,9 +1086,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/cli/commands/doctor.ts": {
-    "mtime": 1787847753.6843538,
-    "seen": 1787849250.325221,
-    "ast_hash": "534b55a9efe03c66afe6cb4e2f75019e",
+    "mtime": 1787849804.899071,
+    "seen": 1787849854.2675455,
+    "ast_hash": "3d70b4f39b2f24c9b4dac19baa4cee9a",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/gate.ts": {

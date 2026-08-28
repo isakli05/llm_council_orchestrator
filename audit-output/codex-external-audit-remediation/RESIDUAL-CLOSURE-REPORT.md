@@ -7,7 +7,7 @@
 
 - Starting HEAD: `c01bdeac2f964ec481f259e465a17542e6b26c24` (= origin/main, clean tree)
 - Branch: `feat/external-audit-residual-closure`
-- Ending HEAD: TBD
+- Ending HEAD: `5753aaa` (5 commits: cd6760e legacy deletion → ab45b39 graphify → b537674 spec-core residuals → ac2e125 evidence docs → 5753aaa finalization)
 - Date: 2026-08-27
 - Scope: the five residuals from the independent readiness reassessment
   (SEC-001, SEC-003, SEC-006, ARCH-001, PROD-003) plus two adjacent
@@ -37,8 +37,9 @@ the expected narrative exactly (no investigation trigger).
 
 - Repository-side verification: DONE (Lane A; evidence file `SEC001-VERIFICATION-2026-08-27.md`). All-rev grep: 3580 name-only mentions, ZERO value assignments (161 assignment-pattern hits are doc placeholders/templates). Pickaxe: 7 name-lifecycle commits only. Purge proven by positive evidence: `REDACTED-SEC-001` marker present in 92 reachable commit:file pairs; rewritten introducing commit `bf1fd09` carries the marker in `.env.test`. High-entropy scan: 0 key-shaped values. `.gitignore` covers `.env`/`.env.local`/`.env.test`; no env files tracked or present.
 - Pre-purge bundle disposition: `/tmp/lco-pre-purge.bundle` was found WORLD-READABLE (mode 644) → immediately corrected to 0600 (metadata-only inspection; never read). Owner decision pending: keep at 0600 / delete / move to encrypted owner-only storage.
-- U1 owner attestation: OUTSTANDING (owner-gated). Owner stated 2026-08-18 the key was already revoked; closure requires the dated attestation format defined in `U1-KEY-ROTATION.md`.
-- Status: repository side FIXED; overall finding USER-GATED on the U1 attestation (+ bundle disposition).
+- U1 owner attestation: **PROVIDED 2026-08-27** (owner gate, this program): key revoked at provider (re-affirming the 2026-08-18 statement); old-key requests fail authentication; any replacement only in untracked env/secret storage. Recorded in `U1-KEY-ROTATION.md`.
+- Bundle disposition: **DELETED by owner decision 2026-08-27** (after 0644→0600 correction during verification); no plaintext copy known to remain.
+- Status: **FIXED** (repository side + owner attestation + bundle cleanup all closed).
 
 ### SEC-003 — MCP allowed-root policy optional (MEDIUM)
 
@@ -85,20 +86,47 @@ the expected narrative exactly (no investigation trigger).
 
 | Gate | Decision | Date | Evidence |
 |---|---|---|---|
-| U1 key rotation attestation | TBD | | |
-| Pre-purge bundle disposition | TBD | | |
-| Live eval authorization (cost envelope) | TBD | | |
-| Push / remote CI | TBD | | |
-| npm release via Trusted Publishing | TBD | | |
+| U1 key rotation attestation | **PROVIDED — SEC-001 FIXED** | 2026-08-27 | U1-KEY-ROTATION.md attestation record (no values) |
+| Pre-purge bundle disposition | **DELETED** | 2026-08-27 | owner decision; deletion verified (file absent) |
+| Live eval authorization (cost envelope) | pending owner decision (see PROD-003) | | audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md |
+| Push / remote CI | **AUTHORIZED — push + CI green + merge to main** | 2026-08-27 | owner gate answer; CI URLs recorded below after execution |
+| npm release via Trusted Publishing | not requested (no new version due; OIDC publish remains "configured, not yet exercised") | 2026-08-27 | program note |
 
 ## 5. Final gates (clean worktree)
 
-TBD — full command table with exit codes, all 12 original runtime scenarios.
+Run from a detached clean worktree of ending HEAD (fresh checkout; `git status --short` = 0 lines). Exact exits:
+
+| Gate | Exit |
+|---|---|
+| `pnpm install --frozen-lockfile` | 0 |
+| `pnpm --filter ./packages/spec-core build` | 0 |
+| `pnpm --filter ./packages/spec-core lint` | 0 |
+| `pnpm --filter ./packages/spec-core test` | 0 — **79 files / 1304 tests** |
+| `pnpm --filter ./packages/spec-core test:coverage` | 0 — 95.42/92.39/99.36/95.42 ≥ thresholds 91/89/96/91 |
+| `pnpm --filter ./packages/spec-core smoke:packed` | 0 |
+| `pnpm audit --prod --audit-level=low` | 0 — **zero advisories** (baseline 66) |
+| `pnpm -r list --depth -1` | 0 — root + spec-core only |
+| `node …/cli/index.js --help` / `--version` / `doctor .` | 0 / 0 / 0 |
+
+Original runtime scenarios: init→compile→lint→freeze→**tamper→verify REFUSED (exit 2)→re-freeze REFUSED (exit 2)→manifest byte-identical** demonstrated end-to-end from the clean worktree (first demo pass had a script-side wrong-filename artifact — corrected and re-run; mechanism itself never at fault). The remaining scenarios are pinned deterministically inside the suite, which ran green from the same worktree: classifier block + clean final → blocked; mixed-lint retry cannot erase unresolved evidence; two-process init exactly-one-winner; mid-change write fault → byte-identical tree; dangling refs → lint/plan refusal; unparseable expectation → dry failure zero execution; MCP exec without opt-in → zero execution (SEC-002 battery); MCP outside effective root → zero read/write/LLM/shell effect (new SEC-003 battery); ID-bearing notifications/* → -32601 never silence (RPC + real stdio scheduler); process timeout → no surviving descendants (SEC-005); packed registry/install smoke (smoke:packed).
 
 ## 6. Readiness verdicts
 
-TBD — judged separately per milestone.
+- **Developer demo: YES** — CLI+MCP surface complete, deterministic, documented; demo needs no credentials.
+- **Internal testing: YES** — 1304 deterministic tests, coverage above thresholds, packed-install smoke, frozen-eval honesty labels.
+- **First Usable Product: YES** — spec compiler validated end-to-end (init→generate-ready→compile→lint→freeze→verify→change→check); security defaults binding; dependency surface clean (zero prod advisories).
+- **Controlled pilot: READY** — with operator discipline: pin LCO_MCP_EXEC_ROOT for any non-project-scoped server; generate is paid+consented; integrity is drift-detection (no tamper evidence).
+- **General external pilot: READY WITH DOCUMENTED CONDITIONS** — (1) SEC-001 owner attestation outstanding until provided; (2) council-advantage claim NOT substantiated (single is default; council experimental until a pre-registered live run passes signTest criterion); (3) untrusted-client exposure requires the exec root pin + review of the documented TOCTOU residual.
+- **Production: READY ONLY IF owner-gated items close** — U1 attestation + bundle disposition + (if council is to be marketed) live evidence; otherwise ship as single-model spec compiler with council off the label.
+- **Commercial: NOT READY** — requires real user/value evidence beyond repository gates (no users, no field data, council economics unmeasured live).
+- **Scale: NOT READY** — no load/throughput evidence; scale claims out of scope of this program.
 
 ## 7. Limitations
 
-TBD.
+1. SEC-001 terminal closure requires the owner's dated rotation attestation (format in U1-KEY-ROTATION.md); without it the old audit's CRITICAL escalation clause remains applicable.
+2. /tmp/lco-pre-purge.bundle retained (0600) pending owner disposition; other mounts/backups outside this machine were not verifiable.
+3. Deterministic eval limits (named in-code and in the pre-registration): substring candidacy cannot read polarity (negated mentions ground constraints); a fully fabricated trace passes; forbidden-invention gating covers ET-01/02 only (advisory elsewhere); lock tamper-evidence is git history + in-lock hash chain (no MAC/signature).
+4. MCP TOCTOU on fresh creation tails (init/generate intermediate components) remains outside the documented threat model (paths.ts header); concurrent-writer adversary with local write access is not covered.
+5. Trusted Publishing is configured but its first real OIDC publish has not been exercised (0.1.0 was bootstrap-published); provenance claims must wait for an actual release through the workflow.
+6. Refusal messages disclose resolved realpaths of outside paths (actionability over fs-layout oracle concern on a local-trust boundary) — accepted, documented.
+7. Root test/build targets intentionally do not exist; everything routes through `pnpm --filter ./packages/spec-core …`.

@@ -1,19 +1,21 @@
 # Live-Eval Pre-Registration (RESIDUAL PROD-003)
 
 Status: PRE-REGISTERED, NO RESULTS. This document records the pass criteria,
-the frozen corpus/threshold/rubric identity, and the deterministic run/cost
-envelope for a FUTURE owner-authorized live eval run. **No live run is
-authorized or performed by this document.** No live results have been viewed
-under the corpus frozen here.
+the frozen corpus/threshold/rubric identity, the model identity, and the
+deterministic run/cost envelope for a FUTURE owner-authorized live eval run.
+**No live run is authorized or performed by this document.** No live results
+have been viewed under the corpus frozen here.
 
-- Frozen: **2026-08-27**, branch `feat/external-audit-residual-closure`
+- Frozen (enforced entry): **2026-08-28**, branch `feat/external-audit-residual-closure`
 - Corpus + threshold + rubric lock: `packages/spec-core/src/eval/corpus-lock.json`
 - Enforced lock hash (verified on every eval entrypoint — mismatch aborts the run):
-  **`sha256:0024fef976487dfc464502e3d19c196682e25cbd0db7bbfe1099d9368d371c79`**
-  (history entry 2, same date; history entry 1 — the original freeze — is
-  `sha256:e9c5e3b0f50953387df13ddad88907216ff99f5f230411233525e95d8b7fb523`
-  and stays in the lock's append-only history with the extension entry naming
-  it as `previous_hash`)
+  **`sha256:4d63a82b3449382398f558484ea4763e485f9de988e6e4ed49ef72c18e2ee321`**
+  (history entry 3, dated 2026-08-28; the append-only chain behind it is
+  history entry 1 — the original 2026-08-27 pre-registration freeze,
+  `sha256:e9c5e3b0f50953387df13ddad88907216ff99f5f230411233525e95d8b7fb523` —
+  and history entry 2 — the same-day rubric-triple scope extension,
+  `sha256:0024fef976487dfc464502e3d19c196682e25cbd0db7bbfe1099d9368d371c79`,
+  named as `previous_hash` by the enforced entry)
 - Exact hashed scope (machine-visible in the lock's `hashed_rubric_files`):
   the 20 eval intents, every CONSTRAINT_TRACE declaration (constraint terms,
   numeric operator+value, forbidden lists), the gate thresholds (G1 required
@@ -22,21 +24,67 @@ under the corpus frozen here.
   is shown), `src/eval/constraints.ts` (the constraint checker), and
   `src/eval/score.ts` (the scoring split).
 
+## Corpus (2026-08-28 substitution)
+
+The greenfield half of the corpus (ET-01..ET-12) is an **owner-provided
+real-world B2B requirements workload, anonymized technical paraphrases;
+source identity withheld at owner request** — the source document, company,
+domain, and persons appear nowhere in this repository, and only the twelve
+intents plus their constraint declarations were carried over. The blocking
+half (ET-13..ET-20, 8 tasks) is unchanged from the original freeze, as are
+the gate thresholds and the rubric triple. Explicit forbidden-invention
+lists are declared on ET-02 (`asorti` — no forced size assortment) and
+ET-12 (`POS`, `payment gateway` — bank transfer only); forbidden matching
+is word-boundary-aware ('POS' does not match "positive" or "deposit",
+plural/derived forms do not match). Numeric relations are declared on ET-04
+(minimum >= 150), ET-06 (pool >= 150), ET-07 (stock == 70), and ET-12
+(proforma >= 35, receipt >= 65).
+
+The substitution was registered by appending a dated lock entry BEFORE any
+live run was attempted; no live results exist under ANY freeze (the only
+prior live artifact, `g4-live-report.md`, predates the constraint-trace
+model and is banner-marked SUPERSEDED).
+
+## Model identity (recorded once, key value never recorded)
+
+- Model: **glm-5.3**, invoked through the **GLM Coding Plan
+  OpenAI-compatible endpoint** (endpoint host: **api.z.ai**, the coding
+  endpoint).
+- Wiring: the existing `LCO_LLM_*` environment (`LCO_LLM_BASE_URL` =
+  the api.z.ai coding-endpoint base URL, `LCO_LLM_MODEL` = the glm-5.3
+  model id, `LCO_LLM_API_KEY` = the owner's key). The key VALUE appears
+  nowhere in this repository, in no report, and in no committed file; it
+  lives only in the owner's untracked `.env.local`. Optional:
+  `LCO_LLM_MAX_TOKENS` to make the output-token column exact.
+
 ## What is frozen, and what any change invalidates
 
 The hash covers exactly: `{model, tasks, thresholds, rubric-file-bytes}` per
 the list above — nothing else. A silent change to any LOCKED file trips the
-lock: every eval entrypoint (mock or live) recomputes the hash and aborts
-loudly on mismatch. Files OUTSIDE the lock (corpus-lock.ts itself, gate.ts,
-render.ts, report.ts, runner.ts, run-eval.ts, the CLI) do NOT trip the run —
-changes there are visible only through git review, which is why the whole
-lane is committed as evidence. Any post-hoc change to the hashed scope —
-after results are viewed, or beforehand without a new dated lock entry —
-**invalidates the run** as evidence. Regeneration is append-only: a new dated
-entry in the lock's history (each naming the hash it supersedes via
-`previous_hash`), never an edit of an existing entry. Tamper-evidence for
-the lock history itself is git history plus that in-lock hash chain — no
-MAC or signature is claimed.
+lock: every eval entrypoint (mock or live — including the live-experiment
+driver below) recomputes the hash and aborts loudly on mismatch. Files
+OUTSIDE the lock (corpus-lock.ts itself, gate.ts, render.ts, report.ts,
+runner.ts, run-eval.ts, live-experiment.ts, aggregate.ts, the CLI) do NOT
+trip the run — changes there are visible only through git review, which is
+why the whole lane is committed as evidence. Any post-hoc change to the
+hashed scope — after results are viewed, or beforehand without a new dated
+lock entry — **invalidates the run** as evidence. Regeneration is
+append-only: a new dated entry in the lock's history (each naming the hash
+it supersedes via `previous_hash`), never an edit of an existing entry.
+Tamper-evidence for the lock history itself is git history plus that
+in-lock hash chain — no MAC or signature is claimed.
+
+## Experiment design
+
+3 repeats x 20 tasks x 2 variants (single + council) = 120 scored runs,
+executed as THREE separate invocations of the full corpus, each with
+`--repeats 1`. Per-invocation repeats=1 is a deliberate crash-resilience
+choice: every (task, variant, repeat) unit is EMITTED to disk the moment it
+completes, so an interrupted invocation loses at most its own in-flight
+unit, never the aggregated evidence; the aggregator is repeat-aware (it
+re-bases per-directory repeat ordinals into global repeats 1..3, in run
+order). Emitted artifacts land under an UNTRACKED output directory and are
+never committed (see the anonymization rule below).
 
 ## Pre-registered pass criteria (all must hold; any single miss = FAIL)
 
@@ -44,13 +92,13 @@ MAC or signature is claimed.
    (ET-13..ET-20, 8 tasks) is blocked correctly in BOTH variants across ALL
    repeats (gate G3 = 8/8, `blockedCorrectly` true for every run).
 2. **Zero forbidden-invention failures — on the tasks that HAVE forbidden
-   lists.** Explicit forbidden lists exist on ET-01/ET-02 only; on the other
-   ten greenfield tasks inventions are ADVISORY (surfaced as unmentioned
-   first-class concepts, never gated). Not one run of ET-01/ET-02 may carry a
-   `FORBIDDEN_PRESENT` constraint failure. Forbidden matching is
-   word-boundary-aware: 'rest' does not match 'restores', 'http' does not
-   match inside 'https' (HTTPS is out of scope for the 'http' term unless a
-   list names 'https' explicitly), and derived forms (plurals) do not match.
+   lists.** Explicit forbidden lists exist on ET-02 (`asorti`) and ET-12
+   (`POS`, `payment gateway`) only; on the other ten greenfield tasks
+   inventions are ADVISORY (surfaced as unmentioned first-class concepts,
+   never gated). Not one run of ET-02/ET-12 may carry a `FORBIDDEN_PRESENT`
+   constraint failure. Forbidden matching is word-boundary-aware: 'POS'
+   does not match "positive" or "deposit", and derived forms (plurals) do
+   not match.
 3. **All structural gates green.** G1 = 15/15 bad-fixture capture, G2 drift
    caught, and every greenfield run `structuralPassed` (schema-valid,
    acyclic, verified, traced where profile demands).
@@ -63,9 +111,10 @@ MAC or signature is claimed.
 6. **Paired council-vs-single effect criterion (pre-registered statistic,
    implemented as code).** The criterion is exactly the pure function
    `signTest()` in `packages/spec-core/src/eval/sign-test.ts` (tested in
-   `sign-test.test.ts`); the live report computes it via `pairedOutcomes()`
+   `sign-test.test.ts`); the aggregation computes it via `pairedOutcomes()`
    and renders it under the label "pre-registered claim criterion".
-   - Repeats: >= 3 per (task, variant).
+   - Repeats: 3 per (task, variant) (achieved as three one-repeat
+     invocations, aggregated repeat-aware).
    - Paired unit: one (greenfield task, repeat) pair. Discordant pair:
      exactly one of {single, council} is a full intent-pass
      (`intentPassed` true); concordant pairs (ties) are EXCLUDED from the
@@ -86,8 +135,7 @@ MAC or signature is claimed.
 no live PASS_DETERMINISTIC_ONLY. The CLI exit code and the G4
 summed-assertion line are NOT the claim decision: the council-advantage
 CLAIM is decided solely by criterion 6 (`signTest().meetsCriterion`), as
-rendered in the live report under "pre-registered claim criterion (binding
-for the council-advantage claim; the CLI exit code alone is NOT)". A run
+rendered by the aggregation under the pre-registered claim criterion. A run
 that meets criteria 1-5 but not criterion 6 is "no demonstrated council
 advantage" — never a win for either side.
 
@@ -97,16 +145,14 @@ advantage" — never a win for either side.
   constraint grounded in a requirement statement, referenced by a task,
   carried into a related test case, with a judgeable exit-code verification;
   numeric bounds retained (over every anchor sentence of the grounding
-  requirement, including sibling sentences that re-state the unit);
+  requirement, including sibling sentences that re-state the anchor);
   forbidden inventions absent from the commitment surfaces of the two tasks
   that forbid them.
 - It cannot read prose semantics: a fabricated complete trace, an operator
-  flip that preserves every digit, or a NEGATED / unrelated-clause mention in
-  a well-shaped requirement chain ("shall make no use of sqlite" grounds the
-  sqlite constraint — substring candidacy cannot read polarity or clause
-  structure) can satisfy any deterministic gate. The criteria above are
-  therefore necessary, not sufficient; blinded live runs and human review
-  remain the evidence for semantics beyond the trace.
+  flip that preserves every digit, or a NEGATED / unrelated-clause mention
+  in a well-shaped requirement chain can satisfy any deterministic gate.
+  The criteria above are therefore necessary, not sufficient; blinded live
+  runs and human review remain the evidence for semantics beyond the trace.
 - G4 (council advantage) is meaningful ONLY in the live report; mock runs
   render PASS_DETERMINISTIC_ONLY by construction and cannot substantiate it.
 
@@ -118,6 +164,11 @@ classify+propose call (max 3 with validation retries); council = classifier +
 proposal A + fused proposeB/judge (min 3, max 6 with the degraded-leg retry
 and validation retries); each completion makes 1..4 HTTP attempts (2s/5s/10s
 backoff, 180s per-request timeout); validation retries repeat the full prompt.
+
+**The corpus substitution does not change the envelope STRUCTURE**: the same
+20 tasks x the same call structure produce the same completion/attempt/wall
+envelope; only the measured prompt-byte ranges shift with the new intent
+lengths (re-measured over the frozen 2026-08-28 corpus below).
 
 | dimension | single | council |
 | --- | --- | --- |
@@ -133,19 +184,19 @@ must-block):
 | logical completions | 240 | 540 |
 | HTTP attempts | 240 | 2,160 |
 | wall time (sequential) | >= 240 requests' latency | 110.5h (540 x 737s) |
-| input tokens (bytes/4 heuristic) | ~ 1.41M (each call at its own min size) | >= 5,085,180 |
+| input tokens (bytes/4 heuristic) | ~ 1.38M (each call at its own min size) | >= 5,085,180 |
 | output tokens | provider-default cap x 240 | provider-default cap x 540 |
 
-Measured prompt sizes over the frozen corpus (the real templates the runner
-sends; UTF-8 bytes):
+Measured prompt sizes over the frozen 2026-08-28 corpus (the real templates
+the runner sends; UTF-8 bytes):
 
 | call site | size range |
 | --- | --- |
-| `classifyAndProposeSingle` (single call 1) | 29,029-29,229 B |
-| `classifySingle` (council call 1) | 2,227-2,427 B |
-| `propose` (council call 2) | 28,862-29,062 B |
-| `proposeB` with proposal A embedded (council call 3) | 33,587-37,668 B |
-| `proposeBDegraded` (council call 3, degraded leg) | 28,859-29,059 B |
+| `classifyAndProposeSingle` (single call 1) | 28,627-29,229 B |
+| `classifySingle` (council call 1) | 1,825-2,427 B |
+| `propose` (council call 2) | 28,460-29,062 B |
+| `proposeB` with proposal A embedded (council call 3) | 32,891-37,668 B |
+| `proposeBDegraded` (council call 3, degraded leg) | 28,457-29,059 B |
 
 Notes on the envelope:
 
@@ -162,21 +213,72 @@ Notes on the envelope:
 
 ```
 cost = (input_tokens  x $IN  / 1M) + (output_tokens x $OUT / 1M)
-minimum run  ≈ ( 1,405,000 x $IN / 1M) + (240 x cap x $OUT / 1M)
+minimum run  ≈ ( 1,377,000 x $IN / 1M) + (240 x cap x $OUT / 1M)
 worst case   ≈ ( 5,085,180 x $IN / 1M) + (540 x cap x $OUT / 1M)
 ```
 
 with `$IN`/`$OUT` the provider's per-1M-token prices and `cap` the
 `LCO_LLM_MAX_TOKENS` value (or the provider default).
 
-## Reproduction
+## Exact run procedure (owner-authorized live run)
+
+Tooling: `packages/spec-core/src/eval/live-experiment.ts` (driver +
+`--aggregate` CLI) and `packages/spec-core/src/eval/aggregate.ts` (pure
+aggregator, tested with synthetic emitted JSON in `aggregate.test.ts` /
+`live-experiment.test.ts` — no network anywhere in the tooling itself).
+Each invocation verifies the corpus lock FIRST and emits one JSON per
+(task, variant, repeat) — the full bundle + structured outcome + usage —
+into its own untracked output directory; the aggregator then loads the
+three directories in run order, pairs greenfield (task, repeat) units
+across variants exactly like `pairedOutcomes()`, and reports the
+pre-registered `signTest()` verdict + cost totals + the criteria counters.
 
 ```
-pnpm --filter ./packages/spec-core test          # suite incl. the adversarial battery + lock tests
-node packages/spec-core/dist/eval/run-eval.js --variant mock --repeats 1
+cd /home/isa/projects/llm_council_orchestrator
+pnpm --filter ./packages/spec-core build          # fresh dist for the lock-verified run
+set -a; source .env.local; set +a                 # LCO_LLM_* (api.z.ai coding endpoint, glm-5.3); never echoed
+
+mkdir -p eval-live-output                         # UNTRACKED — never commit it
+
+# three repeat invocations (each: full 20-task corpus, both variants, --repeats 1)
+node packages/spec-core/dist/eval/live-experiment.js \
+  --variant live --emit-dir eval-live-output/run1 --run-index 1
+node packages/spec-core/dist/eval/live-experiment.js \
+  --variant live --emit-dir eval-live-output/run2 --run-index 2
+node packages/spec-core/dist/eval/live-experiment.js \
+  --variant live --emit-dir eval-live-output/run3 --run-index 3
+
+# aggregation (repeat-aware; prints the sign-test verdict + costs; exit 0 = report printed)
+node packages/spec-core/dist/eval/live-experiment.js \
+  --aggregate eval-live-output/run1 eval-live-output/run2 eval-live-output/run3 \
+  | tee eval-live-output/AGGREGATION.md
 ```
+
+Each invocation also writes its own gate report to
+`<emit-dir>/gate-report.md` (G1-G3 + G4 lines for that invocation). A
+crashed invocation is re-run alone — its directory is rebuilt from its own
+emissions; the other two directories are untouched.
+
+Deterministic reproduction of everything except the live model (no keys, no
+network):
+
+```
+pnpm --filter ./packages/spec-core test            # suite incl. the adversarial battery + lock tests
+node packages/spec-core/dist/eval/run-eval.js --variant mock --repeats 1
+node packages/spec-core/dist/eval/live-experiment.js --variant mock --emit-dir /tmp/mock-run1
+```
+
+## Anonymization rule for any published report
+
+Any report derived from this experiment that leaves the owner's machine may
+carry AGGREGATE NUMBERS and ANONYMIZED TASK IDS only (ET-01..ET-20 with
+outcome/cost statistics). It must NOT contain: intent text, emitted bundle
+content, prompt content, the source workload's identity (document, company,
+domain, persons), the endpoint API key, or any emitted artifact from
+`eval-live-output/`. The emitted artifacts themselves stay untracked; if a
+finding requires quoting a bundle, the owner paraphrases it first.
 
 The live variant requires the owner's explicit authorization and the
 `LCO_LLM_*` environment (the CLI refuses to run half-configured); it is out
-of scope for this pre-registration document and unperformed as of the freeze
-date.
+of scope for this pre-registration document to authorize and unperformed as
+of the freeze date.

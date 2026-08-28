@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scoreRun, normalizeForTermMatch } from './score';
+import { containsWholeTerm } from './constraints';
 import { runPipeline } from './runner';
 import { createMockLlm } from './llm/mock';
 import type { MockScript } from './llm/mock';
@@ -22,6 +23,11 @@ import type { SpecBundle } from '../schemas';
  * This file holds (a) corpus soundness for the frozen constraint declarations
  * and (b) the nine required adversarial vectors. Each vector is a cheat that
  * PASSES term-presence scoring and must FAIL here.
+ *
+ * Corpus note (2026-08-28 substitution): the greenfield intents are the
+ * owner-directed anonymized real-workload paraphrases; the hand-built grounded
+ * fixtures below are re-pinned to those intents. Explicit forbidden lists now
+ * live on ET-02 (asorti) and ET-12 (POS, payment gateway).
  */
 
 const NOW = '2026-08-18T12:00:00Z';
@@ -66,30 +72,161 @@ function specOutcome(t: EvalTask, bundle: SpecBundle) {
 const failureCodes = (t: EvalTask, bundle: SpecBundle): string[] =>
   specOutcome(t, bundle).constraintFailures.map((f) => `${f.constraint}:${f.code}`);
 
+/** Push a synthetic accepted decision (commitment surface) onto a bundle. */
+function pushDecision(b: SpecBundle, claimId: string, decision: string): void {
+  b.decisions.push({
+    claim_id: claimId,
+    decision,
+    rationale: 'test vector',
+    evidence: [],
+    confidence: 0.9,
+    impact: 'medium',
+    assumptions: [],
+    alternatives: [],
+    status: 'accepted',
+  } as SpecBundle['decisions'][number]);
+}
+
 /**
- * A HAND-BUILT end-to-end grounded bundle for ET-01 over the pet-clinic base:
- * requirement statements carry the constraints, the fixture's own task->req
- * refs provide coverage, test cases are appended on the covering tasks, and
- * the fixture's `exit 0` verifications are judgeable. This is what a faithful
- * model output looks like to the checker.
+ * A HAND-BUILT end-to-end grounded bundle for ET-01 (dual B2B enrollment)
+ * over the pet-clinic base: requirement statements carry the constraints, the
+ * fixture's own task->req refs provide coverage, test cases are appended on
+ * the covering tasks, and the fixture's `exit 0` verifications are judgeable.
+ * This is what a faithful model output looks like to the checker.
  */
 function groundedEt01(): SpecBundle {
   const b = genericBundleFor(task('ET-01'), 'pet-clinic');
   b.requirements[0]!.statement =
-    'The tool shall store every short URL and its click count in a single sqlite database file inside the project directory, with no network access of any kind.';
+    'The platform shall support the self-service application form where a new customer submits company details.';
   b.requirements[1]!.statement =
-    'Short codes shall be exactly 7 characters drawn from letters, digits, and the hyphen.';
+    'An administrator shall issue an approve or reject decision on each submitted application form, and may also create accounts manually for existing customers.';
   b.requirements[2]!.statement =
-    'The tool shall provide shorten, stats, and resolve subcommands; resolve exits with exit code 3 for an unknown code.';
-  // REQ-0001 (C1 sqlite, C4 7-char live on REQ-0002) — covering task TASK-0001.
+    'Every enrollment path shall end in the same customer account record, whichever of the two paths produced it.';
+  // REQ-0001 (C1 application form) — covering task TASK-0001.
   b.tasks[0]!.tests[0]!.cases.push(
-    'the sqlite database file is created in the project directory before any command runs',
+    'the application form captures the new customer company details for self-service enrollment',
   );
-  // REQ-0002 covered by TASK-0002 → C4 (7) test case there.
-  b.tasks[1]!.tests[0]!.cases.push('generated codes are exactly 7 characters long');
-  // REQ-0003 covered by TASK-0003 → C2 (shorten) + C3 (resolve).
-  b.tasks[2]!.tests[0]!.cases.push('the shorten command creates a new code and resolve returns the long URL');
+  // REQ-0002 (C2 administrator, C3 approve, C4 reject) — covering task TASK-0002.
+  b.tasks[1]!.tests[0]!.cases.push(
+    'an administrator issues an approve or reject decision on each submitted application',
+  );
   return b;
+}
+
+/**
+ * A grounded ET-02 bundle (campaign pre-order window) over pet-clinic — the
+ * forbidden-list control for vector 7.
+ */
+function groundedEt02(): SpecBundle {
+  const b = genericBundleFor(task('ET-02'), 'pet-clinic');
+  b.requirements[0]!.statement =
+    'During a seasonal campaign the pre-order system shall stay open for a fixed window.';
+  b.requirements[1]!.statement =
+    'Within the campaign window a customer may order any quantity per size, with no forced size assortment.';
+  b.requirements[2]!.statement =
+    'The campaign window shall close automatically at its fixed end date.';
+  b.tasks[0]!.tests[0]!.cases.push('the pre-order window stays open for the whole campaign');
+  b.tasks[1]!.tests[0]!.cases.push('a customer may order any quantity per size during the campaign');
+  return b;
+}
+
+/** Grounded ET-04 (customization MOQ gate, minimum >= 150) over pet-clinic. */
+function groundedEt04(modify?: (b: SpecBundle) => void): SpecBundle {
+  const b = genericBundleFor(task('ET-04'), 'pet-clinic');
+  b.requirements[0]!.statement =
+    'The customization module shall unlock only when the customer meets the minimum order quantity of 150 units.';
+  b.requirements[1]!.statement =
+    'Below 150 units the customization module shall stay locked for that customer.';
+  b.requirements[2]!.statement =
+    'The locked or unlocked state of the customization module shall be visible to the customer.';
+  b.tasks[0]!.tests[0]!.cases.push(
+    'the customization module unlocks only at the minimum order quantity of 150 units',
+  );
+  b.tasks[1]!.tests[0]!.cases.push('below 150 units the customization module stays locked');
+  modify?.(b);
+  return b;
+}
+
+/**
+ * Grounded ET-07 (customer-named fabric stock, == 70) over todo-api. The
+ * `statement` argument replaces REQ-0001's statement so numeric vectors can
+ * vary only the anchor prose.
+ */
+function et07Requirement(statement: string): SpecBundle {
+  const b = genericBundleFor(task('ET-07'), 'todo-api');
+  b.requirements[0]!.statement = statement;
+  b.tasks[0]!.tests[0]!.cases.push('the customer-named stock holds the remaining fabric for a later order');
+  return b;
+}
+const et07Control =
+  'When a customer orders below the batch size, the remaining 70 units of fabric shall be held as customer-named stock usable on a later order of a different model.';
+
+/** Grounded ET-12 (proforma + payment) over todo-api: C2 receipt (>= 65) on
+ * REQ-0002 and C3 email on REQ-0003 are grounded unconditionally; the
+ * `statement` argument replaces REQ-0001 (C1 proforma, >= 35) for the numeric
+ * flip vectors. */
+function et12Requirement(statement: string): SpecBundle {
+  const b = genericBundleFor(task('ET-12'), 'todo-api');
+  b.requirements[0]!.statement = statement;
+  b.requirements[1]!.statement =
+    'Shipment shall require the remaining 65 percent of the total, paid by bank transfer with the receipt uploaded by the customer.';
+  b.requirements[2]!.statement =
+    'All communication with the customer shall run by email.';
+  b.tasks[0]!.tests[0]!.cases.push('the proforma invoice gates production on the deposit');
+  b.tasks[1]!.tests[0]!.cases.push('shipment releases only after the remaining 65 percent is paid and the receipt is uploaded');
+  b.tasks[2]!.tests[0]!.cases.push('every notification to the customer is sent by email');
+  return b;
+}
+const et12Control =
+  'The system shall generate a proforma invoice automatically and start production only after a 35 percent deposit.';
+
+/**
+ * SYNTHETIC checker-semantics tasks (local literals, NOT corpus members): the
+ * 2026-08-28 corpus has no digit-anchored numeric constraint and no
+ * number-adjacent unit term, so the two allowlist rules they pin
+ * (digit-anchored => full intent allowlist; unit-adjacent => scoped allowlist)
+ * are exercised through hand-built tasks carrying ids from the closed union.
+ */
+function syntheticDigitAnchoredTask(): EvalTask {
+  return {
+    id: 'ET-06',
+    kind: 'greenfield',
+    profile: 'p-mini',
+    intent:
+      'Passwords default to 16 characters; the --length flag accepts sizes from 8 through 128 characters.',
+    must_be_blocked: false,
+    assertions: [
+      { type: 'HAS_REQUIREMENTS', min: 3 },
+      { type: 'TASKS_ACYCLIC' },
+      { type: 'TASKS_HAVE_VERIFICATION' },
+      {
+        type: 'CONSTRAINT_TRACE',
+        constraints: [{ id: 'C1', terms: ['128'], numeric: { operator: '<=', value: 128 } }],
+      },
+    ],
+  };
+}
+
+function syntheticUnitAdjacentTask(): EvalTask {
+  return {
+    id: 'ET-07',
+    kind: 'greenfield',
+    profile: 'p-standard',
+    // NOTE: 500 appears ADJACENT to the unit term 'ms' — only that adjacency
+    // can allowlist a number that violates the declared < 300 relation
+    intent: 'The p95 budget is 300 ms per request and bursts may briefly reach 500 ms.',
+    must_be_blocked: false,
+    assertions: [
+      { type: 'HAS_REQUIREMENTS', min: 4 },
+      { type: 'TASKS_ACYCLIC' },
+      { type: 'TASKS_HAVE_VERIFICATION' },
+      { type: 'TRACE_REQ_TASK_COVERED' },
+      {
+        type: 'CONSTRAINT_TRACE',
+        constraints: [{ id: 'C1', terms: ['ms'], numeric: { operator: '<', value: 300 } }],
+      },
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,13 +282,19 @@ describe('corpus soundness — frozen CONSTRAINT_TRACE declarations', () => {
     }
   });
 
-  it('forbidden terms are invention vectors: none appears in its own intent', () => {
+  it('forbidden terms are invention vectors: none appears in its own intent (word-boundary, mirroring enforcement)', () => {
+    // 2026-08-28 corpus note: 'POS' (ET-12) sits as a substring inside the
+    // honest intent word "deposit" — enforcement matches forbidden terms on
+    // unicode word boundaries (containsWholeTerm), and the soundness rule
+    // exists to pin exactly that enforcement, so the intent-side check uses
+    // the same matcher: a forbidden term must not appear as a WHOLE WORD in
+    // its own intent. Substring presence inside an unrelated intent word
+    // neither trips enforcement nor polices intent wording.
     for (const t of greenfield()) {
-      const intent = normalizeForTermMatch(t.intent);
       for (const f of traceOf(t).forbidden ?? []) {
         expect(
-          intent.includes(normalizeForTermMatch(f)),
-          `${t.id}: forbidden term '${f}' also appears in the intent — it would police intent wording, not inventions`,
+          containsWholeTerm(t.intent, f),
+          `${t.id}: forbidden term '${f}' also appears as a whole word in the intent — it would police intent wording, not inventions`,
         ).toBe(false);
       }
     }
@@ -188,7 +331,7 @@ describe('adversarial battery — nine required vectors', () => {
     const own = specOutcome(task('ET-01'), bundle);
     expect(own.intentPassed).toBe(true);
 
-    // …and fails ET-02's constraint set (markdown/html/2s are grounded nowhere)
+    // …and fails ET-02's constraint set (campaign/pre-order/quantity are grounded nowhere)
     const foreign = specOutcome(task('ET-02'), bundle);
     expect(foreign.structuralPassed).toBe(true); // ET-02's structure checks still hold on this bundle
     expect(foreign.intentPassed).toBe(false);
@@ -216,14 +359,18 @@ describe('adversarial battery — nine required vectors', () => {
   it('3. terms present only in glossary or intent echo fail', () => {
     const t = task('ET-01');
     const bundle = genericBundleFor(t, 'pet-clinic');
-    // glossary-only carry: sqlite defined as a first-class concept, never used in a requirement
-    bundle.glossary.push({ term: 'sqlite', definition: 'sqlite is the embedded database engine.' });
-    bundle.glossary.push({ term: 'shorten', definition: 'the shorten command creates codes.' });
+    // glossary-only carry: enrollment concepts defined as first-class, never used in a requirement
+    bundle.glossary.push({ term: 'application form', definition: 'the self-service enrollment form.' });
+    bundle.glossary.push({ term: 'administrator', definition: 'the staff role issuing decisions.' });
+    // decision-layer carry must not ground either: an ACCEPTED decision naming the
+    // term is a commitment surface, not the requirement that implements it
+    pushDecision(bundle, 'DEC-9000', 'An administrator console shall list every pending enrollment application.');
+    expect(normalizeForTermMatch(bundle.decisions[bundle.decisions.length - 1]!.decision)).toContain(
+      'administrator',
+    );
     // intent echo: intent.statement already quotes the whole intent verbatim
     const s = specOutcome(t, bundle);
     expect(s.intentPassed).toBe(false);
-    // pet-clinic's own decision DOES say "SQLite" — decision-layer grounding must not count either
-    expect(normalizeForTermMatch(bundle.decisions[0]!.decision)).toContain('sqlite');
     for (const c of traceOf(t).constraints) {
       expect(s.constraintFailures.map((f) => f.constraint)).toContain(c.id);
     }
@@ -232,7 +379,7 @@ describe('adversarial battery — nine required vectors', () => {
   it('4. correct requirement WITHOUT task/test trace fails (all three break vectors)', () => {
     const t = task('ET-01');
 
-    // (a) no task references the grounding requirement
+    // (a) no task references the grounding requirement (REQ-0002 carries C2/C3/C4)
     const noTask = groundedEt01();
     for (const tk of noTask.tasks) tk.refs.requirements = tk.refs.requirements.filter((r) => r !== 'REQ-0002');
     expect(specOutcome(t, noTask).intentPassed).toBe(false);
@@ -268,107 +415,78 @@ describe('adversarial battery — nine required vectors', () => {
     }
   });
 
-  it('6. numeric constraints with wrong operator/value fail (both directions, off-value)', () => {
-    // ET-06: default length == 16, --length between >= 8 and <= 128
-    const grounded = (): SpecBundle => {
-      const b = genericBundleFor(task('ET-06'), 'pet-clinic');
-      b.requirements[0]!.statement =
-        'Passwords shall default to 16 characters using cryptographic randomness.';
-      b.requirements[1]!.statement =
-        'The --length flag shall accept sizes between 8 and 128; --no-symbols excludes special characters.';
-      b.tasks[0]!.tests[0]!.cases.push('default output is 16 characters');
-      b.tasks[1]!.tests[0]!.cases.push('--length accepts 8 through 128 and --no-symbols drops symbols');
-      return b;
-    };
+  it('6. numeric constraints with wrong operator/value fail (off-value, both directions, operator flip)', () => {
+    // control: the faithful ET-04 (minimum >= 150) bundle passes
+    expect(specOutcome(task('ET-04'), groundedEt04()).intentPassed).toBe(true);
+    // control: the faithful ET-07 (stock == 70) bundle passes
+    expect(specOutcome(task('ET-07'), et07Requirement(et07Control)).intentPassed).toBe(true);
 
-    // control: the faithful sentence passes
-    expect(specOutcome(task('ET-06'), grounded()).intentPassed).toBe(true);
-
-    // (a) off-value on a value-anchored constraint: default 12 instead of the
-    // declared 16 — the anchor token itself vanished, so grounding is gone
-    const offValue = grounded();
+    // (a) off-value on a term-anchored constraint: the declared 150 never
+    // appears in any 'minimum' anchor sentence — the term grounds, the value
+    // does not (NUMERIC_VALUE_MISSING, not mere un-grounding)
+    const offValue = groundedEt04();
     offValue.requirements[0]!.statement =
-      'Passwords shall default to 12 characters using cryptographic randomness.';
-    expect(specOutcome(task('ET-06'), offValue).intentPassed).toBe(false);
-    expect(failureCodes(task('ET-06'), offValue)).toContain('C3:NOT_GROUNDED_IN_REQUIREMENT');
+      'The customization module shall unlock only when the customer meets the minimum order quantity of 120 units.';
+    expect(specOutcome(task('ET-04'), offValue).intentPassed).toBe(false);
+    expect(failureCodes(task('ET-04'), offValue)).toContain('C2:NUMERIC_VALUE_MISSING');
 
-    // (b) off-value on a unit-anchored constraint (ET-07 C3: 'ms' anchor,
-    // declared < 300): the unit survives, the declared value does not
-    const offValueUnit = genericBundleFor(task('ET-07'), 'todo-api');
-    offValueUnit.requirements[0]!.statement =
-      'The p95 end-to-end latency shall stay under 500 ms at 500 concurrent connections.';
-    offValueUnit.tasks[0]!.tests[0]!.cases.push('p95 latency measured in ms stays under budget');
-    expect(failureCodes(task('ET-07'), offValueUnit)).toContain('C3:NUMERIC_VALUE_MISSING');
+    // (b) off-value on the unit-anchored stock constraint (== 70): the unit
+    // 'stock' survives, the declared 70 does not
+    expect(failureCodes(task('ET-07'), et07Requirement(
+      'The remaining 40 units of fabric shall be held as customer-named stock for a later order.',
+    ))).toContain('C1:NUMERIC_VALUE_MISSING');
 
-    // (c) wrong direction, lower bound violated: a foreign 4 slips under the declared >= 8
-    const lowSide = grounded();
-    lowSide.requirements[1]!.statement =
-      'The --length flag shall accept sizes between 8 and 128, with a hard floor of 4 when --no-symbols is set.';
-    expect(failureCodes(task('ET-06'), lowSide)).toContain('C4:NUMERIC_RELATION_VIOLATED');
+    // (c) wrong side, lower bound violated: a foreign 100 slips under the declared >= 150
+    const lowSide = groundedEt04();
+    lowSide.requirements[0]!.statement =
+      'The customization module shall unlock only when the customer meets the minimum order quantity of 150 units, or 100 units for returning customers.';
+    expect(failureCodes(task('ET-04'), lowSide)).toContain('C2:NUMERIC_RELATION_VIOLATED');
 
-    // (d) wrong direction, upper bound violated: a foreign 400 exceeds the declared <= 128
-    const highSide = grounded();
-    highSide.requirements[1]!.statement =
-      'The --length flag shall accept sizes between 8 and 128, or up to 400 in expert mode.';
-    expect(failureCodes(task('ET-06'), highSide)).toContain('C5:NUMERIC_RELATION_VIOLATED');
+    // (d) equality violations in BOTH directions: a foreign 20 beside the
+    // declared == 70 contradicts the exact held-stock amount
+    expect(failureCodes(task('ET-07'), et07Requirement(
+      'The remaining 70 units of fabric shall be held as customer-named stock for a later order, plus 20 units of sample stock.',
+    ))).toContain('C1:NUMERIC_RELATION_VIOLATED');
 
-    // (e) operator flip with re-scaled value: "at least 5" where the intent
-    // said at most 3 (ET-12) — the declared 3 vanished with the flip
-    const flip = genericBundleFor(task('ET-12'), 'todo-api');
-    flip.requirements[0]!.statement =
-      'Each member shall hold at least 5 active reservations at once.';
-    flip.tasks[0]!.tests[0]!.cases.push('a member can hold 5 active reservations');
-    expect(specOutcome(task('ET-12'), flip).intentPassed).toBe(false);
-    expect(failureCodes(task('ET-12'), flip)).toContain('C3:NOT_GROUNDED_IN_REQUIREMENT');
+    // (e) operator flip with re-scaled value: "after a 20 percent deposit"
+    // where the intent demands 35 — the declared 35 vanished with the flip
+    expect(failureCodes(task('ET-12'), et12Requirement(
+      'The system shall generate a proforma invoice automatically and start production only after a 20 percent deposit.',
+    ))).toContain('C1:NUMERIC_VALUE_MISSING');
 
-    // (f) flip that KEEPS the declared 3 and relaxes it with a foreign 5 in
+    // (f) flip that KEEPS the declared 35 and relaxes it with a foreign 10 in
     // the same anchor sentence: value retained, direction violated
-    const flipKeep = genericBundleFor(task('ET-12'), 'todo-api');
-    flipKeep.requirements[0]!.statement =
-      'Each member shall hold at most 3 active reservations, raised to 5 in premium tier.';
-    flipKeep.tasks[0]!.tests[0]!.cases.push('a member holds at most 3 reservations');
-    const keepCodes = failureCodes(task('ET-12'), flipKeep).filter((c) => c.startsWith('C3'));
-    expect(keepCodes).toContain('C3:NUMERIC_RELATION_VIOLATED');
-    expect(keepCodes).not.toContain('C3:NUMERIC_VALUE_MISSING');
+    const flipKeep = et12Requirement(
+      'The proforma invoice shall start production after a deposit of at least 35 percent, reduced to 10 percent for VIP customers.',
+    );
+    const keepCodes = failureCodes(task('ET-12'), flipKeep).filter((c) => c.startsWith('C1'));
+    expect(keepCodes).toContain('C1:NUMERIC_RELATION_VIOLATED');
+    expect(keepCodes).not.toContain('C1:NUMERIC_VALUE_MISSING');
+    expect(specOutcome(task('ET-12'), flipKeep).intentPassed).toBe(false);
   });
 
   it('7. forbidden/invented architectural decisions fail explicitly', () => {
-    // ET-01 forbids network architecture (http/api/websocket/rest) on the commitment surfaces
-    const invented = groundedEt01();
-    invented.decisions.push({
-      claim_id: 'DEC-9001',
-      decision: 'The tool shall sync short codes to a cloud REST API for analytics.',
-      rationale: 'product wants counts',
-      evidence: [],
-      confidence: 0.9,
-      impact: 'medium',
-      assumptions: [],
-      alternatives: [],
-      status: 'accepted',
-    } as SpecBundle['decisions'][number]);
-    const s = specOutcome(task('ET-01'), invented);
+    // ET-02 forbids assortment-pack inventions ('asorti'); control: faithful, passes
+    const faithful = groundedEt02();
+    expect(specOutcome(task('ET-02'), faithful).intentPassed).toBe(true);
+
+    // …until an invented forced-assortment decision appears on a commitment surface
+    const invented = groundedEt02();
+    pushDecision(invented, 'DEC-9001', 'The pre-order module shall force balanced asorti packs per size.');
+    const s = specOutcome(task('ET-02'), invented);
     expect(s.intentPassed).toBe(false);
-    expect(failureCodes(task('ET-01'), invented)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
-    expect(s.constraintFailures.find((f) => f.code === 'FORBIDDEN_PRESENT')!.detail).toMatch(/rest|api/);
+    expect(failureCodes(task('ET-02'), invented)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
+    expect(s.constraintFailures.find((f) => f.code === 'FORBIDDEN_PRESENT')!.detail).toMatch(/asorti/);
 
-    // a glossary concept naming the forbidden technology is an invention too
-    const glossedInvented = groundedEt01();
-    glossedInvented.glossary.push({ term: 'HTTP Sync', definition: 'background sync over http.' });
-    expect(failureCodes(task('ET-01'), glossedInvented)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
+    // a glossary concept naming the forbidden invention is an invention too
+    const glossedInvented = groundedEt02();
+    glossedInvented.glossary.push({ term: 'asorti pack', definition: 'a forced per-size pack.' });
+    expect(failureCodes(task('ET-02'), glossedInvented)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
 
-    // ET-02 forbids external dependencies; an axios glossary term fails it
-    const depInvented = genericBundleFor(task('ET-02'), 'pet-clinic');
-    depInvented.requirements[0]!.statement = 'Input shall convert from markdown to html.';
-    depInvented.requirements[1]!.statement = 'A 10 MB input file shall convert in under 2 seconds.';
-    depInvented.requirements[2]!.statement = 'Only the language standard library shall be used.';
-    depInvented.tasks[0]!.tests[0]!.cases.push('markdown converts to html');
-    depInvented.tasks[1]!.tests[0]!.cases.push('a 10 MB file finishes in under 2 seconds');
-    depInvented.tasks[2]!.tests[0]!.cases.push('no dependency beyond the standard library is imported');
-    // control: faithful, passes
-    expect(specOutcome(task('ET-02'), depInvented).intentPassed).toBe(true);
-    // …until an invented external dependency appears as a first-class concept
-    depInvented.glossary.push({ term: 'axios', definition: 'the http client used for fetches.' });
-    expect(failureCodes(task('ET-02'), depInvented)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
+    // ET-12 forbids POS / payment-gateway inventions; a POS glossary term fails it
+    const posInvented = et12Requirement(et12Control);
+    posInvented.glossary.push({ term: 'POS Terminal', definition: 'card payments at the counter.' });
+    expect(failureCodes(task('ET-12'), posInvented)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
   });
 
   it('8. ambiguous/conflicting intents still block monotonically (no regression)', async () => {
@@ -445,108 +563,101 @@ describe('adversarial battery — nine required vectors', () => {
 // ---------------------------------------------------------------------------
 
 describe('adversarial battery — I-3 numeric retention scope, I-4 word-boundary forbidden lists', () => {
-  /** ET-07 C3 fixture: a unit-anchored requirement ('ms', declared < 300) with test + judgeable chain intact. */
-  function et07Requirement(statement: string): SpecBundle {
-    const b = genericBundleFor(task('ET-07'), 'todo-api');
-    b.requirements[0]!.statement = statement;
-    b.tasks[0]!.tests[0]!.cases.push('p95 latency measured in ms stays under budget');
-    return b;
-  }
-  const c3 = (b: SpecBundle): string[] => failureCodes(task('ET-07'), b).filter((c) => c.startsWith('C3'));
+  /** ET-12 C1 fixture: a term-anchored requirement ('proforma', declared >= 35) with test + judgeable chain intact. */
+  const c1 = (b: SpecBundle): string[] => failureCodes(task('ET-12'), b).filter((c) => c.startsWith('C1'));
 
   it('I-3a: a SIBLING sentence re-scaling the bound in the anchor requirement fails (not only value-containing sentences are checked)', () => {
-    // "under 300 ms." grounds C3; the sibling "up to 5000 ms" in the SAME
-    // requirement carries the unit but a wrong-side foreign number
-    const codes = c3(
-      et07Requirement(
-        'The p95 end-to-end latency shall stay under 300 ms. Burst traffic may take up to 5000 ms before shedding load.',
+    // "after a 35 percent deposit" grounds C1; the sibling "as low as 10
+    // percent" in the SAME requirement restates the anchor term with a
+    // wrong-side foreign number
+    const codes = c1(
+      et12Requirement(
+        'The proforma invoice shall be issued on order completion with production after a 35 percent deposit. Repeat proforma invoices may accept deposits as low as 10 percent.',
       ),
     );
-    expect(codes).toContain('C3:NUMERIC_RELATION_VIOLATED');
-    expect(codes).not.toContain('C3:NUMERIC_VALUE_MISSING');
+    expect(codes).toContain('C1:NUMERIC_RELATION_VIOLATED');
+    expect(codes).not.toContain('C1:NUMERIC_VALUE_MISSING');
   });
 
-  it('I-3a control: a sibling ms sentence with a relation-consistent number passes', () => {
-    expect(c3(et07Requirement('The p95 end-to-end latency shall stay under 300 ms. Health probes answer within 100 ms.'))).toEqual([]);
+  it('I-3a control: a sibling proforma sentence with a relation-consistent number passes', () => {
+    expect(c1(et12Requirement(
+      'The proforma invoice shall be issued on order completion with production after a 35 percent deposit. A second proforma reminder is issued once 40 percent of the total is paid.',
+    ))).toEqual([]);
   });
 
-  it('I-3b: an intent-named number in a FOREIGN unit context is NOT allowlisted (500 connections ≠ 500 ms)', () => {
-    // the ET-07 intent names 500 — as a CONNECTION count, not adjacent to any
-    // 'ms'; "degrading to 500 ms" is a re-scaling the allowlist must not rescue
+  it('I-3b: an intent-named number in a FOREIGN unit context is NOT allowlisted (150 batches ≠ 150 stock)', () => {
+    // the ET-07 intent names 150 — as a BATCH size, not adjacent to 'stock';
+    // "replenished in batches of 150" inside the stock anchor sentence is a
+    // re-scaling the allowlist must not rescue against == 70
     expect(
-      c3(et07Requirement('The p95 end-to-end latency shall stay under 300 ms, degrading to 500 ms only under extreme load.')),
-    ).toContain('C3:NUMERIC_RELATION_VIOLATED');
+      failureCodes(task('ET-07'), et07Requirement(
+        'The remaining 70 units of fabric shall be held as customer-named stock for a later order, replenished in batches of 150.',
+      )).filter((c) => c.startsWith('C1')),
+    ).toContain('C1:NUMERIC_RELATION_VIOLATED');
   });
 
-  it('I-3b control: a number the intent itself expresses in the SAME unit context stays allowlisted', () => {
-    // 300 appears adjacent to 'ms' in the intent ("300 ms'nin"), so restating
-    // "300 ms" anywhere in the anchor sentences cannot false-fail
-    expect(
-      c3(et07Requirement('The p95 end-to-end latency shall stay under 300 ms; hard timeout at 300 ms with a stale-response flag.')),
-    ).toEqual([]);
+  it('I-3b control: a number the intent itself expresses in the SAME unit context stays allowlisted (synthetic task)', () => {
+    // the synthetic intent says "reach 500 ms" — 500 adjacent to the unit term
+    // 'ms' — so restating "degrading to 500 ms" cannot false-fail even though
+    // 500 violates the declared < 300
+    const t = syntheticUnitAdjacentTask();
+    const b = genericBundleFor(t, 'todo-api');
+    b.requirements[0]!.statement =
+      'The p95 latency shall stay under 300 ms, briefly degrading to 500 ms at peak load.';
+    b.tasks[0]!.tests[0]!.cases.push('p95 latency measured in ms stays under budget');
+    expect(specOutcome(t, b).intentPassed).toBe(true);
+
+    // …while a number the intent never names in that unit context still fails
+    const foreign = genericBundleFor(t, 'todo-api');
+    foreign.requirements[0]!.statement =
+      'The p95 latency shall stay under 300 ms, briefly degrading to 600 ms at peak load.';
+    foreign.tasks[0]!.tests[0]!.cases.push('p95 latency measured in ms stays under budget');
+    expect(failureCodes(t, foreign)).toContain('C1:NUMERIC_RELATION_VIOLATED');
   });
 
-  it('I-3b: digit-anchored constraints keep the full intent allowlist (term==value already pins the anchor)', () => {
-    // ET-06 C5 (<= 128, term '128'): the intent's 16 (default length) restated
-    // beside 128 is honest and must pass — 16 is intent-named, any context
-    const b = genericBundleFor(task('ET-06'), 'pet-clinic');
+  it('I-3b: digit-anchored constraints keep the full intent allowlist (term==value already pins the anchor; synthetic task)', () => {
+    // the synthetic intent's 16 (default length) restated beside 128 is
+    // honest and must pass — 16 is intent-named, any context
+    const t = syntheticDigitAnchoredTask();
+    const b = genericBundleFor(t, 'pet-clinic');
     b.requirements[1]!.statement =
       'The --length flag shall accept sizes between 8 and 128; the default stays 16 characters.';
     b.tasks[1]!.tests[0]!.cases.push('--length accepts 8 through 128 around the 16 default');
-    const codes = failureCodes(task('ET-06'), b).filter((c) => c.startsWith('C5'));
+    const codes = failureCodes(t, b).filter((c) => c.startsWith('C1'));
     expect(codes).toEqual([]);
+
+    // control: a foreign 4 below the declared >= 8-style floor still violates
+    // (here <= 128 with a wrong-side 400)
+    const highSide = genericBundleFor(t, 'pet-clinic');
+    highSide.requirements[1]!.statement =
+      'The --length flag shall accept sizes between 8 and 128, or up to 400 in expert mode.';
+    highSide.tasks[1]!.tests[0]!.cases.push('--length accepts 8 through 128');
+    expect(failureCodes(t, highSide)).toContain('C1:NUMERIC_RELATION_VIOLATED');
   });
 
   it('I-4: forbidden terms match on unicode word boundaries — no substring false positives on honest specs', () => {
-    // 'rest' must NOT match "restores"
-    const restores = groundedEt01();
-    restores.decisions.push({
-      claim_id: 'DEC-9002',
-      decision: 'The tool restores deleted short codes from a local backup file.',
-      rationale: 'durability',
-      evidence: [],
-      confidence: 0.9,
-      impact: 'medium',
-      assumptions: [],
-      alternatives: [],
-      status: 'accepted',
-    } as SpecBundle['decisions'][number]);
-    expect(specOutcome(task('ET-01'), restores).intentPassed, "'rest' must not match 'restores'").toBe(true);
+    // 'POS' must NOT match "positive" (glossary term on a commitment surface)
+    const positive = et12Requirement(et12Control);
+    positive.glossary.push({ term: 'Positive Balance', definition: 'credit shown to the customer.' });
+    expect(specOutcome(task('ET-12'), positive).intentPassed, "'POS' must not match 'positive'").toBe(true);
 
-    // 'api' must NOT match "rapid" (glossary term on a commitment surface)
-    const rapid = groundedEt01();
-    rapid.glossary.push({ term: 'Rapid Mode', definition: 'skips click-count bookkeeping.' });
-    expect(specOutcome(task('ET-01'), rapid).intentPassed, "'api' must not match 'rapid'").toBe(true);
+    // derived forms are out of scope: plural 'payment gateways' does not match
+    // 'payment gateway' (documented rule — a list wanting the plural names it)
+    const plural = et12Requirement(et12Control);
+    pushDecision(plural, 'DEC-9002', 'The checkout shall support payment gateways and bank transfers alike.');
+    expect(
+      specOutcome(task('ET-12'), plural).intentPassed,
+      "'payment gateway' must not match 'payment gateways'",
+    ).toBe(true);
 
-    // 'http' does NOT match inside 'https' (documented rule: word-boundary
-    // matching makes HTTPS out of scope for the 'http' forbidden term — a list
-    // that wants to forbid HTTPS must name 'https' explicitly)
-    const https = groundedEt01();
-    https.glossary.push({ term: 'https mirror', definition: 'read-only mirror of the local file.' });
-    expect(specOutcome(task('ET-01'), https).intentPassed, "'http' must not match 'https'").toBe(true);
+    // control: the same lists still catch a REAL standalone mention
+    const posHit = et12Requirement(et12Control);
+    posHit.glossary.push({ term: 'POS Terminal', definition: 'card payments at the counter.' });
+    expect(failureCodes(task('ET-12'), posHit)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
 
-    // derived forms are out of scope too: plural 'WebSockets' does not match 'websocket'
-    const plural = groundedEt01();
-    plural.glossary.push({ term: 'WebSockets note', definition: 'explicitly not used here.' });
-    expect(specOutcome(task('ET-01'), plural).intentPassed, "'websocket' must not match 'WebSockets'").toBe(true);
-
-    // control: the same list still catches a REAL standalone mention
-    const invented = groundedEt01();
-    invented.glossary.push({ term: 'REST API sync', definition: 'syncs to a cloud REST API.' });
-    expect(failureCodes(task('ET-01'), invented)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
-  });
-
-  it('I-4: ET-02\'s forbidden \'express\' no longer false-positives on "expressions" (stdlib-honest prose)', () => {
-    const b = genericBundleFor(task('ET-02'), 'pet-clinic');
-    b.requirements[0]!.statement = 'Input shall convert from markdown to html.';
-    b.requirements[1]!.statement = 'A 10 MB input file shall convert in under 2 seconds.';
-    b.requirements[2]!.statement = 'Only the language standard library shall be used.';
-    b.tasks[0]!.tests[0]!.cases.push('markdown converts to html');
-    b.tasks[1]!.tests[0]!.cases.push('a 10 MB file finishes in under 2 seconds');
-    b.tasks[2]!.tests[0]!.cases.push('no dependency beyond the standard library is imported');
-    // honest prose using the word "expressions" on a commitment surface
-    b.glossary.push({ term: 'inline expressions', definition: 'math expressions pass through verbatim.' });
-    expect(specOutcome(task('ET-02'), b).intentPassed, "'express' must not match 'expressions'").toBe(true);
+    const gatewayHit = et12Requirement(et12Control);
+    pushDecision(gatewayHit, 'DEC-9003', 'Checkout shall run through the payment gateway.');
+    expect(failureCodes(task('ET-12'), gatewayHit)).toContain('FORBIDDEN:FORBIDDEN_PRESENT');
   });
 });
 
@@ -567,6 +678,8 @@ describe('IntentConstraint declarations', () => {
         expect(Number.isFinite(c.numeric!.value)).toBe(true);
       }
     }
-    expect(tasksWithNumeric).toBeGreaterThanOrEqual(6); // the corpus keeps real numeric coverage
+    // the 2026-08-28 corpus carries numeric relations on ET-04 (>= 150),
+    // ET-06 (>= 150), ET-07 (== 70) and ET-12 (>= 35, >= 65)
+    expect(tasksWithNumeric).toBeGreaterThanOrEqual(4); // the corpus keeps real numeric coverage
   });
 });

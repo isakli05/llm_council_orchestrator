@@ -118,7 +118,7 @@ describe('scoreRun — CONSTRAINT_TRACE / structural vs intent split', () => {
     const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
     // structure holds: acyclic, verified
     expect(s.structuralPassed).toBe(true);
-    // intent fidelity fails: jwt/postgresql/ms/24 grounded nowhere
+    // intent fidelity fails: stock/later grounded nowhere
     expect(s.intentPassed).toBe(false);
     expect(s.constraintFailures.length).toBeGreaterThan(0);
     expect(s.constraintFailures.every((f) => traceOf(t).constraints.some((c) => c.id === f.constraint))).toBe(true);
@@ -127,8 +127,9 @@ describe('scoreRun — CONSTRAINT_TRACE / structural vs intent split', () => {
   it('the bundle\'s own intent echo does NOT ground constraints (intent.statement carries the whole intent; grounding reads requirement statements only)', () => {
     const t = task('ET-01');
     const bundle = genericBundleFor(t, 'pet-clinic');
-    // intent.statement now contains the full Turkish intent naming sqlite/shorten/resolve —
-    // 'shorten' appears NOWHERE in pet-clinic's requirement statements, only in the echoed intent
+    // intent.statement now contains the full intent naming application
+    // form/administrator/approve/reject — 'administrator' (C2) appears
+    // NOWHERE in pet-clinic's requirement statements, only in the echoed intent
     const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
     expect(s.constraintFailures.map((f) => f.constraint)).toContain('C2');
     expect(s.intentPassed).toBe(false);
@@ -286,8 +287,9 @@ describe('advisory inventions — unmentioned first-class concepts', () => {
       r.terms_used = ['Short code'];
     });
     const s = scoreRun(t, { kind: 'spec', variant: 'single', bundle, usage: U }, U);
-    // 'short code' — intent says "kısa kod" (Turkish): transliteration mismatch IS advisory-visible...
-    // the honest expectation: advisory reports it, because the intent never says "short code"
+    // 'Short code' is a concept the enrollment intent never names (the 2026-08-28
+    // corpus intents are the anonymized workload paraphrases) — a vocabulary the
+    // model introduced on its own IS advisory-visible
     expect(s.advisoryInventions).toEqual(['Short code']);
   });
 });

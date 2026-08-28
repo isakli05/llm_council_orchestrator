@@ -14,7 +14,7 @@
 > | SEC-006 | **FIXED** (yeniden sınıflandırıldı) | Sessizlik yalnız id yokluğuyla; id'li notifications/* → -32601 + id yankısı; RPC + gerçek stdio zamanlayıcı düzeyinde pinli; geçersiz id asla yankılanmaz |
 > | ARCH-001 | **FIXED** (genişletildi: arşiv → silme) | 320 takipli dosya silindi (−159.805 satır); workspace = yalnız spec-core; `pnpm audit --prod` 66 uyarıdan → **0**; tag `legacy-archive-final` + `docs/legacy-archive.md` kurtarma kaydı |
 > | PROD-003 | **FIXED (deterministik)** + canlı kanıt **USER-GATED** | MENTIONS_TERMS → CONSTRAINT_TRACE (köklendirme zinciri + sayısal ilişki + yasak-icat; 9 adversarial vaka); korpus+eşik+rubrik-dosya-baytları sha256 kilidi `0024fef9…` (geçmiş zincirli, append-only); ön-kayıtlı signTest() kriteri kodda; canlı koşum ya sahibi tarafından yetkilendirilir ya da konsey-üstünlüğü iddiası emekli edilir (ACCEPTED-DOC) |
-> | SEC-001 | **USER-GATED** (depo tarafı FIXED) | Tüm doğrulamalar temiz (değer yok, purge kanıtlı, marker 92 çift); /tmp/lco-pre-purge.bundle 0644→**0600** düzeltildi; kapanış = U1 tarihli rotasyon taahhüdü + bundle tasfiye kararı |
+> | SEC-001 | **FIXED** | U1 tarihli taahhüt VERİLDİ (2026-08-27, owner kapısı): anahtar sağlayıcıda iptal, eski anahtar auth hatası döndürüyor, yeni değer yalnız izlenmeyen env/secret'te; /tmp/lco-pre-purge.bundle sahibin kararıyla SİLİNDİ (önce 0644→0600 düzeltilmişti); tüm depo-tarı doğrulamaları temiz (bkz. SEC001-VERIFICATION-2026-08-27.md) |
 >
 > Komşu düzeltmeler: `lco doctor` adapter gerçeği (canlı HTTP varsayılan,
 > fail-closed; mock yalnız test/kütüphane) + etkin-kök raporlaması; U2

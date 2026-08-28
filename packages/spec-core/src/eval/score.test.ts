@@ -43,9 +43,10 @@ const U = { in: 10, out: 5, calls: 1 };
 describe('scoreRun — arithmetic over all assertion types', () => {
   // PROD-003 note: baseBundle() is the pet-clinic fixture re-profiled — it is
   // STRUCTURALLY clean but does NOT ground ET-01's constraints
-  // (sqlite/shorten/resolve/7) in requirement statements, so every greenfield
-  // expectation below accounts for the CONSTRAINT_TRACE assertion failing on
-  // it. That is the point of the finding: this bundle used to score full marks.
+  // (application form/administrator/approve/reject) in requirement
+  // statements, so every greenfield expectation below accounts for the
+  // CONSTRAINT_TRACE assertion failing on it. That is the point of the
+  // finding: this bundle used to score full marks.
 
   it('greenfield ET-01 with a clean spec outcome scores 3/4: structural pass, intent fail (the generic fixture)', () => {
     const s = scoreRun(task('ET-01'), specOutcome(baseBundle()), U);
@@ -67,8 +68,9 @@ describe('scoreRun — arithmetic over all assertion types', () => {
       attempts: 1,
       usageKnown: true,
     });
-    // RESIDUAL PROD-003: every one of ET-01's four constraints is named as
-    // ungrounded (pet-clinic grounds nothing ET-01's intent asks for)
+    // RESIDUAL PROD-003: every one of ET-01's four constraints (application
+    // form/administrator/approve/reject) is named as ungrounded (pet-clinic
+    // grounds nothing ET-01's intent asks for)
     expect(s.constraintFailures.map((f) => f.constraint)).toEqual(['C1', 'C2', 'C3', 'C4']);
     expect(s.constraintFailures.every((f) => f.code === 'NOT_GROUNDED_IN_REQUIREMENT')).toBe(true);
   });
@@ -130,7 +132,7 @@ describe('scoreRun — arithmetic over all assertion types', () => {
   it('HAS_REQUIREMENTS fails below min (ET-07 needs 4, bundle has 3)', () => {
     // ET-07 (p-standard): HAS_REQUIREMENTS min 4 fails, TASKS_ACYCLIC and
     // TASKS_HAVE_VERIFICATION pass, TRACE_REQ_TASK_COVERED passes (3/3 reqs covered),
-    // CONSTRAINT_TRACE fails (jwt/postgresql/ms/24 never grounded by pet-clinic).
+    // CONSTRAINT_TRACE fails (stock/later never grounded by pet-clinic).
     const s = scoreRun(task('ET-07'), specOutcome(baseBundle()), U);
     expect(s.assertionsTotal).toBe(5);
     expect(s.assertionsPassed).toBe(3);
@@ -160,7 +162,7 @@ describe('scoreRun — arithmetic over all assertion types', () => {
     t3.refs.requirements = []; // REQ-0003 loses its only covering task
     const s = scoreRun(task('ET-08'), specOutcome(b), U);
     // ET-08: HAS_REQUIREMENTS(min 4, have 3) false, ACYCLIC true, VERIFICATION true,
-    // TRACE false, CONSTRAINT_TRACE(transfer/30 never grounded) false
+    // TRACE false, CONSTRAINT_TRACE(tracking/fabric/minimum never grounded) false
     expect(s.assertionsTotal).toBe(5);
     expect(s.assertionsPassed).toBe(2);
   });

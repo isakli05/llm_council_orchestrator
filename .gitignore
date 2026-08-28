@@ -15,3 +15,6 @@ packages/*/src/**/*.js
 graphify-out/cache/
 graphify-out/cost.json
 graphify-out/20??-??-??/
+
+# live-eval experiment artifacts (owner-private; never commit — see audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md)
+eval-live-output/

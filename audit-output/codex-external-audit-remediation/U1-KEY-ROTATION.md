@@ -1,9 +1,31 @@
-# U1 — Key Rotation Checklist (USER action, panel-side)
+# U1 — Key Rotation Checklist (USER action, panel-side) — ATTESTED & CLOSED 2026-08-27
 
 Finding: SEC-001 (HIGH). The exposed provider key is the one named by the env
 var `ZAI_API_KEY`. It was committed historically and pushed, so it must be
 treated as compromised until rotation is confirmed — regardless of the
 repository-side containment and the U2 history purge.
+
+## Owner attestation (closure record — 2026-08-27)
+
+**Attested by the repository owner on 2026-08-27** through the
+residual-closure program's owner gate (the option text quoted all three
+required facts and the owner selected it):
+
+1. The exposed key was **revoked (deleted) at the provider** — originally
+   stated 2026-08-18, re-affirmed with this attestation.
+2. Requests signed with the **old key fail authentication** (provider auth
+   failure / 401).
+3. **No replacement value is tracked anywhere**; any new credential lives only
+   in untracked env / secret storage. No key value was exchanged, logged, or
+   written during this program.
+
+Companion disposition: the pre-purge history backup
+`/tmp/lco-pre-purge.bundle` (which contained the old, now-revoked value) was
+**deleted by owner decision on 2026-08-27** (after first being corrected from
+mode 0644 to 0600 during verification). No plaintext copy of the bundle is
+known to remain on this machine.
+
+**U1 is CLOSED and SEC-001 reaches FIXED.**
 
 This checklist is for the repository owner to execute in the provider console.
 It contains no key values.
