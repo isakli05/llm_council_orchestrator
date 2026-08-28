@@ -1,5 +1,16 @@
+import { setDefaultResultOrder } from 'node:dns';
 import type { LlmAdapter, LlmCompleteOptions, LlmResponse } from './adapter';
 import type { BudgetLedger } from '../budget';
+
+// TRANSPORT (2026-08-28): force IPv4-first DNS ordering for this process.
+// The live endpoint's zone carries AAAA records that are UNREACHABLE from the
+// owner's network (instant ENETUNREACH); with resolver round-robin a long-
+// lived process intermittently attempts an IPv6 address first and the whole
+// fetch fails with a bare 'fetch failed'. IPv4-first makes the healthy A
+// records always precede the unreachable AAAA ones in every lookup — this
+// network has no IPv6 route at all, so nothing is lost. Pure transport:
+// no rubric, prompt, or scoring surface.
+setDefaultResultOrder('ipv4first');
 
 /**
  * OpenAI-compatible HTTP LLM adapter (chat/completions) built on the global

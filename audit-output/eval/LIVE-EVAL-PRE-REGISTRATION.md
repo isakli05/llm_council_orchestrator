@@ -200,6 +200,20 @@ must-block):
 > 4,320; per-completion worst wall 737s → 1912s) and hence the sequential
 > wall-time ceiling (110.5h → 286.8h). The first attempt emitted ZERO units
 > (no data exists), so nothing about the registered exam changed.
+>
+> **Transport note v2 (2026-08-28, still before any aggregated result):** the
+> hardened relaunch's FIRST invocation emitted exactly ONE unit (ET-01 single,
+> outcome `blocked`, observed only as the driver's crash-handling progress
+> line) and then failed on a second unit's 8-attempt exhaustion. Per the
+> registered crash-resilience rule the partial invocation was DISCARDED
+> (launcher clears the emit dir; the unit is not part of any dataset).
+> Diagnosis this time: per-POP probes showed BOTH IPv4 edge POPs healthy while
+> the zone's AAAA records are unreachable from this network (instant
+> ENETUNREACH) — long-lived processes intermittently attempt IPv6 first and
+> fail the fetch outright. Fix: process-wide IPv4-first DNS ordering
+> (`setDefaultResultOrder('ipv4first')` in the transport module). Transport
+> only; corpus, constraints, prompts, scoring, thresholds, and the lock hash
+> `4d63a82b…` are untouched.
 
 Measured prompt sizes over the frozen 2026-08-28 corpus (the real templates
 the runner sends; UTF-8 bytes):

@@ -1,7 +1,7 @@
 # Graph Report - llm_council_orchestrator  (2026-08-28)
 
 ## Corpus Check
-- 203 files · ~174,557 words
+- 203 files · ~174,654 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `265d29de`
+- Built from commit: `68b6d950`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -86,8 +86,8 @@
 4. `runPipeline()` - 30 edges
 5. `runCli()` - 23 edges
 6. `SpecBundleSchema` - 21 edges
-7. `EVAL_TASKS` - 19 edges
-8. `TaskContract` - 19 edges
+7. `TaskContract` - 19 edges
+8. `EVAL_TASKS` - 19 edges
 9. `freeze()` - 18 edges
 10. `LintFinding` - 17 edges
 
@@ -98,10 +98,10 @@
   packages/spec-core/src/cli/commands/plan.test.ts → packages/spec-core/src/compiler/compile.ts
 - `compiledBundle()` --calls--> `compileSpecDir()`  [EXTRACTED]
   packages/spec-core/src/cli/commands/trace.test.ts → packages/spec-core/src/compiler/compile.ts
-- `aggregateEmitted()` --calls--> `pairedOutcomes()`  [EXTRACTED]
-  packages/spec-core/src/eval/aggregate.ts → packages/spec-core/src/eval/sign-test.ts
-- `aggregateEmitted()` --calls--> `signTest()`  [EXTRACTED]
-  packages/spec-core/src/eval/aggregate.ts → packages/spec-core/src/eval/sign-test.ts
+- `cmdGenerate()` --calls--> `createHttpLlm()`  [EXTRACTED]
+  packages/spec-core/src/cli/commands/generate.ts → packages/spec-core/src/eval/llm/http.ts
+- `CheckOptions` --references--> `SpecBundle`  [EXTRACTED]
+  packages/spec-core/src/cli/commands/check.ts → packages/spec-core/src/schemas/index.ts
 
 ## Import Cycles
 - None detected.
@@ -357,7 +357,7 @@ Cohesion: 0.35
 Nodes (10): commandHelp(), parseArgs(), cmdCheck(), cmdCompile(), parseEnginesFloor(), cmdLint(), readBudgetEnv(), readEnginesFloor() (+2 more)
 
 ## Knowledge Gaps
-- **307 isolated node(s):** `GREENFIELD`, `BLOCKED`, `EmitOverrides`, `VariantCost`, `Aggregation` (+302 more)
+- **307 isolated node(s):** `FAKE_ENV`, `FakeEnv`, `PartialFakeEnv`, `BACKOFF_MS`, `HttpChatResponse` (+302 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **1 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -365,14 +365,14 @@ Nodes (10): commandHelp(), parseArgs(), cmdCheck(), cmdCompile(), parseEnginesFl
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `SpecBundle` connect `SpecBundle` to `budget.ts`, `check/runner.ts`, `consent.ts`, `compileSpecDir`, `schemas/index.ts`, `lifecycle.ts`, `acquireSpecRootLock`, `engine.ts`, `lintBundle`, `TaskContract`, `plan.test.ts`, `score.ts`, `report.ts`, `l14.ts`, `lint/trace.test.ts`, `scale-benchmark.test.ts`, `eval/runner.ts`, `l08.test.ts`, `hash.ts`, `freeze.test.ts`, `constraint-trace.test.ts`, `generate.test.ts`, `eval/runner.test.ts`, `all-bad-fixtures.test.ts`, `commands/trace.test.ts`, `generate.ts`, `validation.ts`, `compile.test.ts`?**
-  _High betweenness centrality (0.125) - this node is a cross-community bridge._
+  _High betweenness centrality (0.141) - this node is a cross-community bridge._
 - **Why does `lintBundle()` connect `lintBundle` to `compileSpecDir`, `generate.ts`, `cli/index.ts`, `engine.ts`, `TaskContract`, `plan.test.ts`, `score.ts`, `change.test.ts`, `report.ts`, `live-experiment.ts`, `all-bad-fixtures.test.ts`, `scale-benchmark.test.ts`, `eval/runner.ts`, `l08.test.ts`, `SpecBundle`, `validation.ts`?**
-  _High betweenness centrality (0.031) - this node is a cross-community bridge._
-- **Why does `runPipeline()` connect `eval/runner.ts` to `budget.ts`, `envelope.ts`, `eval/runner.test.ts`, `generate.ts`, `lintBundle`, `constraint-trace.test.ts`, `score.ts`, `report.ts`, `live-experiment.ts`, `generate.test.ts`?**
-  _High betweenness centrality (0.030) - this node is a cross-community bridge._
+  _High betweenness centrality (0.022) - this node is a cross-community bridge._
+- **Why does `SpecBundleSchema` connect `schemas/index.ts` to `check/runner.ts`, `compileSpecDir`, `engine.ts`, `doctor.ts`, `TaskContract`, `report.ts`, `generate.test.ts`, `l14.ts`, `all-bad-fixtures.test.ts`, `lint/trace.test.ts`, `eval/runner.ts`, `scale-benchmark.test.ts`?**
+  _High betweenness centrality (0.021) - this node is a cross-community bridge._
 - **Are the 5 inferred relationships involving `runPipeline()` (e.g. with `.chargeAttempts()` and `.chargeTokens()`) actually correct?**
   _`runPipeline()` has 5 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `GREENFIELD`, `BLOCKED`, `EmitOverrides` to the rest of the system?**
+- **What connects `FAKE_ENV`, `FakeEnv`, `PartialFakeEnv` to the rest of the system?**
   _307 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `check/runner.ts` be split into smaller, more focused modules?**
   _Cohesion score 0.051715309779825906 - nodes in this community are weakly interconnected._
