@@ -378,3 +378,28 @@ variants receive the same prompt, so the steering cannot bias the
 council-vs-single comparison. The stronger alternative — naming the stack
 IN an intent, making it an intent-named constraint the checker enforces
 verbatim — remains available for any future corpus revision.
+
+## Launcher defect disclosure (2026-08-29, disclosed immediately upon discovery — before any further outcome is known)
+
+The v1 launcher script treated ANY non-zero invocation exit as a crash and
+deleted + re-rolled the repeat. The driver's actual semantics are 0 = completed
+PASS, 1 = completed FAIL (a legitimate recorded outcome), 2+ = crash. Repeat 2
+completed its first attempt (TRY 1) at 12:55:10 with exit 1 — verdict FAIL via
+the invocation-level G4 tie (council assertions 24 not > single 24; G1 15/15,
+G3 8/8, intent-fidelity 20/40, structural 23/40, council cost 833,558 <= 3x
+single 422,616) — and the launcher then DELETED those 41 artifacts and started
+TRY 2 (a full regeneration of repeat 2 now in flight). No verdict-based
+selection by any human or agent occurred — the re-roll was a mechanical defect
+triggered by the exit code alone — but the effect (a FAIL-attempt replaced by a
+re-run) is disclosed here in full. Facts preserved:
+
+- TRY 1's per-unit outcomes survive verbatim in `eval-live-output/EXPERIMENT.log`
+  (every `emitted …` line from 06:02:34 to 12:55:10), enabling a post-hoc
+  sensitivity comparison of TRY 1 vs TRY 2 outcomes.
+- The final dataset will use exactly ONE complete attempt per repeat index:
+  repeat 2 = TRY 2 (TRY 1 destroyed by the defect, disclosed); repeats 1 and 3
+  = their single attempts.
+- The launcher is FIXED (retry only on exit >= 2; a completed repeat is final
+  and never deleted). No further re-rolls can occur. The claim decision remains
+  the pre-registered signTest over the final dataset, computed identically
+  regardless of verdict appearances.
