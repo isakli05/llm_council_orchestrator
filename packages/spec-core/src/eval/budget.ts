@@ -29,30 +29,49 @@ import { HTTP_MAX_ATTEMPTS_PER_COMPLETION, HTTP_REQUEST_TIMEOUT_MS, HTTP_BACKOFF
 // --- the envelope (derived from the runner/http constants) -------------------
 
 /**
+ * Council topology (owner spec §2): 'fused' is the HISTORICAL 3-call topology
+ * (classifier → proposal A → fused proposeB+judge — the one PROD-003 ran
+ * under); 'decomposed' is the 4-stage topology (classifier → independent
+ * proposal A ∥ proposal B → judge over both validated proposals).
+ */
+export type CouncilTopology = 'fused' | 'decomposed';
+
+/**
  * Maximum LOGICAL COMPLETIONS one pipeline run can make. Structural facts of
- * runner.ts, pinned by tests in budget.test.ts:
+ * runner.ts/council.ts, pinned by tests in budget.test.ts:
  *  - single: classify+propose attempt, its schema retry, the non-L08 lint
  *    retry → 3;
- *  - council: classifier (no retry) 1 + proposal A with schema retry 2 +
- *    the final gated chain 3 → 6.
+ *  - council fused: classifier (no retry) 1 + proposal A with schema retry 2 +
+ *    the final gated chain 3 → 6;
+ *  - council decomposed: classifier 1 + proposal A 2 + proposal B 2 + the
+ *    judge's gated chain 3 → 8.
  */
 export const MAX_COMPLETIONS: Record<PipelineVariant, number> = {
   single: 3,
   council: 6,
 };
 
+/** Per-(variant, topology) completion ceiling — the topology-aware envelope. */
+export function maxCompletions(variant: PipelineVariant, topology: CouncilTopology = 'fused'): number {
+  if (variant === 'single') return MAX_COMPLETIONS.single;
+  return topology === 'decomposed' ? 8 : MAX_COMPLETIONS.council;
+}
+
 /** Worst-case total HTTP attempts for one run = completions x attempts per completion. */
-export function worstCaseAttempts(variant: PipelineVariant): number {
-  return MAX_COMPLETIONS[variant] * HTTP_MAX_ATTEMPTS_PER_COMPLETION;
+export function worstCaseAttempts(
+  variant: PipelineVariant,
+  topology: CouncilTopology = 'fused',
+): number {
+  return maxCompletions(variant, topology) * HTTP_MAX_ATTEMPTS_PER_COMPLETION;
 }
 
 /**
  * Worst-case wall time for one run = completions x (every attempt timing out
  * + the full backoff chain): 4 x 180s + (2s+5s+10s) = 737s per completion.
  */
-export function worstCaseWallMs(variant: PipelineVariant): number {
+export function worstCaseWallMs(variant: PipelineVariant, topology: CouncilTopology = 'fused'): number {
   return (
-    MAX_COMPLETIONS[variant] *
+    maxCompletions(variant, topology) *
     (HTTP_MAX_ATTEMPTS_PER_COMPLETION * HTTP_REQUEST_TIMEOUT_MS + HTTP_BACKOFF_TOTAL_MS)
   );
 }
@@ -100,13 +119,14 @@ export type ResolvedRunBudget = {
 export function resolveRunBudget(
   variant: PipelineVariant,
   opts: { hasClock: boolean; overrides?: RunBudgetSpec },
+  topology: CouncilTopology = 'fused',
 ): ResolvedRunBudget {
   return {
-    maxAttempts: opts.overrides?.maxAttempts ?? worstCaseAttempts(variant),
+    maxAttempts: opts.overrides?.maxAttempts ?? worstCaseAttempts(variant, topology),
     ...(opts.overrides?.maxWallMs !== undefined || opts.hasClock
       ? {
           maxWallMs:
-            opts.overrides?.maxWallMs ?? worstCaseWallMs(variant) + DEFAULT_WALL_SLACK_MS,
+            opts.overrides?.maxWallMs ?? worstCaseWallMs(variant, topology) + DEFAULT_WALL_SLACK_MS,
         }
       : {}),
     ...(opts.overrides?.maxTokens !== undefined ? { maxTokens: opts.overrides.maxTokens } : {}),

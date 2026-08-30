@@ -8,8 +8,12 @@ import type { EvalTask } from './tasks';
 import type { LlmAdapter } from './llm/adapter';
 import type { BudgetLedger } from './budget';
 import { classifySingle, propose, proposeB, proposeBDegraded, classifyAndProposeSingle } from './prompts';
+import { PROMPT_PROTOCOL_VERSION, withUserAnswers } from './prompts-v4';
+import type { UserAnswerForPrompt } from './prompts-v4';
 import { singleRoutePlan, isLlmPlan } from '../llm/plan';
 import type { LlmPlan, LlmRole } from '../llm/plan';
+import type { CouncilTopology } from './budget';
+import { runDecomposedCouncil } from './council';
 
 /**
  * Evidence-gate pipeline runner (Task 10 binding).
@@ -96,11 +100,24 @@ export interface RoleUsage {
  * output cannot present a single-model-shaped run as a full council.
  */
 export type PipelineOutcome =
-  | { kind: 'spec'; variant: PipelineVariant; bundle: SpecBundle; usage: PipelineUsage; councilDegraded?: true }
-  | { kind: 'blocked'; variant: PipelineVariant; reasons: string[]; usage: PipelineUsage; councilDegraded?: true };
+  | { kind: 'spec'; variant: PipelineVariant; bundle: SpecBundle; usage: PipelineUsage; councilDegraded?: true; degradedRoles?: LlmRole[]; promptProtocol?: string }
+  | { kind: 'blocked'; variant: PipelineVariant; reasons: string[]; usage: PipelineUsage; councilDegraded?: true; degradedRoles?: LlmRole[]; promptProtocol?: string };
+
+/**
+ * Optional pipeline behavior beyond the historical contract (all defaults
+ * preserve the historical single/fused-council semantics exactly):
+ *  - topology: council-only. 'fused' (default) is the historical 3-call
+ *    topology; 'decomposed' runs the 4-stage v4 topology (council.ts).
+ *  - answers: clarification-loop user evidence (§12), wrapped verbatim into
+ *    every prompt; runs with answers record their prompt protocol.
+ */
+export interface PipelineOptions {
+  topology?: CouncilTopology;
+  answers?: UserAnswerForPrompt[];
+}
 
 /** Classifier verdict shape (council call 1). */
-const ClassifierOutputSchema = z.object({
+export const ClassifierOutputSchema = z.object({
   profile: ComplexityProfileSchema,
   must_be_blocked: z.boolean(),
 });
@@ -118,8 +135,11 @@ function firstIssues(issues: readonly z.ZodIssue[], max = 3): string {
     .join('; ');
 }
 
-function parseJsonOrBlock(text: string, schema: z.ZodTypeAny, reasonPrefix: string):
-  { ok: true; value: unknown } | { ok: false; reason: string } {
+export function parseJsonOrBlock(
+  text: string,
+  schema: z.ZodTypeAny,
+  reasonPrefix: string,
+): { ok: true; value: unknown } | { ok: false; reason: string } {
   let raw: unknown;
   try {
     raw = JSON.parse(stripJsonFences(text));
@@ -264,6 +284,7 @@ export async function runPipeline(
   llm: LlmAdapter | LlmPlan,
   nowIso: string,
   budget?: BudgetLedger,
+  opts?: PipelineOptions,
 ): Promise<PipelineOutcome> {
   // §3: a plain adapter normalizes to "the same route for every role" — the
   // historical single-model topology, byte-identical behavior. A plan routes
@@ -360,16 +381,31 @@ export async function runPipeline(
     ...(Object.keys(byRole).length > 0 ? { byRole: { ...byRole } } : {}),
   });
 
-  const blocked = (reasons: string[], degraded = false): PipelineOutcome => ({
+  const blocked = (reasons: string[], degraded = false, degradedRoles?: LlmRole[]): PipelineOutcome => ({
     kind: 'blocked',
     variant,
     reasons,
     usage: usageSnapshot(),
+    promptProtocol,
     ...(degraded ? { councilDegraded: true as const } : {}),
+    ...(degradedRoles !== undefined ? { degradedRoles } : {}),
   });
 
   // nowIso is the run's only time source; it grounds the model, never the gate.
   const context = `[pipeline context] current time (ISO 8601): ${nowIso}\n\n`;
+
+  // §12 answers wrap every prompt of the run (verbatim user evidence); the
+  // protocol identity records which prompt lineage produced the outcome — a
+  // future experiment freezes on this string, and old results can never be
+  // silently re-scored under new prompts.
+  const answers = opts?.answers ?? [];
+  const wrap = (p: string): string => withUserAnswers(p, answers);
+  const promptProtocol =
+    variant === 'council' && opts?.topology === 'decomposed'
+      ? PROMPT_PROTOCOL_VERSION
+      : answers.length > 0
+        ? 'lco-prompts/v3+answers-v1'
+        : 'lco-prompts/v3';
 
   const bundleFromText = (
     text: string,
@@ -441,17 +477,36 @@ export async function runPipeline(
 
   if (variant === 'single') {
     const result = await gatedBundle(
-      context + classifyAndProposeSingle(task.intent, task.profile),
+      context + wrap(classifyAndProposeSingle(task.intent, task.profile)),
       'single',
     );
     if (!result.ok) return blocked(result.reasons ?? [result.reason]);
-    return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot() };
+    return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot(), promptProtocol };
   }
 
-  // Council: classifier, then proposal A (schema-validated on EVERY attempt —
-  // BACK-008), then the fused proposeB+judge call whose output goes through
-  // the full gated chain.
-  const classifierText = await complete(context + classifySingle(task.intent, task.profile), 'classifier');
+  // Decomposed council (owner spec §2): its own module, same shared
+  // machinery (complete/budget usage/gated chain), v4 prompts.
+  if (opts?.topology === 'decomposed') {
+    return runDecomposedCouncil({
+      task,
+      variant,
+      nowIso,
+      answers,
+      complete,
+      bundleFromText,
+      gatedBundle,
+      blocked: (reasons, degradedRoles) => blocked(reasons, false, degradedRoles),
+      usageSnapshot,
+    });
+  }
+
+  // Council (fused, historical): classifier, then proposal A (schema-validated
+  // on EVERY attempt — BACK-008), then the fused proposeB+judge call whose
+  // output goes through the full gated chain.
+  const classifierText = await complete(
+    context + wrap(classifySingle(task.intent, task.profile)),
+    'classifier',
+  );
   const verdict = parseJsonOrBlock(
     classifierText,
     ClassifierOutputSchema,
@@ -463,7 +518,7 @@ export async function runPipeline(
   // BACK-008: proposal A is schema-validated on both attempts. A retry that
   // still fails schema validation DEGRADES the council leg: the unvalidated
   // text never reaches the merger — the judge drafts the final bundle alone.
-  const aPrompt = context + propose(task.intent, task.profile);
+  const aPrompt = context + wrap(propose(task.intent, task.profile));
   let proposalAText = await complete(aPrompt, 'proposal_a');
   let aParsed = bundleFromText(proposalAText);
   if (!aParsed.ok) {
@@ -477,8 +532,8 @@ export async function runPipeline(
 
   const finalResult = await gatedBundle(
     councilDegraded
-      ? context + proposeBDegraded(task.intent, task.profile)
-      : context + proposeB(task.intent, task.profile, proposalAText),
+      ? context + wrap(proposeBDegraded(task.intent, task.profile))
+      : context + wrap(proposeB(task.intent, task.profile, proposalAText)),
     'judge',
   );
 
@@ -512,6 +567,7 @@ export async function runPipeline(
     variant,
     bundle: finalResult.bundle,
     usage: usageSnapshot(),
+    promptProtocol,
     ...(councilDegraded ? { councilDegraded: true as const } : {}),
   };
 }
