@@ -1,7 +1,7 @@
-# Graph Report - llm_council_orchestrator  (2026-08-28)
+# Graph Report - llm_council_orchestrator  (2026-08-30)
 
 ## Corpus Check
-- 203 files · ~175,086 words
+- 203 files · ~175,198 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ffa553d9`
+- Built from commit: `95ae869b`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
