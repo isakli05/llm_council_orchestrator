@@ -29,6 +29,12 @@
       "hash": "sha256:15884058855bca962648a4393c1c7e1ff1f7bfe137a831ca48c45b8b0ce0d5aa",
       "note": "prompt-contract v2: LIFECYCLE CONTRACT pitfall lines added (fresh draft, empty artifact_hashes, no frozen_at) after the v1 live run blocked 24/24 greenfield outputs at the lifecycle gate; claim criterion unchanged; registered before the v2 run",
       "previous_hash": "sha256:4d63a82b3449382398f558484ea4763e485f9de988e6e4ed49ef72c18e2ee321"
+    },
+    {
+      "frozen_at": "2026-08-30",
+      "hash": "sha256:b77730875993f6f83362ef991f55b9a11e2d816480829e01020dd280728c4688",
+      "note": "prompt-contract v3: stack-assumption steering line added (newest current-stable/LTS, exact version, recorded as assumption) — the delta pre-registered as planned BEFORE the v2 results were viewed; applied after the v2 run closed",
+      "previous_hash": "sha256:15884058855bca962648a4393c1c7e1ff1f7bfe137a831ca48c45b8b0ce0d5aa"
     }
   ],
   "hashed_rubric_files": [

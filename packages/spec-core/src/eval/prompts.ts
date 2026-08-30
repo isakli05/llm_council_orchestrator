@@ -68,6 +68,7 @@ const PITFALLS = [
   '- manifest.evidence_snapshot.pack_hash must look like "sha256:" followed by exactly 64 hex characters.',
   '- LIFECYCLE CONTRACT (observed 2026-08-28 live run: 24/24 greenfield outputs arrived as a FRESHLY-FREEZED-looking bundle and every one was correctly rejected — do not repeat it): manifest.state MUST be exactly "draft" — or "blocked" ONLY if you marked UNRESOLVED items. NEVER "reviewed", "frozen", or any other value: generation produces a FRESH DRAFT only; review and freezing are separate LATER steps the engine performs, never you.',
   '- manifest.artifact_hashes MUST be the empty object {} — never compute, guess, or fill any hash (the engine pins hashes at freeze time). manifest.frozen_at MUST be absent. A bundle that arrives pre-hashed or pre-frozen is rejected before anything else is looked at.',
+  '- When the intent does not name a technology and you must ASSUME a stack for verification executability, prefer the newest current-stable/LTS line you know (e.g. the newest Node.js LTS), name the exact version, and record the choice as an assumption with impact_if_wrong — never an EOL or near-EOL line.',
 ].join('\n');
 
 /** Classification guidance shared by classifySingle and the merged single-variant template. */

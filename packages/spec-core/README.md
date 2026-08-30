@@ -1011,6 +1011,14 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
   karar `PASS_DETERMINISTIC_ONLY` (bkz. `audit-output/spec-core-gate-report.md`).
   Rapor artık **yapısal geçişi (28/40)** ile **niyet-doğruluk geçişini (40/40)** ayrı
   listeler ve mock kanıtın sınırlarını adıyla yazar.
+- **Ön-kayıtlı tekrarlı canlı deney İCRA EDİLDİ (2026-08-30, glm-5.3, 3 tekrar ×
+  20 görev × 2 varyant = 120 koşum):** ölçütlerin 5'i MET (48/48 doğru bloklama,
+  0 yasak-icat, tam kullanım muhasebesi, konsey maliyeti 2.04× ≤ 3×) ama bağlayıcı
+  signTest NOT MET (36 çiftten 9'u ayrışık — 10 gerekir; konsey 8-1 önde,
+  p=0.0195) → **"konsey daha doğrudur" iddiası kanıtlanamadı ve EMEKLİ EDİLDİ**.
+  Konsey DENEYSELDİR, tek ajan varsayılandır; ürün doğrulanmış spec derleyicisi
+  olarak konumlanır. Kanıt: `audit-output/eval/LIVE-EVAL-RESULT-2026-08-30.md`
+  (anonim toplamlar). Aynı soruyu yeniden test etmek yeni bir ön-kayıt gerektirir.
 - **Eski live G4 raporu (2026-08-18) historiktir** (`audit-output/g4-live-report.md`):
   o koşum tek tekrarlıydı ve niyet-doğruluk iddiaları İÇERMEZDİ — o sayılara
   (36 > 26, maliyet 2.13×, o zamanki rubrikle PASS) dayanarak "konsey daha doğru"
@@ -1153,6 +1161,14 @@ commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
 izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
 birlikte yaşar (bkz. "Yayın ve Sahiplik").
 
+- **2026-08-30 — canlı deney İCRA ve kapanışı:** 3 tekrar × 20 görev × 2 varyant
+  (glm-5.3, dondurulmuş mühür 15884058 altında) tamamlandı; ölçüt 1-5 MET, bağlayıcı
+  signTest NOT MET (9 ayrışık çift < 10) → konsey-üstünlük iddiası emekli edildi
+  (konsey deneysel, tek ajan varsayılan); canlı ölçülen: %100 doğru bloklama,
+  2.04× maliyet, spec-üretim süresi dakikalar-düzeyi (reasoning açık); transport
+  sertleştirmesi (8 deneme/600 s tavan) ve v2 prompt yaşam-döngüsü sözleşmesi bu
+  koşumda doğrulandı; planlanan v3 prompt deltası (stack varsayımı yönlendirmesi)
+  sonuçlardan önce ön-kayıtlı olup koşum-sonrası uygulandı.
 - **2026-08-28 — canlı deney ön-hazırlığı (sahip-yönlendirmeli):** korpusun 12
   greenfield görevi, sahibin sağladığı gerçek-iş gereksinim belgesinden türetilmiş
   **anonim teknik parafrazlarla** yeniden kaydedildi (kaynak kimliği gizli; 8 belirsiz

@@ -5742,7 +5742,7 @@
       "file_type": "code",
       "norm_label": "classifyandproposesingle()",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L245"
+      "source_location": "L247"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_classifysingle",
@@ -5754,7 +5754,7 @@
       "file_type": "code",
       "norm_label": "classifysingle()",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L107"
+      "source_location": "L109"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_intentblock",
@@ -5766,7 +5766,7 @@
       "file_type": "code",
       "norm_label": "intentblock()",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L79"
+      "source_location": "L81"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_judgemerge",
@@ -5778,7 +5778,7 @@
       "file_type": "code",
       "norm_label": "judgemerge()",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L209"
+      "source_location": "L211"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_propose",
@@ -5790,7 +5790,7 @@
       "file_type": "code",
       "norm_label": "propose()",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L124"
+      "source_location": "L126"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_proposeb",
@@ -5802,7 +5802,7 @@
       "file_type": "code",
       "norm_label": "proposeb()",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L150"
+      "source_location": "L152"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_proposebdegraded",
@@ -5814,7 +5814,7 @@
       "file_type": "code",
       "norm_label": "proposebdegraded()",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L184"
+      "source_location": "L186"
     },
     {
       "id": "packages_spec_core_src_schemas_common_id",
@@ -10061,7 +10061,7 @@
       "file_type": "code",
       "norm_label": "classify_rules",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L72"
+      "source_location": "L74"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_constraint_fidelity",
@@ -10072,7 +10072,7 @@
       "file_type": "code",
       "norm_label": "constraint_fidelity",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L90"
+      "source_location": "L92"
     },
     {
       "id": "packages_spec_core_src_eval_prompts_json_only",
@@ -15523,7 +15523,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L254",
+      "source_location": "L256",
       "weight": 1.0
     },
     {
@@ -15535,7 +15535,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L110",
+      "source_location": "L112",
       "weight": 1.0
     },
     {
@@ -15547,7 +15547,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L227",
+      "source_location": "L229",
       "weight": 1.0
     },
     {
@@ -15559,7 +15559,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L133",
+      "source_location": "L135",
       "weight": 1.0
     },
     {
@@ -15571,7 +15571,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L168",
+      "source_location": "L170",
       "weight": 1.0
     },
     {
@@ -15583,7 +15583,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L197",
+      "source_location": "L199",
       "weight": 1.0
     },
     {
@@ -37869,7 +37869,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L107",
+      "source_location": "L109",
       "weight": 1.0
     },
     {
@@ -37880,7 +37880,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L124",
+      "source_location": "L126",
       "weight": 1.0
     },
     {
@@ -37891,7 +37891,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L150",
+      "source_location": "L152",
       "weight": 1.0
     },
     {
@@ -37902,7 +37902,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L184",
+      "source_location": "L186",
       "weight": 1.0
     },
     {
@@ -37913,7 +37913,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L209",
+      "source_location": "L211",
       "weight": 1.0
     },
     {
@@ -37924,7 +37924,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L245",
+      "source_location": "L247",
       "weight": 1.0
     },
     {
@@ -37979,7 +37979,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L72",
+      "source_location": "L74",
       "weight": 1.0
     },
     {
@@ -37990,7 +37990,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L79",
+      "source_location": "L81",
       "weight": 1.0
     },
     {
@@ -38001,7 +38001,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/spec-core/src/eval/prompts.ts",
-      "source_location": "L90",
+      "source_location": "L92",
       "weight": 1.0
     },
     {
@@ -42872,5 +42872,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "5feb2f1e4b7455ce797f1571a91e322732c31a43"
+  "built_at_commit": "ffa553d9253df8a63de31b9247a46a8aa52ff2e2"
 }

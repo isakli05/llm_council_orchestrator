@@ -1,9 +1,11 @@
 # Live-Eval Pre-Registration (RESIDUAL PROD-003)
 
-Status: **RUN v1 EXECUTED AND STOPPED BY OWNER DECISION (2026-08-28/29); v2
-REGISTERED BELOW FOR THE RE-RUN.** The pass criteria, the statistic, and the
-claim rule are UNCHANGED from v1 to v2; the only delta is the prompt-contract
-fix recorded here. This document records the full chain.
+Status: **EXECUTED AND CLOSED 2026-08-30.** The v2 run completed all three
+repeats (120/120 runs). Result: criteria 1-5 MET, criterion 6 (the binding
+sign-test) NOT MET (36 pairs, 9 discordant < 10 required; p=0.0195) → the
+council-advantage claim is RETIRED. Full aggregate result:
+`LIVE-EVAL-RESULT-2026-08-30.md`. Historical chain below (v1 prompt contract,
+launcher-defect disclosure, planned v3 delta) stands as the record.
 
 ## Run v1 outcome (executed 2026-08-28 evening, stopped at 31/120 units by owner decision after a 100%-consistent pattern)
 

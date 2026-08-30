@@ -462,9 +462,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/prompts.ts": {
-    "mtime": 1787841979.3586812,
-    "seen": 1787842107.026224,
-    "ast_hash": "bf8b4c3338cae914a0687d10d26e37a8",
+    "mtime": 1787950155.1649818,
+    "seen": 1787950430.245913,
+    "ast_hash": "c51b52df87479ffae46abef52859d0e0",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/report.test.ts": {
@@ -1140,15 +1140,15 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/corpus-lock.json": {
-    "mtime": 1787927751.105893,
-    "seen": 1787929019.82834,
-    "ast_hash": "549014fc088b69ff6ccefea97fa4d781",
+    "mtime": 1787950196.832194,
+    "seen": 1787950430.2458968,
+    "ast_hash": "6e01a63984202822e0e62999e8ddd727",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/corpus-lock.test.ts": {
-    "mtime": 1787927777.3446639,
-    "seen": 1787929019.8283408,
-    "ast_hash": "c6a1a228872f5d0ef51a9046b6d8ffcb",
+    "mtime": 1787950375.3771486,
+    "seen": 1787950430.245898,
+    "ast_hash": "799efa44fb214541b4a4155effade9bf",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/corpus-lock.ts": {

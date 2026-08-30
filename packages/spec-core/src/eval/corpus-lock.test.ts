@@ -247,12 +247,17 @@ describe('regeneration — append-only history', () => {
     expect(lock.history[2]!.frozen_at).toBe('2026-08-28');
     expect(lock.history[2]!.note).toMatch(/owner-directed|real-workload/i);
     expect(lock.history[2]!.previous_hash).toBe(lock.history[1]!.hash);
-    // the enforced (newest) entry is the prompt-contract v2 re-registration
-    // after the v1 all-blocked live run (UTC 2026-08-28; ran after local
-    // midnight), chaining onto entry 3
+    // entry 4 (UTC 2026-08-28) is the prompt-contract v2 re-registration
+    // after the v1 all-blocked live run
+    expect(lock.history[3]!.frozen_at).toBe('2026-08-28');
+    expect(lock.history[3]!.note).toMatch(/prompt-contract v2|LIFECYCLE CONTRACT/i);
+    expect(lock.history[3]!.previous_hash).toBe(lock.history[2]!.hash);
+    // the enforced (newest) entry is the prompt-contract v3 stack-steering
+    // delta, pre-registered as planned before the v2 results and applied
+    // after the v2 run closed (2026-08-30)
     const newest = lock.history[lock.history.length - 1]!;
-    expect(newest.frozen_at).toBe('2026-08-28');
-    expect(newest.note).toMatch(/prompt-contract v2|LIFECYCLE CONTRACT/i);
+    expect(newest.frozen_at).toBe('2026-08-30');
+    expect(newest.note).toMatch(/prompt-contract v3|stack-assumption/i);
     expect(newest.previous_hash).toBe(lock.history[lock.history.length - 2]!.hash);
     // the enforced lock has no duplicate hashes
     expect(new Set(lock.history.map((h) => h.hash)).size).toBe(lock.history.length);
@@ -264,9 +269,10 @@ describe('regeneration — append-only history', () => {
     // I-1 scope extension (both 2026-08-27), the 2026-08-28 corpus
     // substitution, and the prompt-contract v2 entry (UTC 2026-08-28) —
     // nothing else, and no test above appended to it
-    expect(lock.history).toHaveLength(4);
+    expect(lock.history).toHaveLength(5);
     expect(lock.history.slice(0, 2).every((h) => h.frozen_at === '2026-08-27')).toBe(true);
     expect(lock.history[2]!.frozen_at).toBe('2026-08-28');
     expect(lock.history[3]!.frozen_at).toBe('2026-08-28');
+    expect(lock.history[4]!.frozen_at).toBe('2026-08-30');
   });
 });
