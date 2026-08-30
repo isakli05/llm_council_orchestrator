@@ -11,6 +11,10 @@ import type { PipelineUsage } from '../../eval/runner';
 import { createBudgetLedger, resolveRunBudget } from '../../eval/budget';
 import type { RunBudgetSpec, BudgetLedger } from '../../eval/budget';
 import { writeSpecDir } from './write-spec';
+import { buildRoleAdapter } from '../../llm/providers';
+import type { ResolvedProfile } from '../../config/llm-config';
+import type { LlmPlan, LlmRole } from '../../llm/plan';
+import type { RoleUsage } from '../../eval/runner';
 
 /**
  * THE generate defaults live HERE (T11/UX-001 controller ruling) — the CLI
@@ -48,6 +52,13 @@ export interface GenerateOptions {
   nowIso: string;
   /** Live adapter override (tests inject mocks); default resolves createHttpLlm(). */
   llm?: LlmAdapter;
+  /**
+   * Named LLM profile (owner spec §7): the CLI/MCP boundary reads
+   * lco.config.json, resolves the profile, and hands it here. When set (and
+   * opts.llm is not), each pipeline role gets its own adapter/gateway/model
+   * (role-aware routing); the profile's variant must AGREE with opts.variant.
+   */
+  llmProfile?: { name: string; resolved: ResolvedProfile };
   /** Budget overrides (CLI flags/env); defaults derive from the variant envelope. */
   budget?: RunBudgetSpec;
   /**
@@ -108,6 +119,87 @@ export function normalizeFileIntent(raw: string): IntentCheck {
 
 function lintReason(f: LintFinding): string {
   return `${f.rule} [${f.path}]: ${f.message}`;
+}
+
+/**
+ * Build the role-aware plan from a resolved profile (§3/§7): one adapter per
+ * role, all charging the same run ledger. Keys resolve BY NAME from the
+ * process environment — the same deliberate fail-closed boundary
+ * createHttpLlm holds (config stores names, never values).
+ */
+function buildLlmPlanFromProfile(resolved: ResolvedProfile, ledger: BudgetLedger): LlmPlan {
+  const ctx = { routingMode: resolved.routingMode, budget: ledger };
+  const adapters = new Map<LlmRole, ReturnType<typeof buildRoleAdapter>>(
+    (Object.keys(resolved.roles) as LlmRole[]).map((role) => [
+      role,
+      buildRoleAdapter(resolved.roles[role]!, process.env, ctx),
+    ]),
+  );
+  return {
+    forRole: (role) => {
+      const adapter = adapters.get(role);
+      if (adapter === undefined) {
+        // resolveProfile already guarantees the role set matches the
+        // topology; this guard is defense in depth against a plan/pipeline
+        // mismatch ever slipping through.
+        throw new Error(`llm profile '${resolved.name}' has no route for role '${role}'`);
+      }
+      const r = resolved.roles[role]!;
+      return {
+        adapter,
+        identity: { gateway: r.gateway, providerKind: r.providerKind, requestedModel: r.model },
+      };
+    },
+  };
+}
+
+/** One per-role usage line (§13): gateway + requested model + honest tokens. */
+function roleUsageLine(role: string, r: RoleUsage): string {
+  const who = `${role} [${r.gateway}/${r.requestedModel}`;
+  const resolvedNote =
+    r.resolvedModels !== undefined && r.resolvedModels.length > 0
+      ? ` resolved: ${r.resolvedModels.join(', ')}`
+      : '';
+  const tokens = r.usageKnown
+    ? `${r.in} in / ${r.out} out tokens`
+    : `tokens unknown — provider reported no usage for ${r.calls} call(s) (unknown is not zero)`;
+  return `  ${who}${resolvedNote}]: ${r.calls} call(s) / ${r.attempts} attempt(s), ${tokens}, ${r.promptBytes} prompt bytes`;
+}
+
+/** Per-role breakdown lines when the run carried role accounting (plan-driven). */
+function roleUsageLines(byRole: Record<string, RoleUsage> | undefined): string[] {
+  if (byRole === undefined) return [];
+  const order = ['single', 'classifier', 'proposal_a', 'proposal_b', 'judge'];
+  const roles = Object.keys(byRole).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return roles.length > 0 ? ['role accounting:', ...roles.map((r) => roleUsageLine(r, byRole[r]!))] : [];
+}
+
+/** Profile/protocol/degradation context lines (present only when meaningful). */
+function runContextLines(outcome: {
+  usage: PipelineUsage;
+  degradedRoles?: string[];
+  councilDegraded?: true;
+  promptProtocol?: string;
+}, profileName?: string, topology?: string, routingMode?: string): string[] {
+  const lines: string[] = [];
+  if (profileName !== undefined) {
+    lines.push(
+      `llm profile ${profileName}` +
+        (topology !== undefined ? `, topology ${topology}` : '') +
+        (routingMode !== undefined ? `, routing ${routingMode}` : ''),
+    );
+  }
+  lines.push(...roleUsageLines(outcome.usage.byRole as Record<string, RoleUsage> | undefined));
+  if (outcome.degradedRoles !== undefined && outcome.degradedRoles.length > 0) {
+    lines.push(
+      `council DEGRADED: ${outcome.degradedRoles.join(', ')} failed schema validation twice — ` +
+        'the judge worked from validated proposals only; this run is NOT a full council result',
+    );
+  }
+  if (outcome.promptProtocol !== undefined) {
+    lines.push(`prompt protocol: ${outcome.promptProtocol}`);
+  }
+  return lines;
 }
 
 /**
@@ -173,6 +265,16 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
   }
   const intent = normalized.intent;
 
+  // --- 0b. profile/variant agreement (§7: explicit and predictable) ------------
+  const resolvedProfile = opts.llmProfile?.resolved;
+  if (resolvedProfile !== undefined && resolvedProfile.variant !== opts.variant) {
+    throw new Error(
+      `llm profile '${opts.llmProfile!.name}' declares variant '${resolvedProfile.variant}' but the ` +
+        `invocation says '--variant ${opts.variant}' — they must agree; drop --variant or pass a matching profile`,
+    );
+  }
+  const topology = resolvedProfile?.topology ?? 'fused';
+
   // --- 1. no-clobber (before anything else) ----------------------------------
   if (existsSync(join(dir, 'spec'))) {
     return {
@@ -181,16 +283,31 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
     };
   }
 
-  // --- 2. run budget (UX-001) ---------------------------------------------------
-  const limits = resolveRunBudget(opts.variant, {
-    hasClock: opts.nowMs !== undefined,
-    overrides: opts.budget,
-  });
+  // --- 2. run budget (UX-001; topology-aware envelope for decomposed) -----------
+  const limits = resolveRunBudget(
+    opts.variant,
+    {
+      hasClock: opts.nowMs !== undefined,
+      overrides: opts.budget,
+    },
+    topology,
+  );
   const ledger: BudgetLedger = createBudgetLedger(limits, { nowMs: opts.nowMs });
 
-  // --- 3. LLM resolution (fail-closed env; live adapter charges the ledger
-  //        per HTTP attempt — see eval/budget.ts) --------------------------------
-  const llm = opts.llm ?? createHttpLlm(ledger);
+  // --- 3. LLM resolution --------------------------------------------------------
+  // Three paths, in precedence order:
+  //   a. opts.llm — the test/library injection (wins when present);
+  //   b. opts.llmProfile — named profile from lco.config.json: one adapter per
+  //      ROLE (multi-gateway heterogeneous councils), keys resolved BY NAME
+  //      from the environment (fail-closed; same deliberate env boundary as
+  //      createHttpLlm), all roles charging the SAME run ledger;
+  //   c. legacy: createHttpLlm() from LCO_LLM_* (unchanged default).
+  const llm: LlmAdapter | LlmPlan =
+    opts.llm !== undefined
+      ? opts.llm
+      : resolvedProfile !== undefined
+        ? buildLlmPlanFromProfile(resolvedProfile, ledger)
+        : createHttpLlm(ledger);
 
   // --- 4. the evidence-gate pipeline ------------------------------------------
   const outcome = await runPipeline(
@@ -199,6 +316,7 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
     llm,
     opts.nowIso,
     ledger,
+    { topology },
   );
 
   if (outcome.kind === 'blocked') {
@@ -207,6 +325,7 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
       output: [
         `generation blocked by the evidence gate (variant ${outcome.variant}, ` +
           `${usageLine(outcome.usage)}) — nothing written:`,
+        ...runContextLines(outcome, opts.llmProfile?.name, resolvedProfile?.topology, resolvedProfile?.routingMode),
         ...outcome.reasons.map((r) => `  - ${r}`),
       ].join('\n'),
     };
@@ -249,6 +368,7 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
       `generated spec/ for ${m.project.name} (complexity_profile ${m.complexity_profile}): ` +
         `${outcome.bundle.requirements.length} REQ, ${outcome.bundle.tasks.length} TASK`,
       `variant ${outcome.variant}, ${usageLine(outcome.usage)}`,
+      ...runContextLines(outcome, opts.llmProfile?.name, resolvedProfile?.topology, resolvedProfile?.routingMode),
       ...(outcome.councilDegraded
         ? [
             'council leg DEGRADED: proposal A failed schema validation twice — its unvalidated output was ' +

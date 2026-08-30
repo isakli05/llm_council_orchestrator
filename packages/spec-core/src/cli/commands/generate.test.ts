@@ -998,3 +998,150 @@ describe('runCli generate — intent-file length design (review fix)', () => {
     expect(existsSync(join(dir, 'spec'))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// named LLM profiles (--llm-profile, §7) — heterogeneous councils end-to-end
+// ---------------------------------------------------------------------------
+
+import { parseLlmConfig, resolveProfile } from '../../config/llm-config';
+
+const PROFILE_CONFIG = JSON.stringify({
+  llm: {
+    providers: {
+      openrouter: { type: 'openrouter', apiKeyEnv: 'OPENROUTER_API_KEY' },
+      routellm: { type: 'routellm', apiKeyEnv: 'ABACUS_ROUTELLM_API_KEY' },
+    },
+    profiles: {
+      'frontier-heterogeneous': {
+        variant: 'council',
+        topology: 'decomposed',
+        routingMode: 'evaluation',
+        roles: {
+          classifier: { provider: 'openrouter', model: 'google/gemini-3.7-flash' },
+          proposal_a: { provider: 'openrouter', model: 'anthropic/claude-opus-5' },
+          proposal_b: { provider: 'openrouter', model: 'x-ai/grok-4.6' },
+          judge: { provider: 'routellm', model: 'gpt-5.6-sol' },
+        },
+      },
+      'glm-single-x': {
+        variant: 'single',
+        roles: { single: { provider: 'routellm', model: 'glm-5.3' } },
+      },
+    },
+  },
+});
+
+describe('cmdGenerate — named llm profile', () => {
+  it('routes each role to its configured gateway/model (mixed-gateway council)', async () => {
+    const dir = makeTmp('spec-core-generate-profile-');
+    writeFileSync(join(dir, 'lco.config.json'), PROFILE_CONFIG);
+    vi.stubEnv('OPENROUTER_API_KEY', 'or-key');
+    vi.stubEnv('ABACUS_ROUTELLM_API_KEY', 'rl-key');
+
+    const seenModels: string[] = [];
+    const seenUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse((init?.body ?? '{}') as string) as { model: string };
+      seenModels.push(body.model);
+      seenUrls.push(String(url));
+      if (body.model === 'google/gemini-3.7-flash') {
+        return jsonResponse({ choices: [{ message: { content: JSON.stringify({ profile: 'p-mini', must_be_blocked: false }) } }] });
+      }
+      // p-mini valid bundle for the proposal/judge legs (matches profile p-mini)
+      return jsonResponse({ choices: [{ message: { content: JSON.stringify(validBundle()) } }] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const parsed = parseLlmConfig(PROFILE_CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const resolved = resolveProfile(parsed.config, 'frontier-heterogeneous');
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+
+    const result = await cmdGenerate(dir, {
+      intent: 'url shortener cli with sqlite and click counting',
+      variant: 'council',
+      profile: 'p-mini',
+      nowIso: NOW,
+      nowMs: () => 0,
+      llmProfile: { name: 'frontier-heterogeneous', resolved: resolved.resolved },
+    });
+
+    expect(result.code).toBe(0);
+    // heterogeneous routing actually happened: each role's model + its gateway endpoint
+    expect(seenModels.sort()).toEqual([
+      'anthropic/claude-opus-5',
+      'google/gemini-3.7-flash',
+      'gpt-5.6-sol',
+      'x-ai/grok-4.6',
+    ].sort());
+    expect(seenUrls.some((u) => u.startsWith('https://routellm.abacus.ai/v1'))).toBe(true);
+    expect(seenUrls.every((u) => u.startsWith('https://openrouter.ai/api/v1') || u.startsWith('https://routellm.abacus.ai/v1'))).toBe(true);
+    // summary carries the per-role accounting + protocol + profile identity
+    expect(result.output).toContain('role accounting:');
+    expect(result.output).toContain('classifier [openrouter/google/gemini-3.7-flash]');
+    expect(result.output).toContain('judge [routellm/gpt-5.6-sol]');
+    expect(result.output).toContain('prompt protocol: lco-prompts/v4');
+    expect(result.output).toContain('llm profile frontier-heterogeneous, topology decomposed, routing evaluation');
+  });
+
+  it('profile/variant disagreement fails closed with both named', async () => {
+    const dir = makeTmp('spec-core-generate-profile-mismatch-');
+    const parsed = parseLlmConfig(PROFILE_CONFIG);
+    if (!parsed.ok) return;
+    const resolved = resolveProfile(parsed.config, 'glm-single-x');
+    if (!resolved.ok) return;
+    await expect(
+      cmdGenerate(dir, {
+        intent: 'x',
+        variant: 'council',
+        profile: 'p-mini',
+        nowIso: NOW,
+        llmProfile: { name: 'glm-single-x', resolved: resolved.resolved },
+      }),
+    ).rejects.toThrow(/glm-single-x.*variant 'single'.*--variant council/);
+  });
+
+  it('missing key env → fail-closed error naming the env var (never a default key)', async () => {
+    const dir = makeTmp('spec-core-generate-profile-nokey-');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubEnv('ABACUS_ROUTELLM_API_KEY', '');
+    const parsed = parseLlmConfig(PROFILE_CONFIG);
+    if (!parsed.ok) return;
+    const resolved = resolveProfile(parsed.config, 'frontier-heterogeneous');
+    if (!resolved.ok) return;
+    await expect(
+      cmdGenerate(dir, {
+        intent: 'x',
+        variant: 'council',
+        profile: 'p-mini',
+        nowIso: NOW,
+        llmProfile: { name: 'frontier-heterogeneous', resolved: resolved.resolved },
+      }),
+    ).rejects.toThrow(/OPENROUTER_API_KEY/);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+});
+
+describe('runCli generate — --llm-profile boundary', () => {
+  it('flag parses and a missing config file is a clean exit 2 before any call', async () => {
+    const dir = makeTmp('spec-core-generate-nocfg-');
+    const code = await runCli(['generate', dir, '--intent', 'x', '--variant', 'council', '--llm-profile', 'nope']);
+    expect(code).toBe(2);
+    expect(stderr()).toMatch(/lco\.config\.json/);
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('a corrupt config is a clean exit 2 naming the problem', async () => {
+    const dir = makeTmp('spec-core-generate-badcfg-');
+    writeFileSync(join(dir, 'lco.config.json'), '{oops');
+    const code = await runCli(['generate', dir, '--intent', 'x', '--llm-profile', 'p']);
+    expect(code).toBe(2);
+    expect(stderr()).toMatch(/not valid JSON/);
+  });
+
+  it('invalid profile-name charset is a parse-time usage error', async () => {
+    expect((await runCli(['generate', 'd', '--intent', 'x', '--llm-profile', 'bad name!']))) as never;
+  });
+});

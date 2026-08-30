@@ -11,9 +11,12 @@ import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 import { cmdCheck } from './commands/check';
 import { cmdDoctor, parseEnginesFloor } from './commands/doctor';
+import { cmdModels } from './commands/models';
 import { cmdGenerate, normalizeFileIntent } from './commands/generate';
 import { parseArgs, commandHelp, USAGE } from './args';
 import type { RunBudgetSpec } from '../eval/budget';
+import { parseLlmConfig, resolveProfile } from '../config/llm-config';
+import type { ResolvedProfile } from '../config/llm-config';
 
 /**
  * Thin CLI entry (split from the old monolith, T23): the pure parsing/usage
@@ -238,6 +241,43 @@ export async function runCli(argv: string[]): Promise<number> {
       console.log(result.output);
       return result.code;
     }
+    case 'models': {
+      // Catalog discovery (§16): the FREE models endpoint only — one GET,
+      // no completions, no retry. Built-in providers (openrouter/routellm)
+      // need no config; a named provider resolves from lco.config.json
+      // (--config path, default ./lco.config.json).
+      let configText: string | undefined;
+      if (parsed.provider !== 'openrouter' && parsed.provider !== 'routellm') {
+        const configPath = parsed.configPath ?? 'lco.config.json';
+        try {
+          configText = await readFile(configPath, 'utf8');
+        } catch (err) {
+          console.error(
+            `lco: --provider ${parsed.provider} needs ${configPath}: ${(err as Error).message}`,
+          );
+          return 2;
+        }
+      }
+      let result;
+      try {
+        result = await cmdModels({
+          ...(parsed.provider === 'openrouter' || parsed.provider === 'routellm'
+            ? { builtin: parsed.provider }
+            : { providerName: parsed.provider, ...(configText !== undefined ? { configText } : {}) }),
+          env: { ...process.env },
+          ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
+        });
+      } catch (err) {
+        console.error(`lco: models failed: ${(err as Error).message}`);
+        return 2;
+      }
+      if (parsed.json) {
+        console.log(JSON.stringify({ entries: result.entries ?? [], code: result.code }));
+      } else {
+        console.log(result.output);
+      }
+      return result.code;
+    }
     case 'generate': {
       // Wrapper edge: resolve --intent-file to the intent text HERE (IO stays
       // at the boundary); an unreadable or empty file is a usage error (2).
@@ -273,6 +313,35 @@ export async function runCli(argv: string[]): Promise<number> {
       }
       const budget: RunBudgetSpec = { ...envBudget, ...parsed.budget };
 
+      // §7 named-profile resolution (fail-closed, at the boundary): the flag
+      // names a profile from <dir>/lco.config.json; a missing/corrupt config,
+      // an unknown profile, or an unresolved reference is a usage error
+      // BEFORE any paid call. No flag → the legacy LCO_LLM_* path, unchanged.
+      let llmProfile: { name: string; resolved: ResolvedProfile } | undefined;
+      if (parsed.llmProfile !== undefined) {
+        const configPath = join(parsed.dir, 'lco.config.json');
+        let text: string;
+        try {
+          text = await readFile(configPath, 'utf8');
+        } catch (err) {
+          console.error(
+            `lco: --llm-profile ${parsed.llmProfile} needs ${configPath}: ${(err as Error).message}`,
+          );
+          return 2;
+        }
+        const parsedConfig = parseLlmConfig(text);
+        if (!parsedConfig.ok) {
+          console.error(`lco: ${parsedConfig.error}`);
+          return 2;
+        }
+        const resolved = resolveProfile(parsedConfig.config, parsed.llmProfile);
+        if (!resolved.ok) {
+          console.error(`lco: ${resolved.error}`);
+          return 2;
+        }
+        llmProfile = { name: parsed.llmProfile, resolved: resolved.resolved };
+      }
+
       // CLI boundary: the clock is read HERE only and injected (nowIso for
       // prompts, nowMs for the wall budget — the core never reads the clock
       // itself). cmdGenerate resolves createHttpLlm() itself and THROWS
@@ -288,6 +357,7 @@ export async function runCli(argv: string[]): Promise<number> {
           nowIso: new Date().toISOString(),
           budget,
           nowMs: () => Date.now(),
+          ...(llmProfile !== undefined ? { llmProfile } : {}),
         });
       } catch (err) {
         console.error(`lco: generate failed: ${(err as Error).message}`);

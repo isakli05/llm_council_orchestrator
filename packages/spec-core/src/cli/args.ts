@@ -79,9 +79,20 @@ commands:
   generate <dir> --intent <text> | --intent-file <path>
                                [--variant single|council] [--profile p-mini|p-standard]
                                [--max-attempts N] [--max-tokens N] [--max-wall-ms N]
+                               [--llm-profile <name>]
                                compile a natural-language intent into a spec/ draft via
                                a live LLM (requires LCO_LLM_BASE_URL, LCO_LLM_API_KEY and
                                LCO_LLM_MODEL env vars; fails closed without them).
+                               --llm-profile selects a NAMED profile from
+                               <dir>/lco.config.json: providers (openai-compatible,
+                               openrouter, routellm; api keys referenced by env-var
+                               NAME, never stored) + per-role models — including
+                               heterogeneous councils (classifier/proposal_a/
+                               proposal_b/judge each with its own gateway+model) and
+                               the decomposed topology (independent proposals A∥B →
+                               judge; EXPERIMENTAL like all council generation).
+                               Profile and --variant must agree; without the flag the
+                               legacy LCO_LLM_* single-model path runs unchanged.
                                Defaults: variant ${DEFAULT_GENERATE_VARIANT}, profile
                                p-standard — council is explicit (--variant council).
                                COST ENVELOPE (an HTTP attempt is a request, NOT a
@@ -160,9 +171,10 @@ const COMMANDS = [
   'check',
   'generate',
   'doctor',
+  'models',
 ] as const;
 type Command = (typeof COMMANDS)[number];
-type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate' | 'doctor'>;
+type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate' | 'doctor' | 'models'>;
 type InitProfile = 'p-mini' | 'p-standard';
 type GenerateVariant = 'single' | 'council';
 
@@ -178,6 +190,15 @@ export type ParseResult =
   | { command: 'init'; dir: string; profile: InitProfile; name: string }
   | { command: 'check'; dir: string; task?: string; yes: boolean; timeoutMs?: number }
   | {
+      command: 'models';
+      /** A named provider from lco.config.json, or a built-in: openrouter|routellm. */
+      provider: string;
+      /** Config path for named providers (default ./lco.config.json at the boundary). */
+      configPath?: string;
+      json: boolean;
+      limit?: number;
+    }
+  | {
       command: 'generate';
       dir: string;
       /** Exactly one of intent/intentFile is present (parseArgs enforces it). */
@@ -187,6 +208,8 @@ export type ParseResult =
       profile: InitProfile;
       /** Budget flag overrides (validated positive ints); env vars resolve at the runCli boundary. */
       budget?: RunBudgetSpec;
+      /** Named LLM profile from <dir>/lco.config.json (§7); resolved at the runCli boundary. */
+      llmProfile?: string;
     };
 
 export function parseArgs(argv: string[]): ParseResult {
@@ -214,8 +237,9 @@ export function parseArgs(argv: string[]): ParseResult {
     return { commandHelp: command as Command };
   }
   // doctor is the one command whose <dir> is OPTIONAL (defaults to the
-  // current directory) — every other command keeps the missing-dir error.
-  if (rest.length === 0 && command !== 'doctor') {
+  // current directory); models takes no dir at all — every other command
+  // keeps the missing-dir error.
+  if (rest.length === 0 && command !== 'doctor' && command !== 'models') {
     return { error: `missing <dir> argument for '${command}'` };
   }
   if (command === 'change') {
@@ -314,6 +338,49 @@ export function parseArgs(argv: string[]): ParseResult {
     }
     return { command: 'check', dir, task, yes, timeoutMs };
   }
+  if (command === 'models') {
+    // `lco models --provider <name> [--config <path>] [--json] [--limit N]` —
+    // the one command besides generate that talks to a network endpoint (the
+    // FREE models listing; never a completion).
+    let provider: string | undefined;
+    let configPath: string | undefined;
+    let json = false;
+    let limit: number | undefined;
+    for (let i = 0; i < rest.length; i++) {
+      const flag = rest[i];
+      if (flag === '--provider') {
+        const value = rest[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --provider' };
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+          return { error: `invalid --provider ${value}: expected a provider name (letters, digits, . _ -)` };
+        }
+        provider = value;
+      } else if (flag === '--config') {
+        const value = rest[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --config' };
+        }
+        configPath = value;
+      } else if (flag === '--json') {
+        json = true;
+      } else if (flag === '--limit') {
+        const value = rest[++i];
+        const n = Number(value);
+        if (!Number.isInteger(n) || n <= 0) {
+          return { error: `invalid --limit ${String(value)}: expected a positive integer` };
+        }
+        limit = n;
+      } else {
+        return { error: `unexpected argument for 'models': ${flag}` };
+      }
+    }
+    if (provider === undefined) {
+      return { error: "missing --provider <name> (a lco.config.json provider, or a built-in: openrouter, routellm)" };
+    }
+    return { command: 'models', provider, ...(configPath !== undefined ? { configPath } : {}), json, ...(limit !== undefined ? { limit } : {}) };
+  }
   if (command === 'generate') {
     const [dir, ...flags] = rest;
     let intent: string | undefined;
@@ -324,6 +391,7 @@ export function parseArgs(argv: string[]): ParseResult {
     let profile: InitProfile = 'p-standard';
     const budget: RunBudgetSpec = {};
     let sawBudgetFlag = false;
+    let llmProfile: string | undefined;
     const budgetFlag = (name: 'maxAttempts' | 'maxTokens' | 'maxWallMs', raw: string | undefined, flag: string): string | null => {
       const n = Number(raw);
       if (!Number.isInteger(n) || n <= 0) {
@@ -372,6 +440,15 @@ export function parseArgs(argv: string[]): ParseResult {
         const name = flag === '--max-attempts' ? 'maxAttempts' : flag === '--max-tokens' ? 'maxTokens' : 'maxWallMs';
         const err = budgetFlag(name, flags[++i], flag);
         if (err) return { error: err };
+      } else if (flag === '--llm-profile') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --llm-profile' };
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+          return { error: `invalid --llm-profile ${value}: expected a profile name (letters, digits, . _ -)` };
+        }
+        llmProfile = value;
       } else {
         return { error: `unexpected argument for 'generate': ${flag}` };
       }
@@ -390,6 +467,7 @@ export function parseArgs(argv: string[]): ParseResult {
       variant,
       profile,
       ...(sawBudgetFlag ? { budget } : {}),
+      ...(llmProfile !== undefined ? { llmProfile } : {}),
     };
   }
   if (rest.length > 1) {
