@@ -131,6 +131,12 @@ export interface RoleUsage {
    * cost — unknown, never zero, never estimated.
    */
   providerCost?: { amount: number; currency: string };
+  /**
+   * The provider reported costs in MORE THAN ONE currency for this role: no
+   * single honest sum exists, so `providerCost` is unset and cost renders as
+   * unknown-mixed (review F2 — never a silent partial sum).
+   */
+  costMixed?: boolean;
 }
 
 /**
@@ -427,13 +433,19 @@ export async function runPipeline(
       }
       const cost = res.provenance?.cost;
       if (cost !== undefined) {
-        // Same-currency accumulation per role; the currency travels with the
-        // first report (providers report one currency; mixing would be a
-        // provider bug worth surfacing, not silently converting).
-        ru.providerCost =
-          ru.providerCost !== undefined && ru.providerCost.currency === cost.currency
-            ? { amount: ru.providerCost.amount + cost.amount, currency: cost.currency }
-            : ru.providerCost ?? cost;
+        // Same-currency accumulation per role. A currency MIX is sticky and
+        // un-summed: no honest single number exists, so the role's cost
+        // renders as unknown-mixed instead of a silent partial sum (F2).
+        if (ru.costMixed === true) {
+          // already unrepresentable — nothing to accumulate
+        } else if (ru.providerCost === undefined) {
+          ru.providerCost = cost;
+        } else if (ru.providerCost.currency === cost.currency) {
+          ru.providerCost = { amount: ru.providerCost.amount + cost.amount, currency: cost.currency };
+        } else {
+          ru.providerCost = undefined;
+          ru.costMixed = true;
+        }
       }
       byRole[role] = ru;
     }

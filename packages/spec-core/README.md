@@ -628,8 +628,9 @@ running**).
   resolved identity (model, upstream provider, fallback-observed) is recorded
   from the response's router metadata.
 - **`evaluation` (reproducible):** `provider.allow_fallbacks: false` (no
-  silent upstream substitution), optional upstream pins via the official
-  `provider.only` / `provider.order` fields, `require_parameters` when
+  silent upstream substitution), optional upstream restriction via the official
+  `provider.only` (restrictive in both modes) / `provider.order` (exhaustive
+  here because fallbacks are off), `require_parameters` when
   structured output is requested, and gateway **auto-routers are prohibited**
   (RouteLLM's `route-llm` is rejected in evaluation profiles — an auto router
   must never be part of a scientific comparison). Requested model, resolved

@@ -67,6 +67,44 @@ function fmt(v: string | number | undefined): string {
   return v !== undefined ? String(v) : 'Unknown';
 }
 
+/**
+ * Read a response body as text WITHOUT buffering past `maxBytes` (F1): the
+ * declared Content-Length was already checked; this bounds the undeclared /
+ * lying case. Cancels the stream the moment the cap is crossed and throws a
+ * CEILING-marked error. Byte-accurate: the counter sums Uint8Array chunks,
+ * not UTF-16 code units.
+ */
+async function readBoundedText(res: Response, maxBytes: number): Promise<string> {
+  const body = res.body;
+  if (body === null) {
+    const text = await res.text();
+    if (new TextEncoder().encode(text).length > maxBytes) {
+      throw new Error(`CEILING: models catalog exceeds the ${maxBytes}-byte sanity ceiling`);
+    }
+    return text;
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done === true || value === undefined) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`CEILING: models catalog exceeded the ${maxBytes}-byte sanity ceiling mid-stream — read aborted`);
+    }
+    chunks.push(value);
+  }
+  const total = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    total.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder('utf-8').decode(total);
+}
+
 /** Parse a /models response permissively (data[] or a bare array; unknown fields ignored). */
 export function parseCatalog(payload: unknown): ModelCatalogEntry[] {
   const container = payload as { data?: unknown } | unknown[] | null;
@@ -160,7 +198,26 @@ export async function cmdModels(opts: ModelsOptions): Promise<ModelsResult> {
     const body = await res.text().catch(() => '');
     return { code: 2, output: `models request returned HTTP ${res.status}: ${body.slice(0, 200)}` };
   }
-  const raw = await res.text();
+  // Hostile-input guard (review F1): refuse on the DECLARED length before
+  // reading, then stream-read with a byte counter and abort the moment the
+  // cap is crossed — the body is never fully buffered when oversized.
+  const declared = res.headers.get('content-length');
+  if (declared !== null) {
+    const n = Number(declared);
+    if (Number.isFinite(n) && n > MAX_CATALOG_BYTES) {
+      return {
+        code: 2,
+        output: `models catalog declares ${n} bytes — over the ${MAX_CATALOG_BYTES}-byte sanity ceiling; refusing to read it`,
+      };
+    }
+  }
+  let raw: string;
+  try {
+    raw = await readBoundedText(res, MAX_CATALOG_BYTES);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { code: 2, output: msg.includes('CEILING') ? msg : `reading the models catalog failed: ${msg}` };
+  }
   if (raw.length > MAX_CATALOG_BYTES) {
     return { code: 2, output: `models catalog exceeds the ${MAX_CATALOG_BYTES}-byte sanity ceiling — refusing to parse` };
   }

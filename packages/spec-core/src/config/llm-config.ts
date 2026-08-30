@@ -27,13 +27,76 @@ import type { CouncilTopology } from '../eval/budget';
  * secret value (whitespace, '=', lowercase, slashes, length) cannot match. */
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
+/**
+ * Provider base URLs: http(s) ONLY, and never a link-local/metadata endpoint.
+ * A shared/cloned lco.config.json must not be able to redirect the operator's
+ * real bearer key to an arbitrary scheme (javascript:/file:/data: pass zod's
+ * .url()) or at cloud metadata (169.254.169.254 et al.). Loopback/private
+ * hosts are allowed on purpose: local OpenAI-compatible gateways are a
+ * legitimate deployment (review F3 — scheme+metadata guard, config-trust
+ * hardening; the config remains operator-owned trust input).
+ */
+const LINK_LOCAL_PREFIXES = ['169.254.', 'fe80:', 'fe90:', 'fea0:', 'feb0:'];
+const METADATA_HOSTS = new Set(['metadata.google.internal', 'metadata.goog']);
+
+const BaseUrlSchema = z
+  .string()
+  .url()
+  .superRefine((v, ctx) => {
+    let u: URL;
+    try {
+      u = new URL(v);
+    } catch {
+      return; // zod's .url() already rejected it
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `baseUrl scheme must be http(s) — '${u.protocol}' is refused (fail fast, never retried)`,
+      });
+      return;
+    }
+    // IPv6 literals keep their brackets in URL.hostname — strip before matching.
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (METADATA_HOSTS.has(host) || LINK_LOCAL_PREFIXES.some((p) => host.startsWith(p))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `baseUrl host '${host}' is a link-local/metadata endpoint — refused (credential-exfiltration hardening)`,
+      });
+    }
+  });
+
+/**
+ * Config header names: RFC 7230 token grammar, and NEVER authorization or
+ * content-type — LCO forces those itself; a mixed-case config copy would
+ * survive as a second key and corrupt the request (review F4).
+ */
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+const HeaderNameSchema = z
+  .string()
+  .min(1)
+  .regex(HEADER_NAME, 'header names must be RFC 7230 tokens')
+  .refine(
+    (n) => n.toLowerCase() !== 'authorization' && n.toLowerCase() !== 'content-type',
+    "LCO sets authorization and content-type itself — they cannot be configured per provider",
+  );
+
 const ProviderTypeSchema = z.enum(PROVIDER_KINDS as [ProviderKind, ...ProviderKind[]]);
 
 const OpenRouterRoutingSchema = z
   .object({
-    /** Allow-list of upstream provider slugs (OpenRouter provider.only). */
+    /**
+     * Allow-list of upstream provider slugs (OpenRouter provider.only —
+     * restrictive in BOTH modes: a request that cannot be served inside the
+     * list fails rather than routing outside it).
+     */
     providerOnly: z.array(z.string().min(1)).min(1).optional(),
-    /** Ordered provider slugs (OpenRouter provider.order — pins the primary). */
+    /**
+     * Preference ORDER of upstream provider slugs (OpenRouter provider.order
+     * — tries in this order; in product mode fallbacks beyond the list stay
+     * allowed, in evaluation mode the factory adds allow_fallbacks:false so
+     * the list is exhaustive).
+     */
     providerOrder: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict();
@@ -44,12 +107,13 @@ const ProviderSchema = z
     /**
      * Required for generic openai-compatible providers (LCO never invents an
      * endpoint); optional override for openrouter/routellm (documented
-     * defaults apply).
+     * defaults apply). http(s) only; link-local/metadata hosts refused.
      */
-    baseUrl: z.string().url().optional(),
+    baseUrl: BaseUrlSchema.optional(),
     apiKeyEnv: z.string().regex(ENV_NAME, 'apiKeyEnv must be an ENVIRONMENT VARIABLE NAME (A-Z, 0-9, _; never a key value)'),
-    /** Extra static request headers (e.g. OpenRouter HTTP-Referer/X-Title). */
-    headers: z.record(z.string().min(1)).optional(),
+    /** Extra static request headers (e.g. OpenRouter HTTP-Referer/X-Title).
+     * Names are RFC 7230 tokens; authorization/content-type are refused. */
+    headers: z.record(HeaderNameSchema, z.string()).optional(),
     /** Default per-call generation cap for this provider. */
     maxTokens: z.number().int().positive().optional(),
     /** Provider escape hatch merged last into the body (model/messages pinned). */

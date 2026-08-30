@@ -200,7 +200,11 @@ function roleUsageLine(role: string, r: RoleUsage): string {
     ? `${r.in} in / ${r.out} out tokens`
     : `tokens unknown — provider reported no usage for ${r.calls} call(s) (unknown is not zero)`;
   const cost =
-    r.providerCost !== undefined ? `, cost ${r.providerCost.amount} ${r.providerCost.currency} (provider-reported)` : '';
+    r.costMixed === true
+      ? ', cost unknown (provider reported MIXED currencies — no honest sum)'
+      : r.providerCost !== undefined
+        ? `, cost ${r.providerCost.amount} ${r.providerCost.currency} (provider-reported)`
+        : '';
   return `  ${who}${resolvedNote}]: ${r.calls} call(s) / ${r.attempts} attempt(s), ${tokens}, ${r.promptBytes} prompt bytes${cost}`;
 }
 

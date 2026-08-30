@@ -884,7 +884,12 @@ function loadLlmConfigForProfiles(
         'raw keys/URLs are never accepted in requests',
     };
   })();
-  configLoadCache.set(options ?? NULL_OPTIONS_KEY, result);
+  // Cache SUCCESSFUL loads only (F6): a failed read (missing/invalid config)
+  // must not pin a permanent refusal for the process lifetime — the operator
+  // who adds or fixes lco.config.json gets picked up on the next call.
+  if (result.ok) {
+    configLoadCache.set(options ?? NULL_OPTIONS_KEY, result);
+  }
   return result;
 }
 

@@ -298,3 +298,72 @@ describe('resolveProfile — reproducibility mode enforcement (§5/§6)', () => 
     expect(resolveProfile(parsed.config, 'strsingle').ok).toBe(false);
   });
 });
+
+describe('parseLlmConfig — baseUrl scheme + metadata hardening (review F3)', () => {
+  function withBaseUrl(baseUrl: string): string {
+    return JSON.stringify({
+      llm: {
+        providers: { x: { type: 'openai-compatible', baseUrl, apiKeyEnv: 'A' } },
+        profiles: { p: { variant: 'single', roles: { single: { provider: 'x', model: 'm' } } } },
+      },
+    });
+  }
+
+  it('accepts https and http (local gateways are legitimate)', () => {
+    expect(parseLlmConfig(withBaseUrl('https://gw.example.test/v1')).ok).toBe(true);
+    expect(parseLlmConfig(withBaseUrl('http://localhost:8000/v1')).ok).toBe(true);
+  });
+
+  it('rejects non-http(s) schemes at parse time (no retried dead fetches)', () => {
+    for (const bad of [
+      'javascript:alert(1)',
+      'file:///etc/passwd',
+      'data:text/plain,hi',
+      'chrome-extension://abc/v1',
+    ]) {
+      const r = parseLlmConfig(withBaseUrl(bad));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/http\(s\)/);
+    }
+  });
+
+  it('rejects link-local and cloud-metadata endpoints (credential exfiltration)', () => {
+    for (const bad of [
+      'http://169.254.169.254/latest/meta-data',
+      'https://169.254.170.2/v1',
+      'http://metadata.google.internal/computeMetadata/v1',
+      'http://[fe80::1]:8080/v1',
+    ]) {
+      const r = parseLlmConfig(withBaseUrl(bad));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/link-local\/metadata/);
+    }
+  });
+});
+
+describe('parseLlmConfig — header-name hardening (review F4)', () => {
+  function withHeaders(headers: Record<string, string>): string {
+    return JSON.stringify({
+      llm: {
+        providers: { x: { type: 'openrouter', apiKeyEnv: 'A', headers } },
+        profiles: { p: { variant: 'single', roles: { single: { provider: 'x', model: 'm' } } } },
+      },
+    });
+  }
+
+  it('accepts normal provider headers (HTTP-Referer, X-Title)', () => {
+    expect(parseLlmConfig(withHeaders({ 'HTTP-Referer': 'https://x', 'X-Title': 'lco' })).ok).toBe(true);
+  });
+
+  it('rejects authorization/content-type in ANY casing (duplicate-header corruption)', () => {
+    for (const name of ['authorization', 'Authorization', 'AUTHORIZATION', 'content-type', 'Content-Type']) {
+      expect(parseLlmConfig(withHeaders({ [name]: 'x' })).ok).toBe(false);
+    }
+  });
+
+  it('rejects non-token header names (CRLF/space injection shapes)', () => {
+    for (const name of ['Bad Header', 'a:b', 'a\nb']) {
+      expect(parseLlmConfig(withHeaders({ [name]: 'x' })).ok).toBe(false);
+    }
+  });
+});

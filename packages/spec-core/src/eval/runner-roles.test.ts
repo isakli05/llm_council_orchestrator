@@ -328,3 +328,45 @@ describe('per-role provider-reported cost (§13)', () => {
     expect(out.usage.byRole!.classifier!.providerCost).toBeUndefined();
   });
 });
+
+describe('per-role provider-reported cost — currency mix (review F2)', () => {
+  it('mixed currencies → costMixed, NO partial sum (unknown, never undercounted)', async () => {
+    let n = 0;
+    // The judge needs TWO completions to mix currencies: its first bundle is
+    // non-L08 lint-dirty (tasks emptied → L02 orphans), the lint retry is clean.
+    const dirtyJudgeBundle = structuredClone(et01Bundle());
+    dirtyJudgeBundle.tasks = [];
+    dirtyJudgeBundle.test_files = [];
+    const plan: LlmPlan = {
+      forRole: (r) => ({
+        adapter: {
+          async complete(): Promise<LlmResponse> {
+            n += 1;
+            const text =
+              n === 1
+                ? JSON.stringify({ profile: 'p-mini', must_be_blocked: false })
+                : n === 2
+                  ? JSON.stringify(et01Bundle()) // proposal A
+                  : n === 3
+                    ? JSON.stringify(dirtyJudgeBundle) // judge attempt 1 (lint-dirty)
+                    : JSON.stringify(et01Bundle()); // judge lint retry (clean)
+            const cost = n === 3 ? { amount: 0.02, currency: 'USD' } : { amount: 0.01, currency: 'credits' };
+            return {
+              text,
+              usage: { in_tokens: 5, out_tokens: 5 },
+              ...(r === 'judge' ? { provenance: { gateway: 'g', providerKind: 'openrouter' as const, requestedModel: 'm', cost } } : {}),
+            };
+          },
+        },
+        identity: { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' },
+      }),
+    };
+    const out = await runPipeline(task('ET-01'), 'council', plan, NOW);
+    expect(out.kind).toBe('spec');
+    if (out.kind !== 'spec') return;
+    expect(n).toBe(4); // classifier + A + judge×2 (lint retry)
+    expect(out.usage.byRole!.judge!.costMixed).toBe(true);
+    expect(out.usage.byRole!.judge!.providerCost).toBeUndefined();
+    expect(out.usage.byRole!.classifier!.costMixed).toBeUndefined();
+  });
+});

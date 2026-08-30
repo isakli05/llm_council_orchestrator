@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { cmdModels, parseCatalog } from './models';
+import { cmdModels, parseCatalog, MAX_CATALOG_BYTES } from './models';
 
 /**
  * lco models — free catalog discovery, deterministic fake fetch, no paid
@@ -120,5 +120,53 @@ describe('cmdModels', () => {
     const r = await cmdModels({ env: ENV });
     expect(r.code).toBe(2);
     expect(r.output).toContain('--provider');
+  });
+});
+
+describe('cmdModels — hostile catalog guards (review F1)', () => {
+  it('refuses on a declared Content-Length over the ceiling BEFORE reading the body', async () => {
+    let bodyRead = false;
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        undefined,
+        {
+          status: 200,
+          headers: { 'content-length': String(MAX_CATALOG_BYTES + 1) },
+        },
+      );
+    }) as unknown as typeof fetch;
+    // mark whether the body was touched: Response above has none to read —
+    // the guard must reject purely on the header.
+    const r = await cmdModels({ builtin: 'openrouter', env: ENV, fetchImpl });
+    expect(r.code).toBe(2);
+    expect(r.output).toMatch(/declares .* over the .* ceiling/);
+    expect(bodyRead).toBe(false);
+  });
+
+  it('aborts a lying/undeclared stream the moment the byte cap is crossed', async () => {
+    const chunk = new Uint8Array(1024 * 1024); // 1 MiB per chunk
+    let cancelled = false;
+    let chunksSent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk);
+      },
+      pull(controller) {
+        chunksSent += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } }),
+    ) as unknown as typeof fetch;
+    const r = await cmdModels({ builtin: 'openrouter', env: ENV, fetchImpl });
+    expect(r.code).toBe(2);
+    expect(r.output).toMatch(/exceeded the .* ceiling mid-stream/);
+    expect(cancelled).toBe(true);
+    // it stopped around the cap — never buffered the unbounded stream
+    expect(chunksSent).toBeLessThan(16);
   });
 });

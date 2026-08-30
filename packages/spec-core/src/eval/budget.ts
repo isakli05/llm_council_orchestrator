@@ -7,11 +7,9 @@ import { HTTP_MAX_ATTEMPTS_PER_COMPLETION, HTTP_REQUEST_TIMEOUT_MS, HTTP_BACKOFF
  *
  * The audit found the documented cost ("council = 3 calls, single = 1")
  * materially understated the real envelope: validation retries multiply the
- * LOGICAL COMPLETIONS per run (single up to 3, council up to 6), and each
- * completion may cost up to 4 HTTP ATTEMPTS (transport retry with 2s/5s/10s
- * backoff and a 180s per-request timeout). A default council invocation
- * could legally issue 24 HTTP requests over ~74 minutes with nothing
- * watching the total.
+ * LOGICAL COMPLETIONS per run (single up to 3; council up to 6 fused / 8
+ * decomposed), and each completion may cost up to 8 HTTP ATTEMPTS (transport
+ * retry with 2/5/15/30/60/120/240s backoff and a 600s per-request timeout).
  *
  * This module turns that envelope into (a) documented numbers derived from
  * the code constants below, and (b) a run budget that ABORTS the run with a
@@ -67,7 +65,8 @@ export function worstCaseAttempts(
 
 /**
  * Worst-case wall time for one run = completions x (every attempt timing out
- * + the full backoff chain): 4 x 180s + (2s+5s+10s) = 737s per completion.
+ * + the full backoff chain): 8 x 600s + 472s of backoff per completion
+ * (derived from the transport constants — never hand-copied).
  */
 export function worstCaseWallMs(variant: PipelineVariant, topology: CouncilTopology = 'fused'): number {
   return (

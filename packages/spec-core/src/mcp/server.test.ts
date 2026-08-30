@@ -2229,3 +2229,49 @@ describe('lco_generate llmProfile (§17 named profiles only)', () => {
     expect(text(res)).toContain('llm profile single-x');
   });
 });
+
+describe('lco_generate llmProfile — the REAL per-role plan path (no injected adapter)', () => {
+  it('builds per-role adapters from the named profile; keys resolve from env by NAME', async () => {
+    const root = freshRoot('spec-core-mcp-realplan-');
+    const multiCfg = JSON.stringify({
+      llm: {
+        providers: { or: { type: 'openrouter', apiKeyEnv: 'MCP_REALPLAN_OR_KEY' } },
+        profiles: {
+          'single-x': { variant: 'single', roles: { single: { provider: 'or', model: 'realplan-model' } } },
+        },
+      },
+    });
+    vi.stubEnv('MCP_REALPLAN_OR_KEY', 'realplan-key');
+    const seenModels: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        // cmdGenerate drives the transport; read the model off the captured body
+        const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls as unknown as [
+          string,
+          RequestInit,
+        ][];
+        const last = calls[calls.length - 1];
+        const body = JSON.parse(last[1].body as string) as { model: string };
+        seenModels.push(body.model);
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(inlineConforming()) } }],
+            usage: { prompt_tokens: 1, completion_tokens: 1 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    );
+
+    const digest = generateConsentDigest('realplan intent', 'p-mini', 'single', 'single-x');
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: 'realplan intent', profile: 'p-mini', llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llmConfigText: multiCfg },
+    );
+    expect(text(res)).toContain('generated spec/');
+    expect(text(res)).toContain('llm profile single-x');
+    expect(seenModels).toEqual(['realplan-model']);
+  });
+});
