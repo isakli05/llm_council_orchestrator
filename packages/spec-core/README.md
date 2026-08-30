@@ -519,6 +519,203 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
 - **Başarı:** `spec/` bölüm dosyaları yazılır (`state: draft`) ve çıktı sıradaki
   adımı önerir: `run lco lint/lco freeze next`.
 
+## Multi-Provider LLM Architecture (gateways, profiles, heterogeneous councils)
+
+**Status framing (binding):** `single` remains the DEFAULT generation variant.
+`council` remains **EXPERIMENTAL**, in every topology. The closed PROD-003
+live experiment did **NOT substantiate** a council advantage (pre-registered
+criterion NOT MET — see `audit-output/eval/LIVE-EVAL-RESULT-2026-08-30.md`);
+nothing here changes that. Heterogeneous councils are equally EXPERIMENTAL
+and carry **no accuracy claim** — any future claim requires a NEW
+pre-registered experiment.
+
+### Gateways
+
+One reusable OpenAI-compatible transport (`src/llm/openai-compatible.ts`)
+serves every gateway. No vendor SDKs. Three provider kinds:
+
+| kind | base URL | key env (name in config) | notes |
+|---|---|---|---|
+| `openai-compatible` | your `baseUrl` (required — LCO never defaults an endpoint) | any env name | the legacy `LCO_LLM_*` path's kin; `extraBody` escape hatch |
+| `openrouter` | `https://openrouter.ai/api/v1` (overridable) | e.g. `OPENROUTER_API_KEY` | routing modes below; provider-reported cost (credits) recorded |
+| `routellm` | `https://routellm.abacus.ai/v1` (overridable) | e.g. `ABACUS_ROUTELLM_API_KEY` | explicit model ids; upstream provider NOT reported → recorded unknown |
+
+**Secrets never live in `lco.config.json`** — providers carry `apiKeyEnv`, the
+NAME of an environment variable. A raw key pasted where the name belongs fails
+validation (and `doctor` fails the config). API-key values stay in the process
+environment, exactly like `LCO_LLM_API_KEY` today.
+
+### `lco.config.json` and named profiles
+
+Put `lco.config.json` in the project directory (the `<dir>` you pass to
+`generate`). A complete, commented example — including a **same-model
+decomposed council** and the frontier heterogeneous EXAMPLE profile — ships at
+`examples/lco.config.example.json`. Shape:
+
+```jsonc
+{
+  "llm": {
+    "providers": {
+      "openrouter": { "type": "openrouter", "apiKeyEnv": "OPENROUTER_API_KEY" }
+    },
+    "profiles": {
+      "frontier-heterogeneous-openrouter": {
+        "variant": "council",
+        "topology": "decomposed",
+        "routingMode": "evaluation",
+        "roles": {
+          "classifier": { "provider": "openrouter", "model": "google/gemini-3.7-flash" },
+          "proposal_a": { "provider": "openrouter", "model": "anthropic/claude-opus-5" },
+          "proposal_b": { "provider": "openrouter", "model": "x-ai/grok-4.6" },
+          "judge":     { "provider": "openrouter", "model": "openai/gpt-5.6-sol" }
+        }
+      }
+    }
+  }
+}
+```
+
+That frontier profile is an **EXAMPLE composition, not a proven optimum** —
+role behavior matters more than vendor branding. The four slugs were verified
+against the live OpenRouter catalogue on 2026-08-30; catalogues change, so
+check current ids with `lco models` (below) rather than trusting any doc.
+
+Usage — one named choice, not fifteen model flags:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...   # the value lives in the ENV, never in config
+lco generate app --intent "..." --variant council --llm-profile frontier-heterogeneous-openrouter
+```
+
+Without `--llm-profile` the legacy `LCO_LLM_*` path runs **unchanged**
+(zero-config, single model, fail-closed). A profile and `--variant` must
+agree. Validation is strict and fail-closed: unknown keys, secret-shaped
+`apiKeyEnv` values, dangling references, and wrong role sets are all refused
+before any paid call.
+
+### Council topologies (under `--variant council`)
+
+```
+single     one configured model (default; unchanged)
+
+council
+  fused        HISTORICAL topology (PROD-003 ran under it):
+               classifier -> proposal A -> fused proposal-B + judge   (3 stages)
+  decomposed   NEW (v4 protocol): classifier -> proposal A ∥ proposal B -> judge
+               over BOTH validated proposals                         (4 stages)
+```
+
+`--variant council` alone still means the **fused** topology — existing
+invocations keep their exact meaning. The decomposed topology is selected by
+a profile (`"topology": "decomposed"`); proposal B is generated **without ever
+seeing proposal A** (independence by construction), and the judge receives
+**only schema-validated proposal content** — a leg that fails validation
+twice is DEGRADED, its unvalidated text is withheld, the outcome carries
+`degraded: [roles]`, and a degraded run is never presented as a full council.
+Blocking evidence stays monotonic and validation retries still cannot erase
+unresolved material.
+
+A decomposed council may use the **same model in all four roles** (see
+`glm-council-decomposed` in the example config) — that is deliberate: a future
+same-topology comparison of same-model vs heterogeneous deliberation requires
+equivalent prompt structure (infrastructure only; **no such experiment is
+running**).
+
+### Routing modes (product vs evaluation)
+
+- **`product` (default / reliability):** gateway defaults — OpenRouter may
+  fall back across upstream providers serving the SAME model for reliability;
+  resolved identity (model, upstream provider, fallback-observed) is recorded
+  from the response's router metadata.
+- **`evaluation` (reproducible):** `provider.allow_fallbacks: false` (no
+  silent upstream substitution), optional upstream pins via the official
+  `provider.only` / `provider.order` fields, `require_parameters` when
+  structured output is requested, and gateway **auto-routers are prohibited**
+  (RouteLLM's `route-llm` is rejected in evaluation profiles — an auto router
+  must never be part of a scientific comparison). Requested model, resolved
+  model, gateway, routing settings, and the prompt protocol are recorded with
+  the run output.
+
+If a gateway cannot report enough information to pin an upstream (RouteLLM
+does not report the serving provider), that is recorded as **unknown — never
+fabricated**.
+
+### Model discovery (`lco models`)
+
+```bash
+lco models --provider openrouter            # built-in; OPENROUTER_API_KEY
+lco models --provider routellm              # built-in; ABACUS_ROUTELLM_API_KEY
+lco models --provider glm --config lco.config.json --limit 20
+lco models --provider openrouter --json     # machine-readable
+```
+
+One GET to the provider's **free** models endpoint — no completion, no
+retries, 10s timeout. Prints exact API ids (display names are never API ids),
+per-token pricing and context **as reported**; `Unknown` means not reported
+(never `0`). The catalogue changes over time — especially RouteLLM's, whose
+doc-page list lags; use the live listing, not screenshots.
+
+### Usage, cost, and provenance accounting
+
+Every council run reports per-role accounting (gateway, requested model,
+resolved model when the provider reports it, calls vs transport attempts,
+tokens or `unknown`, prompt bytes, provider-reported cost when available) plus
+the run total. Honesty rules: **unknown is never zero** — a provider that
+reports no usage renders `tokens unknown`, a gateway that reports no cost has
+no cost line. LCO ships **no price catalogue and never estimates**; the only
+monetary figures shown are provider-**reported** (OpenRouter credits).
+
+Budget caps (attempts/tokens/wall) are LCO-enforced per run and unchanged;
+the decomposed envelope is 8 completions / 32 attempts worst case. **Monetary
+caps are not simulated:** LCO learns a request's exact cost only after the
+provider completes it, so a genuine hard spend ceiling belongs at the
+provider's API-key settings; LCO's role is honest observed-cost accounting.
+
+### Clarification UX (no silent high-impact gaps)
+
+Generation may block on UNRESOLVED product decisions — by design (models may
+reason about missing information; they may not silently invent the answer).
+When a blocked run carries a schema-valid candidate whose UNRESOLVED decisions
+caused the block, the CLI surfaces them as **plain-language, domain/behavior
+questions** (the v4 prompt protocol instructs models to phrase decisions for
+a non-engineer product owner; engineering mechanics stay in `rationale` or as
+recorded assumptions):
+
+```
+GENERATION BLOCKED — USER DECISIONS REQUIRED
+Questions to resolve:
+  DEC-0004 [impact: high]
+    If two customers try to complete the remaining quantity for the same fabric at the same time, what should the system do — accept both orders, or give priority to the first confirmed one?
+    options:
+      - first confirmed order gets priority (the other customer sees an out-of-stock message)
+Answer with an answers file — {"DEC-0004": "your answer", …} — and re-run with --answers <file>.
+```
+
+Nothing is written on block (unchanged). The answers loop is **one
+deterministic round per invocation** (no hidden LLM loop):
+
+```bash
+lco generate app --intent "..." --answers answers.json
+```
+
+Each answer becomes verbatim `user_input` evidence (hash-verified) for the
+next run, resolves **only the decision it names**, and unanswered UNRESOLVED
+decisions must remain unresolved — a run that succeeds carries exactly the
+decisions the evidence supports, surfaced or resolved, never silently
+dropped. (Limitation, stated honestly: question identity across runs is
+prompt-bound claim_ids — LCO keeps clarifications in-memory by design, so
+cross-run persistence of unanswered questions is not mechanically enforced;
+the new run re-surfaces whatever remains unresolved.)
+
+### MCP surface
+
+`lco_generate` accepts an optional `llmProfile` — a **NAME** from the
+operator-configured `lco.config.json` (server start: `LCO_LLM_CONFIG` path or
+`lco.config.json` at the server root). The consent digest binds
+`{intent, profile, variant, llmProfile?}`. Requests can NEVER carry raw API
+keys, base URLs, or headers — those argument shapes are refused by name
+(SSRF/credential/spend control); gateway selection is operator configuration.
+
 ## `lco-mcp`: MCP Sunucusu
 
 `lco-mcp` (bin: `dist/mcp/server.js`), motoru Model Context Protocol istemcilerine

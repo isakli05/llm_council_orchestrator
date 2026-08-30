@@ -11,9 +11,9 @@ local-first spec compiler that turns natural-language intent into schema-validat
 lintable, freezable application specs. Two binaries share the same pure command
 cores:
 
-- **`lco`** — an 11-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
-  `trace`, `plan`, `init`, `check`, `generate`, `doctor` (`lco --help` for usage,
-  `lco <command> --help` per command)
+- **`lco`** — a 12-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
+  `trace`, `plan`, `init`, `check`, `generate`, `doctor`, `models` (`lco --help`
+  for usage, `lco <command> --help` per command)
 - **`lco-mcp`** — a stdio MCP server exposing 10 tools (`lco_compile` … `lco_change`).
   The generation and execution tools are consent-gated env opt-ins — off unless
   the server starts with `LCO_MCP_ALLOW_GENERATE=1` / `LCO_MCP_ALLOW_EXEC=1`;
@@ -71,8 +71,8 @@ gate, known limits: [packages/spec-core/README.md](packages/spec-core/README.md)
 
 ### LLM environment (only for `generate` and live eval)
 
-`lco generate` and the live eval harness call a real LLM over an
-OpenAI-compatible endpoint and **fail closed** unless these are set explicitly:
+The **default** path: `lco generate` calls a real LLM over an OpenAI-compatible
+endpoint and **fails closed** unless these are set explicitly:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
@@ -81,6 +81,18 @@ OpenAI-compatible endpoint and **fail closed** unless these are set explicitly:
 | `LCO_LLM_MODEL` | yes | Model name |
 | `LCO_LLM_MAX_TOKENS` | no | Positive-integer generation cap |
 | `LCO_LLM_EXTRA_BODY` | no | JSON object merged last into the request body |
+
+**Multi-provider (named profiles):** OpenRouter, Abacus RouteLLM, and any
+OpenAI-compatible gateway are first-class via `lco.config.json` — providers
+keyed by env-var **name** (secrets never in the config) and per-role council
+profiles, including heterogeneous decomposed councils (independent
+proposal A ∥ adversarial proposal B → judge over validated proposals;
+EXPERIMENTAL — the closed PROD-003 experiment did not substantiate a council
+advantage). `--llm-profile <name>` selects one; `lco models --provider
+openrouter|routellm` lists the current catalogue (free endpoint, no
+completion). Full guide: [packages/spec-core/README.md](packages/spec-core/README.md)
+("Multi-Provider LLM Architecture"), example config:
+[packages/spec-core/examples/lco.config.example.json](packages/spec-core/examples/lco.config.example.json).
 
 ## CI (spec-core only)
 

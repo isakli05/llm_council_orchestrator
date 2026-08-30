@@ -1,0 +1,58 @@
+{
+  "llm": {
+    "providers": {
+      "glm": {
+        "type": "openai-compatible",
+        "baseUrl": "https://YOUR-OPENAI-COMPATIBLE-ENDPOINT/v1",
+        "apiKeyEnv": "LCO_LLM_API_KEY",
+        "maxTokens": 16000,
+        "extraBody": { "thinking": { "type": "disabled" } }
+      },
+      "openrouter": {
+        "type": "openrouter",
+        "apiKeyEnv": "OPENROUTER_API_KEY",
+        "headers": { "HTTP-Referer": "https://github.com/isakli05/llm_council_orchestrator", "X-Title": "lco-spec" }
+      },
+      "routellm": {
+        "type": "routellm",
+        "apiKeyEnv": "ABACUS_ROUTELLM_API_KEY"
+      }
+    },
+    "profiles": {
+      "glm-single": {
+        "variant": "single",
+        "roles": { "single": { "provider": "glm", "model": "glm-5.3" } }
+      },
+      "glm-council-fused": {
+        "variant": "council",
+        "topology": "fused",
+        "roles": {
+          "classifier": { "provider": "glm", "model": "glm-5.3" },
+          "proposal_a": { "provider": "glm", "model": "glm-5.3" },
+          "judge": { "provider": "glm", "model": "glm-5.3" }
+        }
+      },
+      "glm-council-decomposed": {
+        "variant": "council",
+        "topology": "decomposed",
+        "roles": {
+          "classifier": { "provider": "glm", "model": "glm-5.3" },
+          "proposal_a": { "provider": "glm", "model": "glm-5.3" },
+          "proposal_b": { "provider": "glm", "model": "glm-5.3" },
+          "judge": { "provider": "glm", "model": "glm-5.3" }
+        }
+      },
+      "frontier-heterogeneous-openrouter": {
+        "variant": "council",
+        "topology": "decomposed",
+        "routingMode": "evaluation",
+        "roles": {
+          "classifier": { "provider": "openrouter", "model": "google/gemini-3.7-flash" },
+          "proposal_a": { "provider": "openrouter", "model": "anthropic/claude-opus-5" },
+          "proposal_b": { "provider": "openrouter", "model": "x-ai/grok-4.6" },
+          "judge": { "provider": "openrouter", "model": "openai/gpt-5.6-sol" }
+        }
+      }
+    }
+  }
+}
