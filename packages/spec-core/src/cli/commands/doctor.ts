@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { compileSpecDir } from '../../compiler/compile';
+import { parseLlmConfig } from '../../config/llm-config';
 import {
   acquireSpecRootLock,
   DEFAULT_STALE_MS,
@@ -695,6 +696,57 @@ export function checkSchemaFreshness(
 }
 
 // ---------------------------------------------------------------------------
+// llm-config — lco.config.json presence + validity (names only, NEVER values)
+// ---------------------------------------------------------------------------
+
+/**
+ * Multi-provider (§7/§24): validate <dir>/lco.config.json when present. No
+ * network, no LLM calls, no values — provider/profile NAMES and per-provider
+ * apiKeyEnv env PRESENCE (set/unset) only, the checkProviderEnv discipline.
+ * A malformed config is a FAIL (it breaks every --llm-profile invocation);
+ * an absent config is OK (the legacy LCO_LLM_* path).
+ */
+export function checkLlmConfig(
+  dir: string,
+  env: Record<string, string | undefined>,
+  readText: (p: string) => string,
+): DoctorCheck {
+  const path = join(dir, 'lco.config.json');
+  let text: string;
+  try {
+    text = readText(path);
+  } catch {
+    return {
+      name: 'llm-config',
+      status: 'ok',
+      detail: 'no lco.config.json — legacy LCO_LLM_* env path (named profiles not configured)',
+    };
+  }
+  const parsed = parseLlmConfig(text);
+  if (!parsed.ok) {
+    return {
+      name: 'llm-config',
+      status: 'fail',
+      detail: parsed.error,
+      remedy: 'fix lco.config.json (strict schema; apiKeyEnv carries env-var NAMES, never key values)',
+    };
+  }
+  const providers = Object.entries(parsed.config.llm.providers) as [string, { apiKeyEnv: string }][];
+  const unset: string[] = [];
+  for (const [name, provider] of providers) {
+    if (!env[provider.apiKeyEnv]) unset.push(`${name}→${provider.apiKeyEnv}`);
+  }
+  const profiles = Object.keys(parsed.config.llm.profiles);
+  const detail =
+    `${providers.length} provider(s): ${providers.map(([n]) => n).join(', ')}; ` +
+    `${profiles.length} profile(s): ${profiles.join(', ') || 'none'}` +
+    (unset.length > 0 ? `; UNSET key env: ${unset.join(', ')} (presence only)` : '; all key env set');
+  return unset.length > 0
+    ? { name: 'llm-config', status: 'warn', detail, remedy: `export the listed env vars before using those profiles (doctor prints presence only, never values)` }
+    : { name: 'llm-config', status: 'ok', detail };
+}
+
+// ---------------------------------------------------------------------------
 // the command core
 // ---------------------------------------------------------------------------
 
@@ -725,6 +777,7 @@ export async function cmdDoctor(dir: string, opts: DoctorOptions): Promise<Docto
     ),
   );
   await run('provider-env', () => checkProviderEnv(opts.env));
+  await run('llm-config', () => checkLlmConfig(dir, opts.env, (p) => readFileSync(p, 'utf8')));
   await run('mcp-flags', () => checkMcpFlags(opts.env, (p) => existsSync(p)));
   await run('budget-env', () => checkBudgetEnv(opts.env));
   await run('write', () => checkWritePath(dir));

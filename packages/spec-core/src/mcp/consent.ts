@@ -404,7 +404,7 @@ export type GenerateVariant = 'single' | 'council';
 /**
  * Digest of EXACTLY what a generation request sends to the LLM:
  *
- *   sha256Content(JSON.stringify({ intent, profile, variant }, null, 2))
+ *   sha256Content(JSON.stringify({ intent, profile, variant, llmProfile? }, null, 2))
  *
  * - `intent` — the full prompt text; consenting to one intent is never
  *   consenting to another.
@@ -412,6 +412,12 @@ export type GenerateVariant = 'single' | 'council';
  * - `variant` — the cost axis of the call (single is the default and the
  *   cheap path — up to 3 completions / 12 HTTP attempts worst case; council
  *   is explicit and up to 6 / 24; see eval/budget.ts).
+ * - `llmProfile` (multi-provider §17) — the NAMED lco.config.json profile
+ *   selecting gateways/models (possibly a heterogeneous council). Included
+ *   ONLY when present: JSON.stringify drops undefined, so requests without
+ *   llmProfile keep their historical digest bytes exactly — old consents
+ *   stay valid for old content, and no consent can cross over to a
+ *   different provider/model composition.
  *
  * Computed over the RESOLVED values (defaults applied): a request omitting
  * `variant` and one sending `variant:'single'` carry identical effectual
@@ -424,8 +430,11 @@ export function generateConsentDigest(
   intent: string,
   profile: GenerateProfile,
   variant: GenerateVariant,
+  llmProfile?: string,
 ): `sha256:${string}` {
-  return sha256Content(JSON.stringify({ intent, profile, variant }, null, 2));
+  return sha256Content(
+    JSON.stringify({ intent, profile, variant, ...(llmProfile !== undefined ? { llmProfile } : {}) }, null, 2),
+  );
 }
 
 /**

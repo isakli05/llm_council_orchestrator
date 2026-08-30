@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { cmdCompile } from '../cli/commands/compile';
 import { cmdLint } from '../cli/commands/lint';
 import { cmdFreeze } from '../cli/commands/freeze';
@@ -35,6 +37,8 @@ import {
   type GenerateVariant,
 } from './consent';
 import type { LlmAdapter } from '../eval/llm/adapter';
+import { parseLlmConfig, resolveProfile } from '../config/llm-config';
+import type { LlmConfig, ResolvedProfile } from '../config/llm-config';
 
 /**
  * `lco-mcp` — a minimal MCP server over line-delimited JSON-RPC 2.0 on stdio,
@@ -91,6 +95,12 @@ interface ToolInput {
   intent?: string;
   /** PROD-004 lco_generate: the cost axis (single default; council explicit — see generate.ts). */
   variant?: GenerateVariant;
+  /**
+   * Multi-provider (§17): the NAME of a profile from the operator-configured
+   * lco.config.json — the ONLY way a request can influence gateway/model
+   * selection. Never a raw key, URL, or header: those are unknown arguments.
+   */
+  llmProfile?: string;
   /** PROD-004 lco_change: the inline CLI change envelope (plain object at the
    *  parse layer; the authoritative strict check is ChangeSetSchema in the core). */
   changeset?: ChangeSet;
@@ -122,6 +132,16 @@ interface CallContext extends ExecBoundary {
   /** Mock adapter injected by tests/library callers; production leaves it
    *  unset and cmdGenerate resolves createHttpLlm() fail-closed. */
   llm?: LlmAdapter;
+  /**
+   * Resolve a NAMED llm profile against the operator's lco.config.json
+   * (§17). Built once per tool call at the boundary from (in precedence):
+   * options.llmConfigText (tests) → env LCO_LLM_CONFIG path →
+   * <effectiveMcpRoot>/lco.config.json. A request can only select a NAME
+   * this resolver already knows — there is no request-controlled gateway.
+   */
+  resolveLlmProfile: (name: string) =>
+    | { ok: true; profile: { name: string; resolved: ResolvedProfile } }
+    | { ok: false; output: string };
 }
 
 interface ToolDef {
@@ -360,12 +380,20 @@ const TOOLS: readonly ToolDef[] = [
           type: 'string',
           enum: ['single', 'council'],
           description:
-            'single (default; up to 3 completions/12 HTTP attempts) or council (up to 6/24) — part of the consent digest',
+            'single (default; up to 3 completions/12 HTTP attempts) or council (up to 6/24 fused, 8/32 decomposed) — part of the consent digest',
         },
         profile: {
           type: 'string',
           enum: ['p-mini', 'p-standard'],
           description: 'complexity profile (default p-standard; part of the consent digest)',
+        },
+        llmProfile: {
+          type: 'string',
+          description:
+            'NAME of a profile from the operator-configured lco.config.json (providers + per-role models; ' +
+            'api keys live in environment variables, never in requests) — part of the consent digest. ' +
+            'The variant must agree with the profile. There is NO way to pass a raw key, base URL, or ' +
+            'header through a request: gateway selection is operator configuration only.',
         },
         consent: CONSENT_PROPERTY(
           'paid-call consent: { digest } — the "consent digest" value the refusal for the ' +
@@ -376,7 +404,7 @@ const TOOLS: readonly ToolDef[] = [
       required: ['dir', 'intent'],
       additionalProperties: false,
     },
-    args: ['intent', 'variant', 'profile', 'consent'],
+    args: ['intent', 'variant', 'profile', 'llmProfile', 'consent'],
     requiredArgs: ['intent'],
     run: async (input, nowIso, call) => {
       // PROD-004 consent chain — every refusal happens BEFORE any adapter is
@@ -385,7 +413,7 @@ const TOOLS: readonly ToolDef[] = [
       // conservative default (UX-001 ruling); council is explicit.
       const profile = input.profile ?? DEFAULT_GENERATE_PROFILE;
       const variant = input.variant ?? DEFAULT_GENERATE_VARIANT;
-      const expected = generateConsentDigest(input.intent!, profile, variant);
+      const expected = generateConsentDigest(input.intent!, profile, variant, input.llmProfile);
 
       // 1. No consent: the actionable refusal IS the preview — it carries
       //    this request's digest (there is no dry-run work worth exit 0).
@@ -400,9 +428,30 @@ const TOOLS: readonly ToolDef[] = [
       if (input.consent.digest !== expected) {
         return { code: 2, output: refuseGenerateDigestMismatch(input.consent.digest, expected) };
       }
+      // 4. §17 named-profile resolution — ONLY names the operator configured;
+      //    an unknown name, a missing config, or a variant disagreement is a
+      //    structured refusal BEFORE any adapter exists (zero calls).
+      let llmProfile: { name: string; resolved: ResolvedProfile } | undefined;
+      if (input.llmProfile !== undefined) {
+        const resolved = call.resolveLlmProfile(input.llmProfile);
+        if (!resolved.ok) {
+          return { code: 2, output: resolved.output };
+        }
+        if (resolved.profile.resolved.variant !== variant) {
+          return {
+            code: 2,
+            output:
+              `generation refused: llm profile '${resolved.profile.name}' declares variant ` +
+              `'${resolved.profile.resolved.variant}' but the request says variant '${variant}' — ` +
+              'they must agree; re-send with a matching variant/profile pair (the consent digest covers both)',
+          };
+        }
+        llmProfile = resolved.profile;
+      }
       // Full chain: the shared generate core. call.llm is the boundary-injected
       // (test/library) adapter; when unset cmdGenerate resolves createHttpLlm()
-      // itself and throws fail-closed without LCO_LLM_* env (never invents keys).
+      // itself (or the named profile's per-role adapters) and throws
+      // fail-closed without the required env (never invents keys).
       return cmdGenerate(input.dir, {
         intent: input.intent!,
         variant,
@@ -410,6 +459,7 @@ const TOOLS: readonly ToolDef[] = [
         nowIso,
         llm: call.llm,
         nowMs: call.nowMs,
+        ...(llmProfile !== undefined ? { llmProfile } : {}),
       });
     },
   },
@@ -598,6 +648,13 @@ export interface HandleRpcOptions {
   llm?: LlmAdapter;
   /** Wall-clock provider override (UX-001); default `() => Date.now()` at the boundary. */
   nowMs?: () => number;
+  /**
+   * lco.config.json TEXT for the named-profile resolver (tests/library
+   * callers). Production resolves the path itself: env LCO_LLM_CONFIG →
+   * <effectiveMcpRoot>/lco.config.json. Absent everywhere ⇒ llmProfile
+   * requests are refused (named profiles unavailable).
+   */
+  llmConfigText?: string;
 }
 
 /**
@@ -722,6 +779,18 @@ async function handleToolsCall(
     // UX-001: same boundary-clock contract as nowIso — the wall budget's
     // time source, injected once per tool call (tests override via options).
     nowMs: options?.nowMs ?? (() => Date.now()),
+    // §17 named-profile resolver, built once per tool call: the config comes
+    // from the OPERATOR (options.llmConfigText for tests → env
+    // LCO_LLM_CONFIG path → <effectiveMcpRoot>/lco.config.json), never from
+    // request arguments. Without operator configuration llmProfile requests
+    // are refused — there is no request-controlled gateway.
+    resolveLlmProfile: (name: string) => {
+      const loaded = loadLlmConfigForProfiles(options);
+      if (!loaded.ok) return { ok: false as const, output: loaded.output };
+      const resolved = resolveProfile(loaded.config, name);
+      if (!resolved.ok) return { ok: false as const, output: `generation refused: ${resolved.error}` };
+      return { ok: true as const, profile: { name, resolved: resolved.resolved } };
+    },
   };
 
   // DIR POLICY (SEC-003, MANDATORY allowed-root): the tool's `dir` is
@@ -770,6 +839,58 @@ async function handleToolsCall(
 // unknown keys, and missing required arguments are all -32602 refusals at
 // THIS layer — the command cores only ever see normalized input.
 
+/**
+ * Load the operator's lco.config.json for named-profile selection (§17).
+ * Precedence: options.llmConfigText (tests/library) → env LCO_LLM_CONFIG
+ * path → <effectiveMcpRoot>/lco.config.json. All sources are OPERATOR-owned;
+ * a request never supplies config content. Memoized per options object so
+ * repeated resolves in one call read at most once.
+ */
+function loadLlmConfigForProfiles(
+  options: HandleRpcOptions | undefined,
+): { ok: true; config: LlmConfig } | { ok: false; output: string } {
+  const cache = configLoadCache.get(options ?? NULL_OPTIONS_KEY);
+  if (cache !== undefined) return cache;
+  const result = (() => {
+    if (options?.llmConfigText !== undefined) {
+      const parsed = parseLlmConfig(options.llmConfigText);
+      return parsed.ok
+        ? { ok: true as const, config: parsed.config }
+        : { ok: false as const, output: `generation refused: ${parsed.error}` };
+    }
+    const path = options?.env?.LCO_LLM_CONFIG ?? process.env.LCO_LLM_CONFIG;
+    const candidates: string[] =
+      path !== undefined && path !== ''
+        ? [path]
+        : [join(process.cwd(), 'lco.config.json')];
+    for (const candidate of candidates) {
+      let text: string;
+      try {
+        text = readFileSync(candidate, 'utf8');
+      } catch {
+        continue;
+      }
+      const parsed = parseLlmConfig(text);
+      return parsed.ok
+        ? { ok: true as const, config: parsed.config }
+        : { ok: false as const, output: `generation refused: lco.config.json at ${candidate} is invalid: ${parsed.error}` };
+    }
+    return {
+      ok: false as const,
+      output:
+        'generation refused: no lco.config.json is configured for this server (looked for ' +
+        `${candidates[0]}${path === undefined ? ' and LCO_LLM_CONFIG is unset' : ''}) — named llmProfile ` +
+        'selection requires the OPERATOR to provide lco.config.json at the server boundary; ' +
+        'raw keys/URLs are never accepted in requests',
+    };
+  })();
+  configLoadCache.set(options ?? NULL_OPTIONS_KEY, result);
+  return result;
+}
+
+const NULL_OPTIONS_KEY = {} as const;
+const configLoadCache = new WeakMap<object, ReturnType<typeof loadLlmConfigForProfiles>>();
+
 /** Every argument name any tool accepts beyond `dir`. */
 type ArgName =
   | 'task'
@@ -779,7 +900,8 @@ type ArgName =
   | 'variant'
   | 'name'
   | 'intent'
-  | 'changeset';
+  | 'changeset'
+  | 'llmProfile';
 
 /**
  * Validate one argument: returns the NORMALIZED value, or a per-argument
@@ -822,6 +944,10 @@ const ARG_SPECS: Record<ArgName, ArgValidator> = {
     arg === 'single' || arg === 'council'
       ? { ok: true, value: arg }
       : { ok: false, message: "'variant' must be single or council" },
+  llmProfile: (arg) =>
+    typeof arg === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(arg)
+      ? { ok: true, value: arg }
+      : { ok: false, message: "'llmProfile' must be a profile NAME (letters, digits, . _ -) from the operator's lco.config.json" },
   name: (arg) =>
     typeof arg === 'string' && arg.trim() !== ''
       ? { ok: true, value: arg }
@@ -885,6 +1011,25 @@ function parseToolInput(
         return invalid(
           `unknown argument '${key}': capability/trust state is set by the OPERATOR at the ` +
             `server boundary (env flags / injected adapter), never by a request argument`,
+        );
+      }
+      // §17 credential/gateway-shaped keys: a request must NEVER carry a raw
+      // API key, an arbitrary base URL, or arbitrary headers — that is an
+      // SSRF + credential-injection + spend-control bypass. Gateway and model
+      // selection is a NAMED profile from operator configuration only.
+      if (
+        key === 'apiKey' ||
+        key === 'api_key' ||
+        key === 'baseUrl' ||
+        key === 'base_url' ||
+        key === 'headers' ||
+        key === 'authorization' ||
+        key === 'providerCredentials'
+      ) {
+        return invalid(
+          `unknown argument '${key}': raw credentials, base URLs, and headers are never request ` +
+            `arguments — select llmProfile (a NAME the operator preconfigured in lco.config.json) ` +
+            `instead; keys live only in the server process environment`,
         );
       }
       return invalid(`unknown argument '${key}'`);

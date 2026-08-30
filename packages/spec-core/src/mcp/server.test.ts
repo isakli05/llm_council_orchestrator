@@ -121,6 +121,8 @@ async function rpc(
     allowGenerate?: boolean;
     env?: NodeJS.ProcessEnv;
     llm?: unknown;
+    /** §17 named-profile config text (tests inject the operator's config). */
+    llmConfigText?: string;
   },
 ): Promise<Record<string, any>> {
   const raw = await handleRpcLine(line, options);
@@ -132,7 +134,7 @@ async function rpc(
 async function callTool(
   name: string,
   args: Record<string, unknown>,
-  options?: { allowExec?: boolean; allowGenerate?: boolean; env?: NodeJS.ProcessEnv; llm?: unknown },
+  options?: { allowExec?: boolean; allowGenerate?: boolean; env?: NodeJS.ProcessEnv; llm?: unknown; llmConfigText?: string },
 ): Promise<Record<string, any>> {
   return rpc(
     `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"${name}","arguments":${JSON.stringify(
@@ -313,7 +315,7 @@ describe('handleRpcLine: tools/list', () => {
     // lco_generate never advertises `yes` or any adapter/env parameter.
     expect(Object.keys(byName.get('lco_init')!)).toEqual(['dir', 'profile', 'name']);
     const genProps = byName.get('lco_generate')!;
-    expect(Object.keys(genProps)).toEqual(['dir', 'intent', 'variant', 'profile', 'consent']);
+    expect(Object.keys(genProps)).toEqual(['dir', 'intent', 'variant', 'profile', 'llmProfile', 'consent']);
     expect(genProps.consent.required).toEqual(['digest']);
     expect(JSON.stringify(genProps)).not.toContain('"yes"');
     expect(Object.keys(byName.get('lco_change')!)).toEqual(['dir', 'changeset']);
@@ -2136,5 +2138,94 @@ describe('tools/call: MCP dir policy (SEC-003)', () => {
 
     const check = await callTool('lco_check', { dir: root, execRoot: '/' });
     expect(check.error.code).toBe(-32602);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lco_generate llmProfile — named, operator-configured profiles only (§17)
+// ---------------------------------------------------------------------------
+
+const PROFILE_CFG = JSON.stringify({
+  llm: {
+    providers: { or: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY' } },
+    profiles: {
+      'single-x': { variant: 'single', roles: { single: { provider: 'or', model: 'm1' } } },
+    },
+  },
+});
+
+describe('lco_generate llmProfile (§17 named profiles only)', () => {
+  const INTENT2 = 'profile intent';
+
+  /** The -32602 message of an error response (parse-layer refusals). */
+  function errMessage(res: Record<string, any>): string {
+    return String(res.error?.message ?? '');
+  }
+
+  it('the digest includes llmProfile when present; without it, historical bytes', () => {
+    const without = generateConsentDigest(INTENT2, 'p-mini', 'single');
+    const withProfile = generateConsentDigest(INTENT2, 'p-mini', 'single', 'single-x');
+    expect(without).not.toBe(withProfile);
+    expect(generateConsentDigest(INTENT2, 'p-mini', 'single', undefined)).toBe(without);
+  });
+
+  it('consent-missing refusal advertises the llmProfile-bound digest', async () => {
+    const res = await callTool('lco_generate', { dir: '.', intent: INTENT2, llmProfile: 'single-x' }, {});
+    expect(text(res)).toContain(generateConsentDigest(INTENT2, 'p-standard', 'single', 'single-x'));
+  });
+
+  it('unknown profile name → structured refusal, ZERO LLM calls', async () => {
+    const digest = generateConsentDigest(INTENT2, 'p-standard', 'single', 'ghost');
+    const llm = vi.fn();
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, llmProfile: 'ghost', consent: { digest } },
+      { allowGenerate: true, llmConfigText: PROFILE_CFG, llm: llm as never },
+    );
+    expect(text(res)).toMatch(/unknown llm profile 'ghost'/);
+    expect(llm).not.toHaveBeenCalled();
+  });
+
+  it('no operator config configured → llmProfile refused; ZERO LLM calls', async () => {
+    const digest = generateConsentDigest(INTENT2, 'p-standard', 'single', 'single-x');
+    const llm = vi.fn();
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llm: llm as never, env: {} as NodeJS.ProcessEnv },
+    );
+    expect(text(res)).toMatch(/no lco\.config\.json is configured/);
+    expect(llm).not.toHaveBeenCalled();
+  });
+
+  it('profile/variant disagreement → refusal naming both', async () => {
+    const digest = generateConsentDigest(INTENT2, 'p-standard', 'council', 'single-x');
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, variant: 'council', llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llmConfigText: PROFILE_CFG },
+    );
+    expect(text(res)).toMatch(/declares variant 'single' but the request says variant 'council'/);
+  });
+
+  it('credential/gateway-shaped request arguments get the NAMED refusal (SSRF/credential/spend)', async () => {
+    for (const key of ['apiKey', 'base_url', 'headers', 'authorization']) {
+      const res = await callTool('lco_generate', { dir: '.', intent: 'x', [key]: 'https://evil.example' }, {});
+      expect(errMessage(res)).toMatch(new RegExp(`unknown argument '${key}'`));
+      expect(errMessage(res)).toMatch(/never request/);
+    }
+  });
+
+  it('happy path: named profile reaches cmdGenerate (injected mock adapter wins, profile recorded)', async () => {
+    const root = freshRoot('spec-core-mcp-profile-ok-');
+    const { llm } = makeLlm([JSON.stringify(inlineConforming())]);
+    const digest = generateConsentDigest(INTENT2, 'p-mini', 'single', 'single-x');
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT2, profile: 'p-mini', llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llmConfigText: PROFILE_CFG, llm },
+    );
+    expect(text(res)).toContain('generated spec/');
+    expect(text(res)).toContain('llm profile single-x');
   });
 });
