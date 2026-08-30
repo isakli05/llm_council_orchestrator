@@ -42,9 +42,10 @@ const U = { in: 10, out: 5, calls: 1 };
 
 describe('scoreRun — arithmetic over all assertion types', () => {
   // PROD-003 note: baseBundle() is the pet-clinic fixture re-profiled — it is
-  // STRUCTURALLY clean but does NOT carry ET-01's named constraints
-  // (shorten/stats/resolve), so every greenfield expectation below accounts
-  // for the MENTIONS_TERMS assertion failing on it. That is the point of the
+  // STRUCTURALLY clean but does NOT ground ET-01's constraints
+  // (application form/administrator/approve/reject) in requirement
+  // statements, so every greenfield expectation below accounts for the
+  // CONSTRAINT_TRACE assertion failing on it. That is the point of the
   // finding: this bundle used to score full marks.
 
   it('greenfield ET-01 with a clean spec outcome scores 3/4: structural pass, intent fail (the generic fixture)', () => {
@@ -57,7 +58,7 @@ describe('scoreRun — arithmetic over all assertion types', () => {
       repeat: 1,
       structuralPassed: true,
       intentPassed: false,
-      missingTerms: ['shorten', 'resolve'],
+      constraintFailures: expect.any(Array),
       advisoryInventions: expect.any(Array),
       blockedCorrectly: true,
       councilDegraded: false,
@@ -67,6 +68,11 @@ describe('scoreRun — arithmetic over all assertion types', () => {
       attempts: 1,
       usageKnown: true,
     });
+    // RESIDUAL PROD-003: every one of ET-01's four constraints (application
+    // form/administrator/approve/reject) is named as ungrounded (pet-clinic
+    // grounds nothing ET-01's intent asks for)
+    expect(s.constraintFailures.map((f) => f.constraint)).toEqual(['C1', 'C2', 'C3', 'C4']);
+    expect(s.constraintFailures.every((f) => f.code === 'NOT_GROUNDED_IN_REQUIREMENT')).toBe(true);
   });
 
   it('blocked ET-13 scores 2/2 (BLOCKED + STATE_IS_DRAFT_OR_BLOCKED both pass without a bundle)', () => {
@@ -79,7 +85,7 @@ describe('scoreRun — arithmetic over all assertion types', () => {
       repeat: 1,
       structuralPassed: true,
       intentPassed: true,
-      missingTerms: [],
+      constraintFailures: [],
       advisoryInventions: [],
       blockedCorrectly: true,
       councilDegraded: false,
@@ -100,7 +106,8 @@ describe('scoreRun — arithmetic over all assertion types', () => {
 
     expect(s.blockedCorrectly).toBe(false);
     expect(s.assertionsTotal).toBe(4);
-    expect(s.assertionsPassed).toBe(0); // HAS_REQUIREMENTS / ACYCLIC / VERIFICATION / MENTIONS all need a spec
+    expect(s.assertionsPassed).toBe(0); // HAS_REQUIREMENTS / ACYCLIC / VERIFICATION / CONSTRAINT_TRACE all need a spec
+    expect(s.constraintFailures.every((f) => f.code === 'NOT_GROUNDED_IN_REQUIREMENT')).toBe(true);
   });
 
   it('BLOCKED assertion fails when a must-be-blocked task yields a spec', () => {
@@ -125,7 +132,7 @@ describe('scoreRun — arithmetic over all assertion types', () => {
   it('HAS_REQUIREMENTS fails below min (ET-07 needs 4, bundle has 3)', () => {
     // ET-07 (p-standard): HAS_REQUIREMENTS min 4 fails, TASKS_ACYCLIC and
     // TASKS_HAVE_VERIFICATION pass, TRACE_REQ_TASK_COVERED passes (3/3 reqs covered),
-    // MENTIONS_TERMS fails (jwt/postgresql never carried by pet-clinic).
+    // CONSTRAINT_TRACE fails (stock/later never grounded by pet-clinic).
     const s = scoreRun(task('ET-07'), specOutcome(baseBundle()), U);
     expect(s.assertionsTotal).toBe(5);
     expect(s.assertionsPassed).toBe(3);
@@ -155,7 +162,7 @@ describe('scoreRun — arithmetic over all assertion types', () => {
     t3.refs.requirements = []; // REQ-0003 loses its only covering task
     const s = scoreRun(task('ET-08'), specOutcome(b), U);
     // ET-08: HAS_REQUIREMENTS(min 4, have 3) false, ACYCLIC true, VERIFICATION true,
-    // TRACE false, MENTIONS_TERMS(30/transfer) false
+    // TRACE false, CONSTRAINT_TRACE(tracking/fabric/minimum never grounded) false
     expect(s.assertionsTotal).toBe(5);
     expect(s.assertionsPassed).toBe(2);
   });

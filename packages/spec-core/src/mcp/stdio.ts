@@ -137,7 +137,10 @@ function peekForScheduling(line: string): SchedulingPeek {
     return { kind: 'light', id: null }; // envelope error, no work
   }
   if (method.startsWith('notifications/')) {
-    return { kind: 'light', id: null }; // silent by convention, no work
+    // Scheduling hint only: notifications/* carry no tool work. SEC-006:
+    // silence is decided by the ENVELOPE (id absent), not the method name —
+    // an id-bearing notifications/* is dispatched and answered (-32601).
+    return { kind: 'light', id: null };
   }
   const hasId = 'id' in msg;
   const id = (msg as Record<string, unknown>).id;

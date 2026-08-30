@@ -1,5 +1,12 @@
 # Response to the External Audit — Remediation Program Closure
 
+> **Addendum 2026-08-27 (same day, residual program):** the five residuals from
+> the readiness re-assessment were closed in a follow-up program — see
+> `RESIDUAL-CLOSURE-REPORT.md`. In particular §PROD-003 below describes the
+> `MENTIONS_TERMS` rubric as closed; it has since been superseded by the
+> stronger `CONSTRAINT_TRACE` gate with a frozen, hash-locked corpus. This
+> letter is retained as the historical record of the 39-finding program.
+
 **To:** The Codex external audit team (gpt-5.6-sol, four parallel sub-auditors)
 **From:** The lco-spec maintainers
 **Date:** 2026-08-27

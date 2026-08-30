@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, beforeAll, afterAll, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,8 +18,29 @@ import {
 // stdout-purity regressions live in server.test.ts against dist/).
 
 const tmpDirs: string[] = [];
+
+/**
+ * SEC-003 residual setup: an unpinned server's allowed root is now
+ * realpath(process.cwd()). The real-dispatch tests below call tools on
+ * freshRoot dirs, so the suite runs with cwd switched to a fresh base and
+ * freshRoot creates INSIDE it (setup-only change; no assertion moved).
+ */
+let cwdBase: string;
+let prevCwd: string;
+
+beforeAll(() => {
+  prevCwd = process.cwd();
+  cwdBase = mkdtempSync(join(tmpdir(), 'spec-core-stdio-cwd-'));
+  process.chdir(cwdBase);
+});
+
+afterAll(() => {
+  process.chdir(prevCwd);
+  rmSync(cwdBase, { recursive: true, force: true });
+});
+
 function freshRoot(prefix: string): string {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = mkdtempSync(join(cwdBase, prefix));
   tmpDirs.push(root);
   return root;
 }
@@ -156,7 +177,7 @@ describe('McpStdioServer: frame cap (OPS-001)', () => {
 
 // --- notifications through the session ----------------------------------------------
 
-describe('McpStdioServer: notification silence', () => {
+describe('McpStdioServer: notification semantics (SEC-006, session level)', () => {
   it('a valid notification produces NO response line; the request after it does', async () => {
     const h = makeSession();
     h.send('{"jsonrpc":"2.0","method":"notifications/initialized"}');
@@ -164,6 +185,31 @@ describe('McpStdioServer: notification silence', () => {
     const responses = await collect(h, 1);
     expect(responses).toHaveLength(1);
     expect(responses[0].id).toBe(1); // the ONLY response is the request's
+  });
+
+  it('an ID-BEARING notifications/* gets a -32601 through the real scheduler (session stays healthy)', async () => {
+    // SEC-006 residual: silence is defined by the envelope (no id), never by
+    // the method name. Pinned at the stdio-session level — the scheduling
+    // peek classifies notifications/* as light, but the line is still
+    // dispatched and answered; the -32601 write does not consume an
+    // in-flight slot (it is not work), and the session serves the next
+    // request normally afterwards.
+    const h = makeSession();
+    h.send('{"jsonrpc":"2.0","id":7,"method":"notifications/initialized"}');
+    h.send('{"jsonrpc":"2.0","id":null,"method":"notifications/cancelled"}');
+    const responses = await collect(h, 2);
+    const [first, second] = responses;
+    expect(first.id).toBe(7);
+    expect(first.error.code).toBe(-32601);
+    expect(first.error.message).toContain('Method not found');
+    expect(second.id).toBeNull(); // explicit id:null is a Request id — echoed as-is
+    expect(second.error.code).toBe(-32601);
+    // Session healthy: a subsequent real request is served normally.
+    h.send(INIT);
+    const after = await collect(h, 3);
+    expect(after[2].id).toBe(1);
+    expect(after[2].result.serverInfo.name).toBe('lco-mcp');
+    expect(h.exitCodes()).toHaveLength(0); // nothing exited — no EPIPE/EOF path hit
   });
 });
 

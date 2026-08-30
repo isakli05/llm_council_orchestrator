@@ -50,6 +50,13 @@ export type GateVerdict = 'PASS' | 'FAIL' | 'PASS_DETERMINISTIC_ONLY';
 /** G1 denominator: 12 L-vector dirs + schema-invalid + drift + unresolved (plan-corrected). */
 export const G1_REQUIRED_TOTAL = 15;
 
+/**
+ * G4's council cost cap: council token cost must stay <= G4_COST_MULTIPLIER x
+ * single token cost. FROZEN in src/eval/corpus-lock.json (RESIDUAL PROD-003
+ * pre-registration) — changing it requires appending a new dated lock entry.
+ */
+export const G4_COST_MULTIPLIER = 3;
+
 export interface GateCalcs {
   g1Caught: number;
   g1Total: number;
@@ -122,7 +129,7 @@ export function calcs(r: GateReportInput): GateCalcs {
   const usageUnknownRuns = r.runs.filter((x) => x.usageKnown === false).length;
   const costKnown = usageUnknownRuns === 0;
   const g4Comparable = councilFaithful.length > 0 && singleFaithful.length > 0;
-  const g4CostOk = costKnown && g4Comparable && councilCost <= 3 * singleCost;
+  const g4CostOk = costKnown && g4Comparable && councilCost <= G4_COST_MULTIPLIER * singleCost;
   const g4Pass = g4Comparable && councilAssertions > singleAssertions && g4CostOk;
 
   const detPass = g1Pass && g2Pass && g3Pass;

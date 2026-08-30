@@ -24,16 +24,19 @@ Everything except `generate` (and live eval runs) is local and deterministic —
 API keys required.
 
 The multi-model council system this repo was originally built for (orchestrator,
-indexer, MCP bridge) is **archived and known-broken** — see
-[Legacy (archived) — do not run](#legacy-archived--do-not-run).
+indexer, MCP bridge) was **removed** from the repository on 2026-08-27 — see
+[Legacy (removed)](#legacy-removed).
 
 ## Quick start
 
 **Prerequisites:** Node >= 22 (`packages/spec-core` `engines`), pnpm 10.x.
 
-### From npm (once published)
+### From npm
 
-`lco-spec` is not yet on the npm registry. Once published:
+`lco-spec@0.1.0` is live on the npm registry (bootstrap-published 2026-08-27
+from the owner's authenticated npm session; npm Trusted Publishing via GitHub
+Actions OIDC is configured for future releases, but its first real OIDC publish
+has not yet been exercised):
 
 ```bash
 npm install lco-spec
@@ -82,8 +85,9 @@ OpenAI-compatible endpoint and **fail closed** unless these are set explicitly:
 ## CI (spec-core only)
 
 The [`ci-spec-core`](.github/workflows/ci.yml) workflow gates **`packages/spec-core`
-only** on Node 22 and 24 (badge above) — root build/test remain intentionally
-broken (legacy is archived). Gates per Node version: self-cleaning build,
+only** on Node 22 and 24 (badge above) — the workspace is reduced to spec-core
+(legacy removed; see [Legacy (removed)](#legacy-removed)). Gates per Node
+version: self-cleaning build,
 generated-schema freshness (regenerate + fail on `git status --porcelain`
 inside `packages/spec-core/generated/`), lint, full test suite, and a
 packed-install smoke (`npm pack` → install tarball → `lco init` → `lco-mcp`
@@ -103,32 +107,20 @@ publishes automatically. Details: [`packages/spec-core/README.md`](packages/spec
 ```text
 packages/
   spec-core/     # lco-spec — THE product (CLI, MCP server, schemas, compiler, eval)
-  shared-*/      # ARCHIVED legacy shared packages (consumed only by apps/*)
-apps/            # ARCHIVED legacy services (orchestrator, indexer, mcp_bridge, docs)
-plans/           # design and experiment plans
+plans/           # design and experiment plans (pre-pivot ones are HISTORICAL — they reference the deleted legacy tree; see docs/legacy-archive.md)
 audit-output/    # audit evidence and reports
+docs/            # legacy archive record and project docs
 ```
 
-## Legacy (archived) — do not run
+## Legacy (removed)
 
-Everything under `apps/` and `packages/shared-*` is the original multi-model LLM
-council system (discovery, indexing, role-based analysis, synthesis). It predates
-the spec-core pivot and is kept only as source history:
-
-- **Broken by design.** Not maintained, and not expected to build or pass tests.
-  The former Docker quick start, per-service Dockerfiles, compose files
-  (`docker-compose*.yml`), and the legacy `.env.example` were **removed** from
-  the repo (2026-08, ARCH-001): the images' entrypoints referenced scripts and
-  `dist/` files that do not exist, and the env file documented only the dead
-  services. Git history preserves them.
-- **The root offers no legacy targets.** Root `package.json` scripts were cut to
-  a single scoped alias, `pnpm test:spec`; `pnpm build` / `pnpm test` at the
-  root fail by design — use the PATH-filtered spec-core commands above.
-- Each archived directory carries an `ARCHIVED.md` label, and
-  [docs/legacy-salvage-list.md](docs/legacy-salvage-list.md) records the
-  per-subsystem go/no-go extraction verdicts (zero GO).
-- The provider variables this README used to document (`OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY`, `INDEXER_*`, `EMBEDDING_*`, …) belonged to those archived
-  services. lco-spec's real environment contract is the `LCO_LLM_*` table above.
-- Removing or archiving these directories is a separate, pending decision;
-  historical design notes remain under `apps/docs/`.
+The original multi-model LLM council system (`apps/` orchestrator/indexer/
+mcp_bridge/docs, `packages/shared-*`, and its scripts, monitoring stack, root
+test rig, and configs) was **deleted from the active workspace and dependency
+graph on 2026-08-27** (ARCH-001 residual closure). It was UNSUPPORTED and
+known-broken, and the salvage review recorded **zero GO** extraction verdicts.
+Git history is the archive: see [docs/legacy-archive.md](docs/legacy-archive.md)
+for the record, the per-subsystem verdicts, and the exact recovery command via
+local tag `legacy-archive-final`. The root offers no legacy targets — only
+`pnpm test:spec`; use the PATH-filtered spec-core commands above. lco-spec's
+real environment contract is the `LCO_LLM_*` table above.

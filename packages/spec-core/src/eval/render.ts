@@ -1,7 +1,8 @@
-import { calcs, G1_REQUIRED_TOTAL } from './gate';
+import { calcs, G1_REQUIRED_TOTAL, G4_COST_MULTIPLIER } from './gate';
 import type { GateReportInput } from './gate';
 import { EVAL_TASKS } from './tasks';
 import type { PipelineVariant } from './runner';
+import { signTest, pairedOutcomes, formatP, MIN_DISCORDANT_PAIRS } from './sign-test';
 
 /**
  * Evidence-gate RENDERING (the text half of the old report.ts): turn a
@@ -33,8 +34,8 @@ export function renderGateReport(r: GateReportInput): string {
   lines.push(`- intent-fidelity passes: ${c.intentPasses}/${c.runsTotal} runs`);
   if (r.live) {
     const costCell = c.costKnown
-      ? `council cost ${c.councilCost} <= 3x single cost ${c.singleCost}: ${yn(c.g4CostOk)}`
-      : `council cost unknown <= 3x single cost unknown: ${yn(c.g4CostOk)} ` +
+      ? `council cost ${c.councilCost} <= ${G4_COST_MULTIPLIER}x single cost ${c.singleCost}: ${yn(c.g4CostOk)}`
+      : `council cost unknown <= ${G4_COST_MULTIPLIER}x single cost unknown: ${yn(c.g4CostOk)} ` +
         `(${c.usageUnknownRuns} run(s) without provider usage)`;
     lines.push(
       `- G4 (intent-fidelity-passing runs only): council assertions ${c.councilAssertions} > single ${c.singleAssertions}: ${yn(c.g4Comparable && c.councilAssertions > c.singleAssertions)}; ` +
@@ -44,6 +45,19 @@ export function renderGateReport(r: GateReportInput): string {
       `  - faithful runs contributing: council ${c.councilFaithfulRuns}, single ${c.singleFaithfulRuns} ` +
         `(of ${c.runsTotal} total runs across ${repeats} repeat(s))`,
     );
+    // I-2 (2026-08-27 review): the PRE-REGISTERED decision rule is computed
+    // and rendered — clearly labeled as the binding statistic for the CLAIM,
+    // distinct from the CLI verdict and from G4's summed-assertion line.
+    const pairs = pairedOutcomes(r.runs);
+    const st = signTest(pairs.map((p) => ({ council: p.councilPassed, single: p.singlePassed })));
+    lines.push(
+      `  - pre-registered claim criterion (binding for the council-advantage claim; the CLI exit code alone is NOT): ` +
+        `paired exact sign test over greenfield (task, repeat) pairs — ${st.pairs} pairs, ` +
+        `discordant ${st.discordant} (council wins ${st.councilWins}, single wins ${st.singleWins}; concordant ties excluded), ` +
+        `one-sided exact p=${formatP(st.pOneSidedExact)}, two-sided exact p=${formatP(st.pTwoSidedExact)}, ` +
+        `council-win 95% Clopper-Pearson CI [${st.ci95ClopperPearson.lower.toFixed(4)}, ${st.ci95ClopperPearson.upper.toFixed(4)}] — ` +
+        `criterion (discordant >= ${MIN_DISCORDANT_PAIRS} AND one-sided p < 0.05): ${st.meetsCriterion ? 'MET' : 'NOT MET'}`,
+    );
   }
   lines.push('');
 
@@ -51,7 +65,7 @@ export function renderGateReport(r: GateReportInput): string {
   if (!r.live) {
     lines.push(
       '- mock evidence: the G3 blocked outcomes are scripted plumbing (derived from must_be_blocked), not classification quality; live runs are the classification evidence.',
-      '- mock evidence: the greenfield intent-fidelity passes are CONSTRUCTED (the mock bundles are badged with their task\'s terms by badgeIntentConstraints), not model-fidelity evidence; live runs are that evidence.',
+      '- mock evidence: the greenfield intent-fidelity passes are CONSTRUCTED (the mock bundles are grounded on their task\'s frozen constraint trace by groundIntentConstraints), not model-fidelity evidence; live runs are that evidence.',
       '- mock evidence cannot substantiate G4 — the council-advantage claim is live-only by construction.',
       '- mock repeats are deterministic-by-construction (scripts cannot vary); the spread columns matter only for live runs.',
     );
@@ -59,7 +73,8 @@ export function renderGateReport(r: GateReportInput): string {
     lines.push(
       '- G4 is computed ONLY over intent-fidelity-passing runs with complete provider usage across all repeats; structural passes are excluded from the comparison.',
       '- G4 does NOT establish: blinding (none — the model saw the intent verbatim knowing a spec was expected), human-verified design correctness, cross-provider or cross-model generalization, or stability beyond the observed repeats (see the per-task spread).',
-      '- term assertions verify that named constraints are CARRIED into the bundle, not that they are USED in the design; a semantically-empty term dump (one sentence listing every term) can satisfy them — live fidelity requires the future tightening (each term resolving to a requirement statement / task instruction), which this rubric does not yet enforce.',
+      '- live runs print PASS or FAIL only (there is no live PASS_DETERMINISTIC_ONLY); the council-advantage CLAIM is decided solely by the pre-registered criterion 6 line above — never by the CLI exit code alone.',
+      '- constraint-trace assertions verify each frozen constraint is GROUNDED (requirement statement -> covering task -> related test -> exit-code verification, numeric bounds retained, forbidden inventions absent from commitment surfaces). They do NOT verify prose semantics beyond the frozen declarations: a fabricated complete trace, a negated or unrelated-clause mention in a well-shaped chain, or an operator flip that keeps every digit, can still satisfy any deterministic gate; blinded live runs and human review remain the evidence for semantics.',
       '- mock-vs-live distinction: deterministic gates G1-G2 are identical either way; G3/G4 carry meaning only in this live report.',
     );
   }
@@ -86,14 +101,17 @@ export function renderGateReport(r: GateReportInput): string {
       }
     }
   }
-  // PROD-003: every failed intent run is named with its missing terms — the
-  // operator can see exactly which constraints the bundle failed to carry.
+  // RESIDUAL PROD-003: every failed intent run is named with its failed
+  // constraints AND the trace stage that broke — the operator can see exactly
+  // where the grounding chain (requirement -> task -> test -> verification)
+  // failed, not just that it failed.
   for (const run of r.runs) {
-    if (!run.intentPassed && run.missingTerms.length > 0) {
+    if (!run.intentPassed && run.constraintFailures.length > 0) {
       misses.push(
-        `- intent: ${run.taskId}/${run.variant} rep ${run.repeat} missing named constraints: ${run.missingTerms.join(', ')}`,
+        `- intent: ${run.taskId}/${run.variant} rep ${run.repeat} constraint failures: ` +
+          run.constraintFailures.map((f) => `${f.constraint} ${f.code} (${f.detail})`).join('; '),
       );
-    } else if (!run.intentPassed && run.missingTerms.length === 0 && run.blockedCorrectly === false) {
+    } else if (!run.intentPassed && run.constraintFailures.length === 0 && run.blockedCorrectly === false) {
       misses.push(`- intent: ${run.taskId}/${run.variant} rep ${run.repeat} blocked-incorrectly`);
     }
   }
@@ -114,8 +132,8 @@ export function renderGateReport(r: GateReportInput): string {
         `- G4: token cost not evaluable — ${c.usageUnknownRuns} run(s) report unknown usage ` +
           '(the provider sent no token counts; unknown is not zero cost)',
       );
-    } else if (c.g4Comparable && !(c.councilCost <= 3 * c.singleCost)) {
-      misses.push(`- G4: council cost ${c.councilCost} exceeds 3x single cost ${c.singleCost}`);
+    } else if (c.g4Comparable && !(c.councilCost <= G4_COST_MULTIPLIER * c.singleCost)) {
+      misses.push(`- G4: council cost ${c.councilCost} exceeds ${G4_COST_MULTIPLIER}x single cost ${c.singleCost}`);
     }
   }
   if (misses.length > 0) {

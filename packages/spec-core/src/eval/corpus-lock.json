@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "algorithm": "sha256",
+  "canonicalization": "stable-json-v1",
+  "thresholds": {
+    "g1_required_total": 15,
+    "g4_cost_multiplier": 3
+  },
+  "history": [
+    {
+      "frozen_at": "2026-08-27",
+      "hash": "sha256:e9c5e3b0f50953387df13ddad88907216ff99f5f230411233525e95d8b7fb523",
+      "note": "pre-registration freeze (RESIDUAL PROD-003): constraint-trace corpus + gate thresholds frozen before any live run; no live results viewed under this corpus; see audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md"
+    },
+    {
+      "frozen_at": "2026-08-27",
+      "hash": "sha256:0024fef976487dfc464502e3d19c196682e25cbd0db7bbfe1099d9368d371c79",
+      "note": "scope extended to prompts+checker before any live results (2026-08-27): rubric triple bytes (src/eval/prompts.ts, src/eval/constraints.ts, src/eval/score.ts) hashed into the lock — I-1 pre-registration strengthening; no live results viewed under any freeze",
+      "previous_hash": "sha256:e9c5e3b0f50953387df13ddad88907216ff99f5f230411233525e95d8b7fb523"
+    },
+    {
+      "frozen_at": "2026-08-28",
+      "hash": "sha256:4d63a82b3449382398f558484ea4763e485f9de988e6e4ed49ef72c18e2ee321",
+      "note": "owner-directed real-workload corpus substitution; anonymized; registered before any live run (2026-08-28): ET-01..ET-12 replaced with anonymized technical paraphrases of an owner-provided B2B requirements workload — source identity withheld; blocked tasks ET-13..ET-20, gate thresholds, and rubric triple unchanged; no live results exist under any freeze",
+      "previous_hash": "sha256:0024fef976487dfc464502e3d19c196682e25cbd0db7bbfe1099d9368d371c79"
+    },
+    {
+      "frozen_at": "2026-08-28",
+      "hash": "sha256:15884058855bca962648a4393c1c7e1ff1f7bfe137a831ca48c45b8b0ce0d5aa",
+      "note": "prompt-contract v2: LIFECYCLE CONTRACT pitfall lines added (fresh draft, empty artifact_hashes, no frozen_at) after the v1 live run blocked 24/24 greenfield outputs at the lifecycle gate; claim criterion unchanged; registered before the v2 run",
+      "previous_hash": "sha256:4d63a82b3449382398f558484ea4763e485f9de988e6e4ed49ef72c18e2ee321"
+    },
+    {
+      "frozen_at": "2026-08-30",
+      "hash": "sha256:b77730875993f6f83362ef991f55b9a11e2d816480829e01020dd280728c4688",
+      "note": "prompt-contract v3: stack-assumption steering line added (newest current-stable/LTS, exact version, recorded as assumption) — the delta pre-registered as planned BEFORE the v2 results were viewed; applied after the v2 run closed",
+      "previous_hash": "sha256:15884058855bca962648a4393c1c7e1ff1f7bfe137a831ca48c45b8b0ce0d5aa"
+    }
+  ],
+  "hashed_rubric_files": [
+    "src/eval/constraints.ts",
+    "src/eval/prompts.ts",
+    "src/eval/score.ts"
+  ]
+}

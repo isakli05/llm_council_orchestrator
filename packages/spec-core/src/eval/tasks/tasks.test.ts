@@ -149,9 +149,19 @@ describe('EVAL_TASKS assertions', () => {
 });
 
 describe('EVAL_TASKS intent quality', () => {
-  it('gives every intent at least 200 characters', () => {
+  // 2026-08-28 corpus substitution: the greenfield intents are owner-provided
+  // anonymized workload paraphrases kept verbatim (substance is frozen —
+  // padding sentences or digits into them would alter it), so the prose-style
+  // floors below are scoped accordingly: the synthetic blocked tasks keep the
+  // original 200-char / 3-sentence shape; the greenfield paraphrases keep a
+  // non-triviality floor (>= 100 chars, single requirement statement is
+  // legitimate) and numeric concreteness is demanded exactly where the task
+  // DECLARES numeric constraints (pinned per-value in constraint-trace.test.ts).
+
+  it('gives every intent at least 200 characters (blocked) / 100 characters (greenfield paraphrases)', () => {
     for (const t of EVAL_TASKS) {
-      expect(t.intent.length).toBeGreaterThanOrEqual(200);
+      const floor = t.must_be_blocked ? 200 : 100;
+      expect(t.intent.length, `${t.id} intent too short`).toBeGreaterThanOrEqual(floor);
     }
   });
 
@@ -159,17 +169,22 @@ describe('EVAL_TASKS intent quality', () => {
     expect(new Set(EVAL_TASKS.map((t) => t.intent)).size).toBe(20);
   });
 
-  it('writes each intent as 3..8 sentences', () => {
+  it('writes each intent as 1..8 sentences (blocked tasks stay 3..8; greenfield paraphrases may be single statements)', () => {
     for (const t of EVAL_TASKS) {
       const n = sentenceCount(t.intent);
-      expect(n, `${t.id} has ${n} sentences`).toBeGreaterThanOrEqual(3);
+      const floor = t.must_be_blocked ? 3 : 1;
+      expect(n, `${t.id} has ${n} sentences`).toBeGreaterThanOrEqual(floor);
       expect(n).toBeLessThanOrEqual(8);
     }
   });
 
-  it('embeds a concrete constraint (a digit) in every greenfield intent', () => {
+  it('embeds digits in every greenfield intent that DECLARES numeric constraints', () => {
     for (const t of EVAL_TASKS.filter((x) => x.kind === 'greenfield')) {
-      expect(/\d/.test(t.intent), `${t.id} intent lacks a concrete constraint`).toBe(true);
+      const declaresNumeric = t.assertions.some(
+        (a) => a.type === 'CONSTRAINT_TRACE' && a.constraints.some((c) => c.numeric),
+      );
+      if (!declaresNumeric) continue;
+      expect(/\d/.test(t.intent), `${t.id} declares numeric constraints but the intent carries no digit`).toBe(true);
     }
   });
 });

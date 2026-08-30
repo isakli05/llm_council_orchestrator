@@ -4,26 +4,39 @@
  * 20 natural-language intents a spec-producing pipeline must handle:
  * - ET-01..ET-12 `greenfield`: coherent, well-constrained requests that MUST
  *   produce a valid bundle (requirements, acyclic tasks, verification).
- *   ET-01..ET-06 are `p-mini` (small CLI / game / converter scopes),
- *   ET-07..ET-12 are `p-standard` (API-backed services with NFR hints).
+ *   ET-01..ET-06 are `p-mini`, ET-07..ET-12 are `p-standard`.
  * - ET-13..ET-17 `ambiguous`: deliberately under-specified requests; the
  *   pipeline must block instead of guessing.
  * - ET-18..ET-20 `conflicting`: single intents carrying two contradictory
  *   constraints; the pipeline must block instead of silently picking one.
  *
- * Intents are written in Turkish (the product's target language) as realistic
- * 3-8 sentence user requests. They are the eval set itself — treat every edit
- * as a change of exam questions, not of copy.
+ * Corpus provenance (2026-08-28 substitution, owner-directed): ET-01..ET-12
+ * are anonymized technical paraphrases of an owner-provided real-world B2B
+ * requirements workload — the source's identity (document, company, domain,
+ * persons) is withheld at the owner's request and appears nowhere in this
+ * repository; only the twelve intents and their constraint declarations
+ * below were carried over. ET-13..ET-20 remain the original synthetic
+ * blocking tasks (written in Turkish; the greenfield paraphrases are in
+ * English). They are the eval set itself — treat every edit as a change of
+ * exam questions, not of copy.
  *
- * PROD-003: every greenfield task also carries ONE MENTIONS_TERMS assertion —
- * the concrete constraints its intent names verbatim (commands, flags,
- * technologies, formats, limits, proper nouns). A structurally valid bundle
- * that never carries those terms FAILS the task: structural validity alone no
- * longer scores. Terms are deliberately script/tech literals (SQLite, JWT,
- * --sep, 429, 09:00), not Turkish prose, so a faithful spec in any language
- * satisfies them by carrying the constraint values. The corpus test pins that
- * every term literally appears in its own intent and that no raw good fixture
- * satisfies any task's full term set.
+ * PROD-003 / RESIDUAL PROD-003: every greenfield task carries ONE
+ * CONSTRAINT_TRACE assertion — the concrete constraints its intent names,
+ * each predeclared as a machine-checkable grounding requirement
+ * (requirement statement -> covering task -> related test -> judgeable
+ * verification, plus optional numeric relation retention and a forbidden-
+ * invention absence list). This REPLACES the earlier MENTIONS_TERMS
+ * term-presence check, which a keyword dump or a glossary echo could satisfy.
+ * The corpus test pins that every term literally appears in its own intent,
+ * that every declared numeric value appears as a number token in its own
+ * intent, that no raw good fixture satisfies any task's constraint set, and
+ * that forbidden terms are absent from their own intent (they police
+ * INVENTIONS, not intent wording).
+ *
+ * FROZEN: this corpus (intents + constraint declarations + gate thresholds)
+ * is hash-locked by src/eval/corpus-lock.json (see corpus-lock.ts). Editing
+ * any of it without appending a new dated lock entry makes every eval run
+ * fail loudly.
  */
 
 export type EvalTaskId =
@@ -34,6 +47,59 @@ export type EvalTaskId =
 export type EvalTaskKind = 'greenfield' | 'ambiguous' | 'conflicting';
 
 export type EvalTaskProfile = 'p-mini' | 'p-standard';
+
+/** Declared numeric relation an intent states about a constrained quantity. */
+export type NumericOperator = '==' | '<=' | '>=' | '<' | '>';
+
+/**
+ * One predeclared, machine-checkable intent constraint (RESIDUAL PROD-003).
+ *
+ * `terms` are anchor literals the intent names verbatim. A pure-digit term
+ * (e.g. '7', '429') is matched as a STANDALONE number token (so '7' does not
+ * match inside '17' or 'C7'); every other term is matched as normalized
+ * substring text (so 'PostgreSQL' matches 'postgresql' and 'İstanbul'
+ * matches 'Istanbul').
+ *
+ * `numeric`, when present, additionally requires the declared value to be
+ * retained as a number token in the anchor sentence(s) of the grounding
+ * requirement statement, and every OTHER number in those sentences to be
+ * consistent with the declared relation (an intent-named number is always
+ * allowed — the intent's own quantities are ground truth; a foreign number
+ * on the wrong side of the declared bound is an invented re-scaling).
+ */
+export interface IntentConstraint {
+  /** 'C1'.. per task — unique within its CONSTRAINT_TRACE. */
+  id: string;
+  /** Anchor terms; ALL must be grounded in one requirement statement. */
+  terms: string[];
+  /** Declared numeric relation retained in the anchor sentence (optional). */
+  numeric?: { operator: NumericOperator; value: number };
+}
+
+/**
+ * CONSTRAINT_TRACE (RESIDUAL PROD-003): intent fidelity as a grounding trace
+ * rather than term presence. Each constraint must be carried by an actual
+ * requirement statement (NOT glossary/decision prose, NOT the bundle's own
+ * intent echo); that requirement must be referenced by >= 1 task; that task
+ * must carry a related test case (a case text naming one of the constraint's
+ * terms) and a judgeable verification contract (an `expect` stating an exit
+ * code — the L14 contract — with a real command). Numeric constraints retain
+ * their declared operator/value. `forbidden` lists architectural inventions
+ * the intent explicitly rules out; each term must be ABSENT from the bundle's
+ * commitment surfaces (glossary terms, decision statements, task titles).
+ *
+ * Honest boundary (documented in the pre-registration): a determined
+ * adversary can still fabricate a full fake trace — a deterministic gate
+ * pins WHERE evidence must live, it cannot read prose semantics. A prose
+ * operator flip that keeps every digit ('under 300' -> 'at least 300') is
+ * likewise not detectable without NLP; value re-scaling and off-values are.
+ */
+export interface ConstraintTraceAssertion {
+  type: 'CONSTRAINT_TRACE';
+  constraints: IntentConstraint[];
+  /** Invention vectors: absent from the intent itself, enforced absent from commitment surfaces. */
+  forbidden?: string[];
+}
 
 /**
  * Machine-checkable expectation about the bundle a pipeline produces for a
@@ -47,15 +113,7 @@ export type DeterministicAssertion =
   | { type: 'TRACE_REQ_TASK_COVERED' }
   | { type: 'STATE_IS_DRAFT_OR_BLOCKED' }
   | { type: 'BLOCKED' }
-  /**
-   * PROD-003 intent fidelity: every listed term must appear (normalized,
-   * case-insensitive) in the produced bundle's searchable body text — the
-   * requirements/tasks/tests/glossary/decision prose that implements the
-   * intent. The bundle's own `intent.statement` echo is deliberately NOT
-   * searchable: quoting the intent back is not encoding it. Greenfield tasks
-   * only — a blocked task has no bundle; its fidelity is the BLOCKED assertion.
-   */
-  | { type: 'MENTIONS_TERMS'; terms: string[] };
+  | ConstraintTraceAssertion;
 
 export interface EvalTask {
   /** 'ET-01'..'ET-20', unique across the corpus. */
@@ -64,7 +122,7 @@ export interface EvalTask {
   kind: EvalTaskKind;
   /** p-mini: small CLI/game/converter scope; p-standard: API-backed service. */
   profile: EvalTaskProfile;
-  /** Natural-language user intent (Turkish, 3-8 sentences, realistic). */
+  /** Natural-language user intent (greenfield: anonymized workload paraphrases; blocked: Turkish). */
   intent: string;
   /** True exactly for kind 'ambiguous' or 'conflicting'. */
   must_be_blocked: boolean;
@@ -73,181 +131,296 @@ export interface EvalTask {
 }
 
 export const EVAL_TASKS: EvalTask[] = [
-  // ── Greenfield, p-mini: small CLI / game / converter scopes ────────────
+  // ── Greenfield, p-mini: enrollment / pre-order / catalog workloads ─────
   {
     id: 'ET-01',
     kind: 'greenfield',
     profile: 'p-mini',
+    // E-01 membership dual path
     intent:
-      'Kullanıcıların uzun URL\'leri kısaltabildiği, her kısa kodun tıklanma sayısını izleyen tek dosyalık bir komut satırı aracı istiyorum. Kısa kodlar tam 7 karakter olmalı ve yalnızca harf, rakam ile tire karakterini içermeli. Veriler proje dizinindeki tek bir SQLite dosyasında tutulmalı, araç hiçbir ağ bağlantısı veya harici sunucu gerektirmemeli. shorten, stats ve resolve olmak üzere üç alt komut bulunmalı; resolve mevcut olmayan bir kod için 3 numaralı kaçış koduyla sonlanmalı. Araç, günde en fazla 1000 kısaltma varsayımıyla saniyede 10 işlemin altında kalmacak kadar hızlı olmalı.',
+      'The platform shall support two B2B enrollment paths: accounts created manually by an administrator for existing customers, and a self-service application form where a new customer submits company details and an administrator issues an approve or reject decision.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['sqlite', 'shorten', 'resolve'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: dual enrollment — manual administrator accounts + self-service
+        // application form with an approve/reject decision
+        constraints: [
+          { id: 'C1', terms: ['application form'] },
+          { id: 'C2', terms: ['administrator'] },
+          { id: 'C3', terms: ['approve'] },
+          { id: 'C4', terms: ['reject'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-02',
     kind: 'greenfield',
     profile: 'p-mini',
+    // E-02 pre-order window
     intent:
-      'Elle yazdığım notları Markdown biçiminden HTML\'e çeviren küçük bir komut satırı aracı istiyorum. Başlıklar, kalın ve italik vurgular, sıralı ve sıralanmamış listeler, kod blokları ile bağlantılar desteklenmeli. Girdi dosyası yolu argüman olarak alınmalı, çıktı aynı adı taşıyan .html uzantılı dosyaya yazılmalı. Tanınmayan bir söz dizimi eşleştiğinde araç hata vermek yerine metni olduğu gibi aktarmalı ve standart hataya bir uyarı basmalı. Yalnızca dilin standart kitaplığı kullanılmalı; 10 MB\'lık bir girdi dosyası 2 saniyenin altında dönüşmelidir.',
+      'During a seasonal campaign the pre-order system stays open for a fixed window and customers may order any quantity per size, with no forced size assortment.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['markdown', 'html'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: campaign-scoped pre-order window, free quantity per size
+        constraints: [
+          { id: 'C1', terms: ['campaign'] },
+          { id: 'C2', terms: ['pre-order'] },
+          { id: 'C3', terms: ['quantity'] },
+        ],
+        forbidden: ['asorti'], // "no forced size assortment" — an assortment-pack invention is ruled out
+      },
     ],
   },
   {
     id: 'ET-03',
     kind: 'greenfield',
     profile: 'p-mini',
+    // E-03 product detail screen
     intent:
-      'Terminalde çalışan, bilgisayarın 1 ile 100 arasında tuttuğu sayıyı kullanıcıya 7 denemede bulduran bir sayı tahmin oyunu istiyorum. Her denemeden sonra daha büyük, daha küçük veya bildin biçiminde bir geri bildirim verilmeli. Kullanıcı sayı olmayan bir giriş yaptığında program çökmemeli ve geçersiz giriş deneme hakkını harcamamalı. Oyun bitiminde kaç denemede bilindiği gösterilmeli, tekrar oynama sorusuna evet denilirse yeni bir sayı tutulmalı. Renkli çıktı ANSI kaçış kodlarıyla verilmeli ama Windows terminalinde de okunaklı kalmalı.',
+      'Every model detail screen shall present fabric information, a measurement chart, lining information, and a trim list.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['100', 'ansi'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: detail screen carries fabric / measurement / lining / trim
+        constraints: [
+          { id: 'C1', terms: ['fabric'] },
+          { id: 'C2', terms: ['measurement'] },
+          { id: 'C3', terms: ['lining'] },
+          { id: 'C4', terms: ['trim'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-04',
     kind: 'greenfield',
     profile: 'p-mini',
+    // E-04 customization MOQ gate
     intent:
-      'Satış raporlarını CSV biçiminden JSON\'a dönüştüren bağımsız bir komut satırı aracı istiyorum. İlk satır başlık kabul edilmeli, sayısal görünen alanlar otomatik olarak JSON sayısına çevrilmeli, boş hücreler null olmalı. Ayraç varsayılan olarak virgül olmalı ama --sep bayrağıyla noktalı virgül de seçilebilmeli. Biçimi bozuk bir satır bulunursa araç o satırı atlamalı ve işin sonunda kaç satır atlandığını raporlamalı. 50.000 satırlık bir girdi dosyası 5 saniyenin altında işlenmelidir.',
+      'The customization module shall unlock only when the customer meets the minimum order quantity of 150 units; below 150 the module stays locked.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['csv', 'json', '--sep'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: customization gated on minimum order quantity >= 150
+        constraints: [
+          { id: 'C1', terms: ['customization'] },
+          { id: 'C2', terms: ['minimum'], numeric: { operator: '>=', value: 150 } },
+        ],
+      },
     ],
   },
   {
     id: 'ET-05',
     kind: 'greenfield',
     profile: 'p-mini',
+    // E-05 surcharge path
     intent:
-      'Yapılacaklarımı terminalden yönetmem için sade bir todo uygulaması istiyorum. add, list, done ve remove olmak üzere dört komut bulunmalı; kayıtlar kullanıcı ana dizinindeki tek bir JSON dosyasında saklanmalı. Her kayıt en fazla 200 karakterlik bir başlık ve isteğe bağlı bir son tarih taşımalı. list çıktısı gecikmiş öğeleri en üste almalı ve bunları ünlem işaretiyle işaretlemeli. Veri dosyası bozuksa araç çökmek yerine bozuk dosyayı yedekleyip boş bir listeden devam etmeli.',
+      'A customer requesting a fabric change who cannot meet the minimum fabric quantity may instead place the order with a surcharge.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['todo', 'remove'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: surcharge fallback below the minimum fabric quantity
+        constraints: [
+          { id: 'C1', terms: ['surcharge'] },
+          { id: 'C2', terms: ['fabric'] },
+          { id: 'C3', terms: ['minimum'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-06',
     kind: 'greenfield',
     profile: 'p-mini',
+    // E-06 shared pool
     intent:
-      'Ekiple paylaştığımız servis hesapları için güçlü parolalar üreten küçük bir komut satırı aracı istiyorum. Varsayılan olarak 16 karakter uzunluğunda, büyük ve küçük harfler ile rakam ve özel karakter içeren parolalar üretilmeli. --length bayrağıyla 8 ile 128 arasında bir uzunluk seçilebilmeli, --no-symbols bayrağıyla özel karakterler dışlanabilmeli. Parolalar kriptografik kalitede bir rastgelelik kaynağıyla üretilmeli, aynı komut art arda çalıştığında sonuçlar arasında hiçbir benzerlik olmamalı. Üretilen parolalar hiçbir log dosyasına yazılmamalı, yalnızca standart çıktıya basılmalı.',
+      'Customers below the minimum may submit an order to a shared pool visible to other customers; when combined orders from different customers reach 150 units the pool is approved without surcharge, and at campaign end the owner either pays the surcharge or returns to the standard fabric.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 3 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
-      { type: 'MENTIONS_TERMS', terms: ['--length', '--no-symbols'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: shared pool approved when combined orders reach >= 150
+        constraints: [
+          { id: 'C1', terms: ['pool'], numeric: { operator: '>=', value: 150 } },
+          { id: 'C2', terms: ['combined'] },
+          { id: 'C3', terms: ['surcharge'] },
+        ],
+      },
     ],
   },
 
-  // ── Greenfield, p-standard: API-backed services with NFR hints ────────
+  // ── Greenfield, p-standard: stock / tracking / payment workloads ──────
   {
     id: 'ET-07',
     kind: 'greenfield',
     profile: 'p-standard',
+    // E-07 fabric stock option
     intent:
-      'Bir ekip için görev yönetimi sunan REST tabanlı bir servis istiyorum. Kullanıcılar e-posta ve parola ile kayıt olabilmeli, oturum açtığında 24 saat geçerli bir JWT almalı. Görevler başlık, açıklama, son tarih ve durum alanlarını taşımalı; bir görevi yalnızca sahibi görebilmeli ve değiştirebilmeli. POST /tasks, GET /tasks, PATCH /tasks/:id ve DELETE /tasks/:id uçları bulunmalı ve tüm yanıtlar JSON olmalı. p95 uçtan uca gecikme 300 ms\'nin altında olmalı, servis 500 eşzamanlı bağlantıyı düşürmeden taşımalı. Veriler PostgreSQL\'te saklanmalı, parolalar güçlü bir karma algoritmasıyla özetlenerek tutulmalı.',
+      'When a customer orders 80 units while fabric is supplied in batches of 150, the remaining 70 units of fabric shall be held as customer-named stock usable on a later order of a different model.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 4 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['jwt', 'postgresql'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: leftover batch fabric held as exactly-70-unit customer-named
+        // stock for a later order (150 batch - 80 ordered = 70 remaining)
+        constraints: [
+          { id: 'C1', terms: ['stock'], numeric: { operator: '==', value: 70 } },
+          { id: 'C2', terms: ['later'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-08',
     kind: 'greenfield',
     profile: 'p-standard',
+    // E-08 live fabric tracking
     intent:
-      'Apartman arkadaşlarıyla ortak giderleri paylaşmak için bir gider takip servisi istiyorum. Kullanıcı bir grup oluşturabilmeli, gruba gider ekleyebilmeli ve sistem her ayın sonunda kimin kime ne kadar borçlu olduğunu en az sayıda transferle hesaplamalı. Tüm işlemler kimlik doğrulaması gerektirmeli, grup verilerini yalnızca grup üyeleri okuyabilmeli. Gider tutarları kuruş hassasiyetinde tutulmalı ve ondalık kayan nokta hataları oluşmamalı. Silinen giderler 30 gün boyunca geri alınabilir olarak saklanmalı, bu sürenin sonunda kalıcı olarak silinmeli.',
+      'During the pre-order window a live tracking table shall accumulate ordered quantity per fabric, and a customer may select a popular confirmed fabric to bypass the minimum quantity.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 4 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['30', 'transfer'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: live tracking table per fabric; popular confirmed fabric
+        // bypasses the minimum quantity
+        constraints: [
+          { id: 'C1', terms: ['tracking'] },
+          { id: 'C2', terms: ['fabric'] },
+          { id: 'C3', terms: ['minimum'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-09',
     kind: 'greenfield',
     profile: 'p-standard',
+    // E-09 stock orders
     intent:
-      'Yüklenen görsellerin farklı boyutlarda önizlemelerini üreten bir servis istiyorum. İstemci görseli yüklediğinde servis 200, 600 ve 1200 piksel genişlikte üç küçültülmüş kopya oluşturmalı ve CDN üzerinden sunulacak adresleri dönmeli. Yalnızca JPEG ve PNG kabul edilmeli, 20 MB üzeri dosyalar 413 yanıtıyla reddedilmeli. Dönüşüm 30 saniyeden uzun sürecektense iş asenkron kuyruğa alınmalı ve istemciye bir durum sorgulama adresi verilmeli. Başarısız dönüşümler en fazla 3 kez yeniden denenmeli, tümü başarısız olursa iş ölü mektup kuyruğuna taşınmalı.',
+      'Outside the pre-order window, ready-stock orders shall carry no minimum quantity and offer two assortment packs — one unit per size, or doubled mid sizes — with stock prepared for the most-demanded model-fabric combinations against re-order demand.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 4 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['jpeg', 'png', '413', 'cdn'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: ready-stock orders — no minimum, two assortment packs,
+        // stock prepared against re-order demand
+        constraints: [
+          { id: 'C1', terms: ['stock'] },
+          { id: 'C2', terms: ['re-order'] },
+          { id: 'C3', terms: ['assortment'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-10',
     kind: 'greenfield',
     profile: 'p-standard',
+    // E-10 production tracking
     intent:
-      'Kullanıcılara haftalık özet e-postaları gönderen bir bildirim servisi istiyorum. Servis her pazar 09:00\'da Europe/Istanbul saat dilimine göre o haftanın özetini derleyip abonelere göndermeli. Kullanıcılar e-posta adreslerini doğrulamadan abone olamamalı ve tek tıklamayla abonelikten çıkabilmeli. Gönderim başına en fazla 3 deneme yapılmalı, üç kez üst üste başarısız olan adresler 90 gün boyunca kara listeye alınmalı. Servis saatte 10.000 e-posta gönderimini desteklemeli, gönderim kayıtları denetim için 1 yıl saklanmalı.',
+      'The customer panel shall show each order live through the stages fabric procurement, cutting, sewing, quality control, packaging, and shipping.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 4 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['09:00', 'istanbul'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: live order stages through cutting / quality control / shipping
+        constraints: [
+          { id: 'C1', terms: ['cutting'] },
+          { id: 'C2', terms: ['quality control'] },
+          { id: 'C3', terms: ['shipping'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-11',
     kind: 'greenfield',
     profile: 'p-standard',
+    // E-11 catalog
     intent:
-      'Üçüncü parti bir hava durumu sağlayıcısının önünde önbellek katmanı görevi görecek bir API ağ geçidi istiyorum. weather uç noktası üst sağlayıcıya saatte en fazla 1.000 istek gönderebilmeli; aynı şehir için 10 dakika içinde yinelenen istekler önbellekten yanıtlanmalı. Sağlayıcı yanıt vermezse ağ geçidi son başarılı yanıtı bayat olarak etiketleyip dönmeli. İstemcilere günlük 5.000 isteklik ücretsiz kota uygulanmalı, aşım durumunda 429 yanıtı dönmeli. Tüm uçlar API anahtarıyla korunmalı ve anahtarlar düz metin olarak saklanmamalı.',
+      "When an order completes, professional product photos shall be published automatically to the customer's catalog page, where the customer can build and download a private catalog.",
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 4 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['weather', '429'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: auto-published photos; customer-built downloadable catalog
+        constraints: [
+          { id: 'C1', terms: ['catalog'] },
+          { id: 'C2', terms: ['photos'] },
+          { id: 'C3', terms: ['download'] },
+        ],
+      },
     ],
   },
   {
     id: 'ET-12',
     kind: 'greenfield',
     profile: 'p-standard',
+    // E-12 proforma and payment
     intent:
-      'Mahalle kütüphanesi için kitap rezervasyon servisi istiyorum. Bir kitabın tüm kopyaları dışarıda olduğunda üye sıraya girebilmeli, kitap geri döndüğünde sıradaki ilk üyeye e-posta bildirimi gitmeli. Rezervasyon 48 saat içinde teslim alınmazsa hakkı sıradaki üyeye geçmeli. Her üye aynı anda en fazla 3 aktif rezervasyon tutabilmeli. Ödünç süresi 14 gün olmalı, gecikmede günde 1 puan ceza kesilmeli ve 30 puanı aşan üyeler yeni rezervasyon yapamamalı. Tüm hareketler saniye çözünürlüklü zaman damgasıyla denetim izine yazılmalı.',
+      'On order completion the system shall generate a proforma invoice automatically; production starts only after a 35 percent deposit, shipment requires the remaining 65 percent, the customer pays by bank transfer and uploads the receipt, and all communication runs by email.',
     must_be_blocked: false,
     assertions: [
       { type: 'HAS_REQUIREMENTS', min: 4 },
       { type: 'TASKS_ACYCLIC' },
       { type: 'TASKS_HAVE_VERIFICATION' },
       { type: 'TRACE_REQ_TASK_COVERED' },
-      { type: 'MENTIONS_TERMS', terms: ['48', '14'] },
+      {
+        type: 'CONSTRAINT_TRACE',
+        // intent: proforma -> 35% deposit gates production, remaining 65%
+        // gates shipment, bank-transfer receipt uploaded, email-only contact
+        constraints: [
+          { id: 'C1', terms: ['proforma'], numeric: { operator: '>=', value: 35 } },
+          { id: 'C2', terms: ['receipt'], numeric: { operator: '>=', value: 65 } },
+          { id: 'C3', terms: ['email'] },
+        ],
+        forbidden: ['POS', 'payment gateway'], // bank transfer only — card/POS/processor inventions are ruled out
+      },
     ],
   },
 

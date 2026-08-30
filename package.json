@@ -3,22 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.17.1",
-  "_archival": "ARCH-001: legacy root targets removed 2026-08. apps/* and packages/shared-* are archived, broken by design, and deliberately not runnable from the root. The root offers one convenience alias (test:spec); CI and docs use the PATH-filtered form directly (see README 'Legacy (archived) — do not run').",
+  "_archival": "ARCH-001 (residual closure, 2026-08-27): the archived legacy tree (apps/*, packages/shared-*, scripts, monitoring, .kiro, .audit, tests, test-output, plans-out, tasks, architect.config.*, root tsconfig/vitest) was DELETED from the active workspace — see docs/legacy-archive.md and tag legacy-archive-final. The workspace is packages/spec-core only. The root offers one convenience alias (test:spec); CI and docs use the PATH-filtered form directly.",
   "scripts": {
     "test:spec": "pnpm --filter ./packages/spec-core test"
-  },
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
-  "devDependencies": {
-    "@types/node": "^20.10.0",
-    "@vitest/coverage-v8": "^2.1.0",
-    "axios": "^1.13.6",
-    "fast-check": "^3.22.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.3.3",
-    "vite-tsconfig-paths": "^5.1.4",
-    "vitest": "^2.1.0"
   }
 }

@@ -1,5 +1,16 @@
+import { setDefaultResultOrder } from 'node:dns';
 import type { LlmAdapter, LlmCompleteOptions, LlmResponse } from './adapter';
 import type { BudgetLedger } from '../budget';
+
+// TRANSPORT (2026-08-28): force IPv4-first DNS ordering for this process.
+// The live endpoint's zone carries AAAA records that are UNREACHABLE from the
+// owner's network (instant ENETUNREACH); with resolver round-robin a long-
+// lived process intermittently attempts an IPv6 address first and the whole
+// fetch fails with a bare 'fetch failed'. IPv4-first makes the healthy A
+// records always precede the unreachable AAAA ones in every lookup — this
+// network has no IPv6 route at all, so nothing is lost. Pure transport:
+// no rubric, prompt, or scoring surface.
+setDefaultResultOrder('ipv4first');
 
 /**
  * OpenAI-compatible HTTP LLM adapter (chat/completions) built on the global
@@ -20,8 +31,17 @@ import type { BudgetLedger } from '../budget';
  *
  * TRANSPORT RETRY (live-run robustness): transport-level failures (fetch
  * 'fetch failed', timeouts) and transient statuses (429, 5xx) are retried up
- * to HTTP_MAX_ATTEMPTS_PER_COMPLETION=4 total attempts with 2s/5s/10s backoff
- * and a 180s per-request timeout. Retrying the IDENTICAL request on
+ * to HTTP_MAX_ATTEMPTS_PER_COMPLETION=8 total attempts with
+ * 2s/5s/15s/30s/60s/120s/240s backoff and a 600s per-request timeout
+ * (2026-08-28: raised from 180s — the live reasoning model legitimately
+ * holds non-streaming completions open for minutes on ~30KB prompts; the
+ * pinned-POP run proved the connection itself survives, the 180s abort was
+ * killing healthy generations).
+ * (2026-08-28: raised from 4×[2/5/10s] after the first live run hit a
+ * multi-minute edge-IP brownout — api.z.ai resolves to several edge POPs and
+ * one of them flapped to unreachable from this network; a ~6-minute black
+ * window exhausted the old 4-attempt budget. Longer spacing rides out
+ * brownouts; success cost is zero.) Retrying the IDENTICAL request on
  * infrastructure errors does not alter experiment results (no partial answers
  * are kept); non-retryable 4xx fails immediately — auth/protocol errors are
  * never hammered. A 2xx with unparseable/missing payload still fails closed
@@ -36,11 +56,11 @@ import type { BudgetLedger } from '../budget';
  */
 
 /** Total HTTP attempts one complete() may make (transport retry ceiling). */
-export const HTTP_MAX_ATTEMPTS_PER_COMPLETION = 4;
-const BACKOFF_MS = [2_000, 5_000, 10_000];
+export const HTTP_MAX_ATTEMPTS_PER_COMPLETION = 8;
+const BACKOFF_MS = [2_000, 5_000, 15_000, 30_000, 60_000, 120_000, 240_000];
 /** Per-request timeout (every attempt gets its own). */
-export const HTTP_REQUEST_TIMEOUT_MS = 180_000;
-/** Total backoff sleep between the 4 attempts of one exhausted completion. */
+export const HTTP_REQUEST_TIMEOUT_MS = 600_000;
+/** Total backoff sleep between the 8 attempts of one exhausted completion. */
 export const HTTP_BACKOFF_TOTAL_MS = BACKOFF_MS.reduce((a, b) => a + b, 0);
 
 const MAX_ATTEMPTS = HTTP_MAX_ATTEMPTS_PER_COMPLETION;
@@ -133,6 +153,7 @@ export function createHttpLlm(budget?: BudgetLedger): LlmAdapter {
 
         if (attempt > 1) await sleep(BACKOFF_MS[attempt - 2]);
 
+        const attemptStart = Date.now();
         let res: Response;
         try {
           res = await fetch(endpoint, {
@@ -146,7 +167,21 @@ export function createHttpLlm(budget?: BudgetLedger): LlmAdapter {
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          lastError = new Error(`LLM HTTP request to ${endpoint} failed: ${msg}`);
+          // TRANSPORT DIAGNOSTIC (2026-08-28): fetch-level TypeErrors hide the
+          // syscall cause (ECONNRESET / ETIMEDOUT / ENETUNREACH / TimeoutError
+          // …); surface it in the error text and per-attempt on stderr so a
+          // failing live run leaves a fingerprint instead of a bare
+          // 'fetch failed'. No secrets — codes and timings only.
+          const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+          const causePart = cause
+            ? ` [cause: ${cause.code ?? 'unknown'}${cause.message ? ` ${cause.message.slice(0, 80)}` : ''}]`
+            : '';
+          lastError = new Error(
+            `LLM HTTP request to ${endpoint} failed: ${msg}${causePart}`,
+          );
+          console.error(
+            `[live-transport] attempt ${attempt}/${MAX_ATTEMPTS} failed after ${Date.now() - attemptStart}ms: ${err instanceof Error ? err.name : typeof err}: ${msg}${causePart}`,
+          );
           continue; // transport error → retry
         }
 

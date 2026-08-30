@@ -17,6 +17,7 @@ import { createHttpLlm } from './llm/http';
 import { renderGateReport } from './render';
 import { gateVerdict } from './gate';
 import type { BadFixtureCapture, GateReportInput, GateVerdict } from './gate';
+import { verifyCorpusLock } from './corpus-lock';
 
 /**
  * Evidence-gate eval DRIVER (Task 11 binding): runs the corpora, captures the
@@ -120,20 +121,44 @@ function deriveBundle(task: EvalTask, base: SpecBundle): SpecBundle {
 }
 
 /**
- * PROD-003: badge a derived greenfield bundle with its task's named intent
- * constraints (the MENTIONS_TERMS vocabulary) so the mock's final bundle faces
- * the same intent-fidelity assertions a live model's output faces. This is
- * honest plumbing, labeled as such: the mock cannot authored-be-faithful, it
- * is CONSTRUCTED to satisfy the assertion — the discriminating power of the
- * assertion itself is pinned by the adversarial tests (a raw unbadged fixture
- * fails every task's MENTIONS_TERMS) and by live runs.
+ * RESIDUAL PROD-003: ground a derived greenfield bundle on its task's FROZEN
+ * constraint trace so the mock's final bundle faces the same CONSTRAINT_TRACE
+ * assertions a live model's output faces: each constraint's terms (and its
+ * declared numeric relation) are written into an actual requirement statement
+ * (round-robin over the base fixture's requirements), the requirement's
+ * covering task gains a test case naming the constraint, and a judgeable
+ * exit-code verification is ensured. This replaces the old keyword BADGE
+ * (which appended a term list to task instructions) — under the new gate a
+ * badge would fail its own eval, so the mock plumbing had to become a real
+ * (constructed) trace. Still honest plumbing, labeled as such in the report:
+ * the mock cannot authored-be-faithful, it is CONSTRUCTED to satisfy the
+ * assertion — the discriminating power of the assertion itself is pinned by
+ * the adversarial battery (raw fixtures, keyword dumps, glossary echoes, and
+ * untraced requirements all fail) and by live runs.
  */
-function badgeIntentConstraints(task: EvalTask, b: SpecBundle): SpecBundle {
-  const terms = task.assertions
-    .filter((a): a is Extract<EvalTask['assertions'][number], { type: 'MENTIONS_TERMS' }> => a.type === 'MENTIONS_TERMS')
-    .flatMap((a) => a.terms);
-  if (terms.length === 0) return b;
-  b.tasks[0]!.instructions += ` Intent constraints honored verbatim: ${terms.join(', ')}.`;
+function groundIntentConstraints(task: EvalTask, b: SpecBundle): SpecBundle {
+  const trace = task.assertions.find(
+    (a): a is Extract<EvalTask['assertions'][number], { type: 'CONSTRAINT_TRACE' }> => a.type === 'CONSTRAINT_TRACE',
+  );
+  if (!trace) return b;
+
+  for (const [i, c] of trace.constraints.entries()) {
+    const req = b.requirements[i % b.requirements.length]!;
+    // No id digits inside the sentence: the numeric direction check reads
+    // every number in the anchor sentence, and 'C4' would inject a 4.
+    const numeric = c.numeric ? ` (${c.numeric.operator} ${c.numeric.value})` : '';
+    const sentence = `The system shall honor ${c.terms.join(' and ')}${numeric}.`;
+    if (!req.statement.includes(sentence)) req.statement += ` ${sentence}`;
+
+    const covering = b.tasks.find((t) => t.refs.requirements.includes(req.id));
+    if (covering) {
+      const caseText = `the spec honors ${c.terms.join(', ')}${numeric}`;
+      if (!covering.tests[0]!.cases.includes(caseText)) covering.tests[0]!.cases.push(caseText);
+      if (!covering.verification.some((v) => /\bexit\s+\d+\b/i.test(v.expect))) {
+        covering.verification.push({ command: 'node dist/run.js', expect: 'exit 0' });
+      }
+    }
+  }
   return b;
 }
 
@@ -153,10 +178,11 @@ export interface MockEvalScripts {
 /**
  * Mock scripts for the whole corpus. Both variants return the SAME final
  * bundle for a task — the point of the mock runs is exercising the scoring
- * machinery (now INCLUDING the PROD-003 intent assertions: greenfield finals
- * carry their task's named constraints via badgeIntentConstraints) and the
- * exact call-count accounting (single = 1 call, council = classifier +
- * proposal A + proposeB/judge = 3 calls), not model quality.
+ * machinery (now INCLUDING the CONSTRAINT_TRACE intent assertions: greenfield
+ * finals are grounded on their task's frozen constraints via
+ * groundIntentConstraints) and the exact call-count accounting (single = 1
+ * call, council = classifier + proposal A + proposeB/judge = 3 calls), not
+ * model quality.
  */
 export function buildMockScripts(): MockEvalScripts {
   const single: MockScript = { byTaskId: {} };
@@ -164,12 +190,12 @@ export function buildMockScripts(): MockEvalScripts {
 
   EVAL_TASKS.forEach((task, i) => {
     const base = loadGoodFixture(fixtureNameFor(task, i));
-    const greenfieldBundle = badgeIntentConstraints(task, deriveBundle(task, base));
+    const greenfieldBundle = groundIntentConstraints(task, deriveBundle(task, base));
     const finalBundle = task.must_be_blocked ? unresolvedBundle(task, base) : greenfieldBundle;
 
     // Council's intermediate proposal A: the same derivation, distinguishable
     // via its council_run stamp (embedded verbatim into call 3's prompt).
-    const proposalA = badgeIntentConstraints(task, deriveBundle(task, base));
+    const proposalA = groundIntentConstraints(task, deriveBundle(task, base));
     proposalA.manifest.council_run = {
       run_id: `mock-${task.id}-proposal-a`,
       config_fingerprint: 'mock-eval',
@@ -212,8 +238,13 @@ function finishEvidence(runs: RunScore[]): EvalEvidence {
  * clock. PROD-003: mock repeats are deterministic-by-construction (the script
  * cannot vary between repeats) — the mechanism (per-repeat scoring, spread,
  * aggregate gating) is what matters and is exercised identically by live runs.
+ *
+ * RESIDUAL PROD-003 (PART 2): verifies the corpus lock FIRST — a corpus or
+ * threshold edit without a new dated lock entry aborts the run loudly before
+ * any evidence is produced.
  */
 export async function runMockEval(opts: { repeats?: number } = {}): Promise<EvalEvidence> {
+  verifyCorpusLock();
   const repeats = Math.max(1, opts.repeats ?? 1);
   const scripts = buildMockScripts();
   const runs: RunScore[] = [];
@@ -238,6 +269,10 @@ export async function runMockEval(opts: { repeats?: number } = {}): Promise<Eval
  * real nowIso; the rendered report never sees it.
  */
 async function runLiveEval(repeats: number): Promise<EvalEvidence> {
+  // RESIDUAL PROD-003 (PART 2): the live run — the one the freeze exists for —
+  // refuses to start against an unfrozen/edited corpus. No silent drift
+  // between pre-registration and evidence collection.
+  verifyCorpusLock();
   const llm = createHttpLlm();
   const nowIso = new Date().toISOString();
   const runs: RunScore[] = [];

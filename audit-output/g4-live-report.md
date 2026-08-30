@@ -1,3 +1,15 @@
+> **SUPERSEDED (2026-08-27).** This report is a single-run measurement
+> (2026-08-18) taken BEFORE the PROD-003 intent-fidelity rubric
+> (`CONSTRAINT_TRACE`) and before the frozen corpus/threshold/rubric lock
+> existed. It is **not evidence for any claim** — not for "the council is
+> more correct", not for the G4 line below, not for cost ratios under the
+> current rubric. Retain it as history only. For the live-G4 procedure see
+> the "Live G4 yeniden koşum yordamı" section in
+> `packages/spec-core/README.md`; the binding pass criteria and the frozen
+> lock are pre-registered in `audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md`
+> (the council-advantage claim is decided solely by its criterion 6, rendered
+> in any new live report). Nothing below this banner has been edited.
+
 # Spec-Core Evidence Gate Report
 
 - G1: bad-fixture capture 15/15 (required 15)

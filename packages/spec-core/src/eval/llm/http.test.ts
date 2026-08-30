@@ -137,7 +137,7 @@ describe('createHttpLlm — chat/completions over stubbed fetch', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2); // one per complete() — no retries on 402
   });
 
-  it('retryable 5xx exhausted → throws with status after 4 attempts', async () => {
+  it('retryable 5xx exhausted → throws with status after 8 attempts', async () => {
     stubEnv();
     const fetchMock = vi.fn(async () => jsonResponse({ error: { message: 'boom exploded: quota gone' } }, 500));
     vi.stubGlobal('fetch', fetchMock);
@@ -145,12 +145,12 @@ describe('createHttpLlm — chat/completions over stubbed fetch', () => {
     const llm = createHttpLlm();
     const promise = llm.complete('p');
     promise.catch(() => undefined);
-    await vi.advanceTimersByTimeAsync(2_000);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await vi.advanceTimersByTimeAsync(10_000);
-    await expect(promise).rejects.toThrow(/500.*after 4 attempts/s);
+    for (const ms of [2_000, 5_000, 15_000, 30_000, 60_000, 120_000, 240_000]) {
+      await vi.advanceTimersByTimeAsync(ms);
+    }
+    await expect(promise).rejects.toThrow(/500.*after 8 attempts/s);
     await expect(promise).rejects.toThrow(/boom exploded: quota gone/);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
   });
 
   it('2xx without choices[0].message.content → throws fail-closed instead of returning garbage', async () => {
@@ -221,7 +221,7 @@ describe('createHttpLlm — transport retry policy', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('gives up after 4 attempts with the transport error preserved', async () => {
+  it('gives up after 8 attempts with the transport error preserved', async () => {
     stubEnv();
     const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
     vi.stubGlobal('fetch', fetchMock);
@@ -229,13 +229,13 @@ describe('createHttpLlm — transport retry policy', () => {
     const adapter = createHttpLlm();
     const promise = adapter.complete('ping');
     promise.catch(() => undefined);
-    await vi.advanceTimersByTimeAsync(2_000);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await vi.advanceTimersByTimeAsync(10_000);
+    for (const ms of [2_000, 5_000, 15_000, 30_000, 60_000, 120_000, 240_000]) {
+      await vi.advanceTimersByTimeAsync(ms);
+    }
     await expect(promise).rejects.toThrow(
-      /LLM HTTP request to .* failed: fetch failed \(after 4 attempts\)/,
+      /LLM HTTP request to .* failed: fetch failed \(after 8 attempts\)/,
     );
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
   });
 });
 

@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (1231 test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı)
+pnpm --filter ./packages/spec-core test    # vitest (1329 test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -442,13 +442,17 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
 - **Dürüst maliyet zarfı (UX-001):** "3 çağrı" değil, gerçek en-kötü-case zarf —
   **HTTP denemesi (attempt) ≠ tamamlama (completion)**. Doğrulama-informed
   retry'ler tamamlama sayısını, transport retry'ler deneme sayısını büyütür. Her
-  tamamlama en fazla 4 HTTP denemesi yapabilir (her deneme 180 s zaman aşımı,
-  tükenen denemeler arası toplam 17 s backoff: 2+5+10):
+  tamamlama en fazla 8 HTTP denemesi yapabilir (her deneme 600 s zaman aşımı,
+  tükenen denemeler arası toplam 472 s backoff: 2+5+15+30+60+120+240 —
+  2026-08-28 transport sıkılaştırması: kenar-IP karartmalarına karşı 8 deneme
+  + uzun bekleme; istek tavanı 180→600 s, çünkü akıl yürüten model ~30KB
+  prompt'ta tamamlamayı dakikalarca açık tutar ve bağlantı sağlıklıyken 180 s
+  iptali sağlıklı üretimi öldürüyordu; başarılı isteklerde ek maliyet sıfır):
 
   | variant | tamamlama (iyi → en kötü) | HTTP denemesi (en kötü) | en-kötü duvar süresi |
   | --- | --- | --- | --- |
-  | single | 1 → 3 | 3 × 4 = **12** istek | 3 × (4×180 s + 17 s) = 2211 saniye (~36,9 dk) |
-  | council | 3 → 6 | 6 × 4 = **24** istek | 6 × (4×180 s + 17 s) = 4422 saniye (~73,7 dk) |
+  | single | 1 → 3 | 3 × 8 = **24** istek | 3 × (8×600 s + 472 s) = 15816 saniye (~263,6 dk) |
+  | council | 3 → 6 | 6 × 8 = **48** istek | 6 × (8×600 s + 472 s) = 31632 saniye (~527,2 dk) |
 
   (Sayılar kod sabitlerinden türetilir — `eval/budget.ts`; `budget.test.ts`
   README'yi bu sabitlere sabitler, doküman kayarsa test düşer.)
@@ -560,14 +564,23 @@ Notlar:
   tekrarı yasaktır ve test-enforcelıdır: entegrasyon testi spawn edilen sürecin
   stdout'undaki **her satırı** `JSON.parse` ile doğrular.
 - **`dir` argümanı her çağrıda realpath ile normalize edilir** (bağlantılı üst
-  dizinlerden ulaşlanan bir kök yasaldır ve gerçek yoluna çözülür) ve
-  `LCO_MCP_EXEC_ROOT` ayarlıysa çözülen yolun pinin içinde kalması zorunludur
-  (SEC-003, izinli-kök politikası — her araca, `lco_generate`'ın yazma hedefine
-  kadar; dışarıdaki/red dışındaki `dir` `-32602` ile reddedilir, pinin kendisi
-  çözülemiyorsa her çağrı fail-closed reddedilir). Pin AYARLI DEĞİLSE yol
-  politikası yoktur: bu, BELGELİ yerel-güven sınırıdır — pinsiz sunucu,
-  istemcisine yerel yollarla çalışmayı açıkça emanet eden operatördür. Güvenilir
-  olmayan bir istemciye açarken `LCO_MCP_EXEC_ROOT` kullanın.
+  dizinlerden ulaşılan bir kök yasaldır ve gerçek yoluna çözülür) ve çözülen yol
+  **etkin izinli kökün (effective allowed root) içinde kalmak zorundadır**
+  (SEC-003 — bağlayıcı politika, her araca, `lco_generate`'ın yazma hedefine
+  kadar). Etkin kök: `LCO_MCP_EXEC_ROOT` ayarlıysa o değerin realpath'ı;
+  **ayarl DEĞİLSE sunucunun çalışma dizininin realpath'ı** — pinsiz sunucu
+  kendi çalışma dizinine sabitlenir; "politika yok" modu YOKTUR (denetim
+  kalıntısı: opsiyonel güvenlik reddedildi). Dışarıdaki/red dışındaki `dir`
+  `-32602` ile reddedilir (ret mesajı kökün kaynağını adlandırır: pin mi
+  çalışma dizini mi); etkin kök bir dizine çözülmüyorsa (silinmiş pin, silinmiş
+  cwd) HER araç çağrısı fail-closed reddedilir. Ret hiçbir çekirdek çağrısı,
+  LLM adapter'ı, shell yürütmesi veya dosya yazımı yapmadan önce gerçekleşir.
+  **Dağıtım uyarısı:** pinsiz sunucuda etkin kökün genişliği sunucunun NEREDE
+  başlatıldığına bağlıdır — proje dizininden başlatılan sunucu proje kökünü alır
+  (iyi), `$HOME`'dan başlatılan (kullanıcı-kapsamlı MCP kaydı) `$HOME`'u alır,
+  `/`'dan başlatılan mutlak-yollar için fiilen sınırsızdır. Dizin dışına açık bir
+  sunucu için daima `LCO_MCP_EXEC_ROOT` sabitleyin (mutlak yol ile — göreli pin
+  sunucunun kendi çalışma dizinine göre çözülür, öngörülemez).
 - **`lco_check` aracı varsayılan olarak SADECE önizleme yapar** (DRY) — `yes` parametresi
   MCP yüzeyinden kaldırıldı (SEC-002); yürütme rızası için aşağıdaki Yürütme Rızası
   bölümüne bakın.
@@ -580,8 +593,10 @@ Notlar:
 - El smoke'u (gerçek stdio): `initialize` → `serverInfo {name: "lco-mcp", version:
   "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 10 araç;
   `tools/call lco_check {dir}` → `isError: false`, ilk satır `DRY RUN — no commands
-  executed; pass --yes to execute`. Bildirimler (`notifications/*`) yanıt almaz;
-  bozuk satır `-32700` (id `null`); bilinmeyen araç `-32602`; bilinmeyen metod `-32601`.
+  executed; pass --yes to execute`. **id'siz** geçerli bildirimler sessizdir; id TAŞIYAN
+  her geçerli istek yanıt alır (`notifications/*` bile — bilinen hiçbir işleyicisi
+  yoksa `-32601`, id yankılanır); bozuk satır `-32700` (id `null`); bilinmeyen araç
+  `-32602`; bilinmeyen metod `-32601`.
 
 ### Dayanıklılık ve Protokol Sınırları (OPS-001, SEC-006)
 
@@ -642,9 +657,12 @@ yarıda kesintiye (truncated exit) götüremez:
   reddedilir (`additionalProperties:false` sıkılaştırma politikasının zarf
   uzantısı); **batch** (dizi gövde) tek bir `-32600` hatasıyla reddedilir —
   sunucu tasarımı gereği satır-başına-tek-istektir (stdio-MCP batch'e ihtiyaç
-  duymaz; belgelenmiş no-batch tavrı). Yalnızca GEÇERLİ bildirimler sessizdir:
-  idsiz her geçerli istek ve `notifications/*` (id'li olsa bile, belgelenmiş
-  uzantı) yanıt almaz; geçersiz zarf id'siz olsa bile `id:null` hatası alır.
+  duymaz; belgelenmiş no-batch tavrı). Sessizlik YALNIZCA id yokluğuyla tanımlanır
+  (JSON-RPC 2.0): idsiz geçerli istek (bildirim) yanıt almaz; id TAŞIYAN her
+  geçerli istek — yöntem `notifications/*` olsa bile — bir Request'tir ve yanıt
+  alır (işleyicisi yoksa `-32601`, id yankılanır; SEC-006 kalıntı kapanışı:
+  yöntem-adına göre susma geçersizdi). Geçersiz zarf id'siz olsa bile `id:null`
+  hatası alır; geçersiz id ASLA yankılanmaz.
 
 ### Yürütme Rızası: `lco_check` ve `LCO_MCP_ALLOW_EXEC` (SEC-002)
 
@@ -873,25 +891,48 @@ Karar verme: G1–G3 sağlanırsa mock koşu **`PASS_DETERMINISTIC_ONLY`** verir
 G4'ü temellendiremez — bu bilinçli bir dürüstlük sınırdır). Live koşuda G1–G3 **ve** G4
 sağlanırsa **`PASS`**, aksi halde **`FAIL`**.
 
-**PROD-003 — niyet-doğruluk (intent-fidelity) iddiaları:** her greenfield eval görevi,
-niyet metninde **adıyla** geçen somut kısıtları (komutlar, bayraklar, teknolojiler,
-biçimler, limitler, durum kodları — `sqlite`, `jwt`, `--sep`, `429`, `09:00` …) taşıyan
-bir `MENTIONS_TERMS` iddiası içerir. Üretilen bundle'ın gövde metni (requirements/tasks/
-tests/glossary/decision metinleri) bu terimlerin **hepsini** carry etmelidir; bundle'ın
-kendi `intent.statement` yankısı **aranmaz** (niyeti geri okumak, onu kodlamak değildir).
-**Bilinen sınır (term-dump):** terim iddiaları adlı kısıtların bundle'a **taşındığını**
-doğrular, tasarımda **kullanıldıklarını** değil — tek bir cümleyle tüm terimleri listeleyen
-anlamsız bir "term-dump" bu iddiayı geçebilir; canlı sadakat için terim başına bir
-requirement statement / task instruction'a çözünme gerektiren gelecek sıkılaştırma
-gerekir (bu rubrik henüz uygulamaz). Mock'un greenfield intent geçişleri de
-`badgeIntentConstraints` ile **üretilmiştir** — model sadakat kanıtı değildir.
-Skor iki etikete ayrılır: **yapısal geçiş** (MENTIONS_TERMS dışındaki tüm iddialar) ve
-**niyet-doğruluk geçişi** (MENTIONS_TERMS + BLOCKED + doğru bloklama). Yapısal olarak
-temiz ama niyete sadık olmayan jenerik bir bundle artık tam puan alamaz — ham fixture'lar
-hiçbir görevin terim kümesini karşılamaz (korpus testi bunu sabitler). İcatlar
-(intent'in adını anmadığı glossary/kavramlar) **danışma listesidir, kapı değildir**:
-başka dilde yazılmış dürüst bir spec kavramları yeniden adlandırabilir, sert kural dürüst
-spekleri düşürürdü.
+**PROD-003 — niyet-doğruluk (intent-fidelity) iddiaları (`CONSTRAINT_TRACE`):** her
+greenfield eval görevi, niyet metninde **adıyla** geçen somut kısıtların (komutlar,
+bayraklar, teknolojiler, biçimler, limitler, durum kodları) makine-denetlenebilir bir
+**kısıt-iz (constraint-trace) beyanını** taşır: her kısıt terimi gerçek bir
+**requirement ifadesinde** köklü olmalı (glossary/karar/görev-talimatı metni ve intent
+yankısı ASLA sayılmaz), o requirement **en az bir task tarafından** referans
+edilmeli, o task **ilişkili bir test vakası** ve **yargılanabilir bir çıkış-kodu
+doğrulaması** taşımalıdır; sayısal kısıtlar beyan edilen **operator+değeri** korur —
+ilişki denetimi, köklü requirement'ın **tüm çapa cümlelerini** kapsar (kardeş cümlede
+birimi yinelyip yanlış-yönde yabancı sayı yazmak — "under 300 ms. Bursts may take up
+to 5000 ms." — ihlaldir) ve intent'in adlandırdığı bir sayı yalnızca intent'te **aynı
+birim bağlamında** geçiyorsa muaf sayılır. **Yasak-icat listeleri yalnızca ET-02
+(`asorti` — zorunlu beden-asortisi icadı) ve ET-12'de (`POS`, `payment gateway` —
+kaynağın açıkça dışladığı ödeme-altyapısı icadı) vardır** — sözcük-sınırı
+eşleşmesiyle: 'POS' "deposit"in içine denk gelmez; diğer görevlerde icatlar
+**danışmaktır** (asla kapılanmaz). Sayısal örnekler: ET-04 `customization ≥ 150`,
+ET-06 `pool ≥ 150`, ET-07 `stock == 70`, ET-12 `proforma ≥ 35` / `receipt ≥ 65`.
+Terim-dökme, glossary-eko, iz'siz requirement,
+ilişkisiz/ölçek dışı sayı ve icat yüzeyleri **adversarial test pilisi**yle
+sabitlenmiştir (`src/eval/constraint-trace.test.ts`; 9 gerekli vaka + 2026-08-27
+inceleme vektörleri). Skor iki etikete ayrılır: **yapısal geçiş** (CONSTRAINT_TRACE
+dışındaki tüm iddialar) ve **niyet-doğruluk geçişi** (CONSTRAINT_TRACE + BLOCKED +
+doğru bloklama). Mock'un greenfield intent geçişleri `groundIntentConstraints` ile
+**üretilmiştir** — model sadakat kanıtı değildir. **Korpus + eşik + rubrik
+dondurması:** sha256 kilidi tam olarak {model, 20 görev, tüm kısıt beyanları, eşikler
+(G1=15, G4 çarpanı=3) ve **rubrik üçlüsünün dosya baytları** (`src/eval/prompts.ts`,
+`src/eval/constraints.ts`, `src/eval/score.ts`)} üzerinedir (`src/eval/corpus-lock.json`;
+kapsam kilit içinde `hashed_rubric_files` olarak makine-okunur; ilk donma 2026-08-27,
+rubrik-kapsam genişletmesi ve **sahip-yönlendirmeli gerçek-iş korpusu (anonim
+parafrazlar) ile yeniden kayıt 2026-08-28** — geçmiş girdiler `previous_hash`
+zinciriyle korunur).
+Her eval girişi kilidi doğrular — uyumsuzluk KOŞUYU DURDURUR: **kilitli dosyalardaki
+sessiz sonuç-sonrası değişiklik koşuyu düşürür**; kilit DIŞINDAKİ dosyaların
+(gate/render/report/runner, CLI) değişikliği kilidi tetiklemez ve yalnızca git
+incelemesiyle görünürdür — kurcalama kanıtı için MAC iddiası yoktur, kanıt git
+geçmişi + kilit içi hash zinciridir. Canlı koşum öncesi kayıt:
+`audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md`; konsey-üstünlüğü **iddiası**
+yalnızca oradaki 6. ölçüt (`src/eval/sign-test.ts` eş-imzalı testi) ile karar verir —
+CLI çıkış kodu tek başına değil. Bilinen sınırlar dürüstçe saklanır: tamamen
+uydurulmuş bir iz, basamak-koruyucu düzyazı operator çevirimi veya iyi biçimli bir
+zincirdeki **olumsuzlama/ilgisiz-fıkra anılması** ("shall make no use of sqlite" kökler)
+her deterministik kapıyı geçebilir; G4 yalnızca canlı koşumda anlamlıdır.
 
 **Tekrarlı koşum + belirsizlik:** `--repeats N`, (görev, varyant) başına N koşum yapar;
 rapor görev başına **tekrar-arası geçiş oranı + ortalama/min/max yayılım** tablosu verir.
@@ -970,6 +1011,14 @@ kanıt olarak okunmamalıdır. Yeniden ölçüm için:
   karar `PASS_DETERMINISTIC_ONLY` (bkz. `audit-output/spec-core-gate-report.md`).
   Rapor artık **yapısal geçişi (28/40)** ile **niyet-doğruluk geçişini (40/40)** ayrı
   listeler ve mock kanıtın sınırlarını adıyla yazar.
+- **Ön-kayıtlı tekrarlı canlı deney İCRA EDİLDİ (2026-08-30, glm-5.3, 3 tekrar ×
+  20 görev × 2 varyant = 120 koşum):** ölçütlerin 5'i MET (48/48 doğru bloklama,
+  0 yasak-icat, tam kullanım muhasebesi, konsey maliyeti 2.04× ≤ 3×) ama bağlayıcı
+  signTest NOT MET (36 çiftten 9'u ayrışık — 10 gerekir; konsey 8-1 önde,
+  p=0.0195) → **"konsey daha doğrudur" iddiası kanıtlanamadı ve EMEKLİ EDİLDİ**.
+  Konsey DENEYSELDİR, tek ajan varsayılandır; ürün doğrulanmış spec derleyicisi
+  olarak konumlanır. Kanıt: `audit-output/eval/LIVE-EVAL-RESULT-2026-08-30.md`
+  (anonim toplamlar). Aynı soruyu yeniden test etmek yeni bir ön-kayıt gerektirir.
 - **Eski live G4 raporu (2026-08-18) historiktir** (`audit-output/g4-live-report.md`):
   o koşum tek tekrarlıydı ve niyet-doğruluk iddiaları İÇERMEZDİ — o sayılara
   (36 > 26, maliyet 2.13×, o zamanki rubrikle PASS) dayanarak "konsey daha doğru"
@@ -1112,6 +1161,53 @@ commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
 izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
 birlikte yaşar (bkz. "Yayın ve Sahiplik").
 
+- **2026-08-30 — canlı deney İCRA ve kapanışı:** 3 tekrar × 20 görev × 2 varyant
+  (glm-5.3, dondurulmuş mühür 15884058 altında) tamamlandı; ölçüt 1-5 MET, bağlayıcı
+  signTest NOT MET (9 ayrışık çift < 10) → konsey-üstünlük iddiası emekli edildi
+  (konsey deneysel, tek ajan varsayılan); canlı ölçülen: %100 doğru bloklama,
+  2.04× maliyet, spec-üretim süresi dakikalar-düzeyi (reasoning açık); transport
+  sertleştirmesi (8 deneme/600 s tavan) ve v2 prompt yaşam-döngüsü sözleşmesi bu
+  koşumda doğrulandı; planlanan v3 prompt deltası (stack varsayımı yönlendirmesi)
+  sonuçlardan önce ön-kayıtlı olup koşum-sonrası uygulandı.
+- **2026-08-28 — canlı deney ön-hazırlığı (sahip-yönlendirmeli):** korpusun 12
+  greenfield görevi, sahibin sağladığı gerçek-iş gereksinim belgesinden türetilmiş
+  **anonim teknik parafrazlarla** yeniden kaydedildi (kaynak kimliği gizli; 8 belirsiz
+  görev ve eşikler değişmedi); kilit geçmişe eklenen üçüncü girdiyle yeniden
+  mühürlendi (`sha256:4d63a82b…`). Canlı deney araçları: `live-experiment.js`
+  (çökmeye dayanıklı --emit-dir birim çıktıları + --aggregate toplama) ve saf
+  `signTest()` kararının üç tekrarın üzerinden hesaplanması. Ön-kayıt güncellendi:
+  model `glm-5.3` (GLM Coding Plan OpenAI-uyumlu uç), 3 tekrar × 20 görev × 2
+  varyant, koşum komutları ve anonim rapor kuralı dahil. Yayımlanan hiçbir yüzey
+  kaynak belgeyi, iş adlarını veya kişisel ayrıntıyı içermez — 1329 test.
+- **2026-08-27 — dış-denetim kalıntı kapanış programı:** SEC-003 — MCP izinli-kök
+  politikası BAĞLAYICI hale geldi: etkin kök = realpath(`LCO_MCP_EXEC_ROOT`) ya da
+  (pin yoksa) realpath(sunucu çalışma dizini); "politika yok" modu kaldırıldı,
+  kök çözülmüyorsa her araç fail-closed reddediyor, retler sıfır yan etkiyle
+  çekirdek çağrısından önce. SEC-006 — sessizlik yalnızca id yokluğuyla tanımlanır;
+  id'li `notifications/*` artık `-32601` yanıtı alır (yöntem-adına göre susma
+  kaldırıldı). PROD-003 — `MENTIONS_TERMS` yerine `CONSTRAINT_TRACE` kısıt-iz
+  rubriği (requirement köklüğü + task referansı + test/yargılanabilir doğrulama
+  zinciri, sayısal operator+değer, yasak-icat listeleri; 9 adversarial vaka) ve
+  korpus+eşik sha256 dondurması (`src/eval/corpus-lock.json`) — eval girişleri
+  kilit uyumsuzluğunda koşuyu durdurur; canlı koşum ön-kaydı
+  `audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md`. `lco doctor` üretim
+  adapter gerçeğini düzeltti (canlı HTTP varsayılan, mock yalnız test/kütüphane)
+  ve etkin-kök politikasını raporlar. *Aynı gün bağımsız inceleme kapanışı
+  (Lane D, sonuç görülmeden):* I-1 — kilit kapsamı rubrik üçlüsüne genişletildi
+  (`prompts.ts`/`constraints.ts`/`score.ts` baytları; kilit içi
+  `hashed_rubric_files`; eklenen girdi `previous_hash` ile 0024fef9…; eski
+  e9c5e3b0… geçmişte kalır); I-2 — ön-kayıt 6. ölçütü kod oldu
+  (`src/eval/sign-test.ts`: eşleşik kesin işaret testi + Clopper-Pearson GA;
+  canlı raporda "pre-registered claim criterion" satırı); I-3 — sayı tutma
+  genişletildi (kardeş-cümle yeniden-ölçekleme yakalanır; intent muafiyeti birim
+  bağlamına kısıtlandı); I-4 — yasak listeleri sözcük-sınırıyla eşleşir ve kapsam
+  ET-01/ET-02 olarak dürüstçe belgelendi; I-5 — olumsuzlama/ilgisiz-fıkra sınırları
+  üç yüzeyde adlandı; M-1 `G4_COST_MULTIPLIER` tek kaynak; M-2/M-3 kilit
+  yenileme/güncelleme düzeltmeleri; M-4 eski `g4-live-report.md` SUPERSEDED
+  bandı; NIT-2 ölü kod (`searchableBundleText`) silindi. NOT:
+  `RESPONSE-TO-AUDIT.md`'deki (L94) "MENTIONS_TERMS kapama mekanizması" atfı
+  tarihsel kayıttır — yukarıdaki `CONSTRAINT_TRACE` rubriği onu geçersiz kılar.
+  — 1304 test.
 - **2026-08-27 — P3-5 / P3 düzeltme programının kapanışı (bu aşama):** OPS-003 —
   1 MiB çıktı sınırı taşması artık ayrı `OUTPUT-CAP` etiketiyle yargılanır
   (`TIMEOUT` yalnızca gerçek zaman aşımı kill'i ve sinyalle ölüm; tablo satırı,

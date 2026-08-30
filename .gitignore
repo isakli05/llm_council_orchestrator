@@ -8,13 +8,13 @@ vscode-extension.vsix
 
 # Prevent compiled JS files in source directories
 # Only TypeScript source files should exist in src/
-apps/*/src/**/*.js
 packages/*/src/**/*.js
-!apps/*/src/**/*.test.js
-!apps/*/src/**/*.spec.js
 
 # Graphify: keep the persistent graph, report, HTML, manifest, and integration
 # files versionable; keep query/runtime caches and dated safety backups local.
 graphify-out/cache/
 graphify-out/cost.json
 graphify-out/20??-??-??/
+
+# live-eval experiment artifacts (owner-private; never commit — see audit-output/eval/LIVE-EVAL-PRE-REGISTRATION.md)
+eval-live-output/

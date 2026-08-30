@@ -15,7 +15,7 @@ import {
 } from '../cli/commands/generate';
 import { cmdChange } from '../cli/commands/change';
 import type { ChangeSet } from '../compiler/changeset';
-import { checkMcpDir } from '../storage/paths';
+import { checkMcpDir, effectiveMcpRoot } from '../storage/paths';
 import {
   authorizeExecution,
   checkPreviewDigest,
@@ -605,7 +605,9 @@ export interface HandleRpcOptions {
  *
  * Returns the response line (a `JSON.stringify` string — no embedded
  * newlines), or null when the line must produce NO response (notifications:
- * requests without an `id`, and every `notifications/*` method). This core
+ * VALID requests without an `id` — silence is defined by the absence of id,
+ * never by the method name, so an id-bearing notifications/* request gets a
+ * normal -32601 response). This core
  * never writes to stdout and never rejects — malformed input yields error
  * responses, and a thrown command core becomes an isError tool result.
  *
@@ -635,10 +637,13 @@ export async function handleRpcLine(
   }
   const { hasId, id, method } = envelope;
 
-  // Notifications never get a response — by protocol when they lack an id,
-  // and by convention for the whole notifications/* namespace (initialize
-  // handshake messages arrive both ways depending on the client).
-  if (!hasId || method.startsWith('notifications/')) {
+  // Notifications never get a response — a notification is a request object
+  // WITHOUT an id, per JSON-RPC 2.0 (silence is defined by the absence of
+  // id, never by the method name). A notifications/* method that DOES carry
+  // an id is a Request and falls through to the switch below — no handler
+  // exists for it, so it gets -32601 Method not found with the id echoed
+  // (SEC-006 residual: the old method-name drop silenced valid requests).
+  if (!hasId) {
     return null;
   }
 
@@ -719,15 +724,19 @@ async function handleToolsCall(
     nowMs: options?.nowMs ?? (() => Date.now()),
   };
 
-  // DIR POLICY (SEC-003, allowed-root): the tool's `dir` is normalized and
-  // policy-checked HERE — once per call, at the same server boundary as the
-  // clock and the capability flags, never inside a command core. ALWAYS
-  // realpath-resolve (a root through symlinked parents is legal and
-  // normalizes); when the operator pinned the process with
-  // LCO_MCP_EXEC_ROOT, the dir must RESOLVE inside the pin — every tool,
-  // including lco_generate's write target. The refusal is a -32602 (the
-  // argument is invalid FOR THIS SERVER) naming the pin.
-  const dirCheck = checkMcpDir(input.value.dir, call.execRoot);
+  // DIR POLICY (SEC-003, MANDATORY allowed-root): the tool's `dir` is
+  // normalized and policy-checked HERE — once per call, at the same server
+  // boundary as the clock and the capability flags, never inside a command
+  // core, never from request arguments. ALWAYS realpath-resolve (a root
+  // through symlinked parents is legal and normalizes) and ALWAYS against
+  // the EFFECTIVE root: realpath(LCO_MCP_EXEC_ROOT) when the operator pinned
+  // the process, otherwise realpath of the server's working directory —
+  // there is no unpinned, policy-free mode. Every tool — including
+  // lco_generate's write target — must resolve inside that root; a root that
+  // does not resolve to an existing directory fails every call closed. The
+  // refusal is a -32602 (the argument is invalid FOR THIS SERVER) naming
+  // where the effective root came from.
+  const dirCheck = checkMcpDir(input.value.dir, effectiveMcpRoot(call.execRoot));
   if (!dirCheck.ok) {
     return errorResponse(id, -32602, dirCheck.message);
   }
@@ -863,9 +872,16 @@ function parseToolInput(
       // including the PROD-004 creation surface.
       if (key === 'yes') return invalid(YES_REMOVED_MESSAGE);
       // Capability-shaped keys get a named refusal too: a request trying to
-      // grant itself allowExec/allowGenerate/llm/env must learn that these
-      // are server-boundary state, never request arguments.
-      if (key === 'allowExec' || key === 'allowGenerate' || key === 'llm' || key === 'env') {
+      // grant itself allowExec/allowGenerate/llm/env — or to set/override the
+      // allowed root with execRoot — must learn that these are
+      // server-boundary state, never request arguments.
+      if (
+        key === 'allowExec' ||
+        key === 'allowGenerate' ||
+        key === 'llm' ||
+        key === 'env' ||
+        key === 'execRoot'
+      ) {
         return invalid(
           `unknown argument '${key}': capability/trust state is set by the OPERATOR at the ` +
             `server boundary (env flags / injected adapter), never by a request argument`,
