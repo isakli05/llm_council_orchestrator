@@ -133,6 +133,18 @@ commands:
                                unconfigured optional (live LLM env, budget overrides)
                                -> exit 0; --json emits {"checks":[{name,status,
                                detail,remedy?}...],"healthy":bool}
+  models --provider <name> [--config <path>] [--json] [--limit N]
+                               list a provider's CURRENT model catalogue (FREE
+                               models endpoint only — one GET, no completion,
+                               no retry). <name> is either a provider from
+                               lco.config.json (--config path, default
+                               ./lco.config.json) or a built-in: openrouter
+                               (OPENROUTER_API_KEY) or routellm
+                               (ABACUS_ROUTELLM_API_KEY). Prints exact API ids
+                               — display names are never API ids — with
+                               per-token pricing and context as reported;
+                               Unknown = not reported (never 0). The catalogue
+                               changes: use this, not stale doc screenshots.
 
 changeset template (all three lists are optional; patch keys are strict — typos are rejected):
   {

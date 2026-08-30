@@ -295,3 +295,36 @@ describe('runPipeline — role-aware routing over a plan (fused council unchange
     }
   });
 });
+
+describe('per-role provider-reported cost (§13)', () => {
+  it('accumulates provider-reported cost per role; absent stays absent (unknown ≠ 0)', async () => {
+    let n = 0;
+    const plan: LlmPlan = {
+      forRole: (r) => ({
+        adapter: {
+          async complete(): Promise<LlmResponse> {
+            n += 1;
+            const text =
+              n === 1
+                ? JSON.stringify({ profile: 'p-mini', must_be_blocked: false })
+                : JSON.stringify(et01Bundle());
+            return {
+              text,
+              usage: { in_tokens: 5, out_tokens: 5 },
+              // every call reports a 0.01-credit cost; classifier none
+              ...(r === 'judge' ? { provenance: { gateway: 'g', providerKind: 'openrouter' as const, requestedModel: 'm', cost: { amount: 0.01, currency: 'credits' } } } : {}),
+            };
+          },
+        },
+        identity: { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' },
+      }),
+    };
+    const out = await runPipeline(task('ET-01'), 'council', plan, NOW);
+    expect(out.kind).toBe('spec');
+    if (out.kind !== 'spec') return;
+    // single completion for the judge → exactly the reported cost, not zeroed
+    expect(out.usage.byRole!.judge!.providerCost).toEqual({ amount: 0.01, currency: 'credits' });
+    // roles whose provider reported nothing carry NO cost field (unknown)
+    expect(out.usage.byRole!.classifier!.providerCost).toBeUndefined();
+  });
+});

@@ -163,7 +163,9 @@ function roleUsageLine(role: string, r: RoleUsage): string {
   const tokens = r.usageKnown
     ? `${r.in} in / ${r.out} out tokens`
     : `tokens unknown — provider reported no usage for ${r.calls} call(s) (unknown is not zero)`;
-  return `  ${who}${resolvedNote}]: ${r.calls} call(s) / ${r.attempts} attempt(s), ${tokens}, ${r.promptBytes} prompt bytes`;
+  const cost =
+    r.providerCost !== undefined ? `, cost ${r.providerCost.amount} ${r.providerCost.currency} (provider-reported)` : '';
+  return `  ${who}${resolvedNote}]: ${r.calls} call(s) / ${r.attempts} attempt(s), ${tokens}, ${r.promptBytes} prompt bytes${cost}`;
 }
 
 /** Per-role breakdown lines when the run carried role accounting (plan-driven). */

@@ -85,6 +85,12 @@ export interface RoleUsage {
   promptBytes: number;
   /** Unique provider-REPORTED resolved models for this role, when reported. */
   resolvedModels?: string[];
+  /**
+   * Sum of PROVIDER-REPORTED monetary cost for this role, when any was
+   * reported (OpenRouter reports credits). Absent = no provider reported
+   * cost — unknown, never zero, never estimated.
+   */
+  providerCost?: { amount: number; currency: string };
 }
 
 /**
@@ -363,6 +369,16 @@ export async function runPipeline(
         ru.resolvedModels = [...(ru.resolvedModels ?? []), resolved].filter(
           (m, i, arr) => arr.indexOf(m) === i,
         );
+      }
+      const cost = res.provenance?.cost;
+      if (cost !== undefined) {
+        // Same-currency accumulation per role; the currency travels with the
+        // first report (providers report one currency; mixing would be a
+        // provider bug worth surfacing, not silently converting).
+        ru.providerCost =
+          ru.providerCost !== undefined && ru.providerCost.currency === cost.currency
+            ? { amount: ru.providerCost.amount + cost.amount, currency: cost.currency }
+            : ru.providerCost ?? cost;
       }
       byRole[role] = ru;
     }
