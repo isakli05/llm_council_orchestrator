@@ -707,6 +707,21 @@ prompt-bound claim_ids — LCO keeps clarifications in-memory by design, so
 cross-run persistence of unanswered questions is not mechanically enforced;
 the new run re-surfaces whatever remains unresolved.)
 
+### Future metric extension point: SILENT CRITICAL GAP RATE
+
+The target product behavior is "no important uncertainty disappears silently".
+The architecture now supports scoring a future pre-registered metric for it:
+**SILENT CRITICAL GAP RATE** — the share of production-relevant HIGH/CRITICAL
+issues found by an independent reviewer that a generated spec neither
+resolved, nor declared as an assumption, nor represented as an UNRESOLVED
+decision (i.e., never surfaced at all). A longer spec is NOT a better spec;
+this metric counts disappearances, not requirements. The ingredients exist:
+UNRESOLVED decisions + assumptions are first-class bundle sections, the
+clarification channel records what was asked, and run metadata carries the
+prompt protocol. No such experiment is running and no result is claimed —
+any use requires a NEW pre-registration (the closed PROD-003 criterion and
+its NOT-MET conclusion stand untouched).
+
 ### MCP surface
 
 `lco_generate` accepts an optional `llmProfile` — a **NAME** from the
