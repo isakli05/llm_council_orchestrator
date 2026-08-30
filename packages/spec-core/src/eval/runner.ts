@@ -8,6 +8,8 @@ import type { EvalTask } from './tasks';
 import type { LlmAdapter } from './llm/adapter';
 import type { BudgetLedger } from './budget';
 import { classifySingle, propose, proposeB, proposeBDegraded, classifyAndProposeSingle } from './prompts';
+import { singleRoutePlan, isLlmPlan } from '../llm/plan';
+import type { LlmPlan, LlmRole } from '../llm/plan';
 
 /**
  * Evidence-gate pipeline runner (Task 10 binding).
@@ -57,6 +59,28 @@ export interface PipelineUsage {
    * included); this counter makes that repetition visible instead of guessed.
    */
   promptBytes: number;
+  /**
+   * Per-role accounting (multi-provider council, §13): present once at least
+   * one completion ran, keyed by pipeline role. Same honesty rules as the
+   * totals: `usageKnown` false per role when any of ITS responses lacked
+   * provider usage; `resolvedModels` lists the models the provider REPORTED
+   * as serving (unique) — absent when nothing was reported.
+   */
+  byRole?: Partial<Record<LlmRole, RoleUsage>>;
+}
+
+/** Per-role slice of the run accounting (see PipelineUsage.byRole). */
+export interface RoleUsage {
+  gateway: string;
+  requestedModel: string;
+  calls: number;
+  attempts: number;
+  in: number;
+  out: number;
+  usageKnown: boolean;
+  promptBytes: number;
+  /** Unique provider-REPORTED resolved models for this role, when reported. */
+  resolvedModels?: string[];
 }
 
 /**
@@ -237,10 +261,20 @@ export type PipelineTask = Pick<EvalTask, 'intent' | 'profile'>;
 export async function runPipeline(
   task: PipelineTask,
   variant: PipelineVariant,
-  llm: LlmAdapter,
+  llm: LlmAdapter | LlmPlan,
   nowIso: string,
   budget?: BudgetLedger,
 ): Promise<PipelineOutcome> {
+  // §3: a plain adapter normalizes to "the same route for every role" — the
+  // historical single-model topology, byte-identical behavior. A plan routes
+  // each ROLE to its own adapter/gateway/model; the runner never sees
+  // provider mechanics beyond the route identity used for accounting.
+  const plan = isLlmPlan(llm) ? llm : singleRoutePlan(llm);
+  // byRole accounting exists only on plan-driven runs: a plain adapter has no
+  // role identity to attribute ('unknown'/'unknown' slices are noise), and the
+  // plain-adapter outcome keeps its exact historical shape.
+  const trackRoles = isLlmPlan(llm);
+
   const usage: PipelineUsage = {
     in: 0,
     out: 0,
@@ -250,6 +284,7 @@ export async function runPipeline(
     usageKnown: true,
     promptBytes: 0,
   };
+  const byRole: Partial<Record<LlmRole, RoleUsage>> = {};
 
   // UX-001: one completion = one logical call; transport attempts are the
   // adapter's real count when it self-reports (budget-aware adapters charge
@@ -259,16 +294,18 @@ export async function runPipeline(
   // BudgetExceededError out of this wrapper — the pipeline is strictly
   // sequential, so the abort propagates cleanly with no later completion
   // ever starting.
-  const complete = async (prompt: string): Promise<string> => {
+  const complete = async (prompt: string, role: LlmRole): Promise<string> => {
+    const route = plan.forRole(role);
     budget?.checkWall();
     budget?.ensureAttemptAdmissible();
-    const res = await llm.complete(prompt);
+    const res = await route.adapter.complete(prompt);
     const attempts = res.attempts ?? 1;
     if (res.attempts === undefined) {
       budget?.chargeAttempts(1);
     }
+    const promptBytes = new TextEncoder().encode(prompt).length;
     usage.calls += 1;
-    usage.promptBytes += new TextEncoder().encode(prompt).length;
+    usage.promptBytes += promptBytes;
     usage.attempts += attempts;
     if (res.usage) {
       usage.in += res.usage.in_tokens;
@@ -278,6 +315,37 @@ export async function runPipeline(
       usage.callsWithoutUsage += 1;
       usage.usageKnown = false;
     }
+
+    // §13 per-role slice: same honesty rules as the totals (unknown ≠ zero).
+    if (trackRoles) {
+      const ru: RoleUsage = byRole[role] ?? {
+        gateway: route.identity.gateway,
+        requestedModel: route.identity.requestedModel,
+        calls: 0,
+        attempts: 0,
+        in: 0,
+        out: 0,
+        usageKnown: true,
+        promptBytes: 0,
+      };
+      ru.calls += 1;
+      ru.attempts += attempts;
+      ru.promptBytes += promptBytes;
+      if (res.usage) {
+        ru.in += res.usage.in_tokens;
+        ru.out += res.usage.out_tokens;
+      } else {
+        ru.usageKnown = false;
+      }
+      const resolved = res.provenance?.resolvedModel;
+      if (resolved !== undefined) {
+        ru.resolvedModels = [...(ru.resolvedModels ?? []), resolved].filter(
+          (m, i, arr) => arr.indexOf(m) === i,
+        );
+      }
+      byRole[role] = ru;
+    }
+
     return res.text;
   };
 
@@ -289,6 +357,7 @@ export async function runPipeline(
     callsWithoutUsage: usage.callsWithoutUsage,
     usageKnown: usage.usageKnown,
     promptBytes: usage.promptBytes,
+    ...(Object.keys(byRole).length > 0 ? { byRole: { ...byRole } } : {}),
   });
 
   const blocked = (reasons: string[], degraded = false): PipelineOutcome => ({
@@ -312,13 +381,15 @@ export async function runPipeline(
   /** One gated bundle attempt chain: schema → (schema retry) → lifecycle →
    * lint → (non-L08 lint retry). The lifecycle (generation contract) check
    * precedes lint so an output that is not a fresh draft is refused with the
-   * transition named, not with whichever content lint happens to hit first. */
-  const gatedBundle = async (prompt: string): Promise<
+   * transition named, not with whichever content lint happens to hit first.
+   * `role` attributes every completion inside the chain (single: 'single';
+   * council's fused merger/judge: 'judge'). */
+  const gatedBundle = async (prompt: string, role: LlmRole): Promise<
     { ok: true; bundle: SpecBundle } | { ok: false; reason: string; reasons?: string[] }
   > => {
-    let attempt = bundleFromText(await complete(prompt));
+    let attempt = bundleFromText(await complete(prompt, role));
     if (!attempt.ok) {
-      attempt = bundleFromText(await complete(buildValidationRetryPrompt(prompt, [attempt.reason])));
+      attempt = bundleFromText(await complete(buildValidationRetryPrompt(prompt, [attempt.reason]), role));
       if (!attempt.ok) return attempt;
     }
 
@@ -341,7 +412,7 @@ export async function runPipeline(
     if (fixable.length > 0) {
       const preRetryBundle = attempt.bundle; // BACK-001 (b): unresolved evidence snapshot
       const retried = bundleFromText(
-        await complete(buildValidationRetryPrompt(prompt, fixable.map(lintReason))),
+        await complete(buildValidationRetryPrompt(prompt, fixable.map(lintReason)), role),
       );
       if (retried.ok) {
         // BACK-001 (b): the retry is accepted ONLY if it preserved every piece
@@ -369,7 +440,10 @@ export async function runPipeline(
   };
 
   if (variant === 'single') {
-    const result = await gatedBundle(context + classifyAndProposeSingle(task.intent, task.profile));
+    const result = await gatedBundle(
+      context + classifyAndProposeSingle(task.intent, task.profile),
+      'single',
+    );
     if (!result.ok) return blocked(result.reasons ?? [result.reason]);
     return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot() };
   }
@@ -377,7 +451,7 @@ export async function runPipeline(
   // Council: classifier, then proposal A (schema-validated on EVERY attempt —
   // BACK-008), then the fused proposeB+judge call whose output goes through
   // the full gated chain.
-  const classifierText = await complete(context + classifySingle(task.intent, task.profile));
+  const classifierText = await complete(context + classifySingle(task.intent, task.profile), 'classifier');
   const verdict = parseJsonOrBlock(
     classifierText,
     ClassifierOutputSchema,
@@ -390,10 +464,13 @@ export async function runPipeline(
   // still fails schema validation DEGRADES the council leg: the unvalidated
   // text never reaches the merger — the judge drafts the final bundle alone.
   const aPrompt = context + propose(task.intent, task.profile);
-  let proposalAText = await complete(aPrompt);
+  let proposalAText = await complete(aPrompt, 'proposal_a');
   let aParsed = bundleFromText(proposalAText);
   if (!aParsed.ok) {
-    proposalAText = await complete(buildValidationRetryPrompt(aPrompt, [aParsed.reason]));
+    proposalAText = await complete(
+      buildValidationRetryPrompt(aPrompt, [aParsed.reason]),
+      'proposal_a',
+    );
     aParsed = bundleFromText(proposalAText); // revalidated — never passed through on trust
   }
   const councilDegraded = !aParsed.ok;
@@ -402,6 +479,7 @@ export async function runPipeline(
     councilDegraded
       ? context + proposeBDegraded(task.intent, task.profile)
       : context + proposeB(task.intent, task.profile, proposalAText),
+    'judge',
   );
 
   // BACK-001 (a): blocking evidence is MONOTONIC at the gate. The chain above
