@@ -38,6 +38,46 @@ import { runDecomposedCouncil } from './council';
 export type PipelineVariant = 'single' | 'council';
 
 /**
+ * §10/§11 — one UNRESOLVED decision surfaced as a user-facing question.
+ * Distilled ONLY from a schema-validated (and lifecycle-valid) bundle: the
+ * question text is the decision's own `decision` wording (v4 prompts phrase
+ * it as a domain/behavior question a non-engineer can answer), alternatives
+ * are the answer options. Malformed model output can never become a
+ * clarification — only a bundle the validator accepted can.
+ */
+export interface ClarificationQuestion {
+  claimId: string;
+  question: string;
+  impact: string;
+  alternatives: { option: string; rejected_because: string }[];
+}
+
+/**
+ * Distill clarification questions from a blocked run's last INSPECTABLE
+ * bundle. All conditions binding (§11): a schema+lifecycle-valid candidate
+ * must exist, and the block reasons must include per-decision L08 findings —
+ * i.e. UNRESOLVED decisions caused the block. Anything else (schema failure,
+ * lifecycle violation, classifier-monotonic block without unresolved
+ * material, RESOLUTION_MISSING rejections) yields NO clarifications.
+ */
+export function clarificationsFromBundle(
+  bundle: SpecBundle | undefined,
+  reasons: string[],
+): ClarificationQuestion[] {
+  if (bundle === undefined) return [];
+  const blockedByUnresolvedDecisions = reasons.some((r) => r.startsWith('L08_UNRESOLVED_LEAK [DEC-'));
+  if (!blockedByUnresolvedDecisions) return [];
+  return bundle.decisions
+    .filter((d) => d.status === 'UNRESOLVED')
+    .map((d) => ({
+      claimId: d.claim_id,
+      question: d.decision,
+      impact: d.impact,
+      alternatives: d.alternatives.map((a) => ({ option: a.option, rejected_because: a.rejected_because })),
+    }));
+}
+
+/**
  * Accounting accumulated across the variant's complete() calls (UX-001/T11):
  * `calls` counts LOGICAL COMPLETIONS, `attempts` counts TRANSPORT ATTEMPTS
  * (adapters that self-report attempts — e.g. the HTTP adapter with its
@@ -107,7 +147,22 @@ export interface RoleUsage {
  */
 export type PipelineOutcome =
   | { kind: 'spec'; variant: PipelineVariant; bundle: SpecBundle; usage: PipelineUsage; councilDegraded?: true; degradedRoles?: LlmRole[]; promptProtocol?: string }
-  | { kind: 'blocked'; variant: PipelineVariant; reasons: string[]; usage: PipelineUsage; councilDegraded?: true; degradedRoles?: LlmRole[]; promptProtocol?: string };
+  | {
+      kind: 'blocked';
+      variant: PipelineVariant;
+      reasons: string[];
+      usage: PipelineUsage;
+      councilDegraded?: true;
+      degradedRoles?: LlmRole[];
+      promptProtocol?: string;
+      /**
+       * §11 SAFE IN-MEMORY clarification questions: present only when a
+       * schema+lifecycle-valid candidate was blocked by UNRESOLVED decisions.
+       * NEVER persisted — the blocked run writes nothing; the CLI renders it
+       * as "Questions to resolve" so the product owner can answer and re-run.
+       */
+      clarifications?: ClarificationQuestion[];
+    };
 
 /**
  * Optional pipeline behavior beyond the historical contract (all defaults
@@ -397,7 +452,12 @@ export async function runPipeline(
     ...(Object.keys(byRole).length > 0 ? { byRole: { ...byRole } } : {}),
   });
 
-  const blocked = (reasons: string[], degraded = false, degradedRoles?: LlmRole[]): PipelineOutcome => ({
+  const blocked = (
+    reasons: string[],
+    degraded = false,
+    degradedRoles?: LlmRole[],
+    clarifications?: ClarificationQuestion[],
+  ): PipelineOutcome => ({
     kind: 'blocked',
     variant,
     reasons,
@@ -405,6 +465,7 @@ export async function runPipeline(
     promptProtocol,
     ...(degraded ? { councilDegraded: true as const } : {}),
     ...(degradedRoles !== undefined ? { degradedRoles } : {}),
+    ...(clarifications !== undefined && clarifications.length > 0 ? { clarifications } : {}),
   });
 
   // nowIso is the run's only time source; it grounds the model, never the gate.
@@ -437,7 +498,8 @@ export async function runPipeline(
    * `role` attributes every completion inside the chain (single: 'single';
    * council's fused merger/judge: 'judge'). */
   const gatedBundle = async (prompt: string, role: LlmRole): Promise<
-    { ok: true; bundle: SpecBundle } | { ok: false; reason: string; reasons?: string[] }
+    | { ok: true; bundle: SpecBundle }
+    | { ok: false; reason: string; reasons?: string[]; inspect?: SpecBundle }
   > => {
     let attempt = bundleFromText(await complete(prompt, role));
     if (!attempt.ok) {
@@ -480,7 +542,16 @@ export async function runPipeline(
     }
 
     if (lint.errors.length > 0) {
-      return { ok: false, reason: lint.errors.map(lintReason).join('; '), reasons: lint.errors.map(lintReason) };
+      // §11: this bundle passed schema AND lifecycle — it is INSPECTABLE.
+      // When L08 (unresolved material) is among the errors, the blocked
+      // outcome may carry its UNRESOLVED decisions as clarification
+      // questions (distilled by clarificationsFromBundle; in-memory only).
+      return {
+        ok: false,
+        reason: lint.errors.map(lintReason).join('; '),
+        reasons: lint.errors.map(lintReason),
+        inspect: attempt.bundle,
+      };
     }
 
     // The retry above replaced the bundle — the generation contract is
@@ -496,7 +567,14 @@ export async function runPipeline(
       context + wrap(classifyAndProposeSingle(task.intent, task.profile)),
       'single',
     );
-    if (!result.ok) return blocked(result.reasons ?? [result.reason]);
+    if (!result.ok) {
+      return blocked(
+        result.reasons ?? [result.reason],
+        false,
+        undefined,
+        clarificationsFromBundle(result.inspect, result.reasons ?? [result.reason]),
+      );
+    }
     return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot(), promptProtocol };
   }
 
@@ -511,7 +589,8 @@ export async function runPipeline(
       complete,
       bundleFromText,
       gatedBundle,
-      blocked: (reasons, degradedRoles) => blocked(reasons, false, degradedRoles),
+      blocked: (reasons, degradedRoles, clarifications) =>
+        blocked(reasons, false, degradedRoles, clarifications),
       usageSnapshot,
     });
   }
@@ -573,7 +652,13 @@ export async function runPipeline(
     : [];
 
   if (!finalResult.ok) {
-    return blocked([...classifierEvidence, ...(finalResult.reasons ?? [finalResult.reason])], councilDegraded);
+    const reasons = [...classifierEvidence, ...(finalResult.reasons ?? [finalResult.reason])];
+    return blocked(
+      reasons,
+      councilDegraded,
+      undefined,
+      clarificationsFromBundle(finalResult.inspect, reasons),
+    );
   }
   if (classifierEvidence.length > 0) {
     return blocked(classifierEvidence, councilDegraded);

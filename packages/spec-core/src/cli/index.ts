@@ -17,6 +17,8 @@ import { parseArgs, commandHelp, USAGE } from './args';
 import type { RunBudgetSpec } from '../eval/budget';
 import { parseLlmConfig, resolveProfile } from '../config/llm-config';
 import type { ResolvedProfile } from '../config/llm-config';
+import { parseAnswersFile } from '../eval/answers';
+import type { UserAnswerForPrompt } from '../eval/prompts-v4';
 
 /**
  * Thin CLI entry (split from the old monolith, T23): the pure parsing/usage
@@ -342,6 +344,25 @@ export async function runCli(argv: string[]): Promise<number> {
         llmProfile = { name: parsed.llmProfile, resolved: resolved.resolved };
       }
 
+      // §12 clarification answers: read + validate at the boundary; each
+      // answer becomes verbatim user_input evidence (hash computed locally).
+      let answers: UserAnswerForPrompt[] | undefined;
+      if (parsed.answersFile !== undefined) {
+        let raw: string;
+        try {
+          raw = await readFile(parsed.answersFile, 'utf8');
+        } catch (err) {
+          console.error(`lco: cannot read --answers ${parsed.answersFile}: ${(err as Error).message}`);
+          return 2;
+        }
+        const parsedAnswers = parseAnswersFile(raw, `answers:${parsed.answersFile}`);
+        if (!parsedAnswers.ok) {
+          console.error(`lco: ${parsedAnswers.error}`);
+          return 2;
+        }
+        answers = parsedAnswers.answers;
+      }
+
       // CLI boundary: the clock is read HERE only and injected (nowIso for
       // prompts, nowMs for the wall budget — the core never reads the clock
       // itself). cmdGenerate resolves createHttpLlm() itself and THROWS
@@ -358,6 +379,7 @@ export async function runCli(argv: string[]): Promise<number> {
           budget,
           nowMs: () => Date.now(),
           ...(llmProfile !== undefined ? { llmProfile } : {}),
+          ...(answers !== undefined ? { answers } : {}),
         });
       } catch (err) {
         console.error(`lco: generate failed: ${(err as Error).message}`);

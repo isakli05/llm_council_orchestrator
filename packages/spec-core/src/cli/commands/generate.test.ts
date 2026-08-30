@@ -1145,3 +1145,76 @@ describe('runCli generate — --llm-profile boundary', () => {
     expect((await runCli(['generate', 'd', '--intent', 'x', '--llm-profile', 'bad name!']))) as never;
   });
 });
+
+describe('cmdGenerate — clarification rendering (§10/§11/§25)', () => {
+  it('blocked-by-unresolved renders QUESTIONS TO RESOLVE before reasons; nothing written', async () => {
+    const dir = makeTmp('spec-core-generate-clarify-');
+    const unresolved = structuredClone(PET_CLINIC);
+    unresolved.manifest.project = { name: 'stock-tool', mode: 'greenfield' };
+    unresolved.decisions[0]!.status = 'UNRESOLVED';
+    unresolved.decisions[0]!.decision =
+      'If two customers complete the same fabric quantity at once, should the first confirmed order win?';
+    unresolved.decisions[0]!.impact = 'high';
+    unresolved.decisions[0]!.alternatives = [
+      { option: 'first confirmed wins', rejected_because: 'other customer sees out-of-stock' },
+    ];
+    unresolved.manifest.unresolved_count = 1;
+    const { llm } = makeLlm([JSON.stringify(unresolved), JSON.stringify(unresolved)]);
+
+    const result = await cmdGenerate(dir, {
+      intent: 'stock tool with undecided concurrency behavior',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('GENERATION BLOCKED — USER DECISIONS REQUIRED');
+    expect(result.output).toContain('Questions to resolve:');
+    expect(result.output).toContain('DEC-0001 [impact: high]');
+    expect(result.output).toContain('If two customers complete the same fabric quantity');
+    expect(result.output).toContain('first confirmed wins');
+    expect(result.output).toContain('--answers');
+    // the questions section comes BEFORE the raw lint reasons
+    expect(result.output.indexOf('Questions to resolve:')).toBeLessThan(result.output.indexOf('L08'));
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+
+  it('blocked for non-question reasons keeps the plain reasons rendering', async () => {
+    const dir = makeTmp('spec-core-generate-plainblocked-');
+    const { llm } = makeLlm(['not json', 'also not json']);
+    const result = await cmdGenerate(dir, {
+      intent: 'x',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+    });
+    expect(result.code).toBe(1);
+    expect(result.output).not.toContain('Questions to resolve:');
+  });
+
+  it('--answers path: answers flow into the prompts as verbatim evidence', async () => {
+    const dir = makeTmp('spec-core-generate-answers-');
+    const { llm, prompts } = makeLlm([JSON.stringify(validBundle())]);
+    const result = await cmdGenerate(dir, {
+      intent: 'url shortener',
+      variant: 'single',
+      profile: 'p-mini',
+      nowIso: NOW,
+      llm,
+      answers: [
+        {
+          claimId: 'DEC-0004',
+          answer: 'the first confirmed order gets priority',
+          source: 'answers:answers.json',
+          hash: 'sha256:' + 'a'.repeat(64),
+        },
+      ],
+    });
+    expect(result.code).toBe(0);
+    expect(prompts[0]).toContain('first confirmed order gets priority');
+    expect(prompts[0]).toContain('USER ANSWERS');
+    expect(result.output).toContain('prompt protocol: lco-prompts/v3+answers-v1');
+  });
+});

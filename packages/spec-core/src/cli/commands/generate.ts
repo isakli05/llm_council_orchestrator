@@ -14,7 +14,8 @@ import { writeSpecDir } from './write-spec';
 import { buildRoleAdapter } from '../../llm/providers';
 import type { ResolvedProfile } from '../../config/llm-config';
 import type { LlmPlan, LlmRole } from '../../llm/plan';
-import type { RoleUsage } from '../../eval/runner';
+import type { RoleUsage, ClarificationQuestion } from '../../eval/runner';
+import type { UserAnswerForPrompt } from '../../eval/prompts-v4';
 
 /**
  * THE generate defaults live HERE (T11/UX-001 controller ruling) — the CLI
@@ -61,6 +62,12 @@ export interface GenerateOptions {
   llmProfile?: { name: string; resolved: ResolvedProfile };
   /** Budget overrides (CLI flags/env); defaults derive from the variant envelope. */
   budget?: RunBudgetSpec;
+  /**
+   * Clarification-loop answers (§12): the boundary reads + validates the
+   * answers file; each answer becomes verbatim user_input evidence wrapped
+   * into every prompt of the run. One invocation = one deterministic round.
+   */
+  answers?: UserAnswerForPrompt[];
   /**
    * Wall-clock provider for the wall budget. The core never reads the clock
    * (repo rule) — the CLI boundary injects `() => Date.now()`; tests inject
@@ -119,6 +126,35 @@ export function normalizeFileIntent(raw: string): IntentCheck {
 
 function lintReason(f: LintFinding): string {
   return `${f.rule} [${f.path}]: ${f.message}`;
+}
+
+/**
+ * §10/§25: the user-facing clarification section for a blocked run. Rendered
+ * FIRST (before lint reasons) because it is what the product owner needs;
+ * the raw reasons stay below for developers. The wording is the bundle's own
+ * validated decision text — v4 prompts phrase it as a domain/behavior
+ * question, and nothing here rewrites or reinterprets model output.
+ */
+function clarificationBlock(clarifications: ClarificationQuestion[] | undefined): string[] {
+  if (clarifications === undefined || clarifications.length === 0) return [];
+  const lines = [
+    'GENERATION BLOCKED — USER DECISIONS REQUIRED',
+    'Questions to resolve:',
+  ];
+  for (const q of clarifications) {
+    lines.push(`  ${q.claimId} [impact: ${q.impact}]`);
+    lines.push(`    ${q.question}`);
+    if (q.alternatives.length > 0) {
+      lines.push('    options:');
+      for (const a of q.alternatives) {
+        lines.push(`      - ${a.option} (${a.rejected_because})`);
+      }
+    }
+  }
+  lines.push(
+    'Answer with an answers file — {"' + clarifications[0]!.claimId + '": "your answer", …} — and re-run with --answers <file>.',
+  );
+  return lines;
 }
 
 /**
@@ -318,7 +354,7 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
     llm,
     opts.nowIso,
     ledger,
-    { topology },
+    { topology, ...(opts.answers !== undefined ? { answers: opts.answers } : {}) },
   );
 
   if (outcome.kind === 'blocked') {
@@ -327,6 +363,7 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
       output: [
         `generation blocked by the evidence gate (variant ${outcome.variant}, ` +
           `${usageLine(outcome.usage)}) — nothing written:`,
+        ...clarificationBlock(outcome.clarifications),
         ...runContextLines(outcome, opts.llmProfile?.name, resolvedProfile?.topology, resolvedProfile?.routingMode),
         ...outcome.reasons.map((r) => `  - ${r}`),
       ].join('\n'),

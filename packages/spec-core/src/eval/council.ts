@@ -1,9 +1,16 @@
 import type { SpecBundle } from '../schemas';
-import type { PipelineTask, PipelineOutcome, PipelineVariant, PipelineUsage } from './runner';
+import type {
+  PipelineTask,
+  PipelineOutcome,
+  PipelineVariant,
+  PipelineUsage,
+  ClarificationQuestion,
+} from './runner';
 import {
   parseJsonOrBlock,
   ClassifierOutputSchema,
   buildValidationRetryPrompt,
+  clarificationsFromBundle,
 } from './runner';
 import type { LlmRole } from '../llm/plan';
 import {
@@ -55,8 +62,11 @@ export interface DecomposedCouncilDeps {
   gatedBundle(
     prompt: string,
     role: LlmRole,
-  ): Promise<{ ok: true; bundle: SpecBundle } | { ok: false; reason: string; reasons?: string[] }>;
-  blocked(reasons: string[], degradedRoles?: LlmRole[]): PipelineOutcome;
+  ): Promise<
+    | { ok: true; bundle: SpecBundle }
+    | { ok: false; reason: string; reasons?: string[]; inspect?: SpecBundle }
+  >;
+  blocked(reasons: string[], degradedRoles?: LlmRole[], clarifications?: ClarificationQuestion[]): PipelineOutcome;
   usageSnapshot(): PipelineUsage;
 }
 
@@ -140,10 +150,8 @@ export async function runDecomposedCouncil(deps: DecomposedCouncilDeps): Promise
     : [];
 
   if (!finalResult.ok) {
-    return blocked(
-      [...classifierEvidence, ...(finalResult.reasons ?? [finalResult.reason])],
-      degradedRoles,
-    );
+    const reasons = [...classifierEvidence, ...(finalResult.reasons ?? [finalResult.reason])];
+    return blocked(reasons, degradedRoles, clarificationsFromBundle(finalResult.inspect, reasons));
   }
   if (classifierEvidence.length > 0) {
     return blocked(classifierEvidence, degradedRoles);

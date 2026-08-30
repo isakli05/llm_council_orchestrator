@@ -222,6 +222,8 @@ export type ParseResult =
       budget?: RunBudgetSpec;
       /** Named LLM profile from <dir>/lco.config.json (§7); resolved at the runCli boundary. */
       llmProfile?: string;
+      /** Answers file path for the clarification loop (§12); read at the runCli boundary. */
+      answersFile?: string;
     };
 
 export function parseArgs(argv: string[]): ParseResult {
@@ -404,6 +406,7 @@ export function parseArgs(argv: string[]): ParseResult {
     const budget: RunBudgetSpec = {};
     let sawBudgetFlag = false;
     let llmProfile: string | undefined;
+    let answersFile: string | undefined;
     const budgetFlag = (name: 'maxAttempts' | 'maxTokens' | 'maxWallMs', raw: string | undefined, flag: string): string | null => {
       const n = Number(raw);
       if (!Number.isInteger(n) || n <= 0) {
@@ -461,6 +464,12 @@ export function parseArgs(argv: string[]): ParseResult {
           return { error: `invalid --llm-profile ${value}: expected a profile name (letters, digits, . _ -)` };
         }
         llmProfile = value;
+      } else if (flag === '--answers') {
+        const value = flags[++i];
+        if (value === undefined || value === '') {
+          return { error: 'missing value for --answers' };
+        }
+        answersFile = value;
       } else {
         return { error: `unexpected argument for 'generate': ${flag}` };
       }
@@ -480,6 +489,7 @@ export function parseArgs(argv: string[]): ParseResult {
       profile,
       ...(sawBudgetFlag ? { budget } : {}),
       ...(llmProfile !== undefined ? { llmProfile } : {}),
+      ...(answersFile !== undefined ? { answersFile } : {}),
     };
   }
   if (rest.length > 1) {
