@@ -197,6 +197,9 @@ export async function startClarifyServer(opts: ClarifyServerOptions): Promise<Cl
   const server = createServer((req, res) => {
     void handleRequest(req, res).catch((err: unknown) => {
       emit('session.http.error', { message: (err as Error).message.slice(0, 200) });
+      if (process.env.LCO_DEBUG_HTTP === '1') {
+        console.error('lco clarify http error:', err, 'url:', JSON.stringify(req.url), 'host:', req.headers.host);
+      }
       if (!res.headersSent) {
         securityHeaders(res);
         sendJson(res, 500, { ok: false, error: 'internal server error' });
@@ -207,8 +210,15 @@ export async function startClarifyServer(opts: ClarifyServerOptions): Promise<Cl
   });
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const path = url.pathname;
+    // Malformed request targets (e.g. '//') must yield a clean 400, never a 500.
+    let path: string;
+    try {
+      path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    } catch {
+      securityHeaders(res);
+      sendJson(res, 400, { ok: false, error: 'malformed request target' });
+      return;
+    }
     const method = req.method ?? 'GET';
 
     // --- guard 1: Host (DNS rebinding) — every request, no exceptions -------

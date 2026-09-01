@@ -392,6 +392,7 @@ export async function runCli(argv: string[]): Promise<number> {
             nowMs: () => Date.now(),
             ...(llmProfile !== undefined ? { llmProfile } : {}),
             ...(parsed.noOpen === true ? { noOpen: true } : {}),
+            onLine: (line) => console.log(line),
             onReady: (info) => {
               // the server handle is reachable through the ready callback's
               // closure: cancel by API so the session state machine stays the

@@ -167,4 +167,121 @@ if (err.id !== null || err.error?.code !== -32700) {
 console.log("smoke: initialize ok: serverInfo=" + JSON.stringify(res.result.serverInfo) + "; notification silent; parse error -32700 id null");
 ' "$MCP_OUT"
 
-say "PASS — packed-install smoke: pack -> install -> lco init -> lco-mcp handshake all green"
+# --- 6. installed browser clarification workspace, OFFLINE (owner spec 2026-09-01 §35) ----
+say "== phase 6: interactive clarification workspace from the installed tarball (offline mock LLM) =="
+# A local mock speaks the OpenAI-compatible shape and returns a bundle blocked
+# by ONE unresolved decision, so the workspace has a real question to show.
+# No paid call ever leaves this machine: LCO_LLM_* points at the loopback mock.
+MOCK_PORT=$(node -e 'const n=require("node:net");const s=n.createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();})')
+node -e '
+const http = require("node:http");
+const SHA = "sha256:" + "0".repeat(64);
+const bundle = {
+  manifest: { spec_schema: "lco-spec/1.0", spec_version: 1, project: { name: "smoke-b2b", mode: "greenfield" },
+    complexity_profile: "p-standard", evidence_snapshot: { pack_hash: SHA, collected_at: "2026-09-01T00:00:00Z" },
+    state: "draft", council_run: { run_id: "t", config_fingerprint: "t" }, artifact_hashes: {},
+    unresolved_count: 1, blocking_count: 0, target_runtime: { platform: "node", stack: "ts" } },
+  intent: { statement: "A B2B ordering platform.", normalized: "n" }, glossary: [], assumptions: [],
+  evidence: [{ id: "E-0001", kind: "user_input", source: "s", hash: SHA }],
+  requirements: [{ id: "REQ-0001", statement: "Dealers browse the catalogue.", priority: "must", evidence: ["E-0001"], acceptance_refs: ["TST-0001"], terms_used: [] }],
+  decisions: [{ claim_id: "DEC-0004", decision: "Who gets the last fabric when two dealers order at once?", rationale: "r", evidence: ["E-0001"], confidence: 1, impact: "high", assumptions: [], alternatives: [], status: "UNRESOLVED" }],
+  contracts: [],
+  tasks: [{ task_id: "TASK-0001", title: "t", purpose: "p", refs: { requirements: ["REQ-0001"], architecture: [], decisions: [] }, depends_on: [], preconditions: ["c"], permitted_scope: ["src/**"], protected: [], interface_changes: [], invariants: ["i"], instructions: "do", tests: [{ id: "TST-0001", kind: "unit", file: "a.test.ts", cases: ["REQ-0001: works"] }], verification: [{ command: "node --version", expect: "exit 0" }], acceptance: ["a"], rollback: "r", completion_evidence: { required: ["test_summary"] }, risk: { level: "low", note: "" }, complexity: "xs" }],
+  test_files: ["a.test.ts"],
+};
+http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(bundle) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+  });
+}).listen(Number(process.argv[1]), "127.0.0.1");
+' "$MOCK_PORT" &
+MOCK_PID=$!
+
+SMOKE_DIR="$PROJ/clarify-smoke"
+(
+  cd "$PROJ"
+  LCO_LLM_BASE_URL="http://127.0.0.1:$MOCK_PORT" \
+  LCO_LLM_API_KEY="smoke-key" \
+  LCO_LLM_MODEL="smoke-model" \
+  "$LCO" generate "$SMOKE_DIR" --intent "I need a B2B ordering platform." --interactive --no-open
+) > "$WORK/interactive.out" 2>&1 &
+INT_PID=$!
+
+# wait for the workspace URL line, then exercise the running server offline
+# The announce line is pipe-buffered: a naive substring grep can catch it
+# HALF-FLUSHED and capture a truncated token. The $ anchor only matches a
+# COMPLETE line, so the capture is always the full URL.
+URL_LINE=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  URL_LINE=$(grep -oE 'http://127[.]0[.]0[.]1:[[:digit:]]+/#[[:alnum:]_-]+$' "$WORK/interactive.out" | head -1 || true)
+  [ -n "$URL_LINE" ] && break
+  sleep 0.5
+done
+if [ -z "$URL_LINE" ]; then
+  say "FAIL: interactive workspace never printed its URL"
+  cat "$WORK/interactive.out" >&2
+  kill "$MOCK_PID" "$INT_PID" 2>/dev/null || true
+  exit 1
+fi
+say "workspace URL captured: ${URL_LINE%%#*}#<token>"
+
+# strip the fragment (the session token never rides in any request), then any
+# trailing slash so appended paths cannot double it
+ORIGIN="${URL_LINE%%#*}"
+ORIGIN="${ORIGIN%/}"
+TOKEN="${URL_LINE##*#}"
+SESSION_ID=$(grep -oE 'session s-[[:xdigit:]]{8} .*$' "$WORK/interactive.out" | head -1 | grep -oE 's-[[:xdigit:]]{8}' || true)
+if [ -z "$SESSION_ID" ]; then
+  say "FAIL: session id not found in the interactive output"
+  cat "$WORK/interactive.out" >&2
+  kill "$MOCK_PID" "$INT_PID" 2>/dev/null || true
+  exit 1
+fi
+
+# the packed assets serve offline with the right shape + security headers
+HTML_CODE=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$ORIGIN/" || true)
+CSP=$(curl -s --max-time 5 -D - -o /dev/null "$ORIGIN/" | tr -d '\r' | grep -i '^content-security-policy:' | head -1 || true)
+case "$HTML_CODE:$CSP" in
+  200:*) say "workspace HTML: 200, CSP present" ;;
+  *) say "FAIL: workspace HTML code=$HTML_CODE csp=$CSP"; kill "$MOCK_PID" "$INT_PID" 2>/dev/null || true; exit 1 ;;
+esac
+ASSET=$(node -e 'const m=require(process.argv[1]+"/node_modules/lco-spec/dist/browser/asset-manifest.json");const k=Object.keys(m).find(n=>n.endsWith(".js"));console.log(k||"")' "$PROJ")
+if [ -z "$ASSET" ]; then
+  say "FAIL: no JS asset in the packed manifest"
+  kill "$MOCK_PID" "$INT_PID" 2>/dev/null || true
+  exit 1
+fi
+ASSET_TYPE=$(curl -s --max-time 5 -o /dev/null -w '%{content_type}' "$ORIGIN/assets/$ASSET" || true)
+case "$ASSET_TYPE" in
+  text/javascript*) say "packed asset $ASSET serves as $ASSET_TYPE" ;;
+  *) say "FAIL: asset $ASSET served as '$ASSET_TYPE'"; kill "$MOCK_PID" "$INT_PID" 2>/dev/null || true; exit 1 ;;
+esac
+
+# the session API answers with the real question (blocked bundle → DEC-0004)
+API_CODE=$(curl -s --max-time 5 -o "$WORK/session.json" -w '%{http_code}' -H "x-lco-session: $TOKEN" "$ORIGIN/api/$SESSION_ID/session" || true)
+node -e '
+const s = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+if (!s.ok || !s.session || s.session.state !== "CLARIFICATION_REQUIRED" || !s.session.questions.some((q) => q.claimId === "DEC-0004")) {
+  console.error("smoke: bad session payload"); process.exit(1);
+}
+console.log("session API: state=" + s.session.state + ", question DEC-0004 present");
+' "$WORK/session.json" || { kill "$MOCK_PID" "$INT_PID" 2>/dev/null || true; exit 1; }
+
+# cancel cleanly: exit 1, NOTHING written to the project dir
+CANCEL_CODE=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -X POST -H "x-lco-session: $TOKEN" -H 'content-type: application/json' -d '{}' "$ORIGIN/api/$SESSION_ID/cancel" || true)
+if wait "$INT_PID"; then INT_EXIT=0; else INT_EXIT=$?; fi
+kill "$MOCK_PID" 2>/dev/null || true
+if [ "$CANCEL_CODE" != "200" ] || [ "$INT_EXIT" -ne 1 ]; then
+  say "FAIL: cancel=$CANCEL_CODE interactive-exit=$INT_EXIT (expected 200/1)"
+  exit 1
+fi
+if [ -e "$SMOKE_DIR/spec" ] || [ -e "$SMOKE_DIR/approvals" ]; then
+  say "FAIL: cancelled session left artifacts behind"
+  exit 1
+fi
+say "interactive workspace: offline mock LLM, assets + session API + clean cancel — nothing written"
+
+say "PASS — packed-install smoke: pack -> install -> lco init -> lco-mcp handshake -> offline interactive workspace all green"

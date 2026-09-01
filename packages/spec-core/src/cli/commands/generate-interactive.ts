@@ -48,6 +48,8 @@ export interface GenerateInteractiveOptions {
   onEvent?: (line: string) => void;
   /** Asset injection (tests/library); default loads the packaged workspace. */
   assets?: StaticAssets;
+  /** Immediate line printer (the URL must appear while the session runs). */
+  onLine?: (line: string) => void;
 }
 
 export interface GenerateInteractiveResult {
@@ -118,10 +120,17 @@ export async function cmdGenerateInteractive(
     },
   });
 
-  const lines: string[] = [
+  // Printed IMMEDIATELY (the owner needs the URL while the session runs);
+  // repeated in the final output for scrollback.
+  const announce: string[] = [
     `interactive clarification workspace: ${handle.sessionUrl}`,
+    `session ${sessionId} — open the URL above in a browser; the token lives in the URL fragment and is never sent to the server`,
     opts.noOpen === true ? '(browser opening suppressed — open the URL above manually)' : '(opening your browser…)',
   ];
+  for (const line of announce) {
+    opts.onLine?.(line);
+  }
+  const lines = [...announce];
 
   opts.onReady?.({ origin: handle.origin, sessionUrl: handle.sessionUrl, token: handle.token, sessionId });
   if (opts.noOpen !== true) {
