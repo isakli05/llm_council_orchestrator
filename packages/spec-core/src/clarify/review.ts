@@ -68,6 +68,15 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/**
+ * Content identity of a bundle: key-order-insensitive digest over the whole
+ * canonical content. Shared by the review projection (specDigest) and the
+ * approval baseline (revision digest) so both name the same content.
+ */
+export function specContentDigest(bundle: SpecBundle): string {
+  return sha256Content(canonicalJson(bundle));
+}
+
 function segment(seg: Omit<ReviewSegment, 'contentHash'>): ReviewSegment {
   return { ...seg, contentHash: sha256Content(seg.body) };
 }
@@ -175,7 +184,7 @@ export function projectReview(bundle: SpecBundle, reviewVersion: number): Behavi
 
   return {
     reviewVersion,
-    specDigest: sha256Content(canonicalJson(bundle)),
+    specDigest: specContentDigest(bundle),
     projectName: bundle.manifest.project.name,
     sections,
   };
