@@ -254,6 +254,30 @@ describe('multi-round clarification (§14 — every round is explicit user actio
   });
 });
 
+describe('topology independence (§2 — clarification is a product concern)', () => {
+  it('a DECOMPOSED-council session drives the same lifecycle (classifier → A∥B → judge)', async () => {
+    const classifier = JSON.stringify({ profile: 'p-mini', must_be_blocked: false });
+    const q = JSON.stringify(blockedBundle([['DEC-0004', 'Who gets the last fabric?']]));
+    const clean = JSON.stringify(bundle());
+    // decomposed shaping: classifier + proposal A + proposal B + judge per round
+    const llm = scriptedLlm([classifier, q, q, q, classifier, clean, clean, clean]);
+    const session = createClarifySession({
+      ...OPTS, dir, llm, variant: 'council' as const, topology: 'decomposed' as const,
+    });
+    await session.runInitialRound();
+    expect(session.snapshot().state).toBe('CLARIFICATION_REQUIRED');
+    expect(session.snapshot().questions[0]!.claimId).toBe('DEC-0004');
+    const r = await session.submitAnswers([
+      { decisionId: 'DEC-0004', kind: 'other', freeText: 'First confirmed order gets priority, always.' },
+    ]);
+    expect(r.ok).toBe(true);
+    expect(session.snapshot().state).toBe('FINAL_REVIEW');
+    // decomposed runs attribute to the v4 lineage (answers still wrap every
+    // prompt — the historical v4 protocol string, unchanged by design)
+    expect(session.snapshot().promptProtocol).toBe('lco-prompts/v4');
+  });
+});
+
 describe('enrichment (§11 — previews without per-click calls)', () => {
   it('runs once per question round and swaps Layer-0 previews for validated ones', async () => {
     const enrich = JSON.stringify({
