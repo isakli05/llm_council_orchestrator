@@ -66,6 +66,14 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
     };
   }
 
+  if (inputs.parity.records.length === 0) {
+    return {
+      ok: false,
+      code: 'parity_unresolved',
+      message: 'the parity ledger is empty — run lco renew analyze (PAID) before planning; a plan without discovered behaviors is meaningless',
+    };
+  }
+
   const unresolved = inputs.parity.records.filter((r) => r.ruling === 'unresolved');
   if (unresolved.length > 0) {
     return {

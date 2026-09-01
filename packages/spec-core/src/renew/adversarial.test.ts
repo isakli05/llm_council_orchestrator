@@ -134,7 +134,7 @@ describe('adversarial target repository (untrusted input end-to-end)', () => {
       caps,
     );
     expect(plan1.code).toBe(1);
-    expect(plan1.output).toMatch(/parity_unresolved|unresolved/);
+    expect(plan1.output).toMatch(/parity ledger is empty/);
 
     writeFileSync(join(target, 'src', 'inventory.ts'), 'export const CHANGED = 1;\n');
     const plan2 = await cmdRenewPlan({ dir: project }, caps);
