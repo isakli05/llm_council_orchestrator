@@ -145,9 +145,13 @@ export function attachStatuses(
  * `--answers`-replayable. Server-side validation is mandatory; this is the
  * single implementation.
  */
-export function validateAnswer(answer: ClarificationAnswer, question: ClarificationQuestionView): AnswerCheck {
-  if (!DEC_ID.test(answer.decisionId)) {
-    return { ok: false, error: `decision id '${answer.decisionId}' is not a DEC-NNNN id` };
+export function validateAnswer(
+  answer: ClarificationAnswer,
+  question: ClarificationQuestionView,
+  claimIdPattern: RegExp = DEC_ID,
+): AnswerCheck {
+  if (!claimIdPattern.test(answer.decisionId)) {
+    return { ok: false, error: `decision id '${answer.decisionId}' is not a recognized claim id` };
   }
   if (answer.decisionId !== question.claimId) {
     return { ok: false, error: `answer targets ${answer.decisionId} but the question is ${question.claimId}` };
@@ -248,6 +252,7 @@ export function applyAnswersToRecords(
   answers: ClarificationAnswer[],
   openQuestions: ClarificationQuestionView[],
   round: number,
+  claimIdPattern?: RegExp,
 ): ApplyResult {
   const byId = new Map(openQuestions.map((q) => [q.claimId, q]));
   const checked: { answer: ClarificationAnswer; question: ClarificationQuestionView }[] = [];
@@ -261,7 +266,7 @@ export function applyAnswersToRecords(
     if (question === undefined) {
       return { ok: false, error: `answer for ${raw.decisionId} does not match a question in the current round` };
     }
-    const check = validateAnswer(raw, question);
+    const check = validateAnswer(raw, question, claimIdPattern);
     if (!check.ok) return check;
     checked.push({ answer: check.answer, question });
   }

@@ -14,6 +14,7 @@ import {
   markSuperseded,
   nextOverlayId,
   persistOverlay,
+  type NewOverlayRecord,
 } from './overlay';
 
 const tmpDirs: string[] = [];
@@ -30,7 +31,7 @@ afterEach(() => {
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
 const SNAP = 'RSN-deadbeefdeadbeef';
 
-function baseRecord(overrides: Record<string, unknown> = {}) {
+function baseRecord(overrides: Partial<NewOverlayRecord> = {}): NewOverlayRecord {
   return {
     id: 'OVL-0001',
     relation: 'business_rule',
@@ -52,22 +53,23 @@ describe('OverlayRecordSchema (13-relation vocabulary, anchored)', () => {
   });
 
   it('rejects relations outside the audit-approved vocabulary', () => {
-    const r = OverlayRecordSchema.safeParse(baseRecord({ relation: 'legacy_analysis' }));
+    const r = OverlayRecordSchema.safeParse({ ...baseRecord(), relation: 'legacy_analysis' });
     expect(r.success).toBe(false); // historical role names never return as relation kinds
     expect(OVERLAY_RELATIONS).toHaveLength(13);
   });
 
   it('requires at least one anchor (no free-floating claims)', () => {
-    expect(OverlayRecordSchema.safeParse(baseRecord({ anchors: [] })).success).toBe(false);
+    expect(OverlayRecordSchema.safeParse({ ...baseRecord(), anchors: [] }).success).toBe(false);
   });
 
   it('subject may carry a node_id, and lineage stays strict', () => {
-    const ok = OverlayRecordSchema.safeParse(
-      baseRecord({ subject: { node_id: 'src_pricing_applydiscount', path: 'src/pricing.ts' } }),
-    );
+    const ok = OverlayRecordSchema.safeParse({
+      ...baseRecord(),
+      subject: { node_id: 'src_pricing_applydiscount', path: 'src/pricing.ts' },
+    });
     expect(ok.success).toBe(true);
     expect(
-      OverlayRecordSchema.safeParse(baseRecord({ lineage: { analysis_id: 'AN-0001', bogus: 1 } })).success,
+      OverlayRecordSchema.safeParse({ ...baseRecord(), lineage: { analysis_id: 'AN-0001', bogus: 1 } }).success,
     ).toBe(false);
   });
 });
