@@ -14,6 +14,8 @@ import type { FileManifest } from '../ingest/workspace-copy';
 import { RENEW_CONTEXT_LIMITS, type ContextBundle, type ContextItem, type ContextLimits } from './bundle';
 import { redactSecrets } from './redact';
 
+export { RENEW_CONTEXT_LIMITS } from './bundle';
+
 export type AnalysisScope =
   | { type: 'whole' }
   | { type: 'community'; id: number }
