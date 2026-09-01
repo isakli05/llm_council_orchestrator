@@ -17,7 +17,7 @@ import type { OverlayStore } from '../overlay/overlay';
 import type { RenewalDecisionSet } from './approvals';
 
 /** Renewal claim ids: UNC- (uncertainties), OVL- (overlay reviews), STG- (strategy). */
-export const RENEWAL_CLAIM_ID = /^(UNC|OVL|STG)-\d{4}$/;
+export const RENEWAL_CLAIM_ID = /^(UNC|OVL|STG|PAR)-\d{4}$/;
 
 export const STRATEGY_CLAIM_ID = 'STG-0001';
 
@@ -61,6 +61,8 @@ export interface DistillerInputs {
   /** The ACTIVE analysis records (usually the latest snapshot's). */
   analyses: readonly AnalysisRecord[];
   overlay: OverlayStore;
+  /** Parity ledger: unresolved entries WITHOUT a linked question get their own. */
+  parity?: import('../parity/ledger').ParityStore;
   includeStrategy?: boolean;
 }
 
@@ -99,6 +101,26 @@ export function distillRenewalQuestions(inputs: DistillerInputs): ClarificationQ
         { option: 'Drop the behavior', rejected_because: 'simplifies, but risks losing live behavior — requires strong evidence it is unused' },
       ],
     });
+  }
+
+  if (inputs.parity !== undefined) {
+    const linked = new Set(
+      inputs.parity.records.map((r) => r.decision_claim_id).filter((c): c is string => c !== undefined),
+    );
+    for (const rec of [...inputs.parity.records].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      if (rec.ruling !== 'unresolved') continue;
+      if (rec.decision_claim_id !== undefined && linked.has(rec.decision_claim_id)) continue;
+      questions.push({
+        claimId: rec.id,
+        question: `How should this discovered behavior be treated during modernization: ${rec.behavior}`,
+        impact: 'medium',
+        alternatives: [
+          { option: 'Preserve current behavior; verify parity during migration', rejected_because: 'safest default — the behavior exists in production' },
+          { option: 'Change the behavior deliberately; capture the new intent', rejected_because: 'modernizes, but must be a conscious product decision' },
+          { option: 'Drop the behavior as unused', rejected_because: 'destructive — requires strong evidence it is safe to remove' },
+        ],
+      });
+    }
   }
 
   return questions.sort((a, b) => (a.claimId < b.claimId ? -1 : 1));
@@ -152,9 +174,10 @@ export function makeRenewalDriver(inputs: DistillerInputs): RenewalRoundDriver {
   };
 }
 
-function kindOf(claimId: string): 'uncertainty' | 'overlay_review' | 'strategy' {
+function kindOf(claimId: string): 'uncertainty' | 'overlay_review' | 'parity' | 'strategy' {
   if (claimId.startsWith('UNC-')) return 'uncertainty';
   if (claimId.startsWith('OVL-')) return 'overlay_review';
+  if (claimId.startsWith('PAR-')) return 'parity';
   return 'strategy';
 }
 

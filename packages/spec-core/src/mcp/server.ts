@@ -37,6 +37,13 @@ import {
   type GenerateVariant,
 } from './consent';
 import type { LlmAdapter } from '../eval/llm/adapter';
+import { cmdRenewStatus, cmdRenewExport, cmdRenewAnalyze, type RenewCapabilities } from '../cli/commands/renew';
+import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
+import { renewalPaths } from '../renew/project/project';
+import { singleRoutePlan } from '../llm/plan';
+import { createHttpLlm } from '../eval/llm/http';
+import { renewConsentDigest } from './consent';
+import { execFileSync } from 'node:child_process';
 import { parseLlmConfig, resolveProfile } from '../config/llm-config';
 import type { LlmConfig, ResolvedProfile } from '../config/llm-config';
 
@@ -85,6 +92,10 @@ interface ToolInput {
   dir: string;
   task?: string;
   json?: boolean;
+  /** Legacy Renewal export target file (lco_renew_export). */
+  out?: string;
+  /** Legacy Renewal analysis scope (lco_renew_analyze; 'whole' in V1). */
+  scope?: string;
   /** SEC-002 execution consent / PROD-004 paid-call consent: { digest }. */
   consent?: { digest: string };
   /** PROD-004 lco_init/lco_generate: the CLI profile contract. */
@@ -180,6 +191,26 @@ const CONSENT_PROPERTY = (description: string) => ({
   required: ['digest'],
   additionalProperties: false,
 });
+
+const RENEW_DIR_PROPERTY = {
+  type: 'string',
+  description: 'path to the LCO renewal project directory (contains .lco/renewal/; created by `lco renew init`)',
+} as const;
+
+/** Boundary capabilities for renewal tools: clock, GraphifyAdapter, git. */
+function renewCaps(dir: string, nowIso: string): RenewCapabilities {
+  return {
+    nowIso: () => nowIso,
+    provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(dir).workspace }),
+    gitCommit: (root) => {
+      try {
+        return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', timeout: 5000 }).trim();
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
 
 const TOOLS: readonly ToolDef[] = [
   {
@@ -498,6 +529,124 @@ const TOOLS: readonly ToolDef[] = [
             ? `${r.summary}\n${r.details.map((d) => `  ${d}`).join('\n')}`
             : r.summary,
       };
+    },
+  },
+  {
+    name: 'lco_renew_status',
+    description:
+      'Legacy Renewal status (DETERMINISTIC, read-only, no LLM): snapshot freshness, ' +
+      'graph state, analyses, open questions, overlay/parity state, strategy, plan.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dir: RENEW_DIR_PROPERTY,
+        json: { type: 'boolean', description: 'emit machine-readable JSON' },
+      },
+      required: ['dir'],
+      additionalProperties: false,
+    },
+    args: ['json'],
+    run: (input, nowIso) => cmdRenewStatus({ dir: input.dir, json: input.json ?? false }, renewCaps(input.dir, nowIso)),
+  },
+  {
+    name: 'lco_renew_export',
+    description:
+      'Legacy Renewal report (DETERMINISTIC, read-only, no LLM): renders the validated ' +
+      'modernization state as markdown; export never performs new analysis.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dir: RENEW_DIR_PROPERTY,
+        out: { type: 'string', description: 'write the report to this file path instead of returning it' },
+      },
+      required: ['dir'],
+      additionalProperties: false,
+    },
+    args: ['out'],
+    run: (input, nowIso) => cmdRenewExport({ dir: input.dir, ...(input.out !== undefined ? { out: input.out } : {}) }, renewCaps(input.dir, nowIso)),
+  },
+  {
+    name: 'lco_renew_analyze',
+    description:
+      'Legacy Renewal analysis (PAID — makes LLM calls). Requires the renewal snapshot to be ' +
+      'fresh. Consent chain: LCO_MCP_ALLOW_GENERATE=1 AND consent.digest = the advertised ' +
+      'renewConsentDigest(dir, scope, llmProfile?) — every refusal happens BEFORE any LLM ' +
+      'adapter exists (ZERO calls).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dir: RENEW_DIR_PROPERTY,
+        scope: { type: 'string', description: "'whole' (V1)" },
+        llmProfile: {
+          type: 'string',
+          description: 'named profile from the operator config — must route the renew_recover role',
+        },
+        consent: CONSENT_PROPERTY(
+          'paid-analysis consent: { digest } — the consent digest this tool advertised for the SAME {dir, scope, llmProfile}',
+        ),
+      },
+      required: ['dir'],
+      additionalProperties: false,
+    },
+    args: ['scope', 'llmProfile', 'consent'],
+    run: async (input, nowIso, call) => {
+      const scope = (input.scope as string | undefined) ?? 'whole';
+      const expected = renewConsentDigest(input.dir, scope, input.llmProfile);
+      if (input.consent === undefined) {
+        return {
+          code: 2,
+          output:
+            `renewal analysis is a PAID operation and was NOT performed (zero LLM calls).\n` +
+            `Consent digest for this exact request:\n  ${expected}\n` +
+            'Re-send with consent: { digest } and the server started with LCO_MCP_ALLOW_GENERATE=1.',
+        };
+      }
+      if (!call.allowGenerate) {
+        return {
+          code: 2,
+          output:
+            'renewal analysis refused: this server was not started with LCO_MCP_ALLOW_GENERATE=1 ' +
+            '(zero LLM calls were made).',
+        };
+      }
+      if (input.consent.digest !== expected) {
+        return {
+          code: 2,
+          output:
+            `renewal analysis refused: consent digest mismatch (got ${input.consent.digest}, expected ${expected}). ` +
+            'The digest binds {dir, scope, llmProfile} — zero LLM calls were made.',
+        };
+      }
+      // LLM resolution (after the gate): test-injected adapter, named profile
+      // with a renew_recover route, or the legacy env (fail-closed, no invented keys).
+      const caps = renewCaps(input.dir, nowIso);
+      let llmPlan;
+      if (call.llm !== undefined) {
+        llmPlan = singleRoutePlan(call.llm);
+      } else if (input.llmProfile !== undefined) {
+        const resolved = call.resolveLlmProfile(input.llmProfile);
+        if (!resolved.ok) return { code: 2, output: resolved.output };
+        const role = (resolved.profile.resolved as unknown as { roles?: Record<string, unknown> }).roles?.['renew_recover'];
+        if (role === undefined) {
+          return {
+            code: 2,
+            output: `renewal analysis refused: llm profile '${resolved.profile.name}' has no route for role 'renew_recover' (zero LLM calls)`,
+          };
+        }
+        const { buildRoleAdapter } = await import('../llm/providers');
+        const { createBudgetLedger } = await import('../eval/budget');
+        const ledger = createBudgetLedger({}, {});
+        const adapter = buildRoleAdapter(role as never, process.env, { routingMode: resolved.profile.resolved.routingMode, budget: ledger });
+        llmPlan = { forRole: () => ({ adapter, identity: { gateway: (role as { gateway?: string }).gateway ?? 'unknown', providerKind: (resolved.profile.resolved as unknown as { routingMode: string }).routingMode as never, requestedModel: (role as { model?: string }).model ?? 'unknown' } }) };
+      } else {
+        try {
+          llmPlan = singleRoutePlan(createHttpLlm());
+        } catch (e) {
+          return { code: 2, output: `renewal analysis refused: no LLM route (${(e as Error).message}) — zero calls were made` };
+        }
+      }
+      const capsWithLlm: RenewCapabilities = { ...caps, llm: () => llmPlan };
+      return cmdRenewAnalyze({ dir: input.dir, scope: 'whole' }, capsWithLlm);
     },
   },
 ];
@@ -900,6 +1049,8 @@ const configLoadCache = new WeakMap<object, ReturnType<typeof loadLlmConfigForPr
 type ArgName =
   | 'task'
   | 'json'
+  | 'out'
+  | 'scope'
   | 'consent'
   | 'profile'
   | 'variant'
@@ -930,6 +1081,14 @@ const ARG_SPECS: Record<ArgName, ArgValidator> = {
     typeof arg === 'boolean'
       ? { ok: true, value: arg }
       : { ok: false, message: "'json' must be a boolean" },
+  out: (arg) =>
+    typeof arg === 'string' && arg.trim() !== ''
+      ? { ok: true, value: arg }
+      : { ok: false, message: "'out' must be a non-empty string (report file path)" },
+  scope: (arg) =>
+    arg === 'whole'
+      ? { ok: true, value: arg }
+      : { ok: false, message: "'scope' must be 'whole' (V1 analyzes the whole guarded graph)" },
   consent: (arg) => {
     if (!isPlainObject(arg)) return { ok: false, message: "'consent' must be an object: { digest: string }" };
     const keys = Object.keys(arg);

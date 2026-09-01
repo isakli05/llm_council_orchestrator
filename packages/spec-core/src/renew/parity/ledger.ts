@@ -34,7 +34,7 @@ export const ParityEntrySchema = z
     snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
     source_analysis: z.string().regex(/^AN-\d{4}$/).optional(),
     /** The clarification claim whose approved answer rules this entry. */
-    decision_claim_id: z.string().regex(/^(UNC|OVL)-\d{4}$/).optional(),
+    decision_claim_id: z.string().regex(/^(UNC|OVL|PAR)-\d{4}$/).optional(),
     approval_id: z.string().regex(/^APPR-\d{4}$/).optional(),
     note: z.string().max(4_000).optional(),
   })
@@ -143,8 +143,9 @@ export function applyApprovalToParity(store: ParityStore, approvalRec: RenewalAp
   const updated: string[] = [];
   const stillUnresolved: string[] = [];
   for (const rec of store.records) {
-    if (rec.decision_claim_id === undefined) continue;
-    const decision = byClaim.get(rec.decision_claim_id);
+    // Match by the linked claim id, or by the entry's OWN id (PAR questions
+    // the distiller derives directly from unresolved entries).
+    const decision = byClaim.get(rec.decision_claim_id ?? '') ?? byClaim.get(rec.id);
     if (decision === undefined) continue;
     const text = decision.selected_option ?? decision.free_text ?? '';
     const lower = text.toLowerCase();

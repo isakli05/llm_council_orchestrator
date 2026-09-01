@@ -263,7 +263,7 @@ describe('handleRpcLine: notifications', () => {
 // --- tools/list ----------------------------------------------------------------
 
 describe('handleRpcLine: tools/list', () => {
-  it('returns exactly the 10 engine tools, dir required on each, additionalProperties:false everywhere', async () => {
+  it('returns exactly the 13 engine tools, dir required on each, additionalProperties:false everywhere', async () => {
     const res = await rpc('{"jsonrpc":"2.0","id":9,"method":"tools/list"}');
 
     const names = (res.result.tools as Array<Record<string, any>>).map((t) => t.name);
@@ -278,6 +278,9 @@ describe('handleRpcLine: tools/list', () => {
       'lco_init',
       'lco_generate',
       'lco_change',
+      'lco_renew_status',
+      'lco_renew_export',
+      'lco_renew_analyze',
     ]);
     const requiredByName: Record<string, string[]> = {
       lco_compile: ['dir'],
@@ -290,6 +293,9 @@ describe('handleRpcLine: tools/list', () => {
       lco_init: ['dir'],
       lco_generate: ['dir', 'intent'],
       lco_change: ['dir', 'changeset'],
+      lco_renew_status: ['dir'],
+      lco_renew_export: ['dir'],
+      lco_renew_analyze: ['dir'],
     };
     for (const tool of res.result.tools as Array<Record<string, any>>) {
       expect(typeof tool.description).toBe('string');
@@ -1172,7 +1178,7 @@ describe('PROD-004 e2e: intent → draft → frozen → change, without a shell'
     const init = await rpc('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
     expect(init.result.serverInfo.name).toBe('lco-mcp');
     const listed = await rpc('{"jsonrpc":"2.0","id":2,"method":"tools/list"}');
-    expect((listed.result.tools as unknown[]).length).toBe(10);
+    expect((listed.result.tools as unknown[]).length).toBe(13);
 
     const root = freshRoot('spec-core-mcp-e2e-init-');
     const scaffolded = await callTool('lco_init', { dir: root, profile: 'p-mini', name: 'e2e-project' });
@@ -1326,7 +1332,7 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
 
       expect(byId.get(1)!.result.serverInfo).toEqual({ name: 'lco-mcp', version: '0.1.0' });
       const toolNames = (byId.get(2)!.result.tools as Array<{ name: string }>).map((t) => t.name);
-      expect(toolNames).toHaveLength(10);
+      expect(toolNames).toHaveLength(13);
       expect(new Set(toolNames)).toEqual(
         new Set([
           'lco_compile',
@@ -1339,6 +1345,9 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
           'lco_init',
           'lco_generate',
           'lco_change',
+          'lco_renew_status',
+          'lco_renew_export',
+          'lco_renew_analyze',
         ]),
       );
       expect(byId.get(3)!.result.isError).toBe(false);
@@ -2273,5 +2282,53 @@ describe('lco_generate llmProfile — the REAL per-role plan path (no injected a
     expect(text(res)).toContain('generated spec/');
     expect(text(res)).toContain('llm profile single-x');
     expect(seenModels).toEqual(['realplan-model']);
+  });
+});
+
+
+// --- lco_renew_* tools: read-only + PAID consent (STEP 11) ----------------------
+
+describe('renew MCP tools', () => {
+  it('status on a non-project fails closed with an actionable message', async () => {
+    const res = await callTool('lco_renew_status', { dir: freshRoot('renew-nonproject') });
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/not a renewal project|renew init/);
+  });
+
+  it('PAID analyze: missing consent → ZERO LLM calls, digest advertised', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    const dir = freshRoot('renew-consent');
+    const res = await callTool('lco_renew_analyze', { dir }, { llm, allowGenerate: true });
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/PAID operation and was NOT performed/);
+    expect(text(res)).toMatch(/sha256:[0-9a-f]{64}/);
+    expect(calls).toBe(0);
+  });
+
+  it('PAID analyze: wrong digest → ZERO LLM calls', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    const dir = freshRoot('renew-consent2');
+    const res = await callTool(
+      'lco_renew_analyze',
+      { dir, consent: { digest: `sha256:${'0'.repeat(64)}` } },
+      { llm, allowGenerate: true },
+    );
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/digest mismatch/);
+    expect(calls).toBe(0);
+  });
+
+  it('PAID analyze: server not opted in → ZERO LLM calls even WITH a valid digest', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    const dir = freshRoot('renew-consent3');
+    const { renewConsentDigest } = await import('./consent');
+    const digest = renewConsentDigest(dir, 'whole');
+    const res = await callTool('lco_renew_analyze', { dir, consent: { digest } }, { llm }); // no allowGenerate
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/LCO_MCP_ALLOW_GENERATE=1/);
+    expect(calls).toBe(0);
   });
 });

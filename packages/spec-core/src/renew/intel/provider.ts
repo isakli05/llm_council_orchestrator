@@ -117,9 +117,17 @@ export interface AffectedOptions {
  */
 export interface CodeIntelligenceProvider {
   probe(): Promise<IntelProbe>;
-  build(opts?: { force?: boolean }): Promise<
+  /**
+   * Build/refresh the graph. `workspaceRoot` is the LCO-owned directory the
+   * graph must live under (`<workspaceRoot>/graphify-out/graph.json`) — real
+   * adapters run their subprocess there; fixture providers materialize the
+   * committed graph there.
+   */
+  build(opts?: { force?: boolean; workspaceRoot?: string }): Promise<
     { ok: true } | IntelFailure
   >;
+  /** The parsed structural graph (defensive; renewal context derives from it). */
+  graph(): Promise<{ ok: true; graph: import('./graph-reader').ParsedGraph } | IntelFailure>;
   query(question: string, opts?: { budget?: number }): Promise<IntelItems>;
   path(a: string, b: string): Promise<IntelItems>;
   explain(node: string): Promise<IntelItems>;

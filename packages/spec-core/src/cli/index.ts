@@ -13,6 +13,22 @@ import { cmdCheck } from './commands/check';
 import { cmdDoctor, parseEnginesFloor } from './commands/doctor';
 import { cmdModels } from './commands/models';
 import { cmdGenerate, normalizeFileIntent } from './commands/generate';
+import {
+  cmdRenewInit,
+  cmdRenewRefresh,
+  cmdRenewStatus,
+  cmdRenewAnalyze,
+  cmdRenewReview,
+  cmdRenewPlan,
+  cmdRenewExport,
+  type RenewCapabilities,
+} from './commands/renew';
+import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
+import { renewalPaths } from '../renew/project/project';
+import { singleRoutePlan, type LlmPlan, type LlmRoute } from '../llm/plan';
+import { createHttpLlm } from '../eval/llm/http';
+import { buildRoleAdapter } from '../llm/providers';
+import { execFileSync, spawn } from 'node:child_process';
 import { cmdGenerateInteractive } from './commands/generate-interactive';
 import { parseArgs, commandHelp, USAGE } from './args';
 import type { RunBudgetSpec } from '../eval/budget';
@@ -279,6 +295,127 @@ export async function runCli(argv: string[]): Promise<number> {
       } else {
         console.log(result.output);
       }
+      return result.code;
+    }
+    case 'renew': {
+      // Legacy Renewal V1 (analysis + planning, NO execution). The boundary
+      // owns ALL env/file/clock/subprocess access; cores stay pure.
+      const r = parsed.renew;
+      const caps: RenewCapabilities = {
+        nowIso: () => new Date().toISOString(),
+        provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(r.dir).workspace }),
+        gitCommit: (root) => {
+          try {
+            return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', timeout: 5000 }).trim();
+          } catch {
+            return undefined;
+          }
+        },
+        ...(r.sub === 'analyze'
+          ? {
+              llm: () => {
+                // Named profile (must route renew_recover) or the legacy env —
+                // both fail closed; keys are never invented here.
+                if (r.llmProfile !== undefined) {
+                  let text: string;
+                  try {
+                    text = require('node:fs').readFileSync(join(r.dir, 'lco.config.json'), 'utf8');
+                  } catch (err) {
+                    throw new Error(`--llm-profile needs ${join(r.dir, 'lco.config.json')}: ${(err as Error).message}`);
+                  }
+                  const parsedConfig = parseLlmConfig(text);
+                  if (!('config' in parsedConfig)) {
+                    throw new Error(parsedConfig.error);
+                  }
+                  const resolved = resolveProfile(parsedConfig.config, r.llmProfile);
+                  if (!('resolved' in resolved)) {
+                    throw new Error(resolved.error);
+                  }
+                  const role = (resolved.resolved as unknown as { roles?: Record<string, unknown> }).roles?.['renew_recover'];
+                  if (role === undefined) {
+                    throw new Error(`llm profile '${r.llmProfile}' has no route for role 'renew_recover' (analyze made zero calls)`);
+                  }
+                  const roleCfg = role as { gateway?: string; model?: string; providerKind?: string };
+                  const adapter = buildRoleAdapter(role as never, process.env, { routingMode: resolved.resolved.routingMode });
+                  const plan: LlmPlan = {
+                    forRole: () => ({
+                      adapter,
+                      identity: {
+                        gateway: roleCfg.gateway ?? 'configured',
+                        providerKind: (roleCfg.providerKind ?? 'openai-compatible') as LlmRoute['identity']['providerKind'],
+                        requestedModel: roleCfg.model ?? 'configured',
+                      },
+                    }),
+                  };
+                  return plan;
+                }
+                return singleRoutePlan(createHttpLlm());
+              },
+            }
+          : {}),
+        ...(r.sub === 'review'
+          ? {
+              openBrowser: (url) => {
+                const cmd = process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+                const argv = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+                try {
+                  spawn(cmd, argv, { detached: true, stdio: 'ignore' }).unref();
+                } catch {
+                  /* URL is printed either way */
+                }
+              },
+            }
+          : {}),
+      };
+      let result;
+      switch (r.sub) {
+        case 'init':
+          result = await cmdRenewInit({ dir: r.dir, target: r.target, ...(r.name !== undefined ? { name: r.name } : {}) }, caps);
+          break;
+        case 'refresh':
+          result = await cmdRenewRefresh({ dir: r.dir }, caps);
+          break;
+        case 'status':
+          result = await cmdRenewStatus({ dir: r.dir, json: r.json }, caps);
+          break;
+        case 'analyze':
+          try {
+            result = await cmdRenewAnalyze({ dir: r.dir }, caps);
+          } catch (err) {
+            if (err instanceof Error && /^(LLM env|llm profile)/.test(err.message)) {
+              console.error(`lco: analyze failed: ${err.message}`);
+              return 2;
+            }
+            throw err;
+          }
+          break;
+        case 'review':
+          result = await cmdRenewReview(
+            {
+              dir: r.dir,
+              ...(r.answersFile !== undefined ? { answersPath: r.answersFile } : {}),
+              interactive: r.interactive,
+              noOpen: r.noOpen,
+            },
+            caps,
+          );
+          break;
+        case 'plan':
+          result = await cmdRenewPlan(
+            {
+              dir: r.dir,
+              ...(r.strategy !== undefined ? { strategy: r.strategy } : {}),
+              ...(r.strategyRationale !== undefined ? { strategyRationale: r.strategyRationale } : {}),
+              freeze: r.freeze,
+            },
+            caps,
+          );
+          break;
+        case 'export':
+          result = await cmdRenewExport({ dir: r.dir, ...(r.out !== undefined ? { out: r.out } : {}) }, caps);
+          break;
+      }
+      console.log(result.output);
       return result.code;
     }
     case 'generate': {

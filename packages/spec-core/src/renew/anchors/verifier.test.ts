@@ -134,7 +134,9 @@ describe('AnchorVerifier (recompute — never trust stored hashes)', () => {
     expect(r.all_ok).toBe(false);
     expect(r.results).toHaveLength(3);
     expect(r.results[0].ok).toBe(true);
-    expect(r.results[1].ok && r.results[1].code).toBe(false);
+    const second = r.results[1];
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.code).toBe('hash_mismatch');
     expect(r.results[2].ok).toBe(false);
   });
 });

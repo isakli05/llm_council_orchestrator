@@ -75,6 +75,7 @@ const CHECK_NAMES = [
   'spec',
   'bins',
   'schema',
+  'graphify',
 ] as const;
 
 /** The exact check order the human/JSON surfaces emit (pinned contract). */
@@ -93,7 +94,7 @@ describe('cmdDoctor: full flow', () => {
     expect(result.output).toContain('[provider-env] warn:');
     // ...and the exit contract holds: 0 = no FAIL, warn does not fail.
     expect(result.output).not.toContain(' fail:');
-    expect(result.output).toMatch(/doctor: 10 checks — /);
+    expect(result.output).toMatch(/doctor: 11 checks — /);
   });
 
   it('json mode -> exactly one parseable {checks, healthy} object, same order', async () => {

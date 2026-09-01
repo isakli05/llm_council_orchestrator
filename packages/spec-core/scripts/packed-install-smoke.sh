@@ -284,4 +284,18 @@ if [ -e "$SMOKE_DIR/spec" ] || [ -e "$SMOKE_DIR/approvals" ]; then
 fi
 say "interactive workspace: offline mock LLM, assets + session API + clean cancel — nothing written"
 
-say "PASS — packed-install smoke: pack -> install -> lco init -> lco-mcp handshake -> offline interactive workspace all green"
+# --- Legacy Renewal: offline surface must work WITHOUT Graphify installed in
+# this container (prerequisite probing happens per-project at renew time).
+RENEW_HELP=$("$LCO" renew --help 2>&1)
+case "$RENEW_HELP" in
+  *"renew"*) say "renew help ok" ;;
+  *) say "FAIL: lco renew --help did not mention renew"; exit 1 ;;
+esac
+RENEW_STATUS_CODE=$("$LCO" renew status "$SMOKE_DIR" >/dev/null 2>&1 && echo 0 || echo 1)
+if [ "$RENEW_STATUS_CODE" = "0" ]; then
+  say "FAIL: renew status on a non-project must fail closed, got exit 0"
+  exit 1
+fi
+say "renew offline: help present; status fails closed on non-projects without graphify"
+
+say "PASS — packed-install smoke: pack -> install -> lco init -> lco-mcp handshake -> offline interactive workspace + renewal offline surface all green"

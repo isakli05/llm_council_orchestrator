@@ -191,6 +191,10 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     return graph.ok ? { ok: true } : graph;
   }
 
+  async graph(): Promise<{ ok: true; graph: ParsedGraph } | IntelFailure> {
+    return this.loadGraph();
+  }
+
   async query(question: string): Promise<IntelItems> {
     const g = this.loadGraph();
     if (!g.ok) return g;

@@ -14,8 +14,8 @@ const Sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 
 export const RenewalDecisionSchema = z
   .object({
-    claim_id: z.string().regex(/^(UNC|OVL|STG)-\d{4}$/),
-    kind: z.enum(['uncertainty', 'overlay_review', 'strategy']),
+    claim_id: z.string().regex(/^(UNC|OVL|STG|PAR)-\d{4}$/),
+    kind: z.enum(['uncertainty', 'overlay_review', 'parity', 'strategy']),
     selected_option: z.string().min(1).max(500).optional(),
     free_text: z.string().min(1).max(4_000).optional(),
     evidence: z

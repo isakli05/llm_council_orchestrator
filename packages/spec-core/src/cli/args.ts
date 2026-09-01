@@ -152,6 +152,12 @@ commands:
                                -> exit 0; --json emits {"checks":[{name,status,
                                detail,remedy?}...],"healthy":bool}
   models --provider <name> [--config <path>] [--json] [--limit N]
+
+  renew <sub> <dir>            Legacy Renewal V1 (analysis + planning, no execution)
+                               init <dir> --target <repo> · refresh · status [--json] ·
+                               analyze (PAID — makes LLM calls) · review [--answers f |
+                               --interactive] · plan [--strategy s --strategy-rationale t]
+                               [--freeze] · export [--out f]
                                list a provider's CURRENT model catalogue (FREE
                                models endpoint only — one GET, no completion,
                                no retry). <name> is either a provider from
@@ -202,9 +208,10 @@ const COMMANDS = [
   'generate',
   'doctor',
   'models',
+  'renew',
 ] as const;
 type Command = (typeof COMMANDS)[number];
-type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate' | 'doctor' | 'models'>;
+type SingleDirCommand = Exclude<Command, 'change' | 'init' | 'plan' | 'check' | 'generate' | 'doctor' | 'models' | 'renew'>;
 type InitProfile = 'p-mini' | 'p-standard';
 type GenerateVariant = 'single' | 'council';
 
@@ -246,7 +253,17 @@ export type ParseResult =
       interactive?: boolean;
       /** Suppress opening the browser for --interactive (URL still printed). */
       noOpen?: boolean;
-    };
+    }
+  | { command: 'renew'; renew: RenewParsedArgs };
+
+export type RenewParsedArgs =
+  | { sub: 'init'; dir: string; target: string; name?: string }
+  | { sub: 'refresh'; dir: string }
+  | { sub: 'status'; dir: string; json: boolean }
+  | { sub: 'analyze'; dir: string; llmProfile?: string }
+  | { sub: 'review'; dir: string; answersFile?: string; interactive: boolean; noOpen: boolean }
+  | { sub: 'plan'; dir: string; strategy?: string; strategyRationale?: string; freeze: boolean }
+  | { sub: 'export'; dir: string; out?: string };
 
 export function parseArgs(argv: string[]): ParseResult {
   if (argv.length === 0) {
@@ -271,6 +288,9 @@ export function parseArgs(argv: string[]): ParseResult {
     // Same cast idiom as the SingleDirCommand return below: COMMANDS.includes
     // above guarantees the literal, but does not narrow `string` for TS.
     return { commandHelp: command as Command };
+  }
+  if (command === 'renew') {
+    return parseRenew(rest);
   }
   // doctor is the one command whose <dir> is OPTIONAL (defaults to the
   // current directory); models takes no dir at all — every other command
@@ -557,3 +577,63 @@ export function commandHelp(command: Command): string {
 }
 
 export { USAGE };
+
+
+const RENEW_SUBS = ['init', 'refresh', 'status', 'analyze', 'review', 'plan', 'export'] as const;
+
+function parseRenew(rest: string[]): ParseResult {
+  const err = (message: string): ParseResult => ({ error: message });
+  const [sub, dir, ...flags] = rest;
+  if (sub === undefined || !(RENEW_SUBS as readonly string[]).includes(sub)) {
+    return err(`renew requires a subcommand (${RENEW_SUBS.join(' | ')})`);
+  }
+  if (dir === undefined || dir === '' || dir.startsWith('--')) {
+    return err(`renew ${sub} requires the LCO project <dir> as its first argument (the analyzed repo is --target on init)`);
+  }
+  const flag = (name: string): string | undefined => {
+    const i = flags.indexOf(name);
+    return i >= 0 && i + 1 < flags.length ? flags[i + 1] : undefined;
+  };
+  const has = (name: string): boolean => flags.includes(name);
+  const known = new Set(['--target', '--name', '--json', '--llm-profile', '--answers', '--interactive', '--no-open', '--strategy', '--strategy-rationale', '--freeze', '--out']);
+  for (const f of flags) {
+    if (f.startsWith('--') && !known.has(f)) return err(`unknown flag for 'renew ${sub}': ${f}`);
+  }
+  switch (sub as (typeof RENEW_SUBS)[number]) {
+    case 'init': {
+      const target = flag('--target');
+      if (target === undefined) return err("renew init requires --target <legacy-repo> (the analyzed repository, read-only)");
+      return { command: 'renew', renew: { sub: 'init', dir, target, ...(flag('--name') !== undefined ? { name: flag('--name') } : {}) } };
+    }
+    case 'refresh':
+      return { command: 'renew', renew: { sub: 'refresh', dir } };
+    case 'status':
+      return { command: 'renew', renew: { sub: 'status', dir, json: has('--json') } };
+    case 'analyze':
+      return { command: 'renew', renew: { sub: 'analyze', dir, ...(flag('--llm-profile') !== undefined ? { llmProfile: flag('--llm-profile') } : {}) } };
+    case 'review':
+      return {
+        command: 'renew',
+        renew: {
+          sub: 'review',
+          dir,
+          ...(flag('--answers') !== undefined ? { answersFile: flag('--answers') } : {}),
+          interactive: has('--interactive'),
+          noOpen: has('--no-open'),
+        },
+      };
+    case 'plan':
+      return {
+        command: 'renew',
+        renew: {
+          sub: 'plan',
+          dir,
+          ...(flag('--strategy') !== undefined ? { strategy: flag('--strategy') } : {}),
+          ...(flag('--strategy-rationale') !== undefined ? { strategyRationale: flag('--strategy-rationale') } : {}),
+          freeze: has('--freeze'),
+        },
+      };
+    case 'export':
+      return { command: 'renew', renew: { sub: 'export', dir, ...(flag('--out') !== undefined ? { out: flag('--out') } : {}) } };
+  }
+}

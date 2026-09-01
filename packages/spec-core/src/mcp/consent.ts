@@ -426,6 +426,21 @@ export type GenerateVariant = 'single' | 'council';
  * impossible by construction: the payload shape differs from
  * checkPreviewDigest's, so no check digest can ever equal a generate digest.
  */
+/**
+ * Paid renewal analysis consent digest: binds the resolved {dir, scope,
+ * llmProfile?} — deliberately a DIFFERENT payload shape from generate/check,
+ * so no cross-tool digest replay is possible by construction.
+ */
+export function renewConsentDigest(
+  dir: string,
+  scope: string,
+  llmProfile?: string,
+): `sha256:${string}` {
+  return sha256Content(
+    JSON.stringify({ renew: 'analyze', dir, scope, ...(llmProfile !== undefined ? { llmProfile } : {}) }, null, 2),
+  );
+}
+
 export function generateConsentDigest(
   intent: string,
   profile: GenerateProfile,

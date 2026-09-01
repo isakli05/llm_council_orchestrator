@@ -43,7 +43,7 @@ class WalkFailure extends Error {
 export function buildGuardedCopy(
   targetRoot: string,
   copyRoot: string,
-  opts?: { limits?: IngestLimits },
+  opts?: { limits?: IngestLimits; copy?: boolean },
 ): WalkOutcome {
   if (!existsSync(targetRoot)) {
     return { ok: false, code: 'target_missing', message: `target repository not found: ${targetRoot}` };
@@ -112,6 +112,7 @@ export function buildGuardedCopy(
   }
 
   const manifest: FileManifest = [];
+  const doCopy = opts?.copy !== false;
   let totalBytes = 0;
   for (const f of found) {
     let size: number;
@@ -143,9 +144,11 @@ export function buildGuardedCopy(
           'Narrow the target or raise the ingest corpus cap.',
       };
     }
-    const dest = join(copyRoot, f.rel);
-    mkdirSync(dirname(dest), { recursive: true });
-    writeFileSync(dest, buf);
+    if (doCopy) {
+      const dest = join(copyRoot, f.rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, buf);
+    }
     manifest.push({ path: f.rel, sha256: `sha256:${createHash('sha256').update(buf).digest('hex')}` });
   }
 

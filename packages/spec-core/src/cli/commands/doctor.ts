@@ -792,6 +792,23 @@ export async function cmdDoctor(dir: string, opts: DoctorOptions): Promise<Docto
   await run('bins', () => checkBins(opts.packageRoot));
   await run('schema', () => checkSchemaFreshness(opts.packageRoot));
 
+  // Legacy Renewal prerequisite (informational for everyone else): the
+  // external pinned Graphify tool. Absent = WARN, never FAIL — non-renewal
+  // usage must not require Graphify.
+  await run('graphify', async () => {
+    const { GraphifyAdapter, SUPPORTED_GRAPHIFY_RANGE } = await import('../../renew/intel/graphify-adapter');
+    const probe = await new GraphifyAdapter({ workspaceRoot: dir }).probe();
+    if (probe.ok) {
+      return { name: 'graphify', status: 'ok', detail: `graphify ${probe.providerVersion} (supported ${SUPPORTED_GRAPHIFY_RANGE}) — renewal ready` };
+    }
+    return {
+      name: 'graphify',
+      status: 'warn',
+      detail: `graphify unavailable (${probe.code}): ${probe.message}`,
+      remedy: probe.hint ?? 'install graphify to use `lco renew` (other commands work without it)',
+    };
+  });
+
   const failed = checks.filter((c) => c.status === 'fail').length;
   const healthy = failed === 0;
   const code = healthy ? 0 : 1;
