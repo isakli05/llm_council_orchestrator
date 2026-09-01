@@ -17,6 +17,7 @@ describe('guardPath (default-deny ingest rules for untrusted target repos)', () 
     ]) {
       const v = guardPath(p);
       expect(v.include, p).toBe(false);
+      if (v.include) return;
       expect(v.reason, p).toBe('denied_pattern');
     }
   });
@@ -56,6 +57,7 @@ describe('guardPath (default-deny ingest rules for untrusted target repos)', () 
 
   it('reports the matched rule as detail', () => {
     const v = guardPath('config/.env.production');
+    if (v.include) throw new Error('expected deny');
     expect(v.detail).toMatch(/\.env/);
   });
 });

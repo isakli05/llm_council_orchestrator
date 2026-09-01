@@ -231,37 +231,98 @@
         "evidence": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "hash": {
+                    "$ref": "#/definitions/SpecBundle/properties/manifest/properties/evidence_snapshot/properties/pack_hash"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "code_anchor"
+                  },
+                  "anchor": {
+                    "type": "object",
+                    "properties": {
+                      "node_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1000
+                      },
+                      "content_hash": {
+                        "$ref": "#/definitions/SpecBundle/properties/manifest/properties/evidence_snapshot/properties/pack_hash"
+                      },
+                      "start_line": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      },
+                      "end_line": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "content_hash"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "id",
+                  "source",
+                  "hash",
+                  "kind",
+                  "anchor"
+                ],
+                "additionalProperties": false
               },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "user_input",
-                  "code",
-                  "runtime",
-                  "doc",
-                  "constraint"
-                ]
-              },
-              "source": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1000
-              },
-              "hash": {
-                "$ref": "#/definitions/SpecBundle/properties/manifest/properties/evidence_snapshot/properties/pack_hash"
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/SpecBundle/properties/assumptions/items/properties/evidence/items"
+                  },
+                  "source": {
+                    "$ref": "#/definitions/SpecBundle/properties/evidence/items/anyOf/0/properties/source"
+                  },
+                  "hash": {
+                    "$ref": "#/definitions/SpecBundle/properties/manifest/properties/evidence_snapshot/properties/pack_hash"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "user_input",
+                      "code",
+                      "runtime",
+                      "doc",
+                      "constraint"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "source",
+                  "hash",
+                  "kind"
+                ],
+                "additionalProperties": false
               }
-            },
-            "required": [
-              "id",
-              "kind",
-              "source",
-              "hash"
-            ],
-            "additionalProperties": false
+            ]
           },
           "maxItems": 100
         },
