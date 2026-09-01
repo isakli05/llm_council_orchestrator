@@ -746,12 +746,63 @@ spec/ + onaysız `approvals/APPR-NNNN.json` revizyon kayıtları. Sunucu
 `--answers` akışı değişmeden durur (iki ayrı cevap kanalı — bayraklar birlikte
 verilemez). Tam kılavuz: [docs/clarification-workspace.md](../../docs/clarification-workspace.md).
 
+## Legacy Renewal V1 (`lco renew`) — evidence-backed analysis & planning
+
+Legacy Renewal V1 turns a legacy repository into a validated, evidence-anchored
+**modernization spec** — analysis + planning only, **no execution** (no source
+modification, no patches, no shell against the target, no deployment; those are
+separate future programs). It is best described as *evidence-backed legacy
+application analysis and modernization planning* — not automated modernization.
+
+### Prerequisite (renewal only)
+
+[Graphify](https://github.com/Graphify-Labs/graphify) — an external, pinned,
+unmodified tool (supported range `>=0.9.50 <0.10.0`, audited against 0.9.50).
+Install it separately; `lco renew` probes it and fails closed with install
+instructions when absent or unsupported. **Every other `lco` command works
+without Graphify** (`lco doctor` reports it as an informational warn).
+
+### Commands (`lco renew <sub> <lco-project-dir>`)
+
+| command | cost | what it does |
+| --- | --- | --- |
+| `init <dir> --target <repo> [--name n]` | offline | snapshot + guarded workspace copy + graph build; the analyzed repo is NEVER written |
+| `refresh <dir>` | offline | re-snapshot + graph rebuild (the staleness remedy) |
+| `status <dir> [--json]` | offline | snapshot freshness w/ reasons, graph, analyses, open questions, overlay/parity, strategy, plan |
+| `analyze <dir> [--llm-profile n]` | **PAID** | recovery pipeline: schema-gated LLM hypotheses anchored to verified file hashes; hallucinated paths/stale hashes are rejected, never promoted |
+| `review <dir> --answers f \| --interactive` | free | human decisions in the browser clarification workspace (reused as-is) or headless; approvals are immutable `APPR-NNNN` records |
+| `plan <dir> [--strategy s --strategy-rationale t] [--freeze]` | offline | deterministic migration plan on TaskContract semantics; refuses stale state, missing human strategy, or unresolved parity; `--freeze` → frozen spec revision |
+| `export <dir> [--out f]` | offline | markdown report of validated state only |
+
+Strategy selection and every preserve/change/drop parity ruling are **human
+acts** (workspace or explicit flags — modeled as data, never autonomous).
+
+### Artifacts (LCO project dir; target repo untouched)
+
+```
+<lco-project>/spec/                  modernization spec (existing artifact spine)
+            approvals/APPR-NNNN.json immutable renewal approvals (0600)
+            .lco/renewal/{project,snapshot,overlay,parity,strategy}.json
+            .lco/renewal/analyses/AN-NNNN.json   immutable LLM analysis records
+            .lco/renewal/graph-workspace/        guarded copy + Graphify graph
+```
+
+### Trust model (short version)
+
+Deterministic structural facts come from the pinned Graphify graph; the target
+repo is untrusted input (default-deny ingest: `.env*`/keys never read, archives
+never expanded, size caps, symlink refusal, secret redaction before any prompt,
+all reads realpath-contained). Evidence hashes are RECOMPUTED — an evidence kind
+`code_anchor` verifies against the live tree or the claim is rejected. Analyze
+and plan refuse on stale snapshots with the `refresh` remedy. Paid MCP analysis
+requires the consent digest and makes **zero** LLM calls without it.
+
 ## `lco-mcp`: MCP Sunucusu
 
 `lco-mcp` (bin: `dist/mcp/server.js`), motoru Model Context Protocol istemcilerine
 açan minimal bir stdio sunucusudur: satır-ayrılmış JSON-RPC 2.0. CLI komutlarının saf
 çekirdeklerini (yazdırma yapmayan, yapılandırılmış sonuç döndüren) yeniden kullanır —
-davranış CLI ile birebir aynıdır. 10 araç:
+davranış CLI ile birebir aynıdır. 13 araç (10 motor + 3 yenileme):
 
 | araç | girdi | işlev |
 | --- | --- | --- |
@@ -765,6 +816,9 @@ davranış CLI ile birebir aynıdır. 10 araç:
 | `lco_init` | `{dir, profile?, name?}` | WORKING EXAMPLE spec/ iskeleti (draft/v1) — NO-CLOBBER: `dir/spec` varsa reddeder, diske dokunmaz; `lco init` çekirdeği |
 | `lco_generate` | `{dir, intent, variant?, profile?, consent?}` | intent → spec/ taslağı (ÜCRETLİ LLM çağrısı) — bkz. Ücretli Çağrı Rızası; `lco generate` çekirdeği + T4 kapıları |
 | `lco_change` | `{dir, changeset}` | changeset (CLI zarfı, satır içi nesne) uygula: önce-tam-aday-doğrula sonra-atomik-yaz; lint-invalid → reddetme, disk bayt-bayt aynı; `lco change` çekirdeği |
+| `lco_renew_status` | `{dir, json?}` | Yenileme durumu (DETERMINİSTİK, salt-okunur, LLM YOK) |
+| `lco_renew_export` | `{dir, out?}` | Modernizasyon raporu (deterministik; yeni analiz yapmaz) |
+| `lco_renew_analyze` | `{dir, scope?, llmProfile?, consent?}` | Yenileme analizi (ÜCRETLİ LLM çağrısı) — `LCO_MCP_ALLOW_GENERATE=1` + `consent.digest` = `renewConsentDigest(dir, scope, llmProfile?)`; rıza yoksa sıfır çağrı |
 
 Claude Code'a kaydetmek için (mutlak yol ile):
 
@@ -818,7 +872,7 @@ Notlar:
   `env` gibi yetenek-şekilli anahtarlar da isimle reddedilir (request kendi yetenisini
   kendi veremez — bunlar operatörün sunucu-sınırı durumudur).
 - El smoke'u (gerçek stdio): `initialize` → `serverInfo {name: "lco-mcp", version:
-  "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 10 araç;
+  "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 13 araç;
   `tools/call lco_check {dir}` → `isError: false`, ilk satır `DRY RUN — no commands
   executed; pass --yes to execute`. **id'siz** geçerli bildirimler sessizdir; id TAŞIYAN
   her geçerli istek yanıt alır (`notifications/*` bile — bilinen hiçbir işleyicisi
