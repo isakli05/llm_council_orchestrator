@@ -67,6 +67,15 @@ export type ChangeSetValidation =
  *    silent merges.
  */
 export function validateChangeSet(set: ReviewChangeSet, review: BehaviorReview): ChangeSetValidation {
+  if (set.changes.length === 0) {
+    return { ok: false, error: 'the change set is empty — select part of the review and describe a change first' };
+  }
+  if (set.changes.length > MAX_CHANGES_PER_SET) {
+    return {
+      ok: false,
+      error: `the change set carries ${set.changes.length} changes — the ceiling is ${MAX_CHANGES_PER_SET} per application`,
+    };
+  }
   if (set.reviewVersion !== review.reviewVersion) {
     return {
       ok: false,
