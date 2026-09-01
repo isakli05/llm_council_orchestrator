@@ -36,6 +36,9 @@ export const ContextItemSchema = z.discriminatedUnion('kind', [
       start_line: z.number().int().positive(),
       end_line: z.number().int().positive(),
       text: z.string(),
+      /** Whole-file canonical hash from the snapshot manifest — the anchor
+       * handle the recovery prompt exposes and the AnchorVerifier recomputes. */
+      content_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
       redactions: z.number().int().nonnegative(),
       provenance: z.literal('file-read'),
     })

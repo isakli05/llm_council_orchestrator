@@ -55,10 +55,12 @@ function parseLoc(loc: string | undefined): number | undefined {
 export class GraphContextProvider implements ContextProvider {
   private readonly limits: ContextLimits;
   private readonly manifestPaths: Set<string>;
+  private readonly manifestHashes: Map<string, string>;
 
   constructor(private readonly opts: GraphContextProviderOptions) {
     this.limits = { ...RENEW_CONTEXT_LIMITS, ...(opts.limits ?? {}) };
     this.manifestPaths = new Set(opts.manifest.map((f) => f.path));
+    this.manifestHashes = new Map(opts.manifest.map((f) => [f.path, f.sha256]));
   }
 
   contextFor(scope: AnalysisScope): ContextBundle {
@@ -226,6 +228,7 @@ export class GraphContextProvider implements ContextProvider {
         start_line: slice.startLine,
         end_line: slice.endLine,
         text,
+        content_hash: this.manifestHashes.get(path)!,
         redactions: redacted.count,
         provenance: 'file-read',
       });

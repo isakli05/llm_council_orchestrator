@@ -14,7 +14,13 @@ import type { ProviderKind } from './provider';
  * layer (llm-config.ts builds real plans; tests inject per-role spies).
  */
 
-export type LlmRole = 'single' | 'classifier' | 'proposal_a' | 'proposal_b' | 'judge';
+export type LlmRole =
+  | 'single'
+  | 'classifier'
+  | 'proposal_a'
+  | 'proposal_b'
+  | 'judge'
+  | 'renew_recover';
 
 /** Every role the current pipeline topologies can ask for. */
 export const LLM_ROLES: readonly LlmRole[] = [
@@ -23,6 +29,7 @@ export const LLM_ROLES: readonly LlmRole[] = [
   'proposal_a',
   'proposal_b',
   'judge',
+  'renew_recover',
 ] as const;
 
 export interface LlmRoute {
