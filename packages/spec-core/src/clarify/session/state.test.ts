@@ -81,6 +81,6 @@ describe('the session state machine (§22)', () => {
     expect(nextSessionState('CLARIFICATION_REQUIRED')).toEqual(['ANSWER_APPLYING', 'CANCELLED', 'FAILED']);
     expect(nextSessionState('APPROVED')).toEqual(['CHANGE_APPLYING']); // quiescent: exactly one exit
     const refused = nextSessionState('CANCELLED');
-    expect(refused.ok === false && refused.reason).toContain('terminal');
+    expect(!Array.isArray(refused) && refused.reason).toContain('terminal');
   });
 });

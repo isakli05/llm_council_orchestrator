@@ -338,7 +338,7 @@ describe('review change sets (appendix — multi-change transactions)', () => {
   });
 
   it('a stale change set is rejected transactionally (review unchanged)', async () => {
-    const { session, llm, review } = await atReview();
+    const { session, review } = await atReview();
     const stale = changeFor(review, 'Show live stock levels too.');
     stale.segmentContentHash = SHA; // wrong hash
     const r = await session.applyChangeSet({ reviewVersion: 1, changes: [stale] });
