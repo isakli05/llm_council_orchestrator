@@ -189,6 +189,46 @@ function buildLlmPlanFromProfile(resolved: ResolvedProfile, ledger: BudgetLedger
   };
 }
 
+/**
+ * The runtime every generate surface (headless + interactive) shares: profile/
+ * variant agreement, budget resolution, and fail-closed LLM resolution — the
+ * exact steps 0b/2/3 of cmdGenerate, extracted so the interactive command
+ * runs the SAME gates (behavior locked by generate.test.ts).
+ */
+export function resolveGenerationRuntime(
+  opts: Pick<GenerateOptions, 'variant' | 'llm' | 'llmProfile' | 'budget' | 'nowMs'>,
+): { topology: 'fused' | 'decomposed'; ledger: BudgetLedger; llm: LlmAdapter | LlmPlan } {
+  // --- 0b. profile/variant agreement (§7: explicit and predictable) -----------
+  const resolvedProfile = opts.llmProfile?.resolved;
+  if (resolvedProfile !== undefined && resolvedProfile.variant !== opts.variant) {
+    throw new Error(
+      `llm profile '${opts.llmProfile!.name}' declares variant '${resolvedProfile.variant}' but the ` +
+        `invocation says '--variant ${opts.variant}' — they must agree; drop --variant or pass a matching profile`,
+    );
+  }
+  const topology = resolvedProfile?.topology ?? 'fused';
+
+  // --- budget (UX-001; topology-aware envelope for decomposed) -----------------
+  const limits = resolveRunBudget(
+    opts.variant,
+    {
+      hasClock: opts.nowMs !== undefined,
+      overrides: opts.budget,
+    },
+    topology,
+  );
+  const ledger: BudgetLedger = createBudgetLedger(limits, { nowMs: opts.nowMs });
+
+  // --- LLM resolution (precedence: test injection > named profile > legacy env) -
+  const llm: LlmAdapter | LlmPlan =
+    opts.llm !== undefined
+      ? opts.llm
+      : resolvedProfile !== undefined
+        ? buildLlmPlanFromProfile(resolvedProfile, ledger)
+        : createHttpLlm(ledger);
+  return { topology, ledger, llm };
+}
+
 /** One per-role usage line (§13): gateway + requested model + honest tokens. */
 function roleUsageLine(role: string, r: RoleUsage): string {
   const who = `${role} [${r.gateway}/${r.requestedModel}`;
@@ -307,17 +347,7 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
   }
   const intent = normalized.intent;
 
-  // --- 0b. profile/variant agreement (§7: explicit and predictable) ------------
-  const resolvedProfile = opts.llmProfile?.resolved;
-  if (resolvedProfile !== undefined && resolvedProfile.variant !== opts.variant) {
-    throw new Error(
-      `llm profile '${opts.llmProfile!.name}' declares variant '${resolvedProfile.variant}' but the ` +
-        `invocation says '--variant ${opts.variant}' — they must agree; drop --variant or pass a matching profile`,
-    );
-  }
-  const topology = resolvedProfile?.topology ?? 'fused';
-
-  // --- 1. no-clobber (before anything else) ----------------------------------
+  // --- 1. no-clobber (BEFORE llm resolution, so a bad invocation costs nothing) --
   if (existsSync(join(dir, 'spec'))) {
     return {
       code: 2,
@@ -325,31 +355,12 @@ export async function cmdGenerate(dir: string, opts: GenerateOptions): Promise<G
     };
   }
 
-  // --- 2. run budget (UX-001; topology-aware envelope for decomposed) -----------
-  const limits = resolveRunBudget(
-    opts.variant,
-    {
-      hasClock: opts.nowMs !== undefined,
-      overrides: opts.budget,
-    },
-    topology,
-  );
-  const ledger: BudgetLedger = createBudgetLedger(limits, { nowMs: opts.nowMs });
-
-  // --- 3. LLM resolution --------------------------------------------------------
-  // Three paths, in precedence order:
-  //   a. opts.llm — the test/library injection (wins when present);
-  //   b. opts.llmProfile — named profile from lco.config.json: one adapter per
-  //      ROLE (multi-gateway heterogeneous councils), keys resolved BY NAME
-  //      from the environment (fail-closed; same deliberate env boundary as
-  //      createHttpLlm), all roles charging the SAME run ledger;
-  //   c. legacy: createHttpLlm() from LCO_LLM_* (unchanged default).
-  const llm: LlmAdapter | LlmPlan =
-    opts.llm !== undefined
-      ? opts.llm
-      : resolvedProfile !== undefined
-        ? buildLlmPlanFromProfile(resolvedProfile, ledger)
-        : createHttpLlm(ledger);
+  // --- 0b/2/3. runtime resolution (shared with --interactive; behavior locked) --
+  // Profile/variant agreement, budget, then fail-closed LLM resolution
+  // (test injection > named profile > legacy LCO_LLM_* env) — the shared
+  // helper runs the exact historical steps; generate.test.ts locks behavior.
+  const resolvedProfile = opts.llmProfile?.resolved;
+  const { topology, ledger, llm } = resolveGenerationRuntime(opts);
 
   // --- 4. the evidence-gate pipeline ------------------------------------------
   const outcome = await runPipeline(

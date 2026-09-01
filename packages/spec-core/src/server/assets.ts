@@ -14,15 +14,18 @@ import type { StaticAssets } from './http';
  * session); the session TOKEN never appears in any asset.
  */
 export function loadWorkspaceAssets(sessionId: string): StaticAssets {
-  const dir = join(__dirname, '../browser');
-  const htmlPath = join(dir, 'index.html');
-  const manifestPath = join(dir, 'asset-manifest.json');
-  if (!existsSync(htmlPath) || !existsSync(manifestPath)) {
+  // dist layout (packed install / built bin): dist/server -> dist/browser.
+  // src layout (vitest, whose pretest builds): src/server -> dist/browser.
+  const candidates = [join(__dirname, '../browser'), join(__dirname, '../../dist/browser')];
+  const dir = candidates.find((c) => existsSync(join(c, 'index.html')) && existsSync(join(c, 'asset-manifest.json')));
+  if (dir === undefined) {
     throw new Error(
-      `the browser workspace assets are missing under ${dir} — the installed package is incomplete ` +
-        '(expected dist/browser/index.html + asset-manifest.json from the package build)',
+      'the browser workspace assets are missing — the installed package is incomplete ' +
+        `(looked under ${candidates.join(' and ')}; expected index.html + asset-manifest.json from the package build)`,
     );
   }
+  const htmlPath = join(dir, 'index.html');
+  const manifestPath = join(dir, 'asset-manifest.json');
   const html = readFileSync(htmlPath, 'utf8').replace('__SESSION_ID__', sessionId);
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, string>;
   const files = new Map<string, { content: string; type: string }>();

@@ -80,6 +80,7 @@ commands:
                                [--variant single|council] [--profile p-mini|p-standard]
                                [--max-attempts N] [--max-tokens N] [--max-wall-ms N]
                                [--llm-profile <name>]
+                               [--answers <file>] [--interactive] [--no-open]
                                compile a natural-language intent into a spec/ draft via
                                a live LLM (requires LCO_LLM_BASE_URL, LCO_LLM_API_KEY and
                                LCO_LLM_MODEL env vars; fails closed without them).
@@ -93,6 +94,23 @@ commands:
                                judge; EXPERIMENTAL like all council generation).
                                Profile and --variant must agree; without the flag the
                                legacy LCO_LLM_* single-model path runs unchanged.
+                               --answers <file> applies ONE headless clarification
+                               round from a {"DEC-0000": "answer"} file (§12;
+                               CI/scripts/reproducible runs).
+                               --interactive opens the BROWSER clarification
+                               workspace instead: LCO asks its unresolved-business
+                               questions there (suggested options + consequence
+                               previews + your own rules), re-checks the spec
+                               after each round, shows a final Project Behavior
+                               Review you can annotate with change requests, and
+                               writes spec/ ONLY at your explicit approval
+                               (loopback-only local server; token in the URL
+                               fragment; nothing written on cancel/abandon;
+                               --no-open skips launching a browser and prints
+                               the URL). Mutually exclusive with --answers.
+                               Works with every variant/profile/topology —
+                               clarification is a product concern, not a
+                               provider concern.
                                Defaults: variant ${DEFAULT_GENERATE_VARIANT}, profile
                                p-standard — council is explicit (--variant council).
                                COST ENVELOPE (an HTTP attempt is a request, NOT a
@@ -224,6 +242,10 @@ export type ParseResult =
       llmProfile?: string;
       /** Answers file path for the clarification loop (§12); read at the runCli boundary. */
       answersFile?: string;
+      /** EXPLICIT opt-in to the browser clarification workspace (owner spec 2026-09-01 §3). */
+      interactive?: boolean;
+      /** Suppress opening the browser for --interactive (URL still printed). */
+      noOpen?: boolean;
     };
 
 export function parseArgs(argv: string[]): ParseResult {
@@ -407,6 +429,8 @@ export function parseArgs(argv: string[]): ParseResult {
     let sawBudgetFlag = false;
     let llmProfile: string | undefined;
     let answersFile: string | undefined;
+    let interactive = false;
+    let noOpen = false;
     const budgetFlag = (name: 'maxAttempts' | 'maxTokens' | 'maxWallMs', raw: string | undefined, flag: string): string | null => {
       const n = Number(raw);
       if (!Number.isInteger(n) || n <= 0) {
@@ -470,6 +494,10 @@ export function parseArgs(argv: string[]): ParseResult {
           return { error: 'missing value for --answers' };
         }
         answersFile = value;
+      } else if (flag === '--interactive') {
+        interactive = true;
+      } else if (flag === '--no-open') {
+        noOpen = true;
       } else {
         return { error: `unexpected argument for 'generate': ${flag}` };
       }
@@ -479,6 +507,11 @@ export function parseArgs(argv: string[]): ParseResult {
     }
     if (intent === undefined && intentFile === undefined) {
       return { error: 'missing intent: pass --intent <text> or --intent-file <path>' };
+    }
+    if (interactive && answersFile !== undefined) {
+      return {
+        error: '--interactive and --answers are two different answer channels: --interactive opens the browser workspace (many rounds, in-session), --answers applies one headless round from a file — pass exactly one',
+      };
     }
     return {
       command: 'generate',
@@ -490,6 +523,8 @@ export function parseArgs(argv: string[]): ParseResult {
       ...(sawBudgetFlag ? { budget } : {}),
       ...(llmProfile !== undefined ? { llmProfile } : {}),
       ...(answersFile !== undefined ? { answersFile } : {}),
+      ...(interactive ? { interactive: true } : {}),
+      ...(noOpen ? { noOpen: true } : {}),
     };
   }
   if (rest.length > 1) {

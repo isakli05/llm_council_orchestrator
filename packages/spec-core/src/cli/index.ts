@@ -13,6 +13,7 @@ import { cmdCheck } from './commands/check';
 import { cmdDoctor, parseEnginesFloor } from './commands/doctor';
 import { cmdModels } from './commands/models';
 import { cmdGenerate, normalizeFileIntent } from './commands/generate';
+import { cmdGenerateInteractive } from './commands/generate-interactive';
 import { parseArgs, commandHelp, USAGE } from './args';
 import type { RunBudgetSpec } from '../eval/budget';
 import { parseLlmConfig, resolveProfile } from '../config/llm-config';
@@ -369,6 +370,54 @@ export async function runCli(argv: string[]): Promise<number> {
       // fail-closed when LCO_LLM_* env is missing; a budget abort
       // (BudgetExceededError) lands here the same way: exit 2, nothing
       // written.
+      // §3/§43: --interactive routes to the browser clarification workspace —
+      // an EXPLICIT opt-in; the headless path above is unchanged. SIGINT cancels
+      // the session cleanly (nothing written) and exits 130.
+      if (parsed.interactive === true) {
+        let result;
+        let cancelSession: (() => void) | null = null;
+        const onSigint = (): void => {
+          cancelSession?.();
+          console.error('lco: interrupt — cancelling the clarification session; nothing was written');
+          process.exit(130);
+        };
+        process.on('SIGINT', onSigint);
+        try {
+          result = await cmdGenerateInteractive(parsed.dir, {
+            intent,
+            variant: parsed.variant,
+            profile: parsed.profile,
+            nowIso: () => new Date().toISOString(),
+            budget,
+            nowMs: () => Date.now(),
+            ...(llmProfile !== undefined ? { llmProfile } : {}),
+            ...(parsed.noOpen === true ? { noOpen: true } : {}),
+            onReady: (info) => {
+              // the server handle is reachable through the ready callback's
+              // closure: cancel by API so the session state machine stays the
+              // single writer of CANCELLED
+              cancelSession = () => {
+                void fetch(`${info.origin}/api/${info.sessionId}/cancel`, {
+                  method: 'POST',
+                  headers: { 'x-lco-session': info.token, 'content-type': 'application/json' },
+                  body: '{}',
+                }).catch(() => {
+                  // best effort: server gone = session gone with it
+                });
+              };
+            },
+            onEvent: (line) => console.log(`  · ${line}`),
+          });
+        } catch (err) {
+          console.error(`lco: generate --interactive failed: ${(err as Error).message}`);
+          return 2;
+        } finally {
+          process.off('SIGINT', onSigint);
+        }
+        console.log(result.output);
+        return result.code;
+      }
+
       let result;
       try {
         result = await cmdGenerate(parsed.dir, {
