@@ -181,6 +181,16 @@ export type PipelineOutcome =
 export interface PipelineOptions {
   topology?: CouncilTopology;
   answers?: UserAnswerForPrompt[];
+  /**
+   * Interactive-session prompt wrap (clarification workspace): applied INSIDE
+   * wrap() AFTER the user-answers appendix, so every prompt of the run (all
+   * stages, retries included) carries the caller's appendix verbatim.
+   * Undefined for every historical caller — single/fused/decomposed behavior
+   * and prompt bytes are unchanged without it. Used by the review change-set
+   * channel (lco-clarify/review-changes-v1); never a second spec engine: the
+   * wrap only APPENDS authoritative user evidence around the same templates.
+   */
+  extraPromptWrap?: (prompt: string) => string;
 }
 
 /** Classifier verdict shape (council call 1). */
@@ -488,7 +498,8 @@ export async function runPipeline(
   // future experiment freezes on this string, and old results can never be
   // silently re-scored under new prompts.
   const answers = opts?.answers ?? [];
-  const wrap = (p: string): string => withUserAnswers(p, answers);
+  const wrap = (p: string): string =>
+    opts?.extraPromptWrap !== undefined ? opts.extraPromptWrap(withUserAnswers(p, answers)) : withUserAnswers(p, answers);
   const promptProtocol =
     variant === 'council' && opts?.topology === 'decomposed'
       ? PROMPT_PROTOCOL_VERSION
