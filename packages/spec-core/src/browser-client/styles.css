@@ -1,0 +1,293 @@
+/* LCO Business Clarification Workspace — design tokens + screens.
+ *
+ * Direction (see plan §26 + frontend-design pass): a local, notary-grade
+ * decision workspace. Cool paper, blue-black ink, one deep-evergreen accent
+ * (approval-stamp ink), hairline rules, serif for the decision text (the
+ * hero), system sans for controls, mono for counters. The signature is the
+ * ANSWER STAMP and the honest progress language. Near-zero motion; the only
+ * animation is a 3-dot busy pulse that prefers-reduced-motion disables.
+ */
+
+:root {
+  --paper: #fafaf7;
+  --card: #ffffff;
+  --ink: #1c2430;
+  --ink-soft: #55607a;
+  --line: #e3e4dc;
+  --line-strong: #c9cbc2;
+  --accent: #2f5e50;
+  --accent-soft: #eef3f0;
+  --warn: #8a5a00;
+  --warn-soft: #faf3e3;
+  --focus-ring: 2px solid #2f5e50;
+  --radius: 10px;
+  --font-display: Georgia, 'Times New Roman', 'Noto Serif', serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+/* --- shell ------------------------------------------------------------------ */
+
+.workspace { max-width: 46rem; margin: 0 auto; padding: 0 1.25rem 4rem; }
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 1.1rem 0 0.9rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 1.6rem;
+}
+
+.brand { font-family: var(--font-display); font-size: 1.15rem; letter-spacing: 0.01em; }
+.brand-sub { color: var(--ink-soft); font-size: 0.85rem; margin-left: 0.6rem; }
+
+.eyebrow {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.quiet { color: var(--ink-soft); }
+.small { font-size: 0.85rem; }
+
+/* --- progress (honest language, no fake bars) -------------------------------- */
+
+.progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  margin-bottom: 1.2rem;
+}
+.progress-new { color: var(--warn); font-family: var(--font-ui); }
+.keyboard-hint { color: var(--ink-soft); font-size: 0.78rem; margin-left: auto; }
+
+/* --- cards + questions ------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.4rem 1.5rem 1.5rem;
+  box-shadow: 0 1px 2px rgba(28, 36, 48, 0.04);
+}
+
+.question-index {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin: 0 0 0.5rem;
+}
+
+.question-field { border: 0; padding: 0; margin: 0; }
+.question-field legend {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  line-height: 1.35;
+  padding: 0;
+  margin-bottom: 0.6rem;
+}
+
+.context { color: var(--ink-soft); margin: 0 0 1rem; }
+
+.options-label { margin: 0.6rem 0 0.4rem; font-size: 0.85rem; color: var(--ink-soft); }
+
+.option-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  margin: 0.5rem 0;
+  cursor: pointer;
+  min-height: 44px;
+  background: var(--card);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.option-card:hover { border-color: var(--accent); }
+.option-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.option-card:has(input:focus-visible) { outline: var(--focus-ring); outline-offset: 2px; }
+.option-radio input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); margin: 0.2rem 0 0; }
+.option-text { font-size: 1rem; }
+.other-card .option-text { color: var(--ink); font-style: normal; }
+
+.answer-text {
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--card);
+  margin: 0.4rem 0 0.8rem;
+  resize: vertical;
+}
+.answer-text:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+.extra-label { font-size: 0.85rem; color: var(--ink-soft); display: block; margin-top: 0.8rem; }
+
+/* the signature preview annotation */
+.preview {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 0.7rem 1rem 0.8rem;
+  margin-top: 1rem;
+}
+.preview-text { margin: 0.3rem 0 0; font-size: 0.97rem; }
+.preview-note { margin: 0.4rem 0 0; font-size: 0.85rem; color: var(--ink-soft); font-style: italic; }
+
+.unknowns { margin-top: 0.9rem; font-size: 0.9rem; color: var(--ink-soft); }
+.unknowns ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+
+.notice { border-radius: 8px; padding: 0.7rem 1rem; margin: 0.8rem 0; }
+.notice.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid #e7d9b8; }
+.notice.approved-banner { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line); }
+
+.field-error { color: #a33; font-size: 0.9rem; margin: 0.6rem 0 0; }
+.errors { color: #a33; border: 1px solid #e5c9c9; background: #fdf7f7; border-radius: 8px; padding: 0.7rem 1rem; }
+
+/* resolved answer stamp (the signature) */
+.status-answered > .question-index::after {
+  content: '✓ resolved';
+  display: inline-block;
+  margin-left: 0.7rem;
+  padding: 0.05rem 0.5rem;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transform: rotate(-2deg);
+}
+
+/* --- buttons ------------------------------------------------------------------ */
+
+.btn {
+  font: inherit;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 0.6rem 1.1rem;
+  min-height: 44px;
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: var(--card);
+  color: var(--ink);
+}
+.btn:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:disabled, .btn.approve:disabled { background: var(--line); border-color: var(--line); color: var(--ink-soft); cursor: not-allowed; }
+.btn.ghost { background: transparent; }
+.btn.approve { background: var(--accent); border-color: var(--accent); color: #fff; font-size: 1.05rem; }
+.btn.linklike { border: 0; background: none; color: var(--accent); text-decoration: underline; padding: 0.2rem 0.3rem; min-height: 0; font-weight: 500; }
+
+.nav-row { display: flex; gap: 0.7rem; align-items: center; margin-top: 1.2rem; flex-wrap: wrap; }
+.nav-row .primary { margin-left: auto; }
+
+/* --- review -------------------------------------------------------------------- */
+
+.review-title { font-family: var(--font-display); font-size: 1.6rem; margin: 0 0 0.4rem; }
+.review-intro { color: var(--ink-soft); max-width: 38rem; }
+.review-meta { display: flex; gap: 1rem; align-items: baseline; font-family: var(--font-mono); font-size: 0.85rem; }
+
+.review-doc { border-top: 2px solid var(--ink); margin-top: 1.4rem; }
+.review-section { padding: 1.1rem 0 0.6rem; border-bottom: 1px solid var(--line); }
+.review-section h3 {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 0 0 0.6rem;
+}
+.segment { position: relative; padding: 0.2rem 0 0.9rem; }
+.segment-title { font-weight: 600; margin: 0.4rem 0 0.1rem; }
+.segment-body { margin: 0.15rem 3.4rem 0.3rem 0; white-space: pre-line; }
+.segment .change-trigger { position: absolute; top: 0.2rem; right: 0; opacity: 0.55; }
+.segment:hover .change-trigger, .segment:focus-within .change-trigger { opacity: 1; }
+.priority { font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-soft); border: 1px solid var(--line); border-radius: 5px; padding: 0 0.35rem; }
+.priority.must { color: var(--accent); border-color: var(--accent); }
+
+.change-panel {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 1.1rem 1.3rem;
+  margin: 1.4rem 0;
+}
+.quoted { margin: 0.4rem 0 0.9rem; padding: 0.5rem 0.9rem; border-left: 3px solid var(--line-strong); color: var(--ink-soft); font-style: italic; }
+
+.pending-tray {
+  position: sticky;
+  bottom: 0;
+  margin-top: 1.6rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 1rem 1.3rem;
+  box-shadow: 0 -2px 12px rgba(28, 36, 48, 0.06);
+}
+.tray-head { font-weight: 700; margin: 0 0 0.4rem; }
+.pending-list { list-style: none; margin: 0.4rem 0; padding: 0; }
+.pending-item { border-top: 1px dashed var(--line-strong); padding: 0.55rem 0; }
+.pending-instruction { margin: 0 0 0.15rem; }
+.pending-actions { display: flex; gap: 0.8rem; }
+.approve-control { margin-top: 0.9rem; display: flex; gap: 0.8rem; align-items: center; flex-wrap: wrap; }
+
+.change-outcomes { list-style: none; padding: 0.6rem 1rem; border: 1px solid var(--line); border-radius: 8px; margin: 1rem 0; }
+.change-outcomes li { padding: 0.15rem 0; font-size: 0.92rem; }
+.change-outcome.incorporated { color: var(--accent); }
+.change-outcome.replaced, .change-outcome.needs_decisions { color: var(--warn); }
+
+.confirm { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius); padding: 1rem 1.2rem; margin-top: 1.2rem; }
+
+/* --- status screens -------------------------------------------------------------- */
+
+.screen.status { text-align: left; padding-top: 3rem; }
+.screen.status h2 { font-family: var(--font-display); font-size: 1.5rem; }
+.reasons { max-width: 40rem; color: var(--ink-soft); }
+.pulse { display: inline-flex; gap: 0.4rem; margin-bottom: 0.8rem; }
+.pulse span { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite ease-in-out; }
+.pulse span:nth-child(2) { animation-delay: 0.15s; }
+.pulse span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes pulse { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+
+/* --- responsive + a11y ------------------------------------------------------------- */
+
+:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
+
+@media (max-width: 560px) {
+  .workspace { padding: 0 0.9rem 3rem; }
+  .card { padding: 1.1rem 1rem 1.2rem; }
+  .keyboard-hint { display: none; }
+  .segment-body { margin-right: 0; }
+  .segment .change-trigger { position: static; display: inline-block; margin-top: 0.3rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
