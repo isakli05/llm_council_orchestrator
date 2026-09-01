@@ -478,6 +478,7 @@ export async function startClarifyServer(opts: ClarifyServerOptions): Promise<Cl
   })();
 
   // inactivity shutdown: no authenticated activity for the window → cancel + close
+  const sweepEvery = Math.min(inactivityMs, 30_000);
   const sweep = (): void => {
     if (closed) return;
     const now = opts.nowMs?.() ?? Date.now();
@@ -487,10 +488,10 @@ export async function startClarifyServer(opts: ClarifyServerOptions): Promise<Cl
       void close();
       return;
     }
-    inactivityTimer = setTimeout(sweep, Math.min(inactivityMs, 30_000));
+    inactivityTimer = setTimeout(sweep, sweepEvery);
     inactivityTimer.unref?.();
   };
-  inactivityTimer = setTimeout(sweep, 30_000);
+  inactivityTimer = setTimeout(sweep, sweepEvery);
   inactivityTimer.unref?.();
 
   async function close(): Promise<void> {

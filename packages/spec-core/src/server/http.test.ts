@@ -297,6 +297,49 @@ describe('the API lifecycle over real HTTP (fake adapter)', () => {
   });
 });
 
+describe('lifecycle + HEAD (§5/§30)', () => {
+  it('HEAD is served for HTML and assets without a body', async () => {
+    const head = await fetch(`${base}/`, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe('');
+    const headAsset = await fetch(`${base}/assets/app.js`, { method: 'HEAD' });
+    expect(headAsset.status).toBe(200);
+    expect(await headAsset.text()).toBe('');
+  });
+
+  it('inactivity cancels the session and closes the server (injected clock)', async () => {
+    let clock = 1_000_000;
+    const d = mkdtempSync(join(tmpdir(), 'lco-inact-'));
+    try {
+      const l = fakeLlm([JSON.stringify(blocked())]);
+      const session = createClarifySession({ intent: 'i', profile: 'p-mini', variant: 'single', nowIso: () => NOW, sessionId: 's-inact', dir: d, llm: l });
+      const h = await startClarifyServer({
+        session, sessionId: 's-inact', token: generateSessionToken(), assets: ASSETS,
+        inactivityMs: 50, nowMs: () => clock, // small window: the sweep (≤30s cadence) fires at once
+      });
+      await h.started;
+      // authenticated activity advances the clock baseline
+      await fetch(`${h.origin}/api/s-inact/session`, { headers: { 'x-lco-session': h.token } });
+      clock += 1_000; // past the inactivity window
+      await new Promise((r) => setTimeout(r, 400));
+      expect(session.snapshot().state).toBe('CANCELLED');
+      await h.close();
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('close() is idempotent and releases the port', async () => {
+    await handle.close();
+    await handle.close();
+    await new Promise<void>((resolve, reject) => {
+      const probe = net.connect(handle.port, '127.0.0.1');
+      probe.once('error', () => resolve()); // ECONNREFUSED = released
+      probe.once('connect', () => { probe.destroy(); reject(new Error('port still open')); });
+    });
+  });
+});
+
 describe('session events (§37)', () => {
   it('emits the observable lifecycle events (ids only, no free text)', async () => {
     const events: string[] = [];

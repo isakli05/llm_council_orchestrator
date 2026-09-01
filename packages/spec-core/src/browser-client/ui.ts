@@ -33,12 +33,3 @@ export function el<K extends keyof HTMLElementTagNameMap>(
 export function mount(host: HTMLElement, root: HTMLElement): void {
   host.replaceChildren(root);
 }
-
-/** Small-caps label used for eyebrows/annotations. */
-export function eyebrow(text: string): HTMLElement {
-  return el('span', { class: 'eyebrow' }, text);
-}
-
-export function clear(node: HTMLElement): void {
-  node.replaceChildren();
-}
