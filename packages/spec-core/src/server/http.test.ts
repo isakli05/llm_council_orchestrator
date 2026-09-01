@@ -359,6 +359,8 @@ describe('session events (§37)', () => {
       });
       await h2.close();
       expect(events).toContain('questions.presented:s-evt');
+      // F5 regression: exactly ONE presentation event per transition
+      expect(events.filter((e) => e.startsWith('questions.presented')).length).toBe(1);
       expect(events).toContain('answers.submitted:s-evt');
       expect(events).toContain('review.generated:s-evt');
       // no event payload ever carries the free-text answer

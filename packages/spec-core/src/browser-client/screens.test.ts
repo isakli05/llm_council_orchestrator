@@ -128,6 +128,22 @@ describe('questionnaire screen', () => {
     });
   });
 
+  it('F4 regression: an instruction typed BEFORE selecting an option is kept when the option is chosen', () => {
+    const screen = questionsScreen(snap());
+    const extra = document.getElementById('extra-DEC-0004') as HTMLTextAreaElement;
+    extra.value = 'Dealers imported from our ERP skip the queue.';
+    extra.dispatchEvent(new Event('input', { bubbles: true }));
+    // no radio is checked yet — typing alone drafts nothing for the option kind;
+    // selecting the option must pick up the LIVE textarea value
+    const radio = document.getElementById('opt-DEC-0004-0') as HTMLInputElement;
+    radio.checked = true;
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+    const last = screen.drafts[screen.drafts.length - 1]!;
+    expect(last.kind).toBe('option');
+    expect(last.selectedOption).toBe('first confirmed order gets priority');
+    expect(last.freeText).toBe('Dealers imported from our ERP skip the queue.');
+  });
+
   it('Other-only drafts the user rule as kind other', () => {
     const screen = questionsScreen(snap());
     const other = document.getElementById('other-DEC-0004') as HTMLInputElement;

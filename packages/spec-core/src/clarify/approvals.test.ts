@@ -210,6 +210,34 @@ describe('writeApprovalArtifacts (§21 + appendix: immutable revisions, atomic w
     expect(existsSync(join(dir, 'approvals'))).toBe(false);
   });
 
+  it('F1 regression: a FAILED re-approval leaves the live spec/ at the previously approved revision', () => {
+    const r1 = buildApprovalRecord({
+      bundle: bundle(), revision: 1, approvedAt: 't1', promptProtocol: 'p', rounds: 2,
+      sessionId: 's-1', answers: ANSWERS, changes: [],
+    });
+    writeApprovalArtifacts(dir, r1, { replacing: false });
+
+    const edited = bundle();
+    edited.requirements[0]!.statement = 'UNAPPROVED second-revision wording.';
+    const r2 = buildApprovalRecord({
+      bundle: edited, revision: 2, parentRevision: 1, approvedAt: 't2', promptProtocol: 'p', rounds: 3,
+      sessionId: 's-1', answers: ANSWERS, changes: [],
+    });
+    // force a failure AFTER the preconditions but BEFORE the spec swap: make
+    // approvals/ unwritable by replacing the directory with a file
+    rmSync(join(dir, 'approvals'), { recursive: true, force: true });
+    writeFileSync(join(dir, 'approvals'), 'not a directory');
+    expect(() => writeApprovalArtifacts(dir, r2, { replacing: true })).toThrow();
+
+    // the live spec still holds the APPROVED revision-1 content
+    const liveReq = JSON.parse(readFileSync(join(dir, 'spec', 'requirements.json'), 'utf8')) as { statement: string }[];
+    expect(liveReq[0]!.statement).toBe('Dealers can browse the catalogue.');
+    expect(existsSync(join(dir, 'approvals', 'APPR-0002.json'))).toBe(false);
+    // and no unapproved answers export replaced the approved one
+    const answersDoc = JSON.parse(readFileSync(join(dir, 'clarify-answers.json'), 'utf8')) as Record<string, string>;
+    expect(answersDoc['DEC-0004']).toBe(ANSWERS[0]!.answer);
+  });
+
   it('approval file naming is dense and ordered', () => {
     expect(approvalFileName(1)).toBe('APPR-0001.json');
     expect(approvalFileName(42)).toBe('APPR-0042.json');

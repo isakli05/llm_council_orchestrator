@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { existsSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sha256Content } from '../compiler/hash';
 import { SpecBundleSchema } from '../schemas';
@@ -157,23 +157,26 @@ export function writeApprovalArtifacts(
 ): void {
   const lock = acquireSpecRootLock(dir, record.approvedAt);
   const specDir = join(dir, 'spec');
-  const approvalPath = join(dir, 'approvals', approvalFileName(record.revision));
-  // Transactional rollback bookkeeping: a spec/ this call CREATED is removed
-  // again if a later step fails; a spec/ we refused to touch is never removed.
+  const approvalsDir = join(dir, 'approvals');
+  const approvalPath = join(approvalsDir, approvalFileName(record.revision));
+  const answersPath = join(dir, 'clarify-answers.json');
+  // Transactional ordering (adversarial review F1): the approval record and
+  // the answers export are written FIRST — new/replaceable artifacts whose
+  // failure paths cannot touch spec/ — and the spec/ write is the LAST, commit-
+  // point step. A failure before the commit point rolls back exactly what this
+  // call wrote (the record, the answers export, a spec/ this call created);
+  // the live spec/ never ends up holding content no approval record names.
   let createdSpec = false;
+  let answersWritten = false;
+  // prior state snapshot BEFORE any write: rollback restores exactly this
+  let priorAnswers: Buffer | null = null;
+  if (existsSync(answersPath)) {
+    priorAnswers = readFileSync(answersPath);
+  }
   try {
     if (opts.replacing) {
       if (!existsSync(specDir)) {
         throw new Error(`refusing to replace spec/ at ${specDir}: it does not exist (nothing to replace — first approval must not pass replacing:true)`);
-      }
-      swapFilesAtomically(specDir, [
-        ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: (record.bundle as unknown as Record<string, unknown>)[key] })),
-        ...(record.bundle.legacy !== undefined ? [{ name: 'legacy.json', content: record.bundle.legacy }] : []),
-      ]);
-      // A revision that no longer carries a legacy package must not leave the
-      // prior revision's legacy.json behind (compile reads it when present).
-      if (record.bundle.legacy === undefined && existsSync(join(specDir, 'legacy.json'))) {
-        unlinkSync(join(specDir, 'legacy.json'));
       }
     } else {
       if (existsSync(specDir)) {
@@ -181,29 +184,43 @@ export function writeApprovalArtifacts(
       }
       // writeSpecDir's exact write steps, INLINED because this function already
       // holds the spec-root lock (writeSpecDir acquires it — calling it here
-      // would self-deadlock). Same order, same guarantees: symlink check,
-      // no-clobber (twice — up front and again under the lock we hold), one
-      // staged-dir rename.
+      // would self-deadlock): symlink check, no-clobber under the lock we hold.
       assertNotSymlink(specDir, 'approval write target spec/');
-      mkdirSync(dir, { recursive: true });
-      if (existsSync(specDir)) {
-        throw new Error(`refusing to overwrite existing spec/ at ${specDir}: this session did not write it — remove it first or choose another directory`);
-      }
-      createDirAtomically(specDir, [
-        ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: (record.bundle as unknown as Record<string, unknown>)[key] })),
-        ...(record.bundle.legacy !== undefined ? [{ name: 'legacy.json', content: record.bundle.legacy }] : []),
-      ]);
-      createdSpec = true;
     }
 
-    const approvalsDir = join(dir, 'approvals');
+    // --- 1. the immutable approval record (new file; unlink on rollback) ----
     mkdirSync(approvalsDir, { recursive: true });
     swapFilesAtomically(approvalsDir, [{ name: approvalFileName(record.revision), content: record, mode: 0o600 }]);
 
+    // --- 2. the answers export (rollback restores the prior bytes) -----------
     swapFilesAtomically(dir, [{ name: 'clarify-answers.json', content: answersExportDocument(record.evidence.answers), mode: 0o600 }]);
+    answersWritten = true;
+
+    // --- 3. the spec/ write — THE commit point (nothing may follow) ----------
+    const sections = [
+      ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: (record.bundle as unknown as Record<string, unknown>)[key] })),
+      ...(record.bundle.legacy !== undefined ? [{ name: 'legacy.json', content: record.bundle.legacy }] : []),
+    ];
+    if (opts.replacing) {
+      swapFilesAtomically(specDir, sections);
+    } else {
+      mkdirSync(dir, { recursive: true });
+      if (existsSync(specDir)) {
+        throw new Error(`refusing to overwrite existing spec/ at ${specDir}: this session did not write it`);
+      }
+      createDirAtomically(specDir, sections);
+      createdSpec = true;
+    }
+    // A revision that no longer carries a legacy package must not leave the
+    // prior revision's legacy.json behind (compile reads it when present).
+    if (record.bundle.legacy === undefined && existsSync(join(specDir, 'legacy.json'))) {
+      unlinkSync(join(specDir, 'legacy.json'));
+    }
   } catch (err) {
     // A failed approval leaves no half-written artifacts behind: undo what THIS
-    // call created (never a pre-existing spec/, never a prior revision record).
+    // call wrote. The live spec/ is either untouched (failure before the commit
+    // point) or was fully created by this call (removed again) — never left
+    // holding unapproved content.
     if (createdSpec) {
       rmSync(specDir, { recursive: true, force: true });
     }
@@ -211,6 +228,17 @@ export function writeApprovalArtifacts(
       unlinkSync(approvalPath);
     } catch {
       // not written — nothing to undo
+    }
+    if (answersWritten) {
+      try {
+        if (priorAnswers !== null) {
+          writeFileSync(answersPath, priorAnswers, { mode: 0o600 });
+        } else {
+          unlinkSync(answersPath);
+        }
+      } catch {
+        // best-effort restore; the answers export is replay metadata, never spec content
+      }
     }
     throw err;
   } finally {

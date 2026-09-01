@@ -79,7 +79,7 @@ describe('the session state machine (§22)', () => {
 
   it('nextSessionState lists legal successors and refuses illegal ones with an actionable reason', () => {
     expect(nextSessionState('CLARIFICATION_REQUIRED')).toEqual(['ANSWER_APPLYING', 'CANCELLED', 'FAILED']);
-    expect(nextSessionState('APPROVED')).toEqual(['CHANGE_APPLYING']); // quiescent: exactly one exit
+    expect(nextSessionState('APPROVED')).toEqual(['CHANGE_APPLYING', 'CANCELLED']); // quiescent: change cycles or explicit end
     const refused = nextSessionState('CANCELLED');
     expect(!Array.isArray(refused) && refused.reason).toContain('terminal');
   });

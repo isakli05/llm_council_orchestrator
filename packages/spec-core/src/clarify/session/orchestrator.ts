@@ -234,6 +234,20 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
       reviewVersionCounter += 1;
       review = projectReview(outcome.bundle, reviewVersionCounter);
       promptProtocol = outcome.promptProtocol + protocolSuffix;
+      // F3/F6 (adversarial review): a question that did NOT resurface after a
+      // CLEAN round is moot (§13: no-longer-relevant questions do not stay
+      // mandatory) — whatever the record's prior status, the round's outcome
+      // (which the human now reviews and must explicitly approve) is its
+      // resolution. Records KEEP their stored answer/history; 'superseded'
+      // only means: no standing user evidence, resolved by the reviewed
+      // bundle. If the decision ever resurfaces later, it reopens.
+      for (const rec of records.values()) {
+        if (rec.status !== 'answered' && rec.status !== 'superseded') {
+          rec.status = 'superseded';
+        }
+      }
+      views = [];
+      lastNewlyDiscovered = 0;
       if (state === 'STARTING') transition('SPEC_READY');
       else transition('CLARIFICATION_COMPLETE'); // REVALIDATING
       transition('FINAL_REVIEW');
@@ -254,7 +268,6 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
     round = nextRound;
     const baseViews = questionViews(clarifications, round);
     const newlyDiscovered = baseViews.filter((v) => !records.has(v.claimId)).length;
-    records = mergeRoundRecords(records, baseViews, round);
     let currentViews = baseViews;
     let suffix = protocolSuffix;
     if (opts.enrich) {
@@ -267,6 +280,10 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
         // transport/output failure degrades to Layer-0 previews — answering is never blocked
       }
     }
+    // F2 (adversarial review): merge the ENRICHED views so enrichment-declared
+    // dependencies reach the DecisionRecords — staleness invalidation reads
+    // rec.dependsOn, and pre-enrichment views always carried [].
+    records = mergeRoundRecords(records, currentViews, round);
     views = attachStatuses(currentViews, records);
     lastNewlyDiscovered = newlyDiscovered;
     promptProtocol = (outcome.promptProtocol ?? promptProtocol) + suffix;
@@ -277,10 +294,16 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
 
   let lastNewlyDiscovered = 0;
 
-  /** Accumulated canonical evidence: latest answer per decision, in claim-id order. */
+  /**
+   * Accumulated canonical evidence: latest answer per decision, in claim-id
+   * order. STALE and CONTRADICTED answers are EXCLUDED until re-confirmed —
+   * the dependency changed (or the answer conflicted), so carrying the old
+   * text as authoritative verbatim evidence would silently keep a rule the
+   * user must reconsider (adversarial review F2).
+   */
   const accumulatedAnswers = (): UserAnswerForPrompt[] => {
     return [...records.values()]
-      .filter((rec) => rec.answer !== undefined)
+      .filter((rec) => rec.answer !== undefined && rec.status === 'answered')
       .sort((a, b) => (a.claimId < b.claimId ? -1 : 1))
       .map((rec) => answerToUserAnswer(rec.answer!, `clarify-web:${opts.sessionId}/round${rec.appliedRound ?? 1}`));
   };
@@ -361,15 +384,22 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
         // change evidence is authoritative user evidence for THIS and later rounds
         changeEvidenceLedger = [...changeEvidenceLedger, ...evidence];
         if (outcome.kind === 'spec' && candidate !== undefined) {
-          // outcome mapping BEFORE routing (routeOutcome projects the new review)
+          // Project the new review FIRST, then map per-change outcomes against
+          // BOTH the new bundle (canonical ids) and the new review (stable
+          // segment ids — glossary TERM segments have no canonical ref, so the
+          // same-segmentId-in-new-review check is their honest signal; review F7)
+          const newReview = projectReview(outcome.bundle, reviewVersionCounter + 1);
+          const newSegmentIds = new Set(newReview.sections.flatMap((sec) => sec.segments.map((seg) => seg.segmentId)));
           const outcomes: ChangeSetChangeOutcome[] = set.changes.map((c) => {
             const refs = segmentToCanonicalRefs(c.segmentId);
-            const present = refs.every((ref) => bundleHasId(outcome.bundle, ref));
+            const present = refs.length > 0
+              ? refs.every((ref) => bundleHasId(outcome.bundle, ref))
+              : newSegmentIds.has(c.segmentId);
             return {
               changeId: c.changeId,
               segmentId: c.segmentId,
               outcome: present ? 'incorporated' : 'replaced',
-              ...(present ? {} : { note: `the part you selected no longer exists in the new review — it was replaced; please read the updated document` }),
+              ...(present ? {} : { note: 'the part you selected no longer exists in the new review — it was replaced; please read the updated document' }),
             };
           });
           lastChangeOutcome = { reviewVersion: targetReview.reviewVersion, changes: outcomes };
@@ -411,6 +441,17 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
           error: `there are ${input.pendingChangeIds.length} pending change request(s) you have not applied yet (${input.pendingChangeIds.join(', ')}) — apply or delete them before approving`,
         };
       }
+      // F3 (adversarial review): the state machine's approval guard is "zero
+      // pending changes AND zero open questions" — enforce it. A decision the
+      // user was asked about may not be resolved without user evidence;
+      // superseded (moot) decisions are the documented exception (§13).
+      const unresolved = [...records.values()].filter((rec) => rec.status === 'open' || rec.status === 'stale' || rec.status === 'contradicted');
+      if (unresolved.length > 0) {
+        return {
+          ok: false,
+          error: `these decisions still need your answer before approval: ${unresolved.map((r) => r.claimId).join(', ')} — LCO does not approve resolutions without your evidence`,
+        };
+      }
       const revision = approvedCount + 1;
       const record = buildApprovalRecord({
         bundle: candidate,
@@ -433,14 +474,15 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
     cancel(reason: string): void {
       if (isTerminal(state)) return;
       failure = undefined;
-      state = 'CANCELLED'; // legal from every live state (table rows exist per live state)
+      transition('CANCELLED'); // through the table (F8): rows exist for every live/quiescent state
       void reason;
     },
 
     snapshot(): SessionSnapshot {
-      // 'resolved' = decisions the user HAS answered (an answer exists), even
-      // if a later round contradicted it — honest progress language (§15).
-      const resolved = [...records.values()].filter((r) => r.answer !== undefined).length;
+      // Honest progress language (§15, review F6): resolved = user-answered OR
+      // superseded-by-review; remaining counts only LIVE question views (an
+      // answered view is done; no stale view lingers at review — cleared there).
+      const resolved = [...records.values()].filter((r) => r.status === 'answered' || r.status === 'superseded').length;
       const remaining = views.filter((q) => q.status !== 'answered').length;
       return {
         sessionId: opts.sessionId,

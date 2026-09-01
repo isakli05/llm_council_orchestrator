@@ -95,11 +95,16 @@ function questionCard(state: ClientState, q: QuestionView, actions: QuestionActi
         'aria-describedby': selected ? `${previewId} ctx-${q.claimId}` : `ctx-${q.claimId}`,
         onchange: () => {
           const existing = state.drafts.get(q.claimId);
+          // the live textarea is the source of truth for the additional
+          // instruction: the user may type the note BEFORE selecting an
+          // option (review F4) — a stale draft must not discard it
+          const live = document.getElementById(`extra-${q.claimId}`) as HTMLTextAreaElement | null;
+          const freeText = live?.value ?? existing?.freeText ?? '';
           actions.onDraft({
             decisionId: q.claimId,
             kind: 'option',
             selectedOption: option.option,
-            ...(existing?.freeText !== undefined ? { freeText: existing.freeText } : {}),
+            ...(freeText.trim() !== '' ? { freeText } : {}),
           });
           // instant local preview (also covers hosts that do not re-render):
           // the preview text rides the question data, never a network call.

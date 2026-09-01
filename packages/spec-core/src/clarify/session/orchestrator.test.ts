@@ -210,7 +210,9 @@ describe('multi-round clarification (§14 — every round is explicit user actio
     let snap = session.snapshot();
     expect(snap.state).toBe('CLARIFICATION_REQUIRED');
     expect(snap.round).toBe(2);
-    expect(snap.progress).toEqual({ resolved: 1, remaining: 2, newlyDiscovered: 1 });
+    // honest progress (§15): the contradicted answer stands for nothing —
+    // resolved counts only standing answers (or moot-superseded decisions)
+    expect(snap.progress).toEqual({ resolved: 0, remaining: 2, newlyDiscovered: 1 });
     // DEC-0004 answered but resurfaced → contradicted
     const q4 = snap.questions.find((q) => q.claimId === 'DEC-0004')!;
     expect(q4.status).toBe('contradicted');
@@ -433,6 +435,110 @@ describe('approval (§21 — explicit, immutable baseline)', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('review');
     expect(existsSync(join(dir, 'spec'))).toBe(false);
+  });
+});
+
+describe('adversarial-review regressions (F2/F3/F6/F8)', () => {
+  const blocked2 = () => blockedBundle([
+    ['DEC-0004', 'Who gets the last fabric?'],
+    ['DEC-0007', 'Who may approve an order?'],
+  ]);
+
+  it('F2: enrichment-declared dependencies make stored answers STALE when the dependency changes, and stale evidence stops riding prompts', async () => {
+    const enrich = JSON.stringify({
+      items: [
+        { claimId: 'DEC-0004', options: [] },
+        { claimId: 'DEC-0007', options: [], dependsOn: ['DEC-0004'] },
+      ],
+    });
+    const blockedBoth = blockedBundle([
+      ['DEC-0004', 'Who gets the last fabric?'],
+      ['DEC-0007', 'Who may approve an order?'],
+    ]);
+    const blocked4only = blockedBundle([['DEC-0004', 'Who gets the last fabric? (re-asked)']]);
+    const blocked7only = blockedBundle([['DEC-0007', 'Who may approve an order? (confirm)']]);
+    const llm = scriptedLlm([
+      JSON.stringify(blockedBoth),  // round 1 generation: both questions
+      enrich,                        // round 1 enrichment: DEC-0007 dependsOn DEC-0004
+      JSON.stringify(blocked4only), // round 2 generation: only DEC-0004 resurfaces (contradicted)
+      enrich,                        // round 2 enrichment
+      JSON.stringify(blocked7only), // round 3 generation: DEC-0007 re-asked after the change
+    ]);
+    const session = createClarifySession({ ...OPTS, dir, llm, enrich: true });
+    await session.runInitialRound();
+    await session.submitAnswers([
+      { decisionId: 'DEC-0004', kind: 'other', freeText: 'First confirmed order gets priority, always.' },
+      { decisionId: 'DEC-0007', kind: 'other', freeText: 'Only supervisors may approve after hours.' },
+    ]);
+    // the user now CHANGES the (re-asked) DEC-0004 answer → DEC-0007, which
+    // enrichment declared dependent, must go STALE
+    const r = await session.submitAnswers([
+      { decisionId: 'DEC-0004', kind: 'other', freeText: 'Pre-paid dealers always win the fabric instead.' },
+    ]);
+    expect(r.ok).toBe(true);
+    const snap = session.snapshot();
+    const q7 = snap.questions.find((q) => q.claimId === 'DEC-0007');
+    expect(q7).toBeDefined();
+    expect(q7!.status).toBe('stale');
+    // the STALE answer must NOT ride the next round's GENERATION prompt
+    // (the enrichment prompt fires afterwards and carries no evidence at all)
+    const genPrompts = llm.calls.filter((c) => !c.includes('lco-clarify/enrich-v1'));
+    const round3Prompt = genPrompts[genPrompts.length - 1]!;
+    expect(round3Prompt).not.toContain('Only supervisors may approve after hours.');
+    // the standing (changed) answer DOES ride it
+    expect(round3Prompt).toContain('Pre-paid dealers always win the fabric instead.');
+  });
+
+  it('F3: a question the user never answered is SUPERSEDED by a clean re-run — approval legal, evidence ledger honest about it', async () => {
+    const llm = scriptedLlm([
+      JSON.stringify(blocked2()),   // round 1: two questions
+      JSON.stringify(bundle()),     // round 2: CLEAN although DEC-0007 was never answered (moot)
+    ]);
+    const session = createClarifySession({ ...OPTS, dir, llm });
+    await session.runInitialRound();
+    await session.submitAnswers([
+      { decisionId: 'DEC-0004', kind: 'other', freeText: 'First confirmed order gets priority, always.' },
+    ]);
+    const snap = session.snapshot();
+    expect(snap.state).toBe('FINAL_REVIEW');
+    expect(snap.progress.remaining).toBe(0);
+    // approval is explicit and legal — the human reviewed the bundle that resolved the moot decision
+    const ok = session.approve({ pendingChangeIds: [] });
+    expect(ok.ok).toBe(true);
+    // the evidence ledger is HONEST: no fabricated answer for DEC-0007
+    const record = JSON.parse(readFileSync(join(dir, 'approvals', 'APPR-0001.json'), 'utf8')) as {
+      evidence: { answers: { claimId: string }[] };
+    };
+    expect(record.evidence.answers.map((a) => a.claimId)).toEqual(['DEC-0004']);
+  });
+
+  it('F3/F6: a clean re-run SUPERSEDES questions that did not resurface (moot, §13) — approval legal, snapshot honest', async () => {
+    const llm = scriptedLlm([
+      JSON.stringify(blocked2()),   // round 1: two questions
+      JSON.stringify(bundle()),     // round 2: clean (DEC-0007 became moot via DEC-0004's answer)
+    ]);
+    const session = createClarifySession({ ...OPTS, dir, llm });
+    await session.runInitialRound();
+    await session.submitAnswers([
+      { decisionId: 'DEC-0004', kind: 'other', freeText: 'First confirmed order gets priority, always.' },
+    ]);
+    const snap = session.snapshot();
+    expect(snap.state).toBe('FINAL_REVIEW');
+    // no stale question views linger at review; progress shows nothing remaining
+    expect(snap.questions.filter((q) => q.status !== 'answered')).toHaveLength(0);
+    expect(snap.progress.remaining).toBe(0);
+    // the moot decision is approved openly: its bundle resolution is what the review shows
+    const ok = session.approve({ pendingChangeIds: [] });
+    expect(ok.ok).toBe(true);
+  });
+
+  it('F8: an APPROVED (quiescent) session can still be cancelled through the transition table', async () => {
+    const llm = scriptedLlm([JSON.stringify(bundle())]);
+    const session = createClarifySession({ ...OPTS, dir, llm });
+    await session.runInitialRound();
+    session.approve({ pendingChangeIds: [] });
+    session.cancel('owner closed the session');
+    expect(session.snapshot().state).toBe('CANCELLED');
   });
 });
 

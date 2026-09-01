@@ -72,6 +72,9 @@ const TRANSITIONS: readonly TransitionRule[] = [
   { from: 'CHANGE_APPLYING', to: 'FAILED', guard: 'regeneration failed; review stays at its previous version (transactional)' },
   { from: 'CHANGE_APPLYING', to: 'CANCELLED', guard: 'user cancelled mid-apply' },
   { from: 'APPROVED', to: 'CHANGE_APPLYING', guard: 'the owner requested further changes after approving — one more explicit cycle; the next approval creates revision N+1' },
+  { from: 'APPROVED', to: 'CANCELLED', guard: 'the owner explicitly ends an approved session (approval artifacts stay; nothing further is written)' },
+  { from: 'CLARIFICATION_COMPLETE', to: 'CANCELLED', guard: 'cancelled between completion and review' },
+  { from: 'SPEC_READY', to: 'CANCELLED', guard: 'cancelled before the first review was shown' },
 ];
 
 export function isTerminal(state: ClarifySessionState): boolean {

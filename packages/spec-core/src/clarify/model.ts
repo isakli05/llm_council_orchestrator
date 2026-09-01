@@ -37,8 +37,14 @@ export interface ClarificationOptionView {
   preview: { source: 'bundle' | 'enriched'; text: string };
 }
 
-/** A decision's live state within a session (§12/§13). */
-export type DecisionStatus = 'open' | 'answered' | 'contradicted' | 'stale';
+/** A decision's live state within a session (§12/§13).
+ *
+ * 'superseded' (adversarial review F3): a question that did NOT resurface
+ * after a round completed clean — the round's outcome made it moot (§13:
+ * questions that are no longer relevant do not stay mandatory). It carries no
+ * user answer; its resolution is whatever the (human-reviewed) bundle says.
+ */
+export type DecisionStatus = 'open' | 'answered' | 'contradicted' | 'stale' | 'superseded';
 
 /** Presentation-ready question — extends the runner's distilled question. */
 export interface ClarificationQuestionView {
@@ -217,12 +223,13 @@ export function mergeRoundRecords(records: DecisionRecords, views: Clarification
     const existing = next.get(v.claimId);
     if (existing === undefined) {
       next.set(v.claimId, { claimId: v.claimId, firstSeenRound: round, status: 'open', dependsOn: v.dependsOn });
+    } else if (existing.status === 'answered') {
+      next.set(v.claimId, { ...existing, dependsOn: v.dependsOn, status: 'contradicted' });
+    } else if (existing.status === 'superseded') {
+      // a superseded (moot) question RESURFACING is a real open question again
+      next.set(v.claimId, { ...existing, dependsOn: v.dependsOn, status: 'open' });
     } else {
-      next.set(v.claimId, {
-        ...existing,
-        dependsOn: v.dependsOn,
-        ...(existing.status === 'answered' ? { status: 'contradicted' as const } : {}),
-      });
+      next.set(v.claimId, { ...existing, dependsOn: v.dependsOn });
     }
     // 'open' stays open; 'stale'/'contradicted' keep their conflict semantics.
   }

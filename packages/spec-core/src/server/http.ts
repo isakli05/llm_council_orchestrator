@@ -131,11 +131,8 @@ export async function startClarifyServer(opts: ClarifyServerOptions): Promise<Cl
 
   /** Diff two snapshots into structured events (ids/counts only). */
   const emitDelta = (before: SessionSnapshot, after: SessionSnapshot): void => {
-    if (before.state === 'STARTING' && after.state === 'CLARIFICATION_REQUIRED') {
-      emit('questions.presented', { questions: after.questions.length });
-    }
     if (after.state === 'CLARIFICATION_REQUIRED' && before.state !== after.state) {
-      emit('questions.presented', { questions: after.questions.length });
+      emit('questions.presented', { questions: after.questions.length }); // once per transition (review F5)
     }
     if (after.progress.newlyDiscovered > 0 && after.state === 'CLARIFICATION_REQUIRED') {
       emit('clarification.discovered', { count: after.progress.newlyDiscovered });
