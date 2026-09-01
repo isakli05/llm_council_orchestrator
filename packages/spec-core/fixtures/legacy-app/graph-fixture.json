@@ -1,0 +1,290 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "built_at_commit": "fixture",
+  "hyperedges": [],
+  "nodes": [
+    {
+      "id": "src_main",
+      "label": "main.ts",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "main",
+      "source_file": "src/main.ts"
+    },
+    {
+      "id": "src_orders",
+      "label": "orders.ts",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "orders",
+      "source_file": "src/orders.ts"
+    },
+    {
+      "id": "src_inventory",
+      "label": "inventory.ts",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "inventory",
+      "source_file": "src/inventory.ts"
+    },
+    {
+      "id": "src_pricing",
+      "label": "pricing.ts",
+      "_origin": "ast",
+      "community": 1,
+      "community_name": "pricing",
+      "file_type": "code",
+      "norm_label": "pricing",
+      "source_file": "src/pricing.ts"
+    },
+    {
+      "id": "src_main_run",
+      "label": "run",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "run",
+      "source_file": "src/main.ts",
+      "source_location": "L16"
+    },
+    {
+      "id": "src_orders_createorder",
+      "label": "createOrder",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "createorder",
+      "source_file": "src/orders.ts",
+      "source_location": "L21"
+    },
+    {
+      "id": "src_orders_saveorder",
+      "label": "saveOrder",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "saveorder",
+      "source_file": "src/orders.ts",
+      "source_location": "L35"
+    },
+    {
+      "id": "src_inventory_checkstock",
+      "label": "checkStock",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "checkstock",
+      "source_file": "src/inventory.ts",
+      "source_location": "L13"
+    },
+    {
+      "id": "src_inventory_decrementstock",
+      "label": "decrementStock",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "orders",
+      "file_type": "code",
+      "norm_label": "decrementstock",
+      "source_file": "src/inventory.ts",
+      "source_location": "L17"
+    },
+    {
+      "id": "src_pricing_priceorder",
+      "label": "priceOrder",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 1,
+      "community_name": "pricing",
+      "file_type": "code",
+      "norm_label": "priceorder",
+      "source_file": "src/pricing.ts",
+      "source_location": "L31"
+    },
+    {
+      "id": "src_pricing_applydiscount",
+      "label": "applyDiscount",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 1,
+      "community_name": "pricing",
+      "file_type": "code",
+      "norm_label": "applydiscount",
+      "source_file": "src/pricing.ts",
+      "source_location": "L21"
+    }
+  ],
+  "links": [
+    {
+      "source": "src_main",
+      "target": "src_main_run",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "contains",
+      "source_file": "src/main.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_orders",
+      "target": "src_orders_createorder",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "contains",
+      "source_file": "src/orders.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_orders",
+      "target": "src_orders_saveorder",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "contains",
+      "source_file": "src/orders.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_inventory",
+      "target": "src_inventory_checkstock",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "contains",
+      "source_file": "src/inventory.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_inventory",
+      "target": "src_inventory_decrementstock",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "contains",
+      "source_file": "src/inventory.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_pricing",
+      "target": "src_pricing_priceorder",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "contains",
+      "source_file": "src/pricing.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_pricing",
+      "target": "src_pricing_applydiscount",
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "contains",
+      "source_file": "src/pricing.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_main",
+      "target": "src_orders",
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "import",
+      "source_file": "src/main.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_main",
+      "target": "src_pricing",
+      "relation": "imports",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "import",
+      "source_file": "src/main.ts",
+      "weight": 1.0
+    },
+    {
+      "source": "src_main_run",
+      "target": "src_orders_createorder",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "src/main.ts",
+      "source_location": "L20",
+      "weight": 1.0
+    },
+    {
+      "source": "src_orders_createorder",
+      "target": "src_pricing_priceorder",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "src/orders.ts",
+      "source_location": "L28",
+      "weight": 1.0
+    },
+    {
+      "source": "src_orders_createorder",
+      "target": "src_inventory_checkstock",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "src/orders.ts",
+      "source_location": "L24",
+      "weight": 1.0
+    },
+    {
+      "source": "src_orders_createorder",
+      "target": "src_orders_saveorder",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "src/orders.ts",
+      "source_location": "L32",
+      "weight": 1.0
+    },
+    {
+      "source": "src_pricing_priceorder",
+      "target": "src_pricing_applydiscount",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "src/pricing.ts",
+      "source_location": "L39",
+      "weight": 1.0
+    },
+    {
+      "source": "src_orders_saveorder",
+      "target": "src_inventory_decrementstock",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "src/orders.ts",
+      "source_location": "L40",
+      "weight": 1.0
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "orders-crm",
+  "version": "1.4.2",
+  "description": "Legacy order-handling module (renewal test fixture)",
+  "private": true
+}
