@@ -90,7 +90,9 @@ function questionCard(state: ClientState, q: QuestionView, actions: QuestionActi
         name: q.claimId,
         value: option.option,
         ...(selected ? { checked: true } : {}),
-        'aria-describedby': `${previewId} ctx-${q.claimId}`,
+        // the preview describes the SELECTED option only — attaching it to
+        // every radio would read the same preview once per option (a11y noise)
+        'aria-describedby': selected ? `${previewId} ctx-${q.claimId}` : `ctx-${q.claimId}`,
         onchange: () => {
           const existing = state.drafts.get(q.claimId);
           actions.onDraft({
@@ -99,6 +101,8 @@ function questionCard(state: ClientState, q: QuestionView, actions: QuestionActi
             selectedOption: option.option,
             ...(existing?.freeText !== undefined ? { freeText: existing.freeText } : {}),
           });
+          // instant local preview (also covers hosts that do not re-render):
+          // the preview text rides the question data, never a network call.
           renderPreview(previewNode, q, option.option, state.drafts.get(q.claimId));
           previewNode.removeAttribute('hidden');
         },
@@ -123,7 +127,7 @@ function questionCard(state: ClientState, q: QuestionView, actions: QuestionActi
     onchange: () => {
       const existing = state.drafts.get(q.claimId);
       actions.onDraft({ decisionId: q.claimId, kind: 'other', freeText: existing?.freeText ?? '' });
-      previewNode.setAttribute('hidden', '');
+      // the re-render hides the option preview (kind 'other'); keep typing focus here
       const area = document.getElementById(`other-text-${q.claimId}`) as HTMLTextAreaElement | null;
       area?.focus();
     },
