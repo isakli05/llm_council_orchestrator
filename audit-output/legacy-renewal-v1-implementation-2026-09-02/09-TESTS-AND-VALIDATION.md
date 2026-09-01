@@ -1,0 +1,7 @@
+# 09 — Tests & Validation
+
+Final suite: **1822 tests / 133 files, 1822 passed** (`pnpm --filter ./packages/spec-core test`); lint clean (both tsconfigs); build clean; packed-install smoke PASS. Baseline at branch point: 1602/1602 — zero regressions; existing clarification/spec suites untouched except two PINNED-CONTRACT updates that legitimately evolve with the surface: doctor check list (10→11 with `graphify`) and MCP tool inventory (10→13 with the three `lco_renew_*`).
+
+Per-step gates (all green): intel 58 (incl. REAL pinned-graphify integration: probe/offline build/health/god-nodes/affected + CLI cross-check + workspace-only writes); ingest+snapshot 35 (determinism, idempotence, symlink/escape/caps, staleness codes, manifest-digest stability); anchors+evidence 17+ (backward-compat sweep incl. all good/bad fixtures); context 15 (determinism, provenance, containment, redaction, caps); archview 9 (stability, structural-only, honest coverage); recovery 29 (valid/retry/blocked/hallucinated/stale/injection/budget/usage-honesty/exhaustion); overlay 12; clarify 20 + real-server round-trip; parity 13; planner 16; e2e journey 2 (full workflow + zero-calls); adversarial 2 (consolidated cross-cutting); MCP renew tools 4 (containment-style refusal + three zero-call consent cases).
+
+LLM tests use scripted adapters that THROW when exhausted — no routine test makes a paid call; the only real graphify executions live in the designated integration suite (skipIf absent, documented CI expectation).
