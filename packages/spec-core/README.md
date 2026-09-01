@@ -732,6 +732,20 @@ operator-configured `lco.config.json` (server start: `LCO_LLM_CONFIG` path or
 keys, base URLs, or headers — those argument shapes are refused by name
 (SSRF/credential/spend control); gateway selection is operator configuration.
 
+## Interactive Clarification Workspace (browser, `--interactive`)
+
+`lco generate <dir> --intent "…" --interactive` açtığınız yerel tarayıcıda
+işletilen **İş Netleştirme Çalışma Alanı**'dır: kanıt kapısı bir iş kararının
+eksik olduğunu tespit ettiğinde uydurmak yerine sorar — önerilen seçenekler,
+anlık sonuç önizlemeleri, kendi kuralınız (Other), her turdan sonra yeniden
+doğrulama; sonra iş dilinde bir **Davranış Değerlendirmesi**, üzerinde
+değişiklik isteyebileceğiniz karar blokları ve yalnızca açık onayınızda yazılan
+spec/ + onaysız `approvals/APPR-NNNN.json` revizyon kayıtları. Sunucu
+**yalnızca 127.0.0.1**'e bağlanır; oturum anahtarı URL fragment'ında taşınır
+(sunucuya asla gönderilmez); iptal/terk durumunda hiçbir şey yazılmaz.
+`--answers` akışı değişmeden durur (iki ayrı cevap kanalı — bayraklar birlikte
+verilemez). Tam kılavuz: [docs/clarification-workspace.md](../../docs/clarification-workspace.md).
+
 ## `lco-mcp`: MCP Sunucusu
 
 `lco-mcp` (bin: `dist/mcp/server.js`), motoru Model Context Protocol istemcilerine

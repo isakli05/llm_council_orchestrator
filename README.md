@@ -82,6 +82,15 @@ endpoint and **fails closed** unless these are set explicitly:
 | `LCO_LLM_MAX_TOKENS` | no | Positive-integer generation cap |
 | `LCO_LLM_EXTRA_BODY` | no | JSON object merged last into the request body |
 
+**Interactive clarification (browser):** add `--interactive` to `lco generate`
+and unresolved business decisions become a guided browser questionnaire —
+suggested options with instant consequence previews, your own rules,
+multi-round re-checking, a final Project Behavior Review you can annotate with
+change requests, and explicit approval that records an immutable spec revision.
+Loopback-only local server; nothing is written until you approve. Headless
+CI/scripts keep using `--answers`. Full guide:
+[docs/clarification-workspace.md](docs/clarification-workspace.md).
+
 **Multi-provider (named profiles):** OpenRouter, Abacus RouteLLM, and any
 OpenAI-compatible gateway are first-class via `lco.config.json` — providers
 keyed by env-var **name** (secrets never in the config) and per-role council
