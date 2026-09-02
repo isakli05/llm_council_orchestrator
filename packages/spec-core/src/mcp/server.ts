@@ -19,7 +19,7 @@ import {
 } from '../cli/commands/generate';
 import { cmdChange } from '../cli/commands/change';
 import type { ChangeSet } from '../compiler/changeset';
-import { checkMcpDir, effectiveMcpRoot } from '../storage/paths';
+import { checkMcpDir, effectiveMcpRoot, isInside, tryRealpath, type EffectiveMcpRoot } from '../storage/paths';
 import {
   authorizeExecution,
   checkPreviewDigest,
@@ -41,10 +41,11 @@ import {
 import type { LlmAdapter } from '../eval/llm/adapter';
 import { cmdRenewStatus, cmdRenewExport, cmdRenewAnalyze, type RenewCapabilities } from '../cli/commands/renew';
 import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
-import { renewalPaths } from '../renew/project/project';
+import { renewalPaths, loadRenewalProject } from '../renew/project/project';
 import { singleRoutePlan } from '../llm/plan';
 import { createHttpLlm } from '../eval/llm/http';
 import { renewConsentDigest } from './consent';
+import { RECOVERY_PROMPT_PROTOCOL } from '../renew/recovery/prompts';
 import { createBudgetLedger } from '../eval/budget';
 import { execFileSync } from 'node:child_process';
 import { parseLlmConfig, resolveProfile } from '../config/llm-config';
@@ -210,12 +211,19 @@ function defaultRenewalBudget(): { maxAttempts: number; maxWallMs: number } {
 }
 
 /**
- * H-10: the read-only state the paid consent digest binds: the normalized
- * project root, the ACTIVE snapshot id, and the structural graph digest.
- * (Profile/model fingerprints are added by the caller when a profile routes
- * the call.)
+ * H-10 + S2-H-02 (INV-F2): the read-only state the paid consent digest binds:
+ * the normalized project root, the ACTIVE snapshot id, the structural graph
+ * digest, AND the EFFECTUAL LLM route — when a named profile routes the call
+ * its config fingerprint and the resolved renew_recover model are resolved
+ * BEFORE the digest (different model configs under one profile name must
+ * advertise different digests); the legacy-env route binds the env-resolved
+ * model when present. The digest additionally binds the recovery prompt
+ * protocol and the budget envelope at the call site.
  */
-async function renewalConsentState(dir: string): Promise<{
+async function renewalConsentState(
+  dir: string,
+  opts?: { llmProfile?: string; resolveProfile?: (name: string) => { ok: true; profile: { name: string; resolved: ResolvedProfile } } | { ok: false; output: string } },
+): Promise<{
   dirReal: string;
   snapshotId?: string;
   graphDigest?: string;
@@ -226,12 +234,12 @@ async function renewalConsentState(dir: string): Promise<{
   let snapshotId: string | undefined;
   let graphDigest: string | undefined;
   try {
-    const { loadRenewalProject, loadSnapshotFile, renewalPaths: paths } = await import('../renew/project/project');
+    const { loadSnapshotFile } = await import('../renew/project/project');
     const p = loadRenewalProject(dir);
     if (p.ok) {
       const snap = loadSnapshotFile(dir);
       if (snap.ok) snapshotId = snap.snapshot.snapshot_id;
-      const graphPath = join(paths(dir).workspace, 'graphify-out', 'graph.json');
+      const graphPath = join(renewalPaths(dir).workspace, 'graphify-out', 'graph.json');
       try {
         graphDigest = `sha256:${createHash('sha256').update(readFileSync(graphPath)).digest('hex')}`;
       } catch {
@@ -241,7 +249,71 @@ async function renewalConsentState(dir: string): Promise<{
   } catch {
     // unresolvable state digests without it — consent stays root-bound only.
   }
-  return { dirReal, snapshotId, graphDigest };
+  let profileFingerprint: string | undefined;
+  let resolvedModel: string | undefined;
+  if (opts?.llmProfile !== undefined && opts.resolveProfile !== undefined) {
+    const resolved = opts.resolveProfile(opts.llmProfile);
+    if (resolved.ok) {
+      const profile = resolved.profile.resolved;
+      const role = (profile.roles as Record<string, { gateway: string; model: string } | undefined>)['renew_recover'];
+      if (role !== undefined) {
+        // Fingerprint of the profile's ROUTING CONTENT (name + mode + every
+        // role's gateway/model) — any effectual routing change re-digests.
+        profileFingerprint = `sha256:${createHash('sha256')
+          .update(
+            JSON.stringify({
+              name: resolved.profile.name,
+              routingMode: profile.routingMode,
+              roles: profile.roles,
+            }),
+            'utf8',
+          )
+          .digest('hex')}`;
+        resolvedModel = role.model;
+      }
+    }
+    // An unresolvable profile leaves the fields unbound here — the
+    // post-consent resolution refuses it before any call (zero spend), so an
+    // unbound digest can never authorize a paid request.
+  } else {
+    // Legacy-env route: bind the env-resolved model when the operator set it
+    // (the exact model createHttpLlm will request).
+    resolvedModel = process.env.LCO_LLM_MODEL;
+  }
+  return { dirReal, snapshotId, graphDigest, ...(profileFingerprint !== undefined ? { profileFingerprint } : {}), ...(resolvedModel !== undefined ? { resolvedModel } : {}) };
+}
+
+/**
+ * S2-M-04 (INV-A, MCP facet): containing request.dir inside the pinned root
+ * is NOT sufficient for Renewal — the tool's TRANSITIVE roots (the recorded
+ * target the project reads/hashes, the graph workspace) must also resolve
+ * inside the pin. A project inside the pin pointing at a sibling target
+ * outside it is a containment escape by proxy.
+ */
+function transitiveRenewalRootCheck(dir: string, allowed: EffectiveMcpRoot): { ok: true } | { ok: false; message: string } {
+  const pinReal = tryRealpath(allowed.root);
+  if (pinReal === undefined) {
+    return { ok: false, message: `cannot resolve this server's allowed root ${allowed.root} — failing the renewal call closed` };
+  }
+  const p = loadRenewalProject(dir);
+  if (!p.ok) return { ok: true }; // not a project yet — dir containment already enforced
+  const targetReal = tryRealpath(p.project.target_path);
+  if (targetReal !== undefined && !isInside(pinReal, targetReal)) {
+    return {
+      ok: false,
+      message:
+        `renewal target ${targetReal} resolves OUTSIDE this server's allowed root ${pinReal} — a renewal project ` +
+        `inside the pinned root must not read or hash a target outside it (transitive containment)`,
+    };
+  }
+  const workspaceReal = tryRealpath(renewalPaths(dir).workspace);
+  if (workspaceReal !== undefined && !isInside(pinReal, workspaceReal)) {
+    return {
+      ok: false,
+      message: `renewal graph workspace ${workspaceReal} resolves OUTSIDE this server's allowed root ${pinReal} (transitive containment)`,
+    };
+  }
+  return { ok: true };
 }
 
 /** Boundary capabilities for renewal tools: clock, GraphifyAdapter, git. */
@@ -250,7 +322,15 @@ function renewCaps(dir: string, nowIso: string): RenewCapabilities {  return {
     provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(dir).workspace }),
     gitCommit: (root) => {
       try {
-        return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', timeout: 5000 }).trim();
+        // S2-L-02: mirror the CLI's QUIET probe — a plain (non-Git) target
+        // produces structured repo_kind:'plain' in the snapshot, never raw
+        // Git fatal stderr leaking into the MCP stdio surface.
+        return execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: root,
+          encoding: 'utf8',
+          timeout: 5000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
       } catch {
         return undefined;
       }
@@ -347,7 +427,7 @@ const TOOLS: readonly ToolDef[] = [
       // execution. A compile/lint refusal is T7's actionable output, verbatim.
       const loaded = await loadCheckBundle(input.dir);
       if (!loaded.ok) return { code: loaded.code, output: loaded.output };
-      const { bundle } = loaded;
+      const { bundle, rawSections } = loaded;
 
       // DRY PREVIEW (the default surface): the shared check core at yes:false
       // plus the consent digest this server would require to execute.
@@ -372,6 +452,7 @@ const TOOLS: readonly ToolDef[] = [
         input.task,
         input.consent.digest,
         boundary.execRoot,
+        rawSections,
       );
       if (!auth.ok) {
         return { code: auth.code, output: auth.output };
@@ -639,9 +720,16 @@ const TOOLS: readonly ToolDef[] = [
     run: async (input, nowIso, call) => {
       const scope = (input.scope as string | undefined) ?? 'whole';
 
-      // H-10: compute the digest from the EFFECTUAL operation state — the
-      // active snapshot + graph identity of THIS project right now (read-only).
-      const consentState = await renewalConsentState(input.dir);
+      // H-10 + S2-H-02 (INV-F2): compute the digest from the EFFECTUAL
+      // operation state — the active snapshot + graph identity of THIS project
+      // right now (read-only), AND the resolved profile/model route (resolved
+      // BEFORE the digest — a different model config under the same profile
+      // name must advertise a DIFFERENT digest), AND the recovery prompt
+      // protocol, AND the budget envelope.
+      const consentState = await renewalConsentState(input.dir, {
+        ...(input.llmProfile !== undefined ? { llmProfile: input.llmProfile } : {}),
+        ...(input.llmProfile !== undefined ? { resolveProfile: call.resolveLlmProfile } : {}),
+      });
       const budget = defaultRenewalBudget();
       const expected = renewConsentDigest({
         dir: consentState.dirReal,
@@ -651,6 +739,7 @@ const TOOLS: readonly ToolDef[] = [
         ...(input.llmProfile !== undefined ? { llmProfile: input.llmProfile } : {}),
         ...(consentState.profileFingerprint !== undefined ? { profileFingerprint: consentState.profileFingerprint } : {}),
         ...(consentState.resolvedModel !== undefined ? { resolvedModel: consentState.resolvedModel } : {}),
+        promptProtocol: RECOVERY_PROMPT_PROTOCOL,
         budget,
       });
       if (input.consent === undefined) {
@@ -1037,6 +1126,16 @@ async function handleToolsCall(
     return errorResponse(id, -32602, dirCheck.message);
   }
   input.value.dir = dirCheck.dir;
+
+  // S2-M-04 (INV-A, MCP facet): for Renewal tools, containing request.dir is
+  // not containment of the OPERATION — the recorded target and graph
+  // workspace the tool reads/hashes must also resolve inside the pin.
+  if (tool.name.startsWith('lco_renew_')) {
+    const transitive = transitiveRenewalRootCheck(input.value.dir, effectiveMcpRoot(call.execRoot));
+    if (!transitive.ok) {
+      return errorResponse(id, -32602, transitive.message);
+    }
+  }
 
   let result: CoreResult;
   try {

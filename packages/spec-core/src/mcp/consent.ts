@@ -222,6 +222,7 @@ export function authorizeExecution(
   task: string | undefined,
   consentDigest: string,
   execRoot?: string,
+  rawSections?: Record<string, unknown>,
 ): ExecAuthorization {
   if (execRoot !== undefined) {
     // SEC-003: REAL containment — both sides resolved with realpath before
@@ -266,7 +267,10 @@ export function authorizeExecution(
     }
   }
 
-  const verification = verifyFrozen(bundle);
+  // INV-H1: legacy-compatible verification — pre-hash_version-2 artifacts are
+  // hashed over their own file key order (rawSections), never the current
+  // zod output order.
+  const verification = verifyFrozen(bundle, rawSections);
   if (verification.notFrozen) {
     return {
       ok: false,
@@ -347,10 +351,10 @@ export function consentDigestLine(digest: `sha256:${string}`): string {
  */
 export async function loadCheckBundle(
   dir: string,
-): Promise<{ ok: true; bundle: SpecBundle } | { ok: false; code: 2; output: string }> {
+): Promise<{ ok: true; bundle: SpecBundle; rawSections?: Record<string, unknown> } | { ok: false; code: 2; output: string }> {
   const loaded = await loadBundleAtLevel(dir, 'lint-clean');
   if (!loaded.ok) return loaded;
-  return { ok: true, bundle: loaded.bundle };
+  return { ok: true, bundle: loaded.bundle, ...(loaded.rawSections !== undefined ? { rawSections: loaded.rawSections } : {}) };
 }
 
 // =====================================================================================
@@ -452,6 +456,8 @@ export interface RenewConsentInputs {
   profileFingerprint?: string;
   /** Resolved gateway/model actually serving the role. */
   resolvedModel?: string;
+  /** The recovery prompt protocol version the call will speak (S2-H-02). */
+  promptProtocol?: string;
   /** Budget envelope (serialized canonically). */
   budget?: { maxAttempts?: number; maxTokens?: number; maxWallMs?: number };
 }
@@ -473,6 +479,7 @@ export function renewConsentDigest(args: RenewConsentInputs): `sha256:${string}`
         ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
         ...(args.profileFingerprint !== undefined ? { profileFingerprint: args.profileFingerprint } : {}),
         ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
+        ...(args.promptProtocol !== undefined ? { promptProtocol: args.promptProtocol } : {}),
         ...(args.budget !== undefined ? { budget: args.budget } : {}),
       },
       null,
