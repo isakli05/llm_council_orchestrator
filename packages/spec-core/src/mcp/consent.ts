@@ -127,10 +127,14 @@ export function mcpExecBoundary(env: NodeJS.ProcessEnv): ExecBoundary {
  * (sections that never execute would break consent on unrelated drift) and
  * under-communicates (it would not say WHAT runs).
  */
-export function checkPreviewDigest(b: SpecBundle, task?: string): `sha256:${string}` {
+export function checkPreviewDigest(b: SpecBundle, task?: string, effectualDir?: string): `sha256:${string}` {
   const selected = task ? b.tasks.filter((t) => t.task_id === task) : b.tasks;
   const payload = {
     spec_version: b.manifest.spec_version,
+    // S3-H-10 (trust kernel): the EFFECTUAL execution directory is part of
+    // what the operator consents to — the same commands under a different
+    // root are a different authorization.
+    ...(effectualDir !== undefined ? { effectualDir } : {}),
     tasks: selected.map((t) => ({
       task_id: t.task_id,
       verification: t.verification.map((v) => ({ command: v.command, expect: v.expect })),
@@ -294,7 +298,10 @@ export function authorizeExecution(
     };
   }
 
-  const expected = checkPreviewDigest(bundle, task);
+  // S3-H-10: `dir` here is the EFFECTUAL execution directory (the server
+  // resolves it through checkMcpDir before calling); the preview and the
+  // authorization must bind the same value.
+  const expected = checkPreviewDigest(bundle, task, dir);
   if (expected !== consentDigest) {
     return {
       ok: false,
@@ -460,6 +467,12 @@ export interface RenewConsentInputs {
   promptProtocol?: string;
   /** Budget envelope (serialized canonically). */
   budget?: { maxAttempts?: number; maxTokens?: number; maxWallMs?: number };
+  /** S3-H-07 (trust kernel): canonical digest of the RESOLVED legacy-env
+   *  route — base URL, model, max tokens, extra body, budget envelope —
+   *  computed via trust/paid.resolveLegacyEnvRoute + resolvedRouteDigest.
+   *  Binding the model alone left every other effectual field free to drift
+   *  after consent. */
+  routeDigest?: string;
 }
 
 /** Protocol version of the renewal consent binding itself. */
@@ -479,6 +492,7 @@ export function renewConsentDigest(args: RenewConsentInputs): `sha256:${string}`
         ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
         ...(args.profileFingerprint !== undefined ? { profileFingerprint: args.profileFingerprint } : {}),
         ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
+        ...(args.routeDigest !== undefined ? { routeDigest: args.routeDigest } : {}),
         ...(args.promptProtocol !== undefined ? { promptProtocol: args.promptProtocol } : {}),
         ...(args.budget !== undefined ? { budget: args.budget } : {}),
       },
@@ -493,9 +507,24 @@ export function generateConsentDigest(
   profile: GenerateProfile,
   variant: GenerateVariant,
   llmProfile?: string,
+  /** S3-H-10 (trust kernel): fingerprint of the RESOLVED profile — routing
+   *  mode, per-role gateway/model, topology, budget envelope — computed
+   *  BEFORE the digest so consent authorizes what will actually run, never
+   *  a name that resolves elsewhere. */
+  resolvedProfileFingerprint?: string,
 ): `sha256:${string}` {
   return sha256Content(
-    JSON.stringify({ intent, profile, variant, ...(llmProfile !== undefined ? { llmProfile } : {}) }, null, 2),
+    JSON.stringify(
+      {
+        intent,
+        profile,
+        variant,
+        ...(llmProfile !== undefined ? { llmProfile } : {}),
+        ...(resolvedProfileFingerprint !== undefined ? { resolvedProfileFingerprint } : {}),
+      },
+      null,
+      2,
+    ),
   );
 }
 

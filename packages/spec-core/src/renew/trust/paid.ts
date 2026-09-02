@@ -228,3 +228,29 @@ export function createPaidOperation(args: {
 export function accountCompletionAttempts(ledger: BudgetLedger | undefined, res: { attempts?: number }): void {
   if (res.attempts === undefined) ledger?.chargeAttempts(1);
 }
+
+/**
+ * The wire hook for adapters built by provider factories (named-profile
+ * routes whose configs carry provider specifics): measures the EXACT
+ * serialized request and enforces the cap BEFORE transport — zero calls on
+ * refusal. Fire once per complete() call, so a validation retry through the
+ * same adapter is capped again automatically (S3-H-05).
+ */
+export function wireCap(cap: number): {
+  onSerializedWire: (requestBody: string) => void;
+  lastWireBytes(): number | undefined;
+} {
+  let last: number | undefined;
+  return {
+    onSerializedWire: (requestBody: string) => {
+      last = Buffer.byteLength(requestBody, 'utf8');
+      if (last > cap) {
+        throw new TrustPaidError(
+          'request_over_budget',
+          `serialized request is ${last} bytes, over the ${cap}-byte wire cap — refused BEFORE transport (zero paid calls); shrink the analysis scope`,
+        );
+      }
+    },
+    lastWireBytes: () => last,
+  };
+}

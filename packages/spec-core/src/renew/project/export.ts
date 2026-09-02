@@ -1,15 +1,19 @@
 /**
  * Deterministic markdown modernization report (STEP 11 export): renders
  * EXISTING validated state only — export never introduces new analysis.
+ *
+ * TRUST KERNEL: renders the TYPED active view (trust/state). Every store's
+ * state is truthful — corrupt, cross-snapshot, or missing parity/strategy
+ * renders as exactly that (S3-H-09), never as zeros or "not selected".
  */
 import type { ArchitectureView } from '../archview/architecture-view';
-import type { RenewalState } from './project';
+import type { ActiveRenewalState } from '../trust/state';
 
-export function renderRenewalReport(state: RenewalState, archView: ArchitectureView | undefined): string {
+export function renderRenewalReport(state: ActiveRenewalState, archView: ArchitectureView | undefined): string {
   const lines: string[] = [];
   lines.push(`# Modernization report — ${state.project.name}`);
   lines.push('');
-  lines.push(`Renewal snapshot: \`${state.snapshot?.snapshot_id ?? 'missing'}\` · target: \`${state.project.target_path}\``);
+  lines.push(`Renewal snapshot: \`${state.snapshot.snapshot_id}\` · target: \`${state.project.target_path}\``);
   lines.push('');
 
   if (archView !== undefined) {
@@ -31,11 +35,13 @@ export function renderRenewalReport(state: RenewalState, archView: ArchitectureV
   // the default report must never present Snapshot A's analysis under
   // Snapshot B's header. History is retained but explicitly labeled with its
   // own snapshot id, never interleaved as current.
-  const activeId = state.snapshot?.snapshot_id ?? state.project.snapshot_id;
-  const validated = state.analyses.records.filter((a) => a.outcome === 'validated' && a.snapshot_id === activeId);
-  const historical = state.analyses.records.filter((a) => a.outcome === 'validated' && a.snapshot_id !== activeId);
+  const validated = state.analyses.active.filter((a) => a.outcome === 'validated');
+  const historical = state.analyses.historical.filter((a) => a.outcome === 'validated');
   lines.push('## Recovered business behavior (hypotheses, provenance-verified — semantic support NOT machine-validated)');
   lines.push('');
+  if (state.analyses.corrupt.length > 0) {
+    lines.push(`- ⚠ corrupt analysis records present (${state.analyses.corrupt.join(', ')}) — export does not render them; inspect or remove them`);
+  }
   if (validated.length === 0) {
     lines.push('_No validated analyses for the active snapshot yet._');
   } else {
@@ -75,17 +81,27 @@ export function renderRenewalReport(state: RenewalState, archView: ArchitectureV
       const support = r.ruling === 'unresolved' ? 'unvalidated' : (r.support_status ?? 'unrecorded');
       lines.push(`| ${r.id} | ${r.behavior.replace(/\|/g, '\\|')} | **${r.ruling}** | ${support} | ${(r.rationale ?? '').replace(/\|/g, '\\|')} |`);
     }
+  } else if (state.parity.code === 'store_cross_snapshot') {
+    lines.push(`_parity ledger is HISTORY (bound to a prior snapshot): ${state.parity.message}_`);
+  } else if (state.parity.code === 'store_corrupt') {
+    lines.push(`_parity ledger corrupt — refusing to render it as zeros: ${state.parity.message}_`);
   } else {
-    lines.push(`_parity ledger unreadable: ${state.parity.message}_`);
+    lines.push('_No parity ledger yet._');
   }
   lines.push('');
 
   lines.push('## Strategy');
   lines.push('');
   if (state.strategy.ok) {
-    const s = state.strategy.decision;
-    lines.push(`**${s.strategy}** — selected by ${s.selected_by} via ${s.selected_via} at ${s.selected_at}`);
+    const s = state.strategy.store;
+    lines.push(
+      `**${s.strategy}** — selected by ${s.selected_by} via ${s.selected_via}${s.approval_id !== undefined ? ` (approval ${s.approval_id})` : ' (explicit CLI flag)'} at ${s.selected_at}`,
+    );
     lines.push(`> ${s.rationale}`);
+  } else if (state.strategy.code === 'store_cross_snapshot') {
+    lines.push('_Strategy selection belongs to a PRIOR snapshot — re-select for the current source state (lco renew review)._');
+  } else if (state.strategy.code === 'store_corrupt') {
+    lines.push(`_strategy.json is corrupt — refusing to render it as unselected: ${state.strategy.message}_`);
   } else {
     lines.push('_Not selected — strategy selection is a human act (lco renew review)._');
   }

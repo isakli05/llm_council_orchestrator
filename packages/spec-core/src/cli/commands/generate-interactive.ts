@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LlmAdapter } from '../../eval/llm/adapter';
 import type { RunBudgetSpec } from '../../eval/budget';
+import { createBudgetLedger } from '../../eval/budget';
+import { MAX_CLARIFY_ROUNDS, sessionLedgerEnvelope } from '../../clarify/session/orchestrator';
 import type { ResolvedProfile } from '../../config/llm-config';
 import { normalizeIntent, resolveGenerationRuntime } from './generate';
 import { createClarifySession } from '../../clarify/session/orchestrator';
@@ -88,7 +90,23 @@ export async function cmdGenerateInteractive(
   }
 
   // --- shared gates (profile agreement, budget, fail-closed llm) ---------------
-  const { topology, llm } = resolveGenerationRuntime(opts);
+  // TRUST KERNEL (S3-H-06 neighboring variant): the interactive session is
+  // ONE paid operation — the adapter's transport and the session's accounting
+  // share the SESSION-sized ledger (previously the adapter bound a runtime
+  // ledger that was then DISCARDED here while the session capped against a
+  // second ledger the transport never charged).
+  const sessionLedger = createBudgetLedger(
+    sessionLedgerEnvelope({
+      variant: opts.variant,
+      topology: opts.llmProfile?.resolved.topology ?? 'fused',
+      enrich: true,
+      maxRounds: MAX_CLARIFY_ROUNDS,
+      hasClock: opts.nowMs !== undefined,
+      overrides: opts.budget,
+    }),
+    { nowMs: opts.nowMs },
+  );
+  const { topology, llm } = resolveGenerationRuntime({ ...opts, injectedLedger: sessionLedger });
 
   const sessionId = `s-${randomUUID().slice(0, 8)}`;
   const session = createClarifySession({
@@ -103,6 +121,7 @@ export async function cmdGenerateInteractive(
     llm,
     enrich: true,
     budget: opts.budget,
+    sharedLedger: sessionLedger,
   });
 
   const assets = opts.assets ?? loadWorkspaceAssets(sessionId);

@@ -36,7 +36,7 @@ export interface RenewalClarifySessionOptions {
   sessionId: string;
   /** The LCO renewal project dir (approvals land under <dir>/approvals/). */
   dir: string;
-  projectName?: string;
+  projectName: string;
   nowIso(): string;
   driver: RenewalRoundDriver;
   /** Supplies the sequential approval id (boundary scans the approvals dir). */
@@ -45,7 +45,7 @@ export interface RenewalClarifySessionOptions {
   maxRounds?: number;
   /** F2/H-09: binds the written approval to the snapshot under which the
    * questions were asked — post-refresh approvals cannot rule old state. */
-  snapshotId?: string;
+  snapshotId: string;
 }
 
 export function createRenewalClarifySession(opts: RenewalClarifySessionOptions): ClarifySession {
@@ -182,13 +182,16 @@ export function createRenewalClarifySession(opts: RenewalClarifySessionOptions):
         return { ok: false, error: 'nothing to approve — no answered decisions' };
       }
       const payload = opts.driver.approvalPayload(answered, { sessionId: opts.sessionId });
-      const record = buildRenewalApprovalRecord(payload, {
-        approvalId: opts.nextApprovalId(),
-        sessionId: opts.sessionId,
-        roundCount: round,
-        approvedAt: opts.nowIso(),
-        ...(opts.projectName !== undefined ? { projectName: opts.projectName } : {}),
-        ...(opts.snapshotId !== undefined ? { snapshotId: opts.snapshotId } : {}),
+      // Trust kernel: v3 records REQUIRE project/snapshot scope (S3-C-04) —
+      // an unscoped grant is unrepresentable.
+      const record = buildRenewalApprovalRecord({
+        approval_id: opts.nextApprovalId(),
+        session_id: opts.sessionId,
+        round_count: round,
+        approved_at: opts.nowIso(),
+        project_name: opts.projectName,
+        snapshot_id: opts.snapshotId,
+        decisions: payload.decisions,
       });
       const written = opts.writeApproval(record);
       if (!written.ok) {

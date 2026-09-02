@@ -11,8 +11,9 @@
  * anchors block.
  */
 import { z } from 'zod';
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { CodeAnchorPayloadSchema } from '../../schemas/evidence';
+import { authorizedWrite } from '../trust/fs';
 import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
 import type { AnalysisRecord } from '../recovery/schemas';
 import type { RenewalApprovalRecord } from '../clarify/approvals';
@@ -316,11 +317,10 @@ export function parityProjection(store: ParityStore): ParityProjection {
 
 export type PersistParityResult = { ok: true; path: string };
 
-export function persistParity(path: string, store: ParityStore): PersistParityResult {
+/** Trusted persist (trust/fs authorized atomic write); stable id ordering on disk. */
+export function persistParity(projectDir: string, path: string, store: ParityStore): PersistParityResult {
   const sorted: ParityStore = { ...store, records: [...store.records].sort((a, b) => (a.id < b.id ? -1 : 1)) };
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(sorted, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
+  authorizedWrite({ projectDir, path, content: `${JSON.stringify(sorted, null, 2)}\n` });
   return { ok: true, path };
 }
 

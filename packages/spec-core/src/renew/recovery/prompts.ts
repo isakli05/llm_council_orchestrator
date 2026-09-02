@@ -88,14 +88,21 @@ export function projectItemForEgress(item: ContextItem): EgressProjection {
     value.text = red(item.text);
     value.redactions = item.redactions;
   } else if (item.kind === 'node') {
-    value.node_id = item.node_id;
+    // S3-C-03 (trust kernel): node IDs are repository/Graphify-DERIVED
+    // strings (path-shaped, attacker-influenceable through the analyzed
+    // tree), not free-floating identities — they pass the SAME sanitizer as
+    // every other outbound string. A secret-shaped id redacts; the model's
+    // copy of the redacted form then fails bundle-membership checks, which
+    // is the fail-closed outcome (that content never belonged on the wire).
+    value.node_id = red(item.node_id);
     if (item.label !== undefined) value.label = red(item.label);
     if (item.source_file !== undefined) value.source_file = red(item.source_file);
     if (item.source_location !== undefined) value.source_location = red(item.source_location);
     if (item.community !== undefined) value.community = item.community;
   } else if (item.kind === 'edge') {
-    value.source = item.source;
-    value.target = item.target;
+    // S3-C-03: edge endpoints are node ids — same derived-string rule.
+    value.source = red(item.source);
+    value.target = red(item.target);
     if (item.relation !== undefined) value.relation = red(item.relation);
     if (item.confidence !== undefined) value.confidence = red(item.confidence);
   } else {
@@ -203,10 +210,11 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: reado
     '',
     '--- VALIDATION FAILURE ---',
     'Your previous response failed schema validation. Issues:',
-    // V3-F1 (verifier, minor channel): issue strings may echo model- or
-    // repository-controlled text — rendered line-unsafe-free so they cannot
-    // forge framing in the retry either.
-    ...issues.map((i) => `  - ${escapeLineUnsafe(i)}`),
+    // V3-F1 + S3-C-03 (trust kernel): issue strings may echo model- or
+    // repository-controlled text — redacted like every other outbound string
+    // AND rendered line-unsafe-free so they cannot forge framing in the
+    // retry either.
+    ...issues.map((i) => `  - ${escapeLineUnsafe(redactSecrets(i).text)}`),
     '',
     'Return the corrected JSON object only. Same rules as above — anchors must copy the',
     'ANCHORABLE FILES table verbatim; do not drop uncertainty material to "fix" the output.',

@@ -11,10 +11,10 @@ local-first spec compiler that turns natural-language intent into schema-validat
 lintable, freezable application specs. Two binaries share the same pure command
 cores:
 
-- **`lco`** — a 12-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
+- **`lco`** — a 13-command CLI: `compile`, `lint`, `freeze`, `verify`, `change`,
   `trace`, `plan`, `init`, `check`, `generate`, `doctor`, `models` (`lco --help`
   for usage, `lco <command> --help` per command)
-- **`lco-mcp`** — a stdio MCP server exposing 10 tools (`lco_compile` … `lco_change`).
+- **`lco-mcp`** — a stdio MCP server exposing 13 tools (`lco_compile` … `lco_change`; the list includes `lco_renew_analyze`, `lco_renew_export`, `lco_renew_status`).
   The generation and execution tools are consent-gated env opt-ins — off unless
   the server starts with `LCO_MCP_ALLOW_GENERATE=1` / `LCO_MCP_ALLOW_EXEC=1`;
   `lco_generate` is a **paid** LLM call. Trust boundary:

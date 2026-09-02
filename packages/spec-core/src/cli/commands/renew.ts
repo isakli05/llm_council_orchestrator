@@ -12,56 +12,49 @@
  *   review — clarification (interactive browser or headless --answers);
  *   plan — offline deterministic; refuses on stale state or unresolved parity.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CodeIntelligenceProvider } from '../../renew/intel/provider';
 import type { LlmPlan } from '../../llm/plan';
 import type { BudgetLedger } from '../../eval/budget';
 import { buildGuardedCopy, type FileManifest } from '../../renew/ingest/workspace-copy';
 import { DEFAULT_INGEST_LIMITS } from '../../renew/ingest/guards';
-import {
-  createSnapshot,
-  digestGraphManifest,
-  evaluateStaleness,
-  parseGraphManifestStrict,
-} from '../../renew/snapshot/snapshot';
+import { createSnapshot, evaluateStaleness } from '../../renew/snapshot/snapshot';
+import { parseGraphManifestStrict } from '../../renew/trust/structural';
 import { GraphContextProvider } from '../../renew/context/context-provider';
 import { buildArchitectureView } from '../../renew/archview/architecture-view';
 import { runRecovery } from '../../renew/recovery/pipeline';
-import {
-  loadAnalysisRecords,
-  nextAnalysisId,
-  persistAnalysisRecord,
-} from '../../renew/recovery/analysis-store';
-import { addOverlayRecord, emptyOverlay, loadOverlay, persistOverlay } from '../../renew/overlay/overlay';
-import { addParityEntry, emptyParity, loadParity, persistParity } from '../../renew/parity/ledger';
+import { nextAnalysisId, persistAnalysisRecord } from '../../renew/recovery/analysis-store';
+import { addOverlayRecord, emptyOverlay, persistOverlay } from '../../renew/overlay/overlay';
+import { addParityEntry, applyApprovalToParity, emptyParity, persistParity } from '../../renew/parity/ledger';
 import { makeRenewalDriver, STRATEGY_CLAIM_ID } from '../../renew/clarify/distiller';
 import { createRenewalClarifySession } from '../../renew/clarify/session';
-import {
-  nextRenewalApprovalId,
-  writeRenewalApproval,
-  loadRenewalApproval,
-} from '../../renew/clarify/approvals';
+import { nextRenewalApprovalId, writeRenewalApproval } from '../../renew/clarify/approvals';
 import { buildStrategyDecision, loadStrategy, persistStrategy, MODERNIZATION_STRATEGIES } from '../../renew/planner/strategy';
 import { buildModernizationPlan } from '../../renew/planner/plan';
 import {
   loadRenewalProject,
-  loadRenewalState,
   persistRenewalProject,
   persistSnapshotFile,
   renewalPaths,
   loadSnapshotFile,
   supersedeRenewalStores,
   authorizeRenewalState,
-  assertTargetSnapshotJoin,
-  bumpStateRevision,
 } from '../../renew/project/project';
-import { writeSpecDir } from './write-spec';
+import {
+  bumpStateRevisionTrusted,
+  loadActiveState,
+  runRenewalStateTx,
+  withRenewalWriterLock,
+  type ActiveRenewalState,
+} from '../../renew/trust/state';
+import { authorizedRead, authorizedWrite, authorizedEnsureDir, authorizedRemoveTree } from '../../renew/trust/fs';
+import { validateRenewalApproval } from '../../renew/trust/authority';
+import { structuralIdentity } from '../../renew/trust/structural';
+import { stageSpecDir } from './write-spec';
 import { cmdFreeze } from './freeze';
 import { renderRenewalReport } from '../../renew/project/export';
 import { assertDisjointRealRoots, resolveContainedOutputPath, tryRealpath } from '../../storage/paths';
-import { acquireSpecRootLock, LockHeldError, type SpecRootLock } from '../../storage/revision';
 import { affectedReverse } from '../../renew/intel/graph-ops';
 
 export interface RenewCapabilities {
@@ -85,13 +78,10 @@ export interface RenewResult {
 const REFRESH_REMEDY = "Run 'lco renew refresh <dir>' to re-snapshot and rebuild the graph, then retry.";
 
 /**
- * INV-A write-time re-authorization (verifier F-1): the paid call / review
- * round-trip takes wall-clock MINUTES — far wider than the microsecond
- * check-then-write the TOCTOU residual note describes. Every trusted write
- * re-asserts the real-dir chain IMMEDIATELY before persisting (under the
- * renewal lock where one is held), so a state destination swapped for a
- * symlink mid-operation refuses instead of redirecting the atomic write
- * (e.g. into the analyzed target).
+ * UX preflight (trust kernel): the per-write authorization inside
+ * trust/fs.authorizedWrite is the enforcement; commands re-run this over the
+ * fixed state surface before long work so refusals surface with the best
+ * message earliest, and mid-operation so a swapped chain refuses loudly.
  */
 function persistGuard(dir: string): void {
   const auth = authorizeRenewalState(dir);
@@ -100,11 +90,9 @@ function persistGuard(dir: string): void {
   }
 }
 
-function atomicWrite(path: string, text: string): void {
-  mkdirSync(join(path, '..'), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, text, { mode: 0o600 });
-  renameSync(tmp, path);
+/** Read a graphify workspace file through the trusted read boundary. */
+function readWorkspaceFile(dir: string, absPath: string): string {
+  return authorizedRead({ projectDir: dir, path: absPath });
 }
 
 /** Shared: walk the target, verify graph, decide staleness vs the stored snapshot. */
@@ -124,16 +112,24 @@ async function currentStaleness(
   const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
   const manifestJson = join(paths.workspace, 'graphify-out', 'manifest.json');
   const graphPresent = existsSync(graphJson);
-  // H-11/C-04: identity-bearing manifest parsing is STRICT — a malformed or
-  // absent manifest never becomes an empty-identity "fresh" verdict.
-  const manifestText = existsSync(manifestJson) ? readFileSync(manifestJson, 'utf8') : undefined;
+  // H-11/C-04 + S3-L-03 (trust kernel): identity parsing is STRICT and there
+  // is no non-strict fallback — a malformed or absent manifest is a typed
+  // failure, never an empty-identity digest.
+  const manifestText = existsSync(manifestJson) ? readWorkspaceFile(dir, manifestJson) : undefined;
   const manifestId = parseGraphManifestStrict(manifestText);
   if (graphPresent && !manifestId.ok) {
     return { ok: false, code: 1, output: `renewal graph workspace problem (${manifestId.code}): ${manifestId.message}` };
   }
-  const graphDigest = graphPresent
-    ? `sha256:${createHash('sha256').update(readFileSync(graphJson)).digest('hex')}`
-    : digestGraphManifest('').digest;
+  // When the graph is absent, presence (not digest comparison) drives the
+  // staleness verdict; the sentinel can never equal a recorded digest.
+  let graphDigest: string;
+  if (graphPresent) {
+    const ident = structuralIdentity({ manifestText, graphText: readWorkspaceFile(dir, graphJson) });
+    if (!ident.ok) return { ok: false, code: 1, output: `renewal graph workspace problem (${ident.code}): ${ident.message}` };
+    graphDigest = ident.identity.graph_digest;
+  } else {
+    graphDigest = 'sha256:absent';
+  }
   let graphValid = graphPresent;
   if (graphPresent) {
     const g = await provider.graph();
@@ -149,7 +145,7 @@ async function currentStaleness(
     // is surfaced in addition (history moved even if the tree content matches).
     gitCommit: gitCommit !== undefined ? gitCommit(targetRoot) : undefined,
     files: walk.manifest,
-    graphManifestDigest: manifestId.ok ? manifestId.identity.digest : digestGraphManifest('').digest,
+    graphManifestDigest: manifestId.ok ? manifestId.identity.digest : graphDigest,
     graphDigest,
     graphPresent,
     graphValid,
@@ -197,9 +193,9 @@ export async function cmdRenewInit(
   }
 
   // Clean + rebuild the guarded workspace copy (regenerable substrate).
-  if (existsSync(paths.workspace)) rmSync(paths.workspace, { recursive: true, force: true });
-  mkdirSync(paths.workspace, { recursive: true, mode: 0o700 });
-  const walk = buildGuardedCopy(targetReal, paths.workspace, { limits: DEFAULT_INGEST_LIMITS });
+  if (existsSync(paths.workspace)) authorizedRemoveTree({ projectDir: args.dir, path: paths.workspace });
+  authorizedEnsureDir({ projectDir: args.dir, path: paths.workspace });
+  const walk = buildGuardedCopy(targetReal, paths.workspace, { limits: DEFAULT_INGEST_LIMITS, projectDir: args.dir } as never);
   if (!walk.ok) return { code: 1, output: `renewal init failed: ${walk.message}` };
 
   const build = await caps.provider().build({ force: args.force, workspaceRoot: paths.workspace });
@@ -212,16 +208,21 @@ export async function cmdRenewInit(
 
   const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
   const manifestJson = join(paths.workspace, 'graphify-out', 'manifest.json');
-  // H-11: init refuses to bless a malformed/absent manifest as identity.
-  const gm = parseGraphManifestStrict(existsSync(manifestJson) ? readFileSync(manifestJson, 'utf8') : undefined);
+  // H-11 + trust kernel: init refuses to bless a malformed/absent manifest
+  // as identity (strict parse; no fallback digest).
+  const gm = parseGraphManifestStrict(existsSync(manifestJson) ? readWorkspaceFile(args.dir, manifestJson) : undefined);
   if (!gm.ok) return { code: 1, output: `renewal init failed (${gm.code}): ${gm.message}` };
-  const graphDigest = `sha256:${createHash('sha256').update(readFileSync(graphJson)).digest('hex')}`;
+  const graphDigest = structuralIdentity({
+    manifestText: existsSync(manifestJson) ? readWorkspaceFile(args.dir, manifestJson) : undefined,
+    graphText: readWorkspaceFile(args.dir, graphJson),
+  });
+  if (!graphDigest.ok) return { code: 1, output: `renewal init failed (${graphDigest.code}): ${graphDigest.message}` };
 
   const health = await caps.provider().graphHealth();
   const version = health.ok ? health.provider_version : probe.providerVersion ?? 'unknown';
 
-  // INV-A write-time re-authorization: the graph build spanned a subprocess
-  // — re-assert the real-dir chain immediately before the persist block.
+  // UX preflight after the subprocess window (per-write enforcement lives in
+  // trust/fs; this surfaces a swapped chain with the earliest clear message).
   const buildAuth = authorizeRenewalState(args.dir);
   if (!buildAuth.ok) return { code: 2, output: `renewal init refused: ${buildAuth.message}` };
 
@@ -237,48 +238,71 @@ export async function cmdRenewInit(
       graphifyVersion: version,
       nodeCount: graph.graph.nodes.length,
       edgeCount: graph.graph.edges.length,
-      graphDigest,
+      graphDigest: graphDigest.identity.graph_digest,
     },
     graphManifest: { digest: gm.identity.digest, entries: gm.identity.entries },
     nowIso: caps.nowIso(),
   });
 
-  mkdirSync(join(args.dir, '.lco', 'renewal'), { recursive: true, mode: 0o700 });
-  mkdirSync(paths.analyses, { recursive: true, mode: 0o700 });
-  mkdirSync(paths.approvals, { recursive: true, mode: 0o700 });
-  if (args.force) {
-    // C-05: refresh is an EXPLICIT state transition. Per-snapshot stores are
-    // archived under their old snapshot id (forensic history, never silently
-    // reused); analyses/approvals are retained as immutable history. Fresh
-    // empty stores for the NEW snapshot are created below.
-    const old = loadSnapshotFile(args.dir);
-    const oldId = old.ok ? old.snapshot.snapshot_id : 'unknown';
-    supersedeRenewalStores(paths, oldId);
-  }
-  persistSnapshotFile(args.dir, snapshot);
-  persistRenewalProject(args.dir, {
-    schema_version: 1,
-    name: args.name ?? 'legacy-renewal',
-    target_path: targetReal,
-    created_at: caps.nowIso(),
-    snapshot_id: snapshot.snapshot_id,
+  // TRUST KERNEL: the whole persist block runs under the renewal writer lock
+  // (refresh previously wrote unlocked); a refresh is a STRICT transaction
+  // over the pre-build epoch — a concurrent refresh/init that changed the
+  // snapshot or revision during the graph build refuses as superseded
+  // instead of interleaving archive/rebuild sequences (S3-H-03).
+  const preExisting = existsSync(paths.projectJson);
+  const beginState = preExisting ? loadActiveState(args.dir) : undefined;
+  return withRenewalWriterLock(args.dir, caps.nowIso(), () => {
+    if (beginState !== undefined) {
+      const fresh = loadActiveState(args.dir);
+      if (fresh.identity.snapshotId !== beginState.identity.snapshotId || fresh.identity.revision !== beginState.identity.revision) {
+        return {
+          code: 1,
+          output:
+            `refresh refused: renewal state changed during the graph rebuild (snapshot ${beginState.identity.snapshotId} → ` +
+            `${fresh.identity.snapshotId}, revision ${beginState.identity.revision} → ${fresh.identity.revision}) — re-run the refresh`,
+        };
+      }
+    }
+    authorizedEnsureDir({ projectDir: args.dir, path: join(args.dir, '.lco', 'renewal') });
+    authorizedEnsureDir({ projectDir: args.dir, path: paths.analyses });
+    authorizedEnsureDir({ projectDir: args.dir, path: paths.approvals });
+    if (args.force && beginState !== undefined) {
+      // C-05 + S3-H-04: refresh is an EXPLICIT state transition. Per-snapshot
+      // stores — overlay, parity, strategy, AND spec — are archived under
+      // their old snapshot id (no-clobber); analyses/approvals are retained
+      // as immutable history.
+      supersedeRenewalStores(args.dir, paths, beginState.identity.snapshotId);
+    }
+    persistSnapshotFile(args.dir, snapshot);
+    persistRenewalProject(args.dir, {
+      schema_version: 1,
+      name: args.name ?? 'legacy-renewal',
+      target_path: targetReal,
+      created_at: caps.nowIso(),
+      snapshot_id: snapshot.snapshot_id,
+    });
+    // Overlay/parity stores are created empty on FIRST init only.
+    if (!existsSync(paths.overlay)) persistOverlay(args.dir, paths.overlay, emptyOverlay(snapshot.snapshot_id));
+    if (!existsSync(paths.parity)) persistParity(args.dir, paths.parity, emptyParity(snapshot.snapshot_id));
+    // INV-B2: init/refresh is itself a trusted-state transition.
+    bumpStateRevisionTrusted(args.dir);
+    const excluded = walk.excluded;
+    return {
+      code: 0,
+      output: [
+        `renewal project ready: ${args.dir}`,
+        `  snapshot ${snapshot.snapshot_id} (${walk.manifest.length} files hashed, graphify ${version}, ${graph.graph.nodes.length} nodes / ${graph.graph.edges.length} edges)`,
+        `  excluded: ${excluded.denied.length} denied, ${excluded.binary.length} binary, ${excluded.oversize.length} oversize, ${excluded.symlink.length} symlink`,
+        `  next: lco renew analyze ${args.dir}  (PAID — makes LLM calls)`,
+      ].join('\n'),
+    };
+  }).then((r) => {
+    if (r.code !== 0 || !args.force) return r;
+    return {
+      ...r,
+      output: `${r.output}\n  superseded state: overlay/parity/strategy/spec archived under their old snapshot id; re-analyze (PAID) and re-select strategy before planning`,
+    };
   });
-  // Overlay/parity stores are created empty on FIRST init only.
-  if (!existsSync(paths.overlay)) persistOverlay(paths.overlay, emptyOverlay(snapshot.snapshot_id));
-  if (!existsSync(paths.parity)) persistParity(paths.parity, emptyParity(snapshot.snapshot_id));
-  // INV-B2: init/refresh is itself a trusted-state transition.
-  bumpStateRevision(args.dir);
-
-  const excluded = walk.excluded;
-  return {
-    code: 0,
-    output: [
-      `renewal project ready: ${args.dir}`,
-      `  snapshot ${snapshot.snapshot_id} (${walk.manifest.length} files hashed, graphify ${version}, ${graph.graph.nodes.length} nodes / ${graph.graph.edges.length} edges)`,
-      `  excluded: ${excluded.denied.length} denied, ${excluded.binary.length} binary, ${excluded.oversize.length} oversize, ${excluded.symlink.length} symlink`,
-      `  next: lco renew analyze ${args.dir}  (PAID — makes LLM calls)`,
-    ].join('\n'),
-  };
 }
 
 export const cmdRenewRefresh = async (args: { dir: string }, caps: RenewCapabilities): Promise<RenewResult> => {
@@ -306,75 +330,96 @@ export async function cmdRenewStatus(args: { dir: string; json?: boolean }, caps
   // INV-A: trusted state is never read through a symlinked state chain.
   const stateAuth = authorizeRenewalState(args.dir);
   if (!stateAuth.ok) return { code: 2, output: `renewal status refused: ${stateAuth.message}` };
-  const state = safeState(args.dir);
-  if (typeof state === 'string') return { code: 2, output: state };
-  const p = loadRenewalProject(args.dir);
-  if (!p.ok) return { code: 2, output: p.message };
+  let state: ActiveRenewalState;
+  try {
+    state = loadActiveState(args.dir);
+  } catch (e) {
+    return { code: 2, output: (e as Error).message };
+  }
 
-  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
+  const stale = await currentStaleness(args.dir, state.project.target_path, caps.provider(), caps.gitCommit);
   // Fail-closed status: when trustworthy state CANNOT be computed (corrupt
   // snapshot, invalid manifest, failed walk), status reports the failure and
   // exits non-zero — never "unknown but green" (audit exit semantics).
   if (!stale.ok) return { code: 1, output: `renewal status failed: ${stale.output}` };
+  // S3-H-09 (trust kernel): every store renders its TYPED state — corrupt or
+  // cross-snapshot stores are surfaced as exactly that, never as zeros.
+  if (state.analyses.corrupt.length > 0) {
+    return { code: 1, output: `analysis store corrupt: ${state.analyses.corrupt.join(', ')} — refusing to report green over corrupt state (inspect or remove the records, then re-run)` };
+  }
   // INV-B4 / S2-M-05: open questions are ACTIVE UNRESOLVED work — an
   // uncertainty whose linked parity entry has since been RULED (by approval
-  // projection, headless ruling, or supersession) is resolved current state,
-  // not an open question. Derived: active validated analyses' uncertainties
-  // minus those whose parity entry (linked via decision_claim_id) is ruled.
+  // projection, headless ruling, or supersession) is resolved current state.
   const activeParity = state.parity.ok ? state.parity.store.records : [];
   const ruledClaimIds = new Set(
     activeParity.filter((r) => r.ruling !== 'unresolved' && r.decision_claim_id !== undefined).map((r) => r.decision_claim_id!),
   );
-  const openQuestions = state.analyses.records
-    .filter((a) => a.outcome === 'validated' && a.snapshot_id === (state.snapshot?.snapshot_id ?? ''))
+  const openQuestions = state.analyses.active
+    .filter((a) => a.outcome === 'validated')
     .reduce((n, a) => n + a.promoted.uncertainties.filter((u) => !ruledClaimIds.has(u.id)).length, 0);
-  const activeAnalyses = state.analyses.records.filter((a) => a.snapshot_id === (state.snapshot?.snapshot_id ?? ''));
-  const parityCounts = { preserve: 0, change: 0, drop: 0, unresolved: 0 };
-  for (const r of state.parity.ok ? state.parity.store.records : []) {
-    parityCounts[r.ruling] = (parityCounts[r.ruling] ?? 0) + 1;
-  }
-  const storeBinding =
-    state.overlay.ok && state.snapshot !== undefined && state.overlay.store.snapshot_id !== state.snapshot.snapshot_id
-      ? `superseded (bound to ${state.overlay.store.snapshot_id})`
-      : state.overlay.ok
-        ? `${state.overlay.store.records.length} record(s)`
-        : 'corrupt';
+  const parityResult = state.parity;
+  const parityCounts = parityResult.ok
+    ? parityResult.store.records.reduce(
+        (acc, r) => ({ ...acc, [r.ruling]: (acc[r.ruling] ?? 0) + 1 }),
+        { preserve: 0, change: 0, drop: 0, unresolved: 0 } as Record<string, number>,
+      )
+    : undefined;
+  const storeBinding = !state.overlay.ok
+    ? state.overlay.code === 'store_cross_snapshot'
+      ? `superseded (${state.overlay.message})`
+      : state.overlay.code === 'store_corrupt'
+        ? 'corrupt'
+        : 'not created yet'
+    : `${state.overlay.store.records.length} record(s)`;
+  const strategyResult = state.strategy;
+  const strategyLabel = strategyResult.ok
+    ? strategyResult.store.strategy
+    : strategyResult.code === 'store_cross_snapshot'
+      ? 'superseded (prior snapshot)'
+      : strategyResult.code === 'store_corrupt'
+        ? 'corrupt'
+        : null;
+  const parityLabel = parityResult.ok
+    ? `${parityCounts!.preserve} preserve / ${parityCounts!.change} change / ${parityCounts!.drop} drop / ${parityCounts!.unresolved} UNRESOLVED`
+    : parityResult.code === 'store_cross_snapshot'
+      ? 'superseded (prior snapshot — refresh re-binds)'
+      : 'corrupt';
   const status = {
     project: state.project.name,
-    snapshot_id: state.snapshot?.snapshot_id ?? null,
+    snapshot_id: state.snapshot.snapshot_id,
     snapshot_state: stale.fresh ? 'fresh' : 'stale',
     staleness_reasons: stale.reasons ?? [],
     graphify: (await caps.provider().probe()).ok ? 'available' : 'unavailable',
-    analyses: activeAnalyses.length,
-    analyses_total: state.analyses.records.length,
+    analyses: state.analyses.active.length,
+    analyses_total: state.analyses.active.length + state.analyses.historical.length,
     open_questions: openQuestions,
     overlay: storeBinding,
     overlay_records: state.overlay.ok ? state.overlay.store.records.length : -1,
     overlay_stale: state.overlay.ok ? state.overlay.store.records.filter((r) => r.status === 'stale').length : -1,
-    parity: parityCounts,
-    strategy: state.strategy.ok ? state.strategy.decision.strategy : null,
+    parity: parityResult.ok ? parityCounts : parityLabel,
+    strategy: strategyLabel,
     plan: state.specExists ? 'spec/ present' : 'none',
   };
   if (args.json) return { code: 0, output: JSON.stringify(status, null, 2) };
   const lines = [
     `renewal status: ${status.project}`,
-    `  snapshot: ${status.snapshot_state}${status.snapshot_id ? ` (${status.snapshot_id})` : ''}`,
+    `  snapshot: ${status.snapshot_state} (${status.snapshot_id})`,
     ...status.staleness_reasons.map((r) => `    - ${r}`),
     `  graphify: ${status.graphify}`,
-    `  analyses: ${status.analyses} active (${state.analyses.records.length} total, cross-snapshot history retained)`,
+    `  analyses: ${status.analyses} active (${status.analyses_total} total, cross-snapshot history retained)`,
     `  open questions: ${status.open_questions}`,
     `  overlay: ${storeBinding}${status.overlay_stale > 0 ? `, ${status.overlay_stale} STALE` : ''}`,
-    `  parity: ${parityCounts.preserve} preserve / ${parityCounts.change} change / ${parityCounts.drop} drop / ${parityCounts.unresolved} UNRESOLVED`,
-    `  strategy: ${status.strategy ?? 'not selected (human act — lco renew review)'}`,
+    `  parity: ${parityLabel}`,
+    `  strategy: ${strategyLabel ?? 'not selected (human act — lco renew review)'}`,
     `  plan: ${status.plan}`,
   ];
   if (status.snapshot_state === 'stale') lines.push(`  ${REFRESH_REMEDY}`);
   return { code: 0, output: lines.join('\n') };
 }
 
-function safeState(dir: string): ReturnType<typeof loadRenewalState> | string {
+function safeState(dir: string): ActiveRenewalState | string {
   try {
-    return loadRenewalState(dir);
+    return loadActiveState(dir);
   } catch (e) {
     return (e as Error).message;
   }
@@ -394,15 +439,8 @@ export async function cmdRenewAnalyze(
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
 
-  // INV-B1 (S2-H-11): the mutable project pointer is joined to the snapshot's
-  // recorded root identity before anything is walked or paid for.
-  const joinSnap = loadSnapshotFile(args.dir);
-  if (!joinSnap.ok) return { code: 1, output: joinSnap.message };
-  try {
-    assertTargetSnapshotJoin(p.project, joinSnap.snapshot);
-  } catch (e) {
-    return { code: 2, output: `renewal analyze refused: ${(e as Error).message}` };
-  }
+  // INV-B1 (S2-H-11): identity joins (target realpath AND snapshot ids) are
+  // enforced inside analyzeWithFresh's loadActiveState read view.
 
   const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
   if (!stale.ok) return stale;
@@ -439,7 +477,7 @@ export async function analyzeWithFresh(
   const sliceReader = (path: string, startLine: number, endLine: number) => {
     const abs = join(paths.workspace, path);
     if (!existsSync(abs)) return undefined;
-    const lines = readFileSync(abs, 'utf8').split('\n');
+    const lines = authorizedRead({ projectDir: dir, path: abs }).split('\n');
     const start = Math.max(1, startLine);
     const end = Math.min(endLine, lines.length);
     if (start > end) return undefined;
@@ -455,49 +493,66 @@ export async function analyzeWithFresh(
       output: 'no LLM route configured for renewal analysis (role renew_recover) — set LCO_LLM_* or a named profile; analyze is the PAID step and made ZERO calls',
     };
   }
-  const existing = loadAnalysisRecords(paths.analyses);
-  if (existing.corrupt.length > 0) {
+  // TRUST KERNEL read view: identity joins, revision, typed stores — all
+  // from loadActiveState (the only trusted reader).
+  let beginState: ActiveRenewalState;
+  try {
+    beginState = loadActiveState(dir);
+  } catch (e) {
+    return { code: 1, output: `renewal analyze refused: ${(e as Error).message}` };
+  }
+  if (beginState.analyses.corrupt.length > 0) {
     return {
       code: 1,
-      output: `analysis store corrupt: ${existing.corrupt.join(', ')} — refusing to proceed (corrupt records are never silently replaced; inspect or remove them, then re-run)`,
+      output: `analysis store corrupt: ${beginState.analyses.corrupt.join(', ')} — refusing to proceed (corrupt records are never silently replaced; inspect or remove them, then re-run)`,
     };
   }
-  const analysisId = nextAnalysisId(existing.records.map((r) => r.analysis_id));
-  const snapshotId = loadSnapshotFile(dir);
-  if (!snapshotId.ok) return { code: 1, output: snapshotId.message };
-  const activeSnapshot = snapshotId.snapshot.snapshot_id;
+  const existingRecords = [...beginState.analyses.active, ...beginState.analyses.historical];
+  const analysisId = nextAnalysisId(existingRecords.map((r) => r.analysis_id));
+  const activeSnapshot = beginState.identity.snapshotId;
 
   // C-06 + B4: existing stores load OR the operation stops. A corrupt store
   // is NEVER replaced with an empty one; a cross-snapshot store is refused
-  // (refresh supersedes state explicitly).
-  const ovl = loadOverlay(paths.overlay);
-  if (!ovl.ok) {
-    return { code: 1, output: `overlay store corrupt (${paths.overlay}): ${ovl.message} — refusing to analyze over corrupt state (recover the file or remove it after inspection)` };
+  // (refresh supersedes state explicitly). Typed results from the read view.
+  const entryOverlay = beginState.overlay;
+  if (!entryOverlay.ok && entryOverlay.code === 'store_corrupt') {
+    return { code: 1, output: `overlay store corrupt (${paths.overlay}): ${entryOverlay.message} — refusing to analyze over corrupt state (recover the file or remove it after inspection)` };
   }
-  const par = loadParity(paths.parity);
-  if (!par.ok) {
-    return { code: 1, output: `parity store corrupt (${paths.parity}): ${par.message} — refusing to analyze over corrupt state (recover the file or remove it after inspection)` };
+  if (!entryOverlay.ok && entryOverlay.code === 'store_cross_snapshot') {
+    return { code: 1, output: `overlay store is bound to another snapshot — ${entryOverlay.message} (state was superseded; it is archived, not lost)` };
   }
-  if (ovl.store.snapshot_id !== activeSnapshot) {
-    return { code: 1, output: `overlay store is bound to snapshot ${ovl.store.snapshot_id} but the active snapshot is ${activeSnapshot} — run 'lco renew refresh ${dir}' (state was superseded; it is archived, not lost)` };
+  const entryParity = beginState.parity;
+  if (!entryParity.ok && entryParity.code === 'store_corrupt') {
+    return { code: 1, output: `parity store corrupt (${paths.parity}): ${entryParity.message} — refusing to analyze over corrupt state (recover the file or remove it after inspection)` };
   }
-  if (par.store.snapshot_id !== activeSnapshot) {
-    return { code: 1, output: `parity store is bound to snapshot ${par.store.snapshot_id} but the active snapshot is ${activeSnapshot} — run 'lco renew refresh ${dir}' (state was superseded; it is archived, not lost)` };
+  if (!entryParity.ok && entryParity.code === 'store_cross_snapshot') {
+    return { code: 1, output: `parity store is bound to another snapshot — ${entryParity.message} (state was superseded; it is archived, not lost)` };
+  }
+  const ovl = beginState.overlay;
+  const par = beginState.parity;
+  if (!ovl.ok || !par.ok) {
+    return { code: 1, output: `stores missing — run analysis after init/refresh created them` };
   }
 
   // C-10: the freshness re-check handed to the paid pipeline — re-walks the
-  // target and re-digests the graph; any drift blocks promotion.
+  // target and re-digests the graph STRICTLY (trust/structural; the old
+  // non-strict manifest fallback is deleted); any drift blocks promotion.
   const recheckFreshness = (): { ok: true } | { ok: false; reasons: string[] } => {
     const walk = buildGuardedCopy(targetRoot, paths.workspace, { copy: false, limits: DEFAULT_INGEST_LIMITS });
     if (!walk.ok) return { ok: false, reasons: [`re-walk failed: ${walk.message}`] };
     const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
+    const manifestJson = join(paths.workspace, 'graphify-out', 'manifest.json');
     if (!existsSync(graphJson)) return { ok: false, reasons: ['graph_missing: graph.json vanished mid-analysis'] };
-    const graphDigestNow = `sha256:${createHash('sha256').update(readFileSync(graphJson)).digest('hex')}`;
-    const verdict = evaluateStaleness(snapshotId.snapshot, {
+    const ident = structuralIdentity({
+      manifestText: existsSync(manifestJson) ? readWorkspaceFile(dir, manifestJson) : undefined,
+      graphText: readWorkspaceFile(dir, graphJson),
+    });
+    if (!ident.ok) return { ok: false, reasons: [ident.code] };
+    const verdict = evaluateStaleness(beginState.snapshot, {
       gitCommit: caps.gitCommit(targetRoot),
       files: walk.manifest,
-      graphManifestDigest: digestGraphManifest(existsSync(join(paths.workspace, 'graphify-out', 'manifest.json')) ? readFileSync(join(paths.workspace, 'graphify-out', 'manifest.json'), 'utf8') : '').digest,
-      graphDigest: graphDigestNow,
+      graphManifestDigest: ident.identity.manifest_digest,
+      graphDigest: ident.identity.graph_digest,
       graphPresent: true,
       graphValid: true,
     });
@@ -514,15 +569,15 @@ export async function analyzeWithFresh(
       targetRoot,
       recheckFreshness,
       persist: (record) => {
-        // INV-A write-time re-authorization: this persist can happen DURING
-        // the paid call (transport-failure trail) — the chain is re-asserted
-        // before every immutable analysis write.
+        // UX preflight re-run: this persist can happen DURING the paid call
+        // (transport-failure trail); the per-write authorization inside
+        // trust/fs is the enforcement.
         try {
           persistGuard(dir);
         } catch (e) {
           return { ok: false, code: 'state_domain_changed', message: (e as Error).message };
         }
-        return persistAnalysisRecord(paths.analyses, record);
+        return persistAnalysisRecord(dir, paths.analyses, record);
       },
     },
   );
@@ -575,89 +630,79 @@ export async function analyzeWithFresh(
     };
   }
 
-  // --- promotion fold (overlay + parity) under the renewal store lock (M-07) ---
-  // INV-B5 (S2-M-01): the paid call took wall-clock time and the stores were
-  // read BEFORE it. The lock alone does not close the lost-update window — the
-  // stores are RE-READ under the lock and the fold is applied to the FRESH
-  // state. The fold is additive + dedup-keyed, so it merges with any valid
-  // concurrent change (a human review ruling lands first and SURVIVES: the
-  // fold never mutates an existing ruling, it only adds new entries and links
-  // still-unresolved ones). A store that became corrupt or cross-snapshot
-  // mid-call refuses the fold rather than overwriting trusted state.
-  let lock: SpecRootLock | undefined;
+  // --- promotion fold (overlay + parity) via the state transaction (M-07) ---
+  // INV-B5 (S2-M-01) + trust kernel: the paid call took wall-clock time; the
+  // fold is an ADDITIVE transaction — re-load under the writer lock, refuse
+  // on snapshot supersession, fold deterministically onto FRESH state. The
+  // fold is dedup-keyed and never mutates an existing ruling; a store that
+  // became corrupt or cross-snapshot mid-call refuses the fold.
   try {
-    lock = acquireSpecRootLock(join(dir, '.lco', 'renewal'), caps.nowIso());
-  } catch (e) {
-    if (e instanceof LockHeldError) {
-      return { code: 1, output: `renewal state is locked by another writer (${e.message}) — retry when it completes` };
-    }
-    throw e;
-  }
-  try {
-    // INV-A write-time re-authorization: the paid call spanned the whole
-    // authorization-to-write window — re-assert the real-dir chain (tmp
-    // siblings included) under the lock, immediately before any persist.
-    try {
-      persistGuard(dir);
-    } catch (e) {
-      return { code: 1, output: `analysis promotion refused: ${(e as Error).message}` };
-    }
-    const freshOverlay = loadOverlay(paths.overlay);
-    if (!freshOverlay.ok) {
-      return { code: 1, output: `overlay store changed to corrupt during the analysis (${freshOverlay.message}) — promotion refused; the analysis record is preserved` };
-    }
-    const freshParity = loadParity(paths.parity);
-    if (!freshParity.ok) {
-      return { code: 1, output: `parity store changed to corrupt during the analysis (${freshParity.message}) — promotion refused; the analysis record is preserved` };
-    }
-    if (freshOverlay.store.snapshot_id !== activeSnapshot) {
-      return { code: 1, output: `overlay store was superseded to snapshot ${freshOverlay.store.snapshot_id} during the analysis (active: ${activeSnapshot}) — refresh re-binds state; re-analyze after it` };
-    }
-    if (freshParity.store.snapshot_id !== activeSnapshot) {
-      return { code: 1, output: `parity store was superseded to snapshot ${freshParity.store.snapshot_id} during the analysis (active: ${activeSnapshot}) — refresh re-binds state; re-analyze after it` };
-    }
-    const overlayStore = freshOverlay.store;
-    const parityStore = freshParity.store;
+    await runRenewalStateTx({
+      projectDir: dir,
+      nowIso: caps.nowIso(),
+      expected: { snapshotId: activeSnapshot, revision: beginState.identity.revision },
+      policy: 'additive',
+      work: () => undefined,
+      commit: (fresh) => {
+        const foldOverlay = fresh.overlay;
+        const foldParity = fresh.parity;
+        if (!foldOverlay.ok || !foldParity.ok) {
+          const failMsg = !foldOverlay.ok ? foldOverlay.message : 'parity store is missing';
+          throw Object.assign(
+            new Error(`stores changed during the analysis (${failMsg}) — promotion refused; the analysis record is preserved`),
+            { code: 'fold_refused' },
+          );
+        }
+        const overlayStore = foldOverlay.store;
+        const parityStore = foldParity.store;
 
-    for (const h of record.promoted.hypotheses) {
-      addOverlayRecord(overlayStore, {
-        relation: 'business_rule',
-        subject: { path: h.anchors[0]!.path, ...(h.anchors[0]?.node_id !== undefined ? { node_id: h.anchors[0].node_id } : {}) },
-        value: h.statement,
-        anchors: h.anchors.map((a) => ({ ...a })),
-        snapshot_id: record.snapshot_id,
-        confidence: h.confidence,
-        status: 'active',
-        lineage: { analysis_id: record.analysis_id },
-      });
-      // INV-D3: addParityEntry is idempotent BY BEHAVIOR (semantic identity) —
-      // a re-analysis never duplicates an entry nor disturbs a human ruling.
-      addParityEntry(parityStore, {
-        behavior: h.statement,
-        evidence: h.anchors.map((a) => ({ kind: 'code_anchor' as const, anchor: { ...a } })),
-        source_analysis: record.analysis_id,
-      });
+        for (const h of record.promoted.hypotheses) {
+          addOverlayRecord(overlayStore, {
+            relation: 'business_rule',
+            subject: { path: h.anchors[0]!.path, ...(h.anchors[0]?.node_id !== undefined ? { node_id: h.anchors[0].node_id } : {}) },
+            value: h.statement,
+            anchors: h.anchors.map((a) => ({ ...a })),
+            snapshot_id: record.snapshot_id,
+            confidence: h.confidence,
+            status: 'active',
+            lineage: { analysis_id: record.analysis_id },
+          });
+          // INV-D3: addParityEntry is idempotent BY BEHAVIOR (semantic identity) —
+          // a re-analysis never duplicates an entry nor disturbs a human ruling.
+          addParityEntry(parityStore, {
+            behavior: h.statement,
+            evidence: h.anchors.map((a) => ({ kind: 'code_anchor' as const, anchor: { ...a } })),
+            source_analysis: record.analysis_id,
+          });
+        }
+        // Deterministic linking: an uncertainty rules the parity entry whose
+        // anchors overlap it (same file bytes) — the question and the behavior
+        // it asks about share evidence. Human-authority precedence: only
+        // still-UNRESOLVED, still-unlinked entries are linked — a ruling made
+        // while the paid call ran is never overwritten.
+        for (const a of record.promoted.uncertainties) {
+          const uHashes = new Set(a.anchors.map((x) => `${x.path}|${x.content_hash}`));
+          const target = parityStore.records.find(
+            (r) =>
+              r.ruling === 'unresolved' &&
+              r.decision_claim_id === undefined &&
+              r.evidence.some((ev) => ev.kind === 'code_anchor' && uHashes.has(`${ev.anchor.path}|${ev.anchor.content_hash}`)),
+          );
+          if (target !== undefined) target.decision_claim_id = a.id;
+        }
+        persistOverlay(dir, paths.overlay, overlayStore);
+        persistParity(dir, paths.parity, parityStore);
+      },
+    });
+  } catch (e) {
+    const err = e as Error & { code?: string; domain?: string };
+    if (err.domain === 'trust:state') {
+      return { code: 1, output: `analysis promotion refused (${err.code}): ${err.message} — the analysis record is preserved` };
     }
-    // Deterministic linking: an uncertainty rules the parity entry whose
-    // anchors overlap it (same file bytes) — the question and the behavior it
-    // asks about share evidence. INV-B5 human-authority precedence: only
-    // still-UNRESOLVED, still-unlinked entries are linked — a ruling made
-    // while the paid call ran is never overwritten.
-    for (const a of record.promoted.uncertainties) {
-      const uHashes = new Set(a.anchors.map((x) => `${x.path}|${x.content_hash}`));
-      const target = parityStore.records.find(
-        (r) =>
-          r.ruling === 'unresolved' &&
-          r.decision_claim_id === undefined &&
-          r.evidence.some((ev) => ev.kind === 'code_anchor' && uHashes.has(`${ev.anchor.path}|${ev.anchor.content_hash}`)),
-      );
-      if (target !== undefined) target.decision_claim_id = a.id;
+    if (err.message.startsWith('spec root is locked') || err.name === 'LockHeldError') {
+      return { code: 1, output: `renewal state is locked by another writer (${err.message}) — retry when it completes; the analysis record is preserved` };
     }
-    persistOverlay(paths.overlay, overlayStore);
-    persistParity(paths.parity, parityStore);
-    bumpStateRevision(dir);
-  } finally {
-    lock.release();
+    return { code: 1, output: `analysis promotion refused: ${err.message}` };
   }
 
   return {
@@ -701,23 +746,28 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
       output: `review refused: renewal snapshot is stale.\n${(stale.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}`,
     };
   }
-  // Stores must be loadable AND bound to the active snapshot (B4).
-  if (!state.overlay.ok) return { code: 1, output: `overlay store corrupt: ${state.overlay.message}` };
-  if (state.snapshot !== undefined && state.overlay.store.snapshot_id !== state.snapshot.snapshot_id) {
-    return { code: 1, output: `overlay store is bound to snapshot ${state.overlay.store.snapshot_id} but the active snapshot is ${state.snapshot.snapshot_id} — refresh supersedes state; re-analyze and re-review` };
+  // Stores must be loadable AND bound to the active snapshot (B4, typed view).
+  const reviewOverlay = state.overlay;
+  if (!reviewOverlay.ok && reviewOverlay.code !== 'store_missing') {
+    return { code: 1, output: `overlay store problem (${reviewOverlay.code}): ${reviewOverlay.message}` };
   }
-  if (!state.parity.ok) return { code: 1, output: `parity store corrupt: ${state.parity.message}` };
-  if (state.snapshot !== undefined && state.parity.store.snapshot_id !== state.snapshot.snapshot_id) {
-    return { code: 1, output: `parity store is bound to snapshot ${state.parity.store.snapshot_id} but the active snapshot is ${state.snapshot.snapshot_id} — refresh supersedes state; re-analyze and re-review` };
+  const reviewParity = state.parity;
+  if (!reviewParity.ok && reviewParity.code !== 'store_missing') {
+    return { code: 1, output: `parity store problem (${reviewParity.code}): ${reviewParity.message}` };
   }
 
   const driver = makeRenewalDriver({
-    analyses: state.analyses.records,
+    analyses: [...state.analyses.active, ...state.analyses.historical],
     overlay: state.overlay.ok ? state.overlay.store : emptyOverlay(state.project.snapshot_id),
     parity: state.parity.ok ? state.parity.store : undefined,
     includeStrategy: true,
   });
 
+  // S3-M-03 (trust kernel): the session OWNS its approval identity — the id
+  // is allocated once here, written immutably, remembered, and folded BY
+  // THAT ID (never by re-scanning the approvals directory for the newest
+  // filename, which could fold a different session's approval).
+  const sessionApprovalId = { id: undefined as string | undefined };
   const session = createRenewalClarifySession({
     sessionId: `renew-${state.project.name}-${caps.nowIso().replace(/[^0-9]/g, '').slice(0, 12)}`,
     dir: args.dir,
@@ -726,17 +776,19 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
     driver,
     nextApprovalId: () => nextRenewalApprovalId(paths.approvals),
     writeApproval: (record) => {
-      // INV-A write-time re-authorization: the interactive round-trip took
-      // wall-clock time — re-assert before the immutable approval write.
+      // UX preflight before the immutable approval write (per-write
+      // enforcement lives in trust/fs).
       try {
         persistGuard(args.dir);
       } catch (e) {
         return { ok: false as const, error: (e as Error).message };
       }
-      const result = writeRenewalApproval(paths.approvals, { ...record, approval_id: nextRenewalApprovalId(paths.approvals) });
+      const approvalId = nextRenewalApprovalId(paths.approvals);
+      const result = writeRenewalApproval(args.dir, paths.approvals, { ...record, approval_id: approvalId });
+      if (result.ok) sessionApprovalId.id = approvalId;
       return result.ok ? { ok: true as const } : { ok: false as const, error: result.message };
     },
-    ...(state.snapshot !== undefined ? { snapshotId: state.snapshot.snapshot_id } : {}),
+    snapshotId: state.snapshot.snapshot_id,
   });
 
   if (args.interactive) {
@@ -764,7 +816,7 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
       };
       poll();
     });
-    return finishReview(args.dir, state, session.snapshot().state, paths, caps);
+    return finishReview(args.dir, state, session.snapshot().state, paths, caps, sessionApprovalId.id);
   }
 
   if (args.answersPath === undefined) {
@@ -787,26 +839,29 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
   if (!applied.ok) return { code: 1, output: `answers rejected: ${applied.error}` };
   const approved = session.approve({ pendingChangeIds: [] });
   if (!approved.ok) return { code: 1, output: `approval refused: ${approved.error}` };
-  return finishReview(args.dir, state, session.snapshot().state, paths, caps);
+  return finishReview(args.dir, state, session.snapshot().state, paths, caps, sessionApprovalId.id);
 }
 
-/** After approval: fold the record into parity + write the strategy decision. */
+/** After approval: fold THE SESSION'S record into parity + write strategy. */
 async function finishReview(
   dir: string,
-  state: Exclude<ReturnType<typeof loadRenewalState>, string>,
+  state: ActiveRenewalState,
   finalState: string,
   paths: ReturnType<typeof renewalPaths>,
   caps: RenewCapabilities,
+  sessionApprovalId: string | undefined,
 ): Promise<RenewResult> {
   if (finalState !== 'APPROVED') {
     return { code: 1, output: `review ended in state ${finalState} — nothing written` };
   }
+  // S3-M-03: fold the approval THIS session wrote — by its own id.
+  if (sessionApprovalId === undefined) {
+    return { code: 1, output: 'internal: approval was not written by this review session — nothing to fold' };
+  }
   // H-09: revalidate the source state BEFORE folding the approval — the
   // interactive round-trip takes wall-clock time; a mutation that happened
   // during it must not turn into trusted parity/strategy state.
-  const p = loadRenewalProject(dir);
-  if (!p.ok) return { code: 2, output: p.message };
-  const recheck = await currentStaleness(dir, p.project.target_path, caps.provider(), caps.gitCommit);
+  const recheck = await currentStaleness(dir, state.project.target_path, caps.provider(), caps.gitCommit);
   if (!recheck.ok) return recheck;
   if (!recheck.fresh) {
     return {
@@ -814,64 +869,66 @@ async function finishReview(
       output: `review approval NOT folded: the source changed during the review (snapshot stale).\n${(recheck.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}\nThe approval record is preserved on disk and can guide the re-review after refresh.`,
     };
   }
-  // Newest approval record on disk — loaded SELF-VERIFYING (F3).
-  const files = existsSync(paths.approvals)
-    ? (await import('node:fs')).readdirSync(paths.approvals).filter((f) => /^APPR-\d{4}\.json$/.test(f)).sort()
-    : [];
-  if (files.length === 0) return { code: 1, output: 'internal: approval written but record not found' };
-  const loaded = loadRenewalApproval(join(paths.approvals, files[files.length - 1]!));
-  if (!loaded.ok) return { code: 1, output: `approval record failed verification (${loaded.code}): ${loaded.message} — refusing to fold` };
-  const record = loaded.record;
-  if (record.snapshot_id !== undefined && record.snapshot_id !== state.project.snapshot_id) {
-    return { code: 1, output: `approval ${record.approval_id} is bound to snapshot ${record.snapshot_id} but the active snapshot is ${state.project.snapshot_id} — the approval does not rule the current state` };
-  }
-
-  // INV-B5 (S2-M-01): the fold happens under the lock, over a FRESH parity
-  // read taken AFTER the lock is held — the interactive round-trip took
-  // wall-clock time, and a concurrent analyze must neither lose this approval
-  // nor be lost by a stale fold. Human-authority precedence lives in
-  // applyApprovalToParity (it only rules still-unresolved entries).
-  let lock: SpecRootLock | undefined;
+  // S3-C-04 (trust kernel): full referential integrity — the record is read
+  // through the trusted boundary, its OWN id must match the reference, its
+  // digest and evidence hashes must verify, and it must join the ACTIVE
+  // project and snapshot. No filename rescan, no unscoped grants.
+  const approvalPath = join(paths.approvals, `${sessionApprovalId}.json`);
+  let record;
   try {
-    lock = acquireSpecRootLock(join(dir, '.lco', 'renewal'), caps.nowIso());
+    const raw = JSON.parse(authorizedRead({ projectDir: dir, path: approvalPath }));
+    record = validateRenewalApproval({
+      record: raw,
+      expectedApprovalId: sessionApprovalId,
+      activeScope: { projectName: state.project.name, snapshotId: state.identity.snapshotId },
+      sourceLabel: `approval ${sessionApprovalId}`,
+    });
   } catch (e) {
-    if (e instanceof LockHeldError) {
-      return { code: 1, output: `renewal state is locked by another writer (${e.message}) — the approval is preserved; re-run review to fold it` };
-    }
-    throw e;
+    const err = e as Error & { code?: string };
+    return { code: 1, output: `approval record failed verification (${err.code ?? 'error'}): ${err.message} — refusing to fold` };
   }
+
+  // INV-B5 + trust kernel: the fold is an ADDITIVE transaction — fresh parity
+  // under the writer lock; human-authority precedence lives in
+  // applyApprovalToParity (it only rules still-unresolved entries).
   try {
-    // INV-A write-time re-authorization: the interactive round-trip spanned
-    // the authorization-to-write window — re-assert under the lock.
-    persistGuard(dir);
-    // Fold parity — corrupt parity stops the fold (never empty-overwrite).
-    const par = loadParity(paths.parity);
-    if (!par.ok) return { code: 1, output: `parity store corrupt: ${par.message} — approval preserved, fold refused` };
-    if (state.snapshot !== undefined && par.store.snapshot_id !== state.snapshot.snapshot_id) {
-      return { code: 1, output: `parity store was superseded to snapshot ${par.store.snapshot_id} during the review (active: ${state.snapshot.snapshot_id}) — approval preserved; refresh, re-analyze, re-review` };
-    }
-    const parityStore = par.store;
-    const { applyApprovalToParity } = await import('../../renew/parity/ledger');
-    applyApprovalToParity(parityStore, record);
+    const unresolved = await runRenewalStateTx({
+      projectDir: dir,
+      nowIso: caps.nowIso(),
+      expected: { snapshotId: state.identity.snapshotId, revision: state.identity.revision },
+      policy: 'additive',
+      work: () => undefined,
+      commit: (fresh) => {
+        const foldParity = fresh.parity;
+        if (!foldParity.ok) {
+          throw Object.assign(
+            new Error(`parity store problem (${foldParity.code}): ${foldParity.message} — approval preserved, fold refused`),
+            { code: 'fold_refused' },
+          );
+        }
+        const parityStore = foldParity.store;
+        applyApprovalToParity(parityStore, record);
 
-    // Strategy decision from the STG claim, if answered.
-    const stg = record.decisions.find((d) => d.claim_id === STRATEGY_CLAIM_ID);
-    const strategyDecision =
-      stg !== undefined && MODERNIZATION_STRATEGIES.includes(stg.selected_option as never)
-        ? buildStrategyDecision({
-            strategy: stg.selected_option as (typeof MODERNIZATION_STRATEGIES)[number],
-            rationale: `human selection via clarification (${stg.evidence.answer_text})`,
-            selectedVia: 'workspace',
-            snapshotId: state.project.snapshot_id,
-            nowIso: record.approved_at,
-            approvalId: record.approval_id,
-          })
-        : undefined;
+        // Strategy decision from the STG claim, if answered (S3-H-08: the
+        // workspace selection carries its authorizing approval id).
+        const stg = record.decisions.find((d) => d.claim_id === STRATEGY_CLAIM_ID);
+        const strategyDecision =
+          stg !== undefined && MODERNIZATION_STRATEGIES.includes(stg.selected_option as never)
+            ? buildStrategyDecision({
+                strategy: stg.selected_option as (typeof MODERNIZATION_STRATEGIES)[number],
+                rationale: `human selection via clarification (${stg.evidence.answer_text})`,
+                selectedVia: 'workspace',
+                snapshotId: fresh.identity.snapshotId,
+                nowIso: record.approved_at,
+                approvalId: record.approval_id,
+              })
+            : undefined;
 
-    persistParity(paths.parity, parityStore);
-    if (strategyDecision !== undefined) persistStrategy(paths.strategy, strategyDecision);
-    bumpStateRevision(dir);
-    const unresolved = parityStore.records.filter((r) => r.ruling === 'unresolved').length;
+        persistParity(dir, paths.parity, parityStore);
+        if (strategyDecision !== undefined) persistStrategy(dir, paths.strategy, strategyDecision);
+        return parityStore.records.filter((r) => r.ruling === 'unresolved').length;
+      },
+    });
     return {
       code: 0,
       output: [
@@ -879,8 +936,15 @@ async function finishReview(
         `  parity: ${unresolved} still unresolved — rule them (explicit lco renew review answers or edit rulings) before planning`,
       ].join('\n'),
     };
-  } finally {
-    lock.release();
+  } catch (e) {
+    const err = e as Error & { code?: string; domain?: string; name?: string };
+    if (err.name === 'LockHeldError' || err.message.startsWith('spec root is locked')) {
+      return { code: 1, output: `renewal state is locked by another writer (${err.message}) — the approval is preserved; re-run review to fold it` };
+    }
+    if (err.domain === 'trust:state') {
+      return { code: 1, output: `review fold refused (${err.code}): ${err.message} — the approval record is preserved` };
+    }
+    return { code: 1, output: `review fold refused: ${err.message}` };
   }
 }
 
@@ -893,19 +957,25 @@ export async function cmdRenewPlan(
   // INV-A: authorize BEFORE any trusted-state read (plan reads + writes).
   const stateAuth = authorizeRenewalState(args.dir);
   if (!stateAuth.ok) return { code: 2, output: `renewal plan refused: ${stateAuth.message}` };
-  const state = safeState(args.dir);
-  if (typeof state === 'string') return { code: 2, output: state };
+  let state: ActiveRenewalState;
+  try {
+    state = loadActiveState(args.dir);
+  } catch (e) {
+    return { code: 2, output: (e as Error).message };
+  }
   const paths = renewalPaths(args.dir);
-  const p = loadRenewalProject(args.dir);
-  if (!p.ok) return { code: 2, output: p.message };
 
-  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
+  const stale = await currentStaleness(args.dir, state.project.target_path, caps.provider(), caps.gitCommit);
   if (!stale.ok) return stale;
   if (!stale.fresh) {
     return { code: 1, output: `plan refused: snapshot is stale.\n${(stale.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}` };
   }
 
-  // Explicit headless strategy selection (a recorded human act).
+  // Explicit headless strategy selection is a recorded human act. The
+  // decision is BUILT here and WRITTEN inside the transaction commit —
+  // previously the write happened before parity/plan validation and outside
+  // every lock (S3-H-03); now a refused plan writes no strategy either.
+  let flagStrategyDecision: ReturnType<typeof buildStrategyDecision> | undefined;
   if (args.strategy !== undefined) {
     if (!MODERNIZATION_STRATEGIES.includes(args.strategy as never)) {
       return { code: 2, output: `unknown strategy '${args.strategy}' — one of ${MODERNIZATION_STRATEGIES.join(', ')}` };
@@ -913,119 +983,176 @@ export async function cmdRenewPlan(
     if ((args.strategyRationale ?? '').trim() === '') {
       return { code: 2, output: '--strategy requires --strategy-rationale (selection is a human act and must be explained)' };
     }
-    const snap = loadSnapshotFile(args.dir);
-    if (!snap.ok) return { code: 1, output: snap.message };
-    persistStrategy(
-      paths.strategy,
-      buildStrategyDecision({
-        strategy: args.strategy as (typeof MODERNIZATION_STRATEGIES)[number],
-        rationale: args.strategyRationale!,
-        selectedVia: 'flag',
-        snapshotId: snap.snapshot.snapshot_id,
-        nowIso: caps.nowIso(),
-      }),
-    );
+    flagStrategyDecision = buildStrategyDecision({
+      strategy: args.strategy as (typeof MODERNIZATION_STRATEGIES)[number],
+      rationale: args.strategyRationale!,
+      selectedVia: 'flag',
+      snapshotId: state.identity.snapshotId,
+      nowIso: caps.nowIso(),
+    });
   }
 
-  const strategyLoad = loadStrategy(paths.strategy);
-  if (!strategyLoad.ok) return { code: 1, output: `plan refused: ${strategyLoad.message}` };
-  // C-08/G2 command-level joins: strategy and overlay must belong to the
-  // ACTIVE snapshot; analyses are filtered to it (history is not an input).
-  const snapForJoins = loadSnapshotFile(args.dir);
-  if (!snapForJoins.ok) return { code: 1, output: snapForJoins.message };
-  const activeId = snapForJoins.snapshot.snapshot_id;
-  if (strategyLoad.decision.snapshot_id !== activeId) {
-    return { code: 1, output: `plan refused: the selected strategy belongs to snapshot ${strategyLoad.decision.snapshot_id} but the active snapshot is ${activeId} — re-select the strategy (lco renew review or --strategy) for the current source state` };
+  // C-08/G2 command-level joins from the TYPED active view: strategy and
+  // overlay must belong to the ACTIVE snapshot; analyses are filtered to it.
+  const strategyForPlan =
+    flagStrategyDecision !== undefined
+      ? flagStrategyDecision
+      : state.strategy.ok
+        ? state.strategy.store
+        : undefined;
+  if (strategyForPlan === undefined) {
+    const why = !state.strategy.ok
+      ? state.strategy.code === 'store_cross_snapshot'
+        ? `the selected strategy belongs to a prior snapshot — ${state.strategy.message}`
+        : state.strategy.code === 'store_corrupt'
+          ? `strategy.json is corrupt — ${state.strategy.message}`
+          : 'no strategy selected yet — selection is a human act (lco renew review or --strategy)'
+      : 'no strategy selected yet — selection is a human act (lco renew review or --strategy)';
+    return { code: 1, output: `plan refused: ${why}` };
   }
-  if (!state.overlay.ok) return { code: 1, output: `plan refused: overlay store corrupt — ${state.overlay.message}` };
-  if (state.overlay.store.snapshot_id !== activeId) {
-    return { code: 1, output: `plan refused: overlay store is bound to snapshot ${state.overlay.store.snapshot_id} but the active snapshot is ${activeId} — refresh supersedes overlay state` };
+  if (strategyForPlan.snapshot_id !== state.identity.snapshotId) {
+    return { code: 1, output: `plan refused: the selected strategy belongs to snapshot ${strategyForPlan.snapshot_id} but the active snapshot is ${state.identity.snapshotId} — re-select the strategy (lco renew review or --strategy) for the current source state` };
   }
-  const activeAnalyses = state.analyses.records.filter((a) => a.snapshot_id === activeId);
-
-  if (!state.parity.ok) return { code: 1, output: `plan refused: ${state.parity.message}` };
+  if (!state.overlay.ok) {
+    return { code: 1, output: `plan refused: overlay store problem (${state.overlay.code}) — ${state.overlay.message}` };
+  }
+  const overlayForPlan = state.overlay.store;
+  const activeAnalyses = state.analyses.active;
+  if (state.analyses.corrupt.length > 0) {
+    return { code: 1, output: `plan refused: corrupt analysis records (${state.analyses.corrupt.join(', ')}) — inspect or remove them, then re-run` };
+  }
+  if (!state.parity.ok) {
+    return { code: 1, output: `plan refused: parity store problem (${state.parity.code}) — ${state.parity.message}` };
+  }
   const parityStoreForPlan = state.parity.store;
-  const snapForGate = loadSnapshotFile(args.dir);
-  if (!snapForGate.ok) return { code: 1, output: snapForGate.message };
-  // F4: approval references resolve to VERIFIED records bound to the active
-  // snapshot — a fabricated APPR-9999 blocks instead of authorizing.
-  const gate = await import('../../renew/parity/ledger').then((m) =>
-    m.parityGate(parityStoreForPlan, p.project.target_path, {
-      loadApproval: (approvalId) => {
-        const loaded = loadRenewalApproval(join(paths.approvals, `${approvalId}.json`));
-        return loaded.ok ? loaded.record : undefined;
-      },
-      activeSnapshot: snapForGate.snapshot.snapshot_id,
-    }),
-  );
-  if (!gate.ok) {
-    return {
-      code: 1,
-      output: [
-        'plan refused: parity ledger is not plannable.',
-        ...gate.blockers.map((b) => `  - ${b.id}: ${b.reason}`),
-      ].join('\n'),
-    };
-  }
 
-  const graph = await caps.provider().graph();
-  if (!graph.ok) return { code: 1, output: `graph unreadable: ${graph.message}` };
-  const nodeIdsByFile = new Map<string, string[]>();
-  for (const n of graph.graph.nodes) {
-    if (n.source_file === undefined) continue;
-    nodeIdsByFile.set(n.source_file, [...(nodeIdsByFile.get(n.source_file) ?? []), n.node_id]);
-  }
-  const blastRadius = (path: string): string[] => {
-    const impacted = new Set<string>();
-    for (const seedId of nodeIdsByFile.get(path) ?? []) {
-      const r = affectedSync(graph, seedId);
-      for (const hit of r) {
-        for (const n of graph.graph.nodes) {
-          if (n.node_id === hit && n.source_file !== undefined) impacted.add(n.source_file);
-        }
-      }
+  // F4 + S3-C-04 (trust kernel): approval references resolve to FULLY
+  // VALIDATED records — own identity (id join), digest, evidence hashes, and
+  // ACTIVE project/snapshot scope. A fabricated or misfiled APPR id blocks.
+  const loadApprovalValidated = (approvalId: string) => {
+    try {
+      const raw = JSON.parse(authorizedRead({ projectDir: args.dir, path: join(paths.approvals, `${approvalId}.json`) }));
+      return validateRenewalApproval({
+        record: raw,
+        expectedApprovalId: approvalId,
+        activeScope: { projectName: state.project.name, snapshotId: state.identity.snapshotId },
+        sourceLabel: `approval ${approvalId}`,
+      });
+    } catch {
+      return undefined;
     }
-    impacted.delete(path);
-    return [...impacted].sort();
   };
 
-  const snap = loadSnapshotFile(args.dir);
-  if (!snap.ok) return { code: 1, output: snap.message };
-  const manifestFiles = stale.manifest;
-  const archView = buildArchitectureView(graph.graph, manifestFiles, snap.snapshot.snapshot_id);
+  // TRUST KERNEL: the whole plan runs as a STRICT transaction — the read
+  // view's snapshot AND revision must still hold at commit; any intervening
+  // trusted mutation (analyze fold, review ruling, refresh) is a typed
+  // stale_revision/snapshot_superseded refusal and NOTHING is written
+  // (S3-H-03). The spec write lands inside the tx critical section.
+  try {
+    const plan = await runRenewalStateTx({
+      projectDir: args.dir,
+      nowIso: caps.nowIso(),
+      expected: { snapshotId: state.identity.snapshotId, revision: state.identity.revision },
+      policy: 'strict',
+      work: async () => {
+        const gate = await import('../../renew/parity/ledger').then((m) =>
+          m.parityGate(parityStoreForPlan, state.project.target_path, {
+            loadApproval: loadApprovalValidated,
+            activeSnapshot: state.identity.snapshotId,
+          }),
+        );
+        if (!gate.ok) {
+          throw Object.assign(
+            new Error(['plan refused: parity ledger is not plannable.', ...gate.blockers.map((b) => `  - ${b.id}: ${b.reason}`)].join('\n')),
+            { code: 'plan_gate' },
+          );
+        }
 
-  const plan = buildModernizationPlan({
-    snapshot: snap.snapshot,
-    architectureView: archView,
-    overlay: state.overlay.store,
-    parity: parityStoreForPlan,
-    strategy: strategyLoad.decision,
-    analyses: activeAnalyses,
-    projectName: state.project.name,
-    projectDir: args.dir,
-    blastRadius,
-  });
-  if (!plan.ok) {
-    const blockers = 'blockers' in plan && plan.blockers ? plan.blockers.map((b) => `  - ${b.id}: ${b.reason}`).join('\n') : '';
-    return { code: 1, output: `plan refused (${plan.code}): ${plan.message}${blockers ? `\n${blockers}` : ''}` };
-  }
+        const graph = await caps.provider().graph();
+        if (!graph.ok) return { ok: false as const, code: 1, output: `graph unreadable: ${graph.message}` };
+        const nodeIdsByFile = new Map<string, string[]>();
+        for (const n of graph.graph.nodes) {
+          if (n.source_file === undefined) continue;
+          nodeIdsByFile.set(n.source_file, [...(nodeIdsByFile.get(n.source_file) ?? []), n.node_id]);
+        }
+        const blastRadius = (path: string): string[] => {
+          const impacted = new Set<string>();
+          for (const seedId of nodeIdsByFile.get(path) ?? []) {
+            const r = affectedSync(graph, seedId);
+            for (const hit of r) {
+              for (const n of graph.graph.nodes) {
+                if (n.node_id === hit && n.source_file !== undefined) impacted.add(n.source_file);
+              }
+            }
+          }
+          impacted.delete(path);
+          return [...impacted].sort();
+        };
 
-  // B7/C-10 family: re-verify freshness IMMEDIATELY before the final write —
-  // state must not have drifted between command entry and finalization.
-  const finalCheck = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
-  if (!finalCheck.ok) return finalCheck;
-  if (!finalCheck.fresh) {
-    return { code: 1, output: `plan refused: the source changed during planning.\n${(finalCheck.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}\nNOTHING was written.` };
-  }
+        const archView = buildArchitectureView(graph.graph, stale.manifest, state.snapshot.snapshot_id);
+        const planBuilt = buildModernizationPlan({
+          snapshot: state.snapshot,
+          architectureView: archView,
+          overlay: overlayForPlan,
+          parity: parityStoreForPlan,
+          strategy: strategyForPlan,
+          analyses: activeAnalyses,
+          projectName: state.project.name,
+          projectDir: args.dir,
+          blastRadius,
+        });
+        if (!planBuilt.ok) {
+          const blockers = 'blockers' in planBuilt && planBuilt.blockers ? planBuilt.blockers.map((b) => `  - ${b.id}: ${b.reason}`).join('\n') : '';
+          return { ok: false as const, code: 1, output: `plan refused (${planBuilt.code}): ${planBuilt.message}${blockers ? `\n${blockers}` : ''}` };
+        }
 
-  writeSpecDir(args.dir, plan.bundle, caps.nowIso());
-  let output = `plan written: ${join(args.dir, 'spec')} (${plan.bundle.tasks.length} task(s), topo order ${plan.topoOrder.join(' → ')})`;
-  if (args.freeze) {
-    const frozen = await cmdFreeze(args.dir, caps.nowIso());
-    output += `\n${frozen.output}`;
-    return { code: frozen.code, output };
+        // B7/C-10 family: re-verify freshness IMMEDIATELY before the final
+        // write — the source must not have drifted between entry and commit.
+        const finalCheck = await currentStaleness(args.dir, state.project.target_path, caps.provider(), caps.gitCommit);
+        if (!finalCheck.ok) return finalCheck;
+        if (!finalCheck.fresh) {
+          return {
+            ok: false as const,
+            code: 1,
+            output: `plan refused: the source changed during planning.\n${(finalCheck.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}\nNOTHING was written.`,
+          };
+        }
+        return { ok: true as const, bundle: planBuilt.bundle, topoOrder: planBuilt.topoOrder };
+      },
+      commit: (_fresh, workResult) => {
+        if (!workResult.ok) return workResult;
+        // S3-H-04 shadow: a pre-refresh spec cannot survive here (refresh
+        // archives it), and the tx re-validated the epoch — write the spec
+        // inside the critical section via the shared staging core.
+        stageSpecDir(args.dir, workResult.bundle);
+        if (flagStrategyDecision !== undefined) {
+          persistStrategy(args.dir, paths.strategy, flagStrategyDecision);
+        }
+        return {
+          ok: true as const,
+          output: `plan written: ${join(args.dir, 'spec')} (${workResult.bundle.tasks.length} task(s), topo order ${workResult.topoOrder.join(' → ')})`,
+        };
+      },
+    });
+    if (!plan.ok) return plan;
+    let output = plan.output;
+    if (args.freeze) {
+      const frozen = await cmdFreeze(args.dir, caps.nowIso());
+      output += `\n${frozen.output}`;
+      return { code: frozen.code, output };
+    }
+    return { code: 0, output };
+  } catch (e) {
+    const err = e as Error & { code?: string; domain?: string; name?: string };
+    if (err.name === 'LockHeldError' || err.message.startsWith('spec root is locked')) {
+      return { code: 1, output: `renewal state is locked by another writer (${err.message}) — retry when it completes` };
+    }
+    if (err.domain === 'trust:state') {
+      return { code: 1, output: `plan refused: trusted state changed during planning (${err.code}) — ${err.message}\nRe-run the plan against current state.` };
+    }
+    if (err.code === 'plan_gate') return { code: 1, output: err.message };
+    return { code: 1, output: `plan refused: ${err.message}` };
   }
-  return { code: 0, output };
 }
 
 function affectedSync(
@@ -1061,7 +1188,10 @@ export async function cmdRenewExport(args: { dir: string; out?: string }, caps: 
       out: args.out,
     });
     if (!contained.ok) return { code: 2, output: `export refused: ${contained.message}` };
-    atomicWrite(contained.path, report);
+    // Trust kernel: the write itself authorizes the final destination AND its
+    // staging (unpredictable exclusive temp) — a pre-planted out.tmp is inert
+    // (S3-C-01); no-clobber keeps export non-destructive.
+    authorizedWrite({ projectDir: args.dir, targetDir: targetReal, path: contained.path, content: report, noClobber: true });
     return { code: 0, output: `report written: ${contained.path}` };
   }
   return { code: 0, output: report };

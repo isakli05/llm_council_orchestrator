@@ -109,6 +109,13 @@ export interface ClarifySessionOptions {
   budget?: RunBudgetSpec;
   nowMs?: () => number;
   maxRounds?: number;
+  /** TRUST KERNEL (S3-H-06 neighboring variant): the ledger the injected
+   *  adapter's transport charges. When supplied, the session USES it (with
+   *  the session envelope applied at construction by the caller) instead of
+   *  building a second, disconnected ledger the transport never charges —
+   *  the exact defect where interactive sessions capped at zero transport
+   *  attempts while an orphaned runtime ledger absorbed the real spend. */
+  sharedLedger?: BudgetLedger;
 }
 
 export interface ClarifySession {
@@ -118,6 +125,26 @@ export interface ClarifySession {
   approve(input: { pendingChangeIds: string[] }): SessionOpResult;
   cancel(reason: string): void;
   snapshot(): SessionSnapshot;
+}
+
+/** The session-wide budget envelope: maxRounds × the per-run envelope (×2
+ *  headroom when enrichment runs). Exported so the interactive boundary can
+ *  construct the ONE ledger the adapter binds BEFORE the session exists. */
+export function sessionLedgerEnvelope(args: {
+  variant: 'single' | 'council';
+  topology: 'fused' | 'decomposed';
+  enrich: boolean;
+  maxRounds: number;
+  hasClock: boolean;
+  overrides?: RunBudgetSpec;
+}): { maxAttempts: number; maxTokens?: number; maxWallMs?: number } {
+  const perRun = resolveRunBudget(args.variant, { hasClock: args.hasClock, overrides: args.overrides }, args.topology);
+  const scale = args.maxRounds * (args.enrich ? 2 : 1);
+  return {
+    maxAttempts: perRun.maxAttempts * scale,
+    ...(perRun.maxTokens !== undefined ? { maxTokens: perRun.maxTokens * scale } : {}),
+    ...(perRun.maxWallMs !== undefined ? { maxWallMs: perRun.maxWallMs * args.maxRounds } : {}),
+  };
 }
 
 export function createClarifySession(opts: ClarifySessionOptions): ClarifySession {
@@ -130,22 +157,18 @@ export function createClarifySession(opts: ClarifySessionOptions): ClarifySessio
     throw new Error(`refusing to start: ${join(opts.dir, 'spec')} already exists — interactive clarification writes spec/ only at approval`);
   }
 
-  // SESSION-wide budget: one ledger for the whole session (adapters bind to
-  // their ledger at construction), sized maxRounds × the per-run envelope the
-  // headless command uses (×2 headroom for the enrichment call each
-  // question-round may add). Wall time scales with rounds.
-  const perRun = resolveRunBudget(opts.variant, { hasClock: opts.nowMs !== undefined, overrides: opts.budget }, topology);
-  const scale = maxRounds * (opts.enrich ? 2 : 1);
-  // Absent caps stay absent (no token cap by default — a guessed number would
-  // be dishonest); present caps scale with the session's round bound.
-  const ledger: BudgetLedger = createBudgetLedger(
-    {
-      maxAttempts: perRun.maxAttempts * scale,
-      ...(perRun.maxTokens !== undefined ? { maxTokens: perRun.maxTokens * scale } : {}),
-      ...(perRun.maxWallMs !== undefined ? { maxWallMs: perRun.maxWallMs * maxRounds } : {}),
-    },
-    { nowMs: opts.nowMs },
-  );
+  // SESSION-wide budget: ONE ledger for the whole session — the same
+  // instance the adapter's transport charges (adapters bind their ledger at
+  // construction), sized maxRounds × the per-run envelope the headless
+  // command uses (×2 headroom for the enrichment call each question-round
+  // may add). When the caller supplies the adapter-bound ledger it is used
+  // directly (the caller sizes it with sessionLedgerEnvelope below).
+  const ledger: BudgetLedger =
+    opts.sharedLedger ??
+    createBudgetLedger(
+      sessionLedgerEnvelope({ variant: opts.variant, topology, enrich: opts.enrich === true, maxRounds, hasClock: opts.nowMs !== undefined, overrides: opts.budget }),
+      { nowMs: opts.nowMs },
+    );
 
   // --- session bookkeeping -------------------------------------------------------
   let state: ClarifySessionState = 'STARTING';

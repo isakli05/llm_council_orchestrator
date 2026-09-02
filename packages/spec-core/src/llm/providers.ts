@@ -39,6 +39,14 @@ const openRouterCost: CostExtractor = (usage) => {
 /** Per-call context the factories need beyond the role itself. */
 export interface RoleCallContext {
   routingMode: RoutingMode;
+  /**
+   * Trust kernel (S3-H-05): when present, the built adapter measures the
+   * EXACT serialized wire request through this hook and the hook's throw
+   * aborts before any transport call. Renewal paid routes install the
+   * measuring/capping hook; absent = measuring off (non-renewal consumers
+   * keep their documented envelope policy).
+   */
+  onSerializedWire?: (requestBody: string) => void;
 }
 
 /**
@@ -157,5 +165,9 @@ export function buildRoleAdapter(
       : role.providerKind === 'routellm'
         ? toRouteLlmConfig(role, apiKey, ctx)
         : toGenericConfig(role, apiKey);
-  return createOpenAiCompatibleLlm({ ...base, ...(ctx.budget !== undefined ? { budget: ctx.budget } : {}) });
+  return createOpenAiCompatibleLlm({
+    ...base,
+    ...(ctx.budget !== undefined ? { budget: ctx.budget } : {}),
+    ...(ctx.onSerializedWire !== undefined ? { onSerializedWire: ctx.onSerializedWire } : {}),
+  });
 }

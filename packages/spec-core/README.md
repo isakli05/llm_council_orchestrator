@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (1329 test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
+pnpm --filter ./packages/spec-core test    # vitest (2200+ test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -1459,7 +1459,7 @@ birlikte yaşar (bkz. "Yayın ve Sahiplik").
   `signTest()` kararının üç tekrarın üzerinden hesaplanması. Ön-kayıt güncellendi:
   model `glm-5.3` (GLM Coding Plan OpenAI-uyumlu uç), 3 tekrar × 20 görev × 2
   varyant, koşum komutları ve anonim rapor kuralı dahil. Yayımlanan hiçbir yüzey
-  kaynak belgeyi, iş adlarını veya kişisel ayrıntıyı içermez — 1329 test.
+  kaynak belgeyi, iş adlarını veya kişisel ayrıntıyı içermez — 2200+ test.
 - **2026-08-27 — dış-denetim kalıntı kapanış programı:** SEC-003 — MCP izinli-kök
   politikası BAĞLAYICI hale geldi: etkin kök = realpath(`LCO_MCP_EXEC_ROOT`) ya da
   (pin yoksa) realpath(sunucu çalışma dizini); "politika yok" modu kaldırıldı,

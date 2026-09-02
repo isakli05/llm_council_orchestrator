@@ -40,14 +40,14 @@ const Sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const ApprovalDecisionSchema = z
   .object({
     claim_id: z.string().regex(/^(UNC|OVL|STG|PAR)-\d{4}$/),
-    kind: z.enum(['uncertainty', 'overlay', 'strategy', 'parity']),
+    kind: z.enum(['uncertainty', 'overlay_review', 'parity', 'strategy']),
     selected_option: z.string().min(1).max(500).optional(),
-    free_text: z.string().max(4000).optional(),
+    free_text: z.string().min(1).max(4_000).optional(),
     evidence: z
       .object({
-        source: z.string().min(1),
-        answer_text: z.string().max(8000),
-        hash: Sha256,
+        source: z.string().min(1).max(200),
+        answer_text: z.string().min(1).max(8_000),
+        hash: Sha256, // sha256 of answer_text — computed locally, never by the model
       })
       .strict(),
   })

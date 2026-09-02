@@ -196,7 +196,12 @@ function buildLlmPlanFromProfile(resolved: ResolvedProfile, ledger: BudgetLedger
  * runs the SAME gates (behavior locked by generate.test.ts).
  */
 export function resolveGenerationRuntime(
-  opts: Pick<GenerateOptions, 'variant' | 'llm' | 'llmProfile' | 'budget' | 'nowMs'>,
+  opts: Pick<GenerateOptions, 'variant' | 'llm' | 'llmProfile' | 'budget' | 'nowMs'> & {
+    /** Trust kernel: inject the ledger the adapter must charge (interactive
+     *  sessions pass the session-sized ledger so transport spend and session
+     *  accounting are one lineage). */
+    injectedLedger?: BudgetLedger;
+  },
 ): { topology: 'fused' | 'decomposed'; ledger: BudgetLedger; llm: LlmAdapter | LlmPlan } {
   // --- 0b. profile/variant agreement (§7: explicit and predictable) -----------
   const resolvedProfile = opts.llmProfile?.resolved;
@@ -217,7 +222,7 @@ export function resolveGenerationRuntime(
     },
     topology,
   );
-  const ledger: BudgetLedger = createBudgetLedger(limits, { nowMs: opts.nowMs });
+  const ledger: BudgetLedger = opts.injectedLedger ?? createBudgetLedger(limits, { nowMs: opts.nowMs });
 
   // --- LLM resolution (precedence: test injection > named profile > legacy env) -
   const llm: LlmAdapter | LlmPlan =

@@ -44,6 +44,13 @@ import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
 import { renewalPaths, loadRenewalProject } from '../renew/project/project';
 import { singleRoutePlan } from '../llm/plan';
 import { createHttpLlm } from '../eval/llm/http';
+import {
+  MAX_RECOVERY_WIRE_BYTES,
+  createPaidOperation,
+  resolveLegacyEnvRoute,
+  resolvedRouteDigest,
+  wireCap,
+} from '../renew/trust/paid';
 import { renewConsentDigest } from './consent';
 import { RECOVERY_PROMPT_PROTOCOL } from '../renew/recovery/prompts';
 import { createBudgetLedger } from '../eval/budget';
@@ -229,6 +236,7 @@ async function renewalConsentState(
   graphDigest?: string;
   profileFingerprint?: string;
   resolvedModel?: string;
+  routeDigest?: `sha256:${string}`;
 }> {
   const dirReal = realpathSync(dir);
   let snapshotId: string | undefined;
@@ -251,6 +259,7 @@ async function renewalConsentState(
   }
   let profileFingerprint: string | undefined;
   let resolvedModel: string | undefined;
+  let legacyRouteDigest: `sha256:${string}` | undefined;
   if (opts?.llmProfile !== undefined && opts.resolveProfile !== undefined) {
     const resolved = opts.resolveProfile(opts.llmProfile);
     if (resolved.ok) {
@@ -276,11 +285,27 @@ async function renewalConsentState(
     // post-consent resolution refuses it before any call (zero spend), so an
     // unbound digest can never authorize a paid request.
   } else {
-    // Legacy-env route: bind the env-resolved model when the operator set it
-    // (the exact model createHttpLlm will request).
+    // Legacy-env route (S3-H-07, trust kernel): resolve EVERY effectual
+    // field — base URL, model, max tokens, extra body — and bind the
+    // CANONICAL ROUTE DIGEST, not the model alone.
     resolvedModel = process.env.LCO_LLM_MODEL;
+    try {
+      legacyRouteDigest = resolvedRouteDigest(
+        resolveLegacyEnvRoute(process.env, { maxAttempts: defaultRenewalBudget().maxAttempts ?? 8 }),
+      );
+    } catch {
+      // unconfigured env: nothing to bind — post-consent resolution refuses
+      // before any adapter exists (zero spend), same as before.
+    }
   }
-  return { dirReal, snapshotId, graphDigest, ...(profileFingerprint !== undefined ? { profileFingerprint } : {}), ...(resolvedModel !== undefined ? { resolvedModel } : {}) };
+  return {
+    dirReal,
+    snapshotId,
+    graphDigest,
+    ...(profileFingerprint !== undefined ? { profileFingerprint } : {}),
+    ...(resolvedModel !== undefined ? { resolvedModel } : {}),
+    ...(legacyRouteDigest !== undefined ? { routeDigest: legacyRouteDigest } : {}),
+  };
 }
 
 /**
@@ -430,9 +455,12 @@ const TOOLS: readonly ToolDef[] = [
       const { bundle, rawSections } = loaded;
 
       // DRY PREVIEW (the default surface): the shared check core at yes:false
-      // plus the consent digest this server would require to execute.
+      // plus the consent digest this server would require to execute. S3-H-10
+      // (trust kernel): the digest binds the EFFECTUAL execution directory —
+      // the same commands under a different root are a different consent.
       if (input.consent === undefined) {
-        const digest = checkPreviewDigest(bundle, input.task);
+        const effectualDir = realpathSync(input.dir);
+        const digest = checkPreviewDigest(bundle, input.task, effectualDir);
         const dry = await cmdCheck(input.dir, {
           task: input.task,
           yes: false,
@@ -571,25 +599,13 @@ const TOOLS: readonly ToolDef[] = [
       // conservative default (UX-001 ruling); council is explicit.
       const profile = input.profile ?? DEFAULT_GENERATE_PROFILE;
       const variant = input.variant ?? DEFAULT_GENERATE_VARIANT;
-      const expected = generateConsentDigest(input.intent!, profile, variant, input.llmProfile);
-
-      // 1. No consent: the actionable refusal IS the preview — it carries
-      //    this request's digest (there is no dry-run work worth exit 0).
-      if (input.consent === undefined) {
-        return { code: 2, output: refuseGenerateConsentMissing(expected) };
-      }
-      // 2. Server-start opt-in (exactly '1'; independent of LCO_MCP_ALLOW_EXEC).
-      if (!call.allowGenerate) {
-        return { code: 2, output: refuseGenerateNotOptedIn() };
-      }
-      // 3. Consent bound to the recomputed effectual content.
-      if (input.consent.digest !== expected) {
-        return { code: 2, output: refuseGenerateDigestMismatch(input.consent.digest, expected) };
-      }
-      // 4. §17 named-profile resolution — ONLY names the operator configured;
-      //    an unknown name, a missing config, or a variant disagreement is a
-      //    structured refusal BEFORE any adapter exists (zero calls).
-      let llmProfile: { name: string; resolved: ResolvedProfile } | undefined;
+      // S3-H-10 (trust kernel): RESOLVE BEFORE DIGEST — when a named profile
+      // is requested, its effectual routing content (variant agreement,
+      // routing mode, per-role gateway/model) resolves FIRST and its
+      // fingerprint binds into the digest, so consent authorizes what will
+      // actually run — never a NAME that could resolve elsewhere afterwards.
+      let preResolvedProfile: { name: string; resolved: ResolvedProfile } | undefined;
+      let resolvedFingerprint: string | undefined;
       if (input.llmProfile !== undefined) {
         const resolved = call.resolveLlmProfile(input.llmProfile);
         if (!resolved.ok) {
@@ -604,8 +620,34 @@ const TOOLS: readonly ToolDef[] = [
               'they must agree; re-send with a matching variant/profile pair (the consent digest covers both)',
           };
         }
-        llmProfile = resolved.profile;
+        preResolvedProfile = resolved.profile;
+        const rp = resolved.profile.resolved;
+        resolvedFingerprint = `sha256:${createHash('sha256')
+          .update(
+            JSON.stringify({ name: resolved.profile.name, routingMode: rp.routingMode, roles: rp.roles }),
+            'utf8',
+          )
+          .digest('hex')}`;
       }
+      const expected = generateConsentDigest(input.intent!, profile, variant, input.llmProfile, resolvedFingerprint);
+
+      // 1. No consent: the actionable refusal IS the preview — it carries
+      //    this request's digest (there is no dry-run work worth exit 0).
+      if (input.consent === undefined) {
+        return { code: 2, output: refuseGenerateConsentMissing(expected) };
+      }
+      // 2. Server-start opt-in (exactly '1'; independent of LCO_MCP_ALLOW_EXEC).
+      if (!call.allowGenerate) {
+        return { code: 2, output: refuseGenerateNotOptedIn() };
+      }
+      // 3. Consent bound to the recomputed effectual content.
+      if (input.consent.digest !== expected) {
+        return { code: 2, output: refuseGenerateDigestMismatch(input.consent.digest, expected) };
+      }
+      // 4. §17 named-profile resolution — already resolved BEFORE the digest
+      //    above (S3-H-10); reuse that resolution. Unknown names and variant
+      //    disagreements refused before any digest or adapter existed.
+      const llmProfile = preResolvedProfile;
       // Full chain: the shared generate core. call.llm is the boundary-injected
       // (test/library) adapter; when unset cmdGenerate resolves createHttpLlm()
       // itself (or the named profile's per-role adapters) and throws
@@ -739,6 +781,7 @@ const TOOLS: readonly ToolDef[] = [
         ...(input.llmProfile !== undefined ? { llmProfile: input.llmProfile } : {}),
         ...(consentState.profileFingerprint !== undefined ? { profileFingerprint: consentState.profileFingerprint } : {}),
         ...(consentState.resolvedModel !== undefined ? { resolvedModel: consentState.resolvedModel } : {}),
+        ...(consentState.routeDigest !== undefined ? { routeDigest: consentState.routeDigest } : {}),
         promptProtocol: RECOVERY_PROMPT_PROTOCOL,
         budget,
       });
@@ -769,8 +812,16 @@ const TOOLS: readonly ToolDef[] = [
       }
       // LLM resolution (after the gate): test-injected adapter, a VALIDATED
       // renewal-variant named profile (no casts — H-04), or the legacy env
-      // (fail-closed, no invented keys). The budget ledger is INJECTED (H-05).
+      // (fail-closed, no invented keys). S3-H-06 (trust kernel): ONE ledger
+      // per operation — the SAME instance charges the transport and the
+      // pipeline accounting (two instances was exactly how spend went
+      // uncounted). S3-H-05: adapters measure/cap the exact serialized wire
+      // request before transport.
       const caps = renewCaps(input.dir, nowIso);
+      const { createBudgetLedger } = await import('../eval/budget');
+      const opLedger = createBudgetLedger(budget, { nowMs: Date.now });
+      const { buildRoleAdapter } = await import('../llm/providers');
+      const cap = wireCap(MAX_RECOVERY_WIRE_BYTES);
       let llmPlan;
       if (call.llm !== undefined) {
         llmPlan = singleRoutePlan(call.llm);
@@ -791,10 +842,11 @@ const TOOLS: readonly ToolDef[] = [
             output: `renewal analysis refused: llm profile '${resolved.profile.name}' has no route for role 'renew_recover' (zero LLM calls)`,
           };
         }
-        const { buildRoleAdapter } = await import('../llm/providers');
-        const { createBudgetLedger } = await import('../eval/budget');
-        const ledger = createBudgetLedger(budget, { nowMs: Date.now });
-        const adapter = buildRoleAdapter(role, process.env, { routingMode: profile.routingMode, budget: ledger });
+        const adapter = buildRoleAdapter(role, process.env, {
+          routingMode: profile.routingMode,
+          budget: opLedger,
+          onSerializedWire: cap.onSerializedWire,
+        });
         llmPlan = {
           forRole: () => ({
             adapter,
@@ -802,8 +854,18 @@ const TOOLS: readonly ToolDef[] = [
           }),
         };
       } else {
+        // Legacy env via the paid kernel: the FULL route (base URL, model,
+        // max tokens, extra body) resolves once, fails closed, and the
+        // adapter is wire-capped with the SAME ledger (S3-H-07).
         try {
-          llmPlan = singleRoutePlan(createHttpLlm());
+          const route = resolveLegacyEnvRoute(process.env, { maxAttempts: budget.maxAttempts ?? 8 });
+          const apiKey = process.env.LCO_LLM_API_KEY?.trim();
+          if (apiKey === undefined || apiKey === '') {
+            throw new Error('LLM env incomplete: LCO_LLM_API_KEY must be set with LCO_LLM_BASE_URL and LCO_LLM_MODEL');
+          }
+          llmPlan = singleRoutePlan(
+            createPaidOperation({ route, apiKey, ledger: opLedger, wireByteCap: MAX_RECOVERY_WIRE_BYTES }).adapter,
+          );
         } catch (e) {
           return { code: 2, output: `renewal analysis refused: no LLM route (${(e as Error).message}) — zero calls were made` };
         }
@@ -811,7 +873,7 @@ const TOOLS: readonly ToolDef[] = [
       const capsWithLlm: RenewCapabilities = {
         ...caps,
         llm: () => llmPlan,
-        budget: () => createBudgetLedger(budget, { nowMs: Date.now }),
+        budget: () => opLedger,
       };
       return cmdRenewAnalyze({ dir: input.dir, scope: 'whole' }, capsWithLlm);
     },

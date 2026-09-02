@@ -10,13 +10,14 @@
  * persistence/read functions here are deprecated bypass shapes being
  * migrated to trust/state + trust/fs.
  */
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import {
   MODERNIZATION_STRATEGIES,
   StrategyDecisionSchema,
   type ModernizationStrategy,
   type StrategyDecision,
 } from '../trust/authority';
+import { authorizedWrite } from '../trust/fs';
 
 export { MODERNIZATION_STRATEGIES, StrategyDecisionSchema };
 export type { ModernizationStrategy, StrategyDecision };
@@ -43,11 +44,9 @@ export function buildStrategyDecision(args: BuildStrategyArgs): StrategyDecision
   });
 }
 
-/** @deprecated TRUST KERNEL: persist via the renewal state transaction. */
-export function persistStrategy(path: string, decision: StrategyDecision): { ok: true; path: string } {
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(decision, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
+/** Trusted persist (trust/fs authorized atomic write). */
+export function persistStrategy(projectDir: string, path: string, decision: StrategyDecision): { ok: true; path: string } {
+  authorizedWrite({ projectDir, path, content: `${JSON.stringify(decision, null, 2)}\n` });
   return { ok: true, path };
 }
 

@@ -27,6 +27,7 @@ import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
 import { renewalPaths } from '../renew/project/project';
 import { singleRoutePlan, type LlmPlan, type LlmRoute } from '../llm/plan';
 import { createHttpLlm } from '../eval/llm/http';
+import { MAX_RECOVERY_WIRE_BYTES, createPaidOperation, resolveLegacyEnvRoute, wireCap } from '../renew/trust/paid';
 import { buildRoleAdapter } from '../llm/providers';
 import { execFileSync, spawn } from 'node:child_process';
 import { cmdGenerateInteractive } from './commands/generate-interactive';
@@ -381,7 +382,17 @@ export async function runCli(argv: string[]): Promise<number> {
                   if (role === undefined) {
                     throw new Error(`llm profile '${r.llmProfile}' has no route for role 'renew_recover' (analyze made zero calls)`);
                   }
-                  const adapter = buildRoleAdapter(role, process.env, { routingMode: resolved.resolved.routingMode, budget: ledger });
+                  // S3-H-05 (trust kernel): the adapter measures the EXACT
+                  // serialized wire request (envelope, model, extra body
+                  // included) and refuses over-cap BEFORE any transport —
+                  // the validation retry goes through the same adapter and
+                  // is capped again.
+                  const cap = wireCap(MAX_RECOVERY_WIRE_BYTES);
+                  const adapter = buildRoleAdapter(role, process.env, {
+                    routingMode: resolved.resolved.routingMode,
+                    budget: ledger,
+                    onSerializedWire: cap.onSerializedWire,
+                  });
                   const plan: LlmPlan = {
                     forRole: () => ({
                       adapter,
@@ -394,12 +405,26 @@ export async function runCli(argv: string[]): Promise<number> {
                   };
                   return plan;
                 }
-                // Legacy env route — the SAME one-ledger envelope (default
-                // wall cap included; INV-F1 closes the documented-but-absent
-                // CLI default by construction: renewalBudget() always sets
-                // maxAttempts and the ledger enforces wall via the shared
-                // clocked construction).
-                return singleRoutePlan(createHttpLlm(oneLedger()));
+                // Legacy env route (S3-H-07, trust kernel): EVERY effectual
+                // field (base URL, model, max tokens, extra body, budget)
+                // resolves NOW into the immutable paid route — one ledger,
+                // wire-capped adapter, zero post-resolution drift.
+                const route = resolveLegacyEnvRoute(process.env, {
+                  maxAttempts: renewalBudget().maxAttempts,
+                  ...(renewalBudget().maxWallMs !== undefined ? { wallMs: renewalBudget().maxWallMs } : {}),
+                });
+                const apiKey = process.env.LCO_LLM_API_KEY?.trim();
+                if (apiKey === undefined || apiKey === '') {
+                  throw new Error('LLM env incomplete: LCO_LLM_API_KEY must be set with LCO_LLM_BASE_URL and LCO_LLM_MODEL (fail-closed; no default endpoint)');
+                }
+                return singleRoutePlan(
+                  createPaidOperation({
+                    route,
+                    apiKey,
+                    ledger: oneLedger(),
+                    wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+                  }).adapter,
+                );
               },
               };
             })()

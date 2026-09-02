@@ -11,8 +11,9 @@
  * ordering by id, strict schemas — diffable by design.
  */
 import { z } from 'zod';
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { CodeAnchorPayloadSchema } from '../../schemas/evidence';
+import { authorizedWrite } from '../trust/fs';
 import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
 
 /** The audit-approved relation vocabulary (STEP 7) — do not extend speculatively. */
@@ -109,15 +110,13 @@ export function markSuperseded(store: OverlayStore, id: string, supersededBy?: s
 
 export type PersistResult = { ok: true; path: string } | { ok: false; code: 'dir_missing'; message: string };
 
-/** Atomic persist: staged temp file + rename; stable id ordering on disk. */
-export function persistOverlay(path: string, store: OverlayStore): PersistResult {
+/** Trusted persist (trust/fs authorized atomic write); stable id ordering on disk. */
+export function persistOverlay(projectDir: string, path: string, store: OverlayStore): PersistResult {
   const sorted: OverlayStore = {
     ...store,
     records: [...store.records].sort((a, b) => (a.id < b.id ? -1 : 1)),
   };
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(sorted, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
+  authorizedWrite({ projectDir, path, content: `${JSON.stringify(sorted, null, 2)}\n` });
   return { ok: true, path };
 }
 

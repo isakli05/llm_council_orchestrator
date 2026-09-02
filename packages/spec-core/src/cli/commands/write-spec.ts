@@ -55,14 +55,27 @@ export function writeSpecDir(dir: string, bundle: SpecBundle, nowIso: string): v
   mkdirSync(dir, { recursive: true });
   const lock = acquireSpecRootLock(dir, nowIso);
   try {
-    if (existsSync(specDir)) {
-      throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
-    }
-    createDirAtomically(specDir, [
-      ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: bundle[key] })),
-      ...(bundle.legacy !== undefined ? [{ name: 'legacy.json', content: bundle.legacy }] : []),
-    ]);
+    stageSpecDir(dir, bundle);
   } finally {
     lock.release();
   }
+}
+
+/**
+ * The staging core (no lock): re-check no-clobber, then land the whole tree
+ * atomically. Exported for the RENEWAL plan path, which writes its spec
+ * INSIDE the renewal state transaction (under the renewal writer lock — a
+ * different, tx-owned critical section that already serializes trusted
+ * renewal mutations); non-renewal callers use the locked wrapper above.
+ */
+export function stageSpecDir(dir: string, bundle: SpecBundle): void {
+  const specDir = join(dir, 'spec');
+  assertNotSymlink(specDir, 'generate write target spec/');
+  if (existsSync(specDir)) {
+    throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
+  }
+  createDirAtomically(specDir, [
+    ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: bundle[key] })),
+    ...(bundle.legacy !== undefined ? [{ name: 'legacy.json', content: bundle.legacy }] : []),
+  ]);
 }

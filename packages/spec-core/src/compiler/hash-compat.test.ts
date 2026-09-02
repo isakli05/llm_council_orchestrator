@@ -24,6 +24,7 @@ import type { SpecBundle } from '../schemas';
  */
 
 const FIXTURES = join(__dirname, '../../fixtures');
+const PRE_RENEWAL_FIXTURE = join(FIXTURES, 'pre-renewal-frozen-spec');
 const NOW = '2026-09-02T00:00:00Z';
 const SHA = `sha256:${'a'.repeat(64)}`;
 
@@ -291,5 +292,33 @@ describe('manifest.hash_version (additive optional field)', () => {
   it('rejects non-positive and non-integer values (stamp is 2, never hand-authored)', () => {
     expect(() => ManifestSchema.parse({ ...validManifest, hash_version: 0 })).toThrow();
     expect(() => ManifestSchema.parse({ ...validManifest, hash_version: 1.5 })).toThrow();
+  });
+});
+
+
+describe('S3-L-04: committed immutable pre-Renewal frozen fixture', () => {
+  it('the genuine pre-Renewal artifact verifies unchanged (v1 legacy bytes, file key order)', async () => {
+    const compiled = await compileSpecDir(PRE_RENEWAL_FIXTURE);
+    expect(compiled.bundle).toBeTruthy();
+    const result = verifyFrozen(compiled.bundle!, compiled.rawSections);
+    expect(result.ok).toBe(true);
+    expect(result.drifted).toEqual([]);
+  });
+
+  it('a one-value semantic mutation of the fixture DRIFTS', async () => {
+    const mutated = mkdtempSync(join(tmpdir(), 'lco-pre-renewal-mut-'));
+    try {
+      mkdirSync(join(mutated, 'spec'), { recursive: true });
+      for (const f of ['manifest', 'intent', 'glossary', 'assumptions', 'evidence', 'requirements', 'decisions', 'contracts', 'tasks']) {
+        const src = readFileSync(join(PRE_RENEWAL_FIXTURE, 'spec', `${f}.json`), 'utf8');
+        writeFileSync(join(mutated, 'spec', `${f}.json`), f === 'intent' ? src.replace(/"purpose"/, '"purposes"') : src);
+      }
+      const compiled = await compileSpecDir(mutated);
+      const result = verifyFrozen(compiled.bundle!, compiled.rawSections);
+      expect(result.ok).toBe(false);
+      expect(result.drifted).toContain('intent');
+    } finally {
+      rmSync(mutated, { recursive: true, force: true });
+    }
   });
 });

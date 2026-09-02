@@ -2,11 +2,18 @@
  * Renewal project state (STEP 11): the LCO-owned layout under
  * `<lco-project>/.lco/renewal/` + deterministic status aggregation and the
  * markdown export renderer. The analyzed target repository is NEVER written.
+ *
+ * TRUST KERNEL: trusted reads/writes route through trust/fs + trust/state;
+ * the persist helpers here are thin domain wrappers over the authorized
+ * primitives (they add the stable-on-disk sorting the stores promise).
  */
-import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { authorizeRenewalPaths, tryRealpath } from '../../storage/paths';
+import { tryRealpath } from '../../storage/paths';
+import { authorizedWrite } from '../trust/fs';
+import { bumpStateRevisionTrusted, loadActiveState, supersedeStoresForRefresh } from '../trust/state';
+import { preflightRenewalSurface } from '../trust/fs';
 import { loadAnalysisRecords } from '../recovery/analysis-store';
 import { loadOverlay } from '../overlay/overlay';
 import { loadParity } from '../parity/ledger';
@@ -83,7 +90,10 @@ export function renewalStateDestinations(paths: RenewalPaths): string[] {
 }
 
 export function authorizeRenewalState(dir: string): { ok: true } | { ok: false; message: string } {
-  return authorizeRenewalPaths({ projectDir: dir, destinations: renewalStateDestinations(renewalPaths(dir)) });
+  // UX preflight over the fixed surface (enforcement lives per-write inside
+  // trust/fs.authorizedWrite / authorizedRead).
+  const refusals = preflightRenewalSurface(dir);
+  return refusals.length === 0 ? { ok: true } : { ok: false, message: refusals[0]! };
 }
 
 export type ProjectLoad =
@@ -102,20 +112,11 @@ export interface SupersessionResult {
   retained: string[]; // store names kept as history
 }
 
-export function supersedeRenewalStores(paths: RenewalPaths, oldSnapshotId: string): SupersessionResult {
-  const archived: string[] = [];
-  const perSnapshot: Array<[string, string]> = [
-    ['overlay', paths.overlay],
-    ['parity', paths.parity],
-    ['strategy', paths.strategy],
-  ];
-  for (const [name, path] of perSnapshot) {
-    if (!existsSync(path)) continue;
-    const target = `${path}.${oldSnapshotId}.superseded`;
-    renameSync(path, target);
-    archived.push(`${name} → ${target.split(/[\\/]/).pop()}`);
-  }
-  return { archived, retained: ['analyses (immutable history)', 'approvals (immutable human history)'] };
+export function supersedeRenewalStores(dir: string, paths: RenewalPaths, oldSnapshotId: string): SupersessionResult {
+  // Trust kernel: archives overlay/parity/strategy AND spec (S3-H-04), with
+  // no-clobber renames (S3-M-05). Caller holds the renewal writer lock.
+  const outcome = supersedeStoresForRefresh(dir, paths, oldSnapshotId);
+  return { archived: outcome.archived, retained: outcome.retained };
 }
 
 export function loadRenewalProject(dir: string): ProjectLoad {
@@ -135,19 +136,19 @@ export function loadRenewalProject(dir: string): ProjectLoad {
 }
 
 export function persistRenewalProject(dir: string, project: RenewalProject): void {
-  const path = renewalPaths(dir).projectJson;
-  mkdirSync(join(path, '..'), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(project, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
+  authorizedWrite({
+    projectDir: dir,
+    path: renewalPaths(dir).projectJson,
+    content: `${JSON.stringify(project, null, 2)}\n`,
+  });
 }
 
 export function persistSnapshotFile(dir: string, snapshot: ProjectSnapshot): void {
-  const path = renewalPaths(dir).snapshot;
-  mkdirSync(join(path, '..'), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
+  authorizedWrite({
+    projectDir: dir,
+    path: renewalPaths(dir).snapshot,
+    content: `${JSON.stringify(snapshot, null, 2)}\n`,
+  });
 }
 
 export function loadSnapshotFile(dir: string): { ok: true; snapshot: ProjectSnapshot } | { ok: false; message: string } {
@@ -251,10 +252,8 @@ export function readStateRevision(dir: string): number {
 }
 
 export function bumpStateRevision(dir: string): void {
-  const path = renewalPaths(dir).state;
-  const next = readStateRevision(dir) + 1;
-  mkdirSync(join(path, '..'), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ schema_version: 1, revision: next }, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
+  // Trust kernel wrapper (authorized atomic write; caller holds the lock).
+  bumpStateRevisionTrusted(dir);
 }
+
+export { loadActiveState };

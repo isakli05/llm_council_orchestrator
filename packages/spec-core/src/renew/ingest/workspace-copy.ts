@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DEFAULT_INGEST_LIMITS, guardPath, isDeniedDirectory, looksBinary, type IngestLimits } from './guards';
+import { authorizedCopyWrite } from '../trust/fs';
 
 export interface FileManifestEntry {
   /** Repo-relative POSIX path, forward slashes, sorted. */
@@ -43,7 +44,7 @@ class WalkFailure extends Error {
 export function buildGuardedCopy(
   targetRoot: string,
   copyRoot: string,
-  opts?: { limits?: IngestLimits; copy?: boolean },
+  opts?: { limits?: IngestLimits; copy?: boolean; projectDir?: string },
 ): WalkOutcome {
   if (!existsSync(targetRoot)) {
     return { ok: false, code: 'target_missing', message: `target repository not found: ${targetRoot}` };
@@ -146,10 +147,16 @@ export function buildGuardedCopy(
     }
     if (doCopy) {
       const dest = join(copyRoot, f.rel);
-      // M-05: the guarded copy can contain inline secret-shaped content —
-      // restrict at-rest exposure to the owning user (files 0600, dirs 0700).
-      mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
-      writeFileSync(dest, buf, { mode: 0o600 });
+      // M-05 + trust kernel: the guarded copy can contain inline secret-shaped
+      // content — restrict at-rest exposure to the owning user (files 0600,
+      // dirs 0700) and write through the authorized primitive when a project
+      // root is supplied (fresh-file, chain-authorized workspace writes).
+      if (opts?.projectDir !== undefined) {
+        authorizedCopyWrite({ projectDir: opts.projectDir, path: dest, content: buf.toString('utf8') });
+      } else {
+        mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+        writeFileSync(dest, buf, { mode: 0o600 });
+      }
     }
     manifest.push({ path: f.rel, sha256: `sha256:${createHash('sha256').update(buf).digest('hex')}` });
   }

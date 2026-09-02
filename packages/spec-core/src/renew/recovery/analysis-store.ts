@@ -2,10 +2,15 @@
  * Immutable analysis record store (STEP 6): write-once files under
  * `.lco/renewal/analyses/`. History is never overwritten — a new snapshot or
  * re-analysis creates a NEW record; current state may POINT at the active one.
+ *
+ * TRUST KERNEL: writes go through the authorized exclusive-create primitive;
+ * trusted reads route through trust/state.loadActiveState (this module's
+ * directory loader remains for diagnostics/tests).
  */
-import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { AnalysisRecordSchema, type AnalysisRecord } from './schemas';
+import { authorizedCreateExclusive } from '../trust/fs';
 
 export function nextAnalysisId(existingIds: readonly string[]): string {
   let max = 0;
@@ -20,13 +25,13 @@ export type PersistOutcome =
   | { ok: true; path: string }
   | { ok: false; code: 'already_exists'; message: string };
 
-export function persistAnalysisRecord(dir: string, record: AnalysisRecord): PersistOutcome {
+export function persistAnalysisRecord(projectDir: string, dir: string, record: AnalysisRecord): PersistOutcome {
   const path = join(dir, `${record.analysis_id}.json`);
   try {
-    writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    authorizedCreateExclusive({ projectDir, path, content: `${JSON.stringify(record, null, 2)}\n` });
   } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    if (err.code === 'EEXIST') {
+    const err = e as NodeJS.ErrnoException & { code?: string };
+    if (err.code === 'record_exists') {
       return {
         ok: false,
         code: 'already_exists',

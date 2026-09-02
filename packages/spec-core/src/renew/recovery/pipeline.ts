@@ -13,6 +13,7 @@
  * and is set here, deterministically, to 'hypothesized'.
  */
 import { sha256Content } from '../../compiler/hash';
+import { accountCompletionAttempts } from '../trust/paid';
 import { stripJsonFences } from '../../eval/runner';
 import { BudgetExceededError, type BudgetLedger } from '../../eval/budget';
 import type { LlmPlan } from '../../llm/plan';
@@ -131,12 +132,14 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     }
     usage.latency_ms = (usage.latency_ms ?? 0) + (res.latencyMs ?? (Date.now() - startedAt));
     const attempts = res.attempts ?? 1;
-    // INV-F1 (S2-H-01): the ONE ledger is charged the ACTUAL attempts the
-    // transport took — self-reported attempts are charged too (the old
-    // skip-when-reported path is exactly how maxAttempts=1 accepted
-    // attempts=2 with the ledger at 0). Charging past the cap throws the
-    // typed budget refusal; the caller never promotes an over-budget result.
-    deps.budget?.chargeAttempts(attempts);
+    // S3-H-06 (trust kernel): the SINGLE-CHARGE contract. Real transports
+    // charge every fetch they make (pre-fetch, inside the adapter); scripted
+    // and non-reporting adapters self-report attempts without charging —
+    // accountCompletionAttempts charges ONLY those. The previous
+    // unconditional re-charge double-billed every real one-attempt call
+    // (maxAttempts=1 aborted at half the envelope), and the pre-kernel
+    // skip-when-reported path let non-charging self-reporters through free.
+    accountCompletionAttempts(deps.budget, res);
     usage.calls += 1;
     usage.attempts += attempts;
     // INV-F1: accounting consumes the REAL response structure —
@@ -188,7 +191,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     item_count: req.bundle.items.length,
     slice_count: req.bundle.items.filter((i) => i.kind === 'file_slice').length,
     truncated: req.bundle.truncated,
-    warnings: req.bundle.warnings.slice(0, 50),
+    warnings: req.bundle.warnings.slice(0, 50).map(scrubDiagnostic),
   };
 
   const baseRecord = {
@@ -250,7 +253,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       validation: { schema_ok: false, retry_used: false, issues: ['no anchorable file slice fit the context budget — UNRESOLVED_INSUFFICIENT_CONTEXT'], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
       promoted: { hypotheses: [], uncertainties: [] },
       rejected: [],
-      coverage_notes: req.bundle.warnings.slice(0, 20),
+      coverage_notes: req.bundle.warnings.slice(0, 20).map(scrubDiagnostic),
       usage: { ...usage },
     };
     const r = deps.persist(blockedRecord);
@@ -306,7 +309,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
         ...baseRecord,
         model: routeIdentity,
         outcome: 'blocked_stale',
-        validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+        validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20).map(scrubDiagnostic), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
         staleness_reasons: staleCheck2.reasons.slice(0, 20),
         promoted: { hypotheses: [], uncertainties: [] },
         rejected: [],
