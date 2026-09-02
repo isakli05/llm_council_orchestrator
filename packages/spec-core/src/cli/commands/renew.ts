@@ -797,6 +797,19 @@ export async function cmdRenewPlan(
 
   const strategyLoad = loadStrategy(paths.strategy);
   if (!strategyLoad.ok) return { code: 1, output: `plan refused: ${strategyLoad.message}` };
+  // C-08/G2 command-level joins: strategy and overlay must belong to the
+  // ACTIVE snapshot; analyses are filtered to it (history is not an input).
+  const snapForJoins = loadSnapshotFile(args.dir);
+  if (!snapForJoins.ok) return { code: 1, output: snapForJoins.message };
+  const activeId = snapForJoins.snapshot.snapshot_id;
+  if (strategyLoad.decision.snapshot_id !== activeId) {
+    return { code: 1, output: `plan refused: the selected strategy belongs to snapshot ${strategyLoad.decision.snapshot_id} but the active snapshot is ${activeId} — re-select the strategy (lco renew review or --strategy) for the current source state` };
+  }
+  if (!state.overlay.ok) return { code: 1, output: `plan refused: overlay store corrupt — ${state.overlay.message}` };
+  if (state.overlay.store.snapshot_id !== activeId) {
+    return { code: 1, output: `plan refused: overlay store is bound to snapshot ${state.overlay.store.snapshot_id} but the active snapshot is ${activeId} — refresh supersedes overlay state` };
+  }
+  const activeAnalyses = state.analyses.records.filter((a) => a.snapshot_id === activeId);
 
   if (!state.parity.ok) return { code: 1, output: `plan refused: ${state.parity.message}` };
   const parityStoreForPlan = state.parity.store;
@@ -852,10 +865,10 @@ export async function cmdRenewPlan(
   const plan = buildModernizationPlan({
     snapshot: snap.snapshot,
     architectureView: archView,
-    overlay: state.overlay.ok ? state.overlay.store : emptyOverlay(state.project.snapshot_id),
+    overlay: state.overlay.store,
     parity: parityStoreForPlan,
     strategy: strategyLoad.decision,
-    analyses: state.analyses.records,
+    analyses: activeAnalyses,
     projectName: state.project.name,
     projectDir: args.dir,
     blastRadius,
@@ -863,6 +876,14 @@ export async function cmdRenewPlan(
   if (!plan.ok) {
     const blockers = 'blockers' in plan && plan.blockers ? plan.blockers.map((b) => `  - ${b.id}: ${b.reason}`).join('\n') : '';
     return { code: 1, output: `plan refused (${plan.code}): ${plan.message}${blockers ? `\n${blockers}` : ''}` };
+  }
+
+  // B7/C-10 family: re-verify freshness IMMEDIATELY before the final write —
+  // state must not have drifted between command entry and finalization.
+  const finalCheck = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
+  if (!finalCheck.ok) return finalCheck;
+  if (!finalCheck.fresh) {
+    return { code: 1, output: `plan refused: the source changed during planning.\n${(finalCheck.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}\nNOTHING was written.` };
   }
 
   writeSpecDir(args.dir, plan.bundle, caps.nowIso());

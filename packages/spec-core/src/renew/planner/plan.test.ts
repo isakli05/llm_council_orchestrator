@@ -16,7 +16,6 @@ import type { RenewalApprovalRecord } from '../clarify/approvals';
 import type { FileManifest } from '../ingest/workspace-copy';
 
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
-const SNAP_ID = 'RSN-deadbeefdeadbeef';
 
 const PRICING = 'export function applyDiscount(s: number): number {\n  return s * 0.95;\n}\n';
 const ORDERS = 'export function createOrder(c: string) {\n  return { accepted: true };\n}\n';
@@ -42,6 +41,7 @@ const snapshot = createSnapshot({
   graphManifest: { digest: sha('manifest'), entries: 4 },
   nowIso: '2026-09-02T00:00:00.000Z',
 });
+const SNAP_ID = snapshot.snapshot_id;
 
 function twoHypothesisAnalysis(): AnalysisRecord {
   return JSON.parse(

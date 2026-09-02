@@ -12,7 +12,7 @@
  * radius (impacted files migrate after their dependency), and REAL
  * verification commands (`lco compile/verify` exit 0) — never placeholders.
  */
-import { SPEC_SCHEMA_VERSION, type SpecBundle } from '../../schemas';
+import { SPEC_SCHEMA_VERSION, SpecBundleSchema, type SpecBundle } from '../../schemas';
 import { sha256Content } from '../../compiler/hash';
 import { lintBundle } from '../../lint/engine';
 import type { ProjectSnapshot } from '../snapshot/snapshot';
@@ -40,12 +40,12 @@ export type PlanOutcome =
   | { ok: true; bundle: SpecBundle; topoOrder: string[] }
   | {
       ok: false;
-      code: 'missing_strategy' | 'parity_unresolved' | 'cycle';
+      code: 'missing_strategy' | 'parity_unresolved' | 'cycle' | 'input_mismatch' | 'unscoped_tasks' | 'invalid_bundle';
       message: string;
       blockers?: { id: string; reason: string }[];
     };
 
-const PARITY_TEST_FILE = '.lco/renewal/parity.json';
+const PARITY_LEDGER_FILE = '.lco/renewal/parity.json';
 
 interface TaskSeed {
   parId: string;
@@ -63,6 +63,36 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
       ok: false,
       code: 'missing_strategy',
       message: 'no modernization strategy selected — strategy selection is a human act (lco renew review or --strategy)',
+    };
+  }
+
+  // --- G2: input joins — every trust-bearing input must be the SAME snapshot --
+  const active = inputs.snapshot.snapshot_id;
+  const mismatches: { id: string; reason: string }[] = [];
+  if (inputs.architectureView.snapshot_id !== active) {
+    mismatches.push({ id: 'architecture_view', reason: `bound to snapshot ${inputs.architectureView.snapshot_id}, active is ${active}` });
+  }
+  if (inputs.overlay.snapshot_id !== active) {
+    mismatches.push({ id: 'overlay', reason: `bound to snapshot ${inputs.overlay.snapshot_id}, active is ${active} — refresh supersedes overlay state` });
+  }
+  if (inputs.parity.snapshot_id !== active) {
+    mismatches.push({ id: 'parity', reason: `bound to snapshot ${inputs.parity.snapshot_id}, active is ${active} — refresh supersedes parity state` });
+  }
+  if (inputs.strategy.snapshot_id !== active) {
+    mismatches.push({ id: 'strategy', reason: `selected for snapshot ${inputs.strategy.snapshot_id}, active is ${active} — re-select the strategy for the current source state` });
+  }
+  const knownAnalyses = new Set(inputs.analyses.map((a) => a.analysis_id));
+  for (const rec of inputs.parity.records) {
+    if (rec.source_analysis !== undefined && !knownAnalyses.has(rec.source_analysis)) {
+      mismatches.push({ id: rec.id, reason: `cites source analysis ${rec.source_analysis} which does not exist (fabricated or foreign state)` });
+    }
+  }
+  if (mismatches.length > 0) {
+    return {
+      ok: false,
+      code: 'input_mismatch',
+      message: 'planner inputs are not a coherent single-snapshot state — cross-snapshot or fabricated inputs cannot produce a trusted plan',
+      blockers: mismatches,
     };
   }
 
@@ -88,6 +118,24 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
   }
 
   const projection = parityProjection(inputs.parity); // refuses partial — defensive double-check
+
+  // --- C-09 root cause: a parity entry with NO code anchors produces a task
+  // with an empty permitted_scope, which the TaskContract forbids — refuse it
+  // as an explicit blocker BEFORE any bundle is built or written.
+  const unscoped = inputs.parity.records.filter(
+    (r) => !r.evidence.some((ev) => ev.kind === 'code_anchor'),
+  );
+  if (unscoped.length > 0) {
+    return {
+      ok: false,
+      code: 'unscoped_tasks',
+      message: 'parity entries without code anchors cannot scope migration tasks — code evidence (or an explicit manual-review ruling) is required for every planned behavior',
+      blockers: unscoped.map((r) => ({
+        id: r.id,
+        reason: 'no code_anchor evidence — the task would have an empty permitted_scope (schema-invalid); re-analyze with anchors or rule the behavior for manual handling',
+      })),
+    };
+  }
 
   // --- evidence: one code_anchor item per unique anchor + strategy evidence ----
   const evidence: SpecBundle['evidence'] = [];
@@ -197,6 +245,22 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
   }
 
   // --- bundle sections ------------------------------------------------------------
+  // G1: the overlay is CONSUMED — active preserve/risk/manual-review records
+  // materially shape tasks; it is no longer an ignored trust-bearing input.
+  const activeOverlay = inputs.overlay.records.filter((r) => r.status === 'active');
+  const preservePaths = new Set(
+    activeOverlay.filter((r) => r.relation === 'behavior_preserve').flatMap((r) => r.anchors.map((a) => a.path)),
+  );
+  const riskByPath = new Map<string, string[]>();
+  for (const r of activeOverlay.filter((rec) => rec.relation === 'renewal_risk' || rec.relation === 'security_risk')) {
+    for (const a of r.anchors) {
+      riskByPath.set(a.path, [...(riskByPath.get(a.path) ?? []), `${r.relation}: ${r.value ?? r.note ?? 'recorded risk'}`]);
+    }
+  }
+  const reviewRecords = activeOverlay.filter(
+    (r) => r.relation === 'manual_review' || r.relation === 'uncertain_behavior',
+  );
+
   const requirements: SpecBundle['requirements'] = [];
   const tasks: SpecBundle['tasks'] = [];
   seeds.forEach((s, i) => {
@@ -216,6 +280,8 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
       acceptance_refs: [tstId],
       terms_used: [],
     });
+    const overlayProtects = s.paths.filter((p) => preservePaths.has(p));
+    const overlayRisks = [...new Set(s.paths.flatMap((p) => riskByPath.get(p) ?? []))];
     tasks.push({
       task_id: taskIds[i],
       title: `${s.ruling} — ${s.behavior.slice(0, 60)}`,
@@ -224,31 +290,101 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
       depends_on: [...dependsOn[i]].sort(),
       preconditions: [`parity ruling recorded (${s.parId}: ${s.ruling})`],
       permitted_scope: s.paths,
-      protected: s.ruling === 'preserve' ? [...s.paths] : [],
+      protected: s.ruling === 'preserve' || overlayProtects.length > 0 ? [...new Set([...(s.ruling === 'preserve' ? s.paths : []), ...overlayProtects])] : [],
       interface_changes: [],
       invariants: [s.ruling === 'drop' ? `behavior '${s.behavior.slice(0, 80)}' is intentionally absent from the target` : `behavior parity: ${s.behavior.slice(0, 120)}`],
       instructions:
         `${s.ruling.toUpperCase()} the behavior anchored to ${s.paths.join(', ')} per parity entry ${s.parId}. ` +
-        `Rationale (human-approved): ${s.rationale}. Blast radius at capture: ${[...new Set(s.paths.flatMap((p) => inputs.blastRadius(p)))].join(', ') || 'none recorded'}.`,
+        `Rationale (human-approved): ${s.rationale}. Blast radius at capture: ${[...new Set(s.paths.flatMap((p) => inputs.blastRadius(p)))].join(', ') || 'none recorded'}.` +
+        (overlayRisks.length > 0 ? ` Overlay-recorded risks for this scope: ${overlayRisks.join('; ')}.` : ''),
+      // H-12: the tests entry references the parity LEDGER (the ruling data
+      // source) and states plainly that behavioral parity is NOT machine-
+      // verified — this plan performs no behavioral parity test.
       tests: [
         {
           id: tstId,
           kind: 'integration',
-          file: PARITY_TEST_FILE,
-          cases: [`${reqId}: ${s.behavior}`, 'OPS-0001: deterministic verification stays green (lco compile/verify exit 0)'],
+          file: PARITY_LEDGER_FILE,
+          cases: [
+            `${reqId}: parity ruling recorded (${s.ruling}) — behavioral equivalence is NOT machine-verified by this plan; manual characterization or a future acceptance harness is REQUIRED before the migration is called done`,
+            'OPS-0001: deterministic verification stays green (lco compile/verify exit 0 — spec self-check only)',
+          ],
         },
       ],
       verification: [
         { command: `lco compile ${inputs.projectDir}`, expect: 'exit 0' },
         { command: `lco verify ${inputs.projectDir}`, expect: 'exit 0' },
       ],
-      acceptance: [`Parity ledger entry ${s.parId} satisfied (${s.ruling})`],
+      acceptance: [`Parity ledger entry ${s.parId} satisfied (${s.ruling}) — with manual behavioral verification (see verification gap)`],
       rollback: `restore prior behavior of ${s.paths.join(', ')} (planning artifact — execution is a future program)`,
       completion_evidence: { required: ['verification_outputs'] },
-      risk: { level: s.ruling === 'drop' ? 'high' : 'medium', note: `parity ruling ${s.ruling} on ${s.paths.join(', ')}` },
+      risk: { level: s.ruling === 'drop' ? 'high' : 'medium', note: `parity ruling ${s.ruling} on ${s.paths.join(', ')}${overlayRisks.length > 0 ? `; overlay risks: ${overlayRisks.length}` : ''}` },
       complexity: 's',
     });
   });
+
+  // --- H-06: explicit MANUAL-REVIEW tasks for un-resolvable coverage -----------
+  // Overlay manual_review/uncertain_behavior records and graph-unrepresented
+  // (unsupported) files become visible, completable manual-review units —
+  // never silently omitted "completeness".
+  const manualSeeds: { id: string; paths: string[]; what: string }[] = reviewRecords.map((r) => ({
+    id: r.id,
+    paths: [...new Set(r.anchors.map((a) => a.path))].sort(),
+    what: `${r.relation === 'uncertain_behavior' ? 'Uncertain behavior' : 'Manual review'} required${r.subject.symbol !== undefined ? ` (${r.subject.symbol})` : ''}: ${r.note ?? r.value ?? 'behavior is not statically derivable'}`,
+  }));
+  const unsupported = inputs.architectureView.coverage.unsupported_files;
+  if (unsupported.length > 0) {
+    manualSeeds.push({
+      id: 'COVERAGE',
+      paths: [...unsupported].sort().slice(0, 50),
+      what: `${unsupported.length} guarded file(s) are NOT represented in the structural graph (unsupported language or unparseable) — behavior in these files was never analyzed; characterize them manually before claiming coverage`,
+    });
+  }
+  for (const m of manualSeeds) {
+    const taskIdx = tasks.length + 1;
+    const reqId = `REQ-${String(taskIdx).padStart(4, '0')}`;
+    const tstId = `TST-${String(taskIdx).padStart(4, '0')}`;
+    requirements.push({
+      id: reqId,
+      statement: `MANUAL REVIEW REQUIRED: ${m.what}`,
+      priority: 'must',
+      evidence: [strategyEvidenceId],
+      acceptance_refs: [tstId],
+      terms_used: [],
+    });
+    tasks.push({
+      task_id: `TASK-${String(taskIdx).padStart(4, '0')}`,
+      title: `Manual review — ${m.id}`,
+      purpose: `Manual characterization unit for ${m.id}: the planner cannot verify this material deterministically.`,
+      refs: { requirements: [reqId, 'OPS-0001'], architecture: [], decisions: ['DEC-0001'] },
+      depends_on: [],
+      preconditions: ['human review with domain knowledge'],
+      permitted_scope: m.paths.length > 0 ? m.paths : [PARITY_LEDGER_FILE],
+      protected: [],
+      interface_changes: [],
+      invariants: ['no behavior inside the manual-review scope changes without explicit human characterization'],
+      instructions:
+        `${m.what}. Review ${m.paths.join(', ') || 'the recorded scope'}, record the actual behavior, and rule it preserve/change/drop (lco renew review). ` +
+        'This unit exists because static analysis could NOT cover this material — completing it is required for an honest migration.',
+      tests: [
+        {
+          id: tstId,
+          kind: 'integration',
+          file: PARITY_LEDGER_FILE,
+          cases: [`${reqId}: manual characterization recorded for ${m.id} (human act — not machine-verified)`],
+        },
+      ],
+      verification: [
+        { command: `lco compile ${inputs.projectDir}`, expect: 'exit 0' },
+        { command: `lco verify ${inputs.projectDir}`, expect: 'exit 0' },
+      ],
+      acceptance: [`${m.id} manually characterized and ruled`],
+      rollback: 'n/a (analysis unit — no execution)',
+      completion_evidence: { required: ['verification_outputs'] },
+      risk: { level: 'high', note: 'unanalyzed/unresolved material — completeness is blocked until characterized' },
+      complexity: 's',
+    });
+  }
 
   const coverage = inputs.architectureView.coverage;
   // L07: p-legacy bundles carry an explicit NFR budget requirement. This one
@@ -324,7 +460,10 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
     ],
     contracts: [],
     tasks,
-    test_files: [PARITY_TEST_FILE],
+    // H-12: the ledger is INPUT data referenced by tests entries for L03
+    // coherence — the cases state plainly that behavioral parity is NOT
+    // machine-verified; this is no fake PASS-able parity test.
+    test_files: [PARITY_LEDGER_FILE],
     legacy: {
       as_is_summary: `Structural summary (deterministic): ${inputs.architectureView.god_nodes.length} god node(s), ${inputs.architectureView.communities.length} communit(ies), ${inputs.architectureView.coverage.graph_files}/${inputs.architectureView.coverage.guarded_files} guarded file(s) represented in the graph; language coverage: ${inputs.architectureView.language_coverage.map((l) => `${l.language}×${l.files}`).join(', ') || 'none'}.`,
       preserve_change_drop: projection.items.map((item, i) => ({
@@ -343,14 +482,27 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
     },
   };
 
+  // --- G3/C-09: validate BEFORE the bundle can leave this module — a schema-
+  // invalid bundle is a planner bug and must NEVER reach writeSpecDir.
+  const schemaCheck = SpecBundleSchema.safeParse(bundle);
+  if (!schemaCheck.success) {
+    const issue = schemaCheck.error.issues[0];
+    return {
+      ok: false,
+      code: 'invalid_bundle',
+      message: `planned bundle failed SpecBundleSchema validation (${issue.path.join('.')}: ${issue.message}) — nothing was written (this is a planner bug — please report)`,
+    };
+  }
   const lint = lintBundle(bundle);
   if (lint.errors.length > 0) {
     // The planner's own contract: only lint-clean bundles leave this module.
     return {
       ok: false,
-      code: 'cycle',
+      code: 'invalid_bundle',
       message: `planned bundle failed lint (this is a planner bug — please report): ${lint.errors.map((f) => `${f.rule}: ${f.message}`).join('; ')}`,
     };
   }
+  // Manual-review tasks carry no dependencies — they complete the topo order.
+  for (const t of tasks.slice(seeds.length)) topoOrder.push(t.task_id);
   return { ok: true, bundle, topoOrder };
 }
