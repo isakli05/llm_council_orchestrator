@@ -719,7 +719,9 @@ function parseRenew(rest: string[]): ParseResult {
     const i = flags.indexOf(name);
     if (i === -1) return undefined;
     const value = flags[i + 1];
-    if (value === undefined || value.startsWith('--')) {
+    // An empty value is a MISSING value (same rule as the <dir> positional):
+    // `--target ''` must be a grammar error, never a silent empty string.
+    if (value === undefined || value === '' || value.startsWith('--')) {
       return undefined;
     }
     return value;

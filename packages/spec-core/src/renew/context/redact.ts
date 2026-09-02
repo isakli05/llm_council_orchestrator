@@ -74,28 +74,40 @@ const RULES: readonly Rule[] = [
     replacement: '[REDACTED:api-key]',
   },
   // --- L3: credential-name assignments (any casing: snake/kebab/camel) -------------
+  // NOTE: implemented as a LINEAR identifier match + tail check in the
+  // replacer below — a nested-quantifier "ends-with-keyword" pattern would
+  // backtrack catastrophically on long identifier-like runs (minified code),
+  // hanging the egress path (ReDoS). The value charset excludes
+  // brackets/quotes/commas so already-redacted markers are never re-matched.
   {
-    // The identifier must END in a credential word (case-insensitive) — with
-    // an OPTIONAL prefix, so bare `password`/`token`/`secret` match just as
-    // `githubToken`/`client_secret`/`DB_PASSWORD`/`api-key` do, while
-    // `tokenize`/`keyboard` (credential word followed by more letters) never
-    // do. The value charset excludes brackets/quotes/commas so already-redacted
-    // markers are never re-matched.
-    pattern:
-      /((?:[A-Za-z][A-Za-z0-9]*[_-]?)*)(key|secret|password|passwd|token|credential)(?![A-Za-z])\s*[:=]\s*['"]?([^\s'"`,;\[\]]{8,})/gi,
-    replacement: '$1$2=[REDACTED:secret]',
+    pattern: /([A-Za-z$][A-Za-z0-9$_-]*)(?![A-Za-z0-9$_-])\s*[:=]\s*['"]?([^\s'"`,;\[\]]{8,})/gi,
+    replacement: '', // decided per-match by credentialTail() in the replacer
   },
 ];
+
+/** The credential words an identifier may END with (any casing) to be an L3 secret name. */
+const CREDENTIAL_TAIL = /(key|secret|password|passwd|token|credential)$/i;
 
 export function redactSecrets(text: string): RedactionResult {
   let out = text;
   let count = 0;
   for (const rule of RULES) {
     out = out.replace(rule.pattern, (...args: unknown[]) => {
+      const groups = args.slice(1, -2) as (string | undefined)[];
+      const match = String(args[0]);
+      // L3: only identifiers ENDING in a credential word redact — bare
+      // `password`/`githubToken`/`DB_PASSWORD`/`api-key` match; `tokenize`
+      // and `keyboard` pass through untouched (linear tail test, no
+      // backtracking).
+      if (rule.replacement === '') {
+        const name = groups[0] ?? '';
+        if (!CREDENTIAL_TAIL.test(name)) return match;
+        count++;
+        return `${name}=[REDACTED:secret]`;
+      }
       count++;
       // Function replacements do not interpolate $n — do it manually so rules
       // can keep the key NAME / URL scheme.
-      const groups = args.slice(1, -2) as (string | undefined)[];
       return rule.replacement.replace(/\$(\d+)/g, (_m, d: string) => groups[Number(d) - 1] ?? '');
     });
   }

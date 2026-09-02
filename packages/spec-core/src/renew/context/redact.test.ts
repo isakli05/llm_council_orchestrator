@@ -41,3 +41,19 @@ describe('redactSecrets (before ANY prompt inclusion)', () => {
     expect(r.count).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe('L3 linear-time guarantee (ReDoS regression)', () => {
+  it('long identifier-like runs redact in bounded time (no catastrophic backtracking)', () => {
+    const minified = `const x${'a'.repeat(20_000)} = "${'v'.repeat(50)}";\nconst githubToken = "abcdef1234567890abcd";`;
+    const started = Date.now();
+    const r = redactSecrets(minified);
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(2_000); // linear — completes near-instantly
+    expect(r.text).toContain('[REDACTED:secret]');
+    expect(r.text).not.toContain('abcdef1234567890abcd');
+    // The non-credential long identifier and its value pass through untouched…
+    expect(r.text).toContain('v'.repeat(50));
+    // …and the credential-named assignment on the next line is redacted.
+    expect(r.text).toContain('githubToken=[REDACTED:secret]');
+  });
+});

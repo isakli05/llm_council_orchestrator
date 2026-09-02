@@ -3,7 +3,13 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyAnchor, verifyMany, type CodeAnchorInput } from './verifier';
+import {
+  verifyAnchor,
+  verifyMany,
+  isValidAnchorPath,
+  canonicalFileHash,
+  type CodeAnchorInput,
+} from './verifier';
 
 const tmpDirs: string[] = [];
 
@@ -138,5 +144,23 @@ describe('AnchorVerifier (recompute — never trust stored hashes)', () => {
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.code).toBe('hash_mismatch');
     expect(r.results[2].ok).toBe(false);
+  });
+});
+
+describe('path length and line-count edges', () => {
+  it('an over-long anchor path is invalid before any filesystem touch', () => {
+    expect(isValidAnchorPath('a/'.repeat(600))).toBe(false); // >1000 chars
+    expect(isValidAnchorPath('')).toBe(false);
+  });
+
+  it('an EMPTY file verifies by hash with an honest line_count of 0 (nothing to anchor)', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'lco-ver-'));
+    writeFileSync(join(dir, 'empty.ts'), '');
+    const v = verifyAnchor({ path: 'empty.ts', content_hash: canonicalFileHash(Buffer.from('')) }, dir);
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.line_count).toBe(0);
   });
 });
