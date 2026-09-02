@@ -13,6 +13,12 @@ export interface CompileResult {
   ok: boolean;
   bundle?: SpecBundle;
   errors: CompileError[];
+  /** INV-H1: the JSON.parse'd section objects AS READ FROM DISK (present on
+   * `ok` only) — file key order preserved, never reordered by zod. Consumers
+   * that must judge pre-v2 compatibility (verifyFrozen's legacy hash) hash
+   * these, not the zod-parsed bundle. Keys: the nine section files, plus
+   * `legacy` when spec/legacy.json exists. */
+  rawSections?: Record<string, unknown>;
 }
 
 /** Required section files under spec/; the file name matches the section name. */
@@ -138,7 +144,14 @@ export async function compileSpecDir(root: string): Promise<CompileResult> {
     return { ok: false, errors: duplicateErrors };
   }
 
-  return { ok: true, bundle: parsed.data, errors: [] };
+  // INV-H1: carry the sections exactly as JSON.parse read them (file key
+  // order) so compatibility verification never depends on zod's ordering.
+  const rawSections: Record<string, unknown> = {};
+  for (const [name, section] of sections) {
+    rawSections[name] = section;
+  }
+
+  return { ok: true, bundle: parsed.data, errors: [], rawSections };
 }
 
 /**

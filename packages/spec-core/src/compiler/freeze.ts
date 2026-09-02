@@ -10,7 +10,8 @@ export interface FreezeResult {
 }
 
 /**
- * Freeze: stamp a bundle frozen and pin its section hashes.
+ * Freeze: stamp a bundle frozen and pin its section hashes (canonical v2,
+ * with `manifest.hash_version: 2` — INV-H1).
  *
  * ALL gating (transition legality from 'draft', lint cleanliness, zero
  * counters, no UNRESOLVED decisions, frozen_at residue, version provenance)
@@ -30,10 +31,14 @@ export function freeze(b: SpecBundle, lint: LintResult, nowIso: string): FreezeR
 
   // Pass: stamp the manifest and embed the section hashes of the frozen bundle.
   // The hashed sections exclude the manifest itself, so the stamps above do
-  // not perturb the hashes below.
+  // not perturb the hashes below. INV-H1: hashes are v2 CANONICAL
+  // (key-sorted) and the manifest is stamped `hash_version: 2`, which puts
+  // verification of this freeze in strict mode (canonical hash only — the
+  // legacy compat check exists for pre-v2 freezes, not for new ones).
   const bundle: SpecBundle = structuredClone(b);
   bundle.manifest.state = 'frozen';
   bundle.manifest.frozen_at = nowIso;
+  bundle.manifest.hash_version = 2;
   bundle.manifest.artifact_hashes = artifactHashes(bundle);
 
   return { ok: true, bundle, reasons: [] };

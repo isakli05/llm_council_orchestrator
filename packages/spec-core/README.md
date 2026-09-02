@@ -817,7 +817,7 @@ davranış CLI ile birebir aynıdır. 13 araç (10 motor + 3 yenileme):
 | `lco_generate` | `{dir, intent, variant?, profile?, consent?}` | intent → spec/ taslağı (ÜCRETLİ LLM çağrısı) — bkz. Ücretli Çağrı Rızası; `lco generate` çekirdeği + T4 kapıları |
 | `lco_change` | `{dir, changeset}` | changeset (CLI zarfı, satır içi nesne) uygula: önce-tam-aday-doğrula sonra-atomik-yaz; lint-invalid → reddetme, disk bayt-bayt aynı; `lco change` çekirdeği |
 | `lco_renew_status` | `{dir, json?}` | Yenileme durumu (DETERMINİSTİK, salt-okunur, LLM YOK) |
-| `lco_renew_export` | `{dir, out?}` | Modernizasyon raporu (deterministik; yeni analiz yapmaz) |
+| `lco_renew_export` | `{dir}` | Modernizasyon raporu (deterministik; yeni analiz yapmaz; içerik olarak döner — dosya YAZMAZ; dosya çıktısı yalnızca CLI `lco renew export --out`) |
 | `lco_renew_analyze` | `{dir, scope?, llmProfile?, consent?}` | Yenileme analizi (ÜCRETLİ LLM çağrısı) — `LCO_MCP_ALLOW_GENERATE=1` + `consent.digest` = `renewConsentDigest(dir, scope, llmProfile?)`; rıza yoksa sıfır çağrı |
 
 Claude Code'a kaydetmek için (mutlak yol ile):

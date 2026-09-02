@@ -152,12 +152,6 @@ commands:
                                -> exit 0; --json emits {"checks":[{name,status,
                                detail,remedy?}...],"healthy":bool}
   models --provider <name> [--config <path>] [--json] [--limit N]
-
-  renew <sub> <dir>            Legacy Renewal V1 (analysis + planning, no execution)
-                               init <dir> --target <repo> · refresh · status [--json] ·
-                               analyze (PAID — makes LLM calls) · review [--answers f |
-                               --interactive] · plan [--strategy s --strategy-rationale t]
-                               [--freeze] · export [--out f]
                                list a provider's CURRENT model catalogue (FREE
                                models endpoint only — one GET, no completion,
                                no retry). <name> is either a provider from
@@ -169,6 +163,12 @@ commands:
                                per-token pricing and context as reported;
                                Unknown = not reported (never 0). The catalogue
                                changes: use this, not stale doc screenshots.
+
+  renew <sub> <dir>            Legacy Renewal V1 (analysis + planning, no execution)
+                               init <dir> --target <repo> · refresh · status [--json] ·
+                               analyze (PAID — makes LLM calls) · review [--answers f |
+                               --interactive] · plan [--strategy s --strategy-rationale t]
+                               [--freeze] · export [--out f]
 
 changeset template (all three lists are optional; patch keys are strict — typos are rejected):
   {
@@ -701,38 +701,58 @@ function parseRenew(rest: string[]): ParseResult {
   if (sub === undefined || !(RENEW_SUBS as readonly string[]).includes(sub)) {
     return err(`renew requires a subcommand (${RENEW_SUBS.join(' | ')})`);
   }
-  if (dir === undefined || dir === '' || dir.startsWith('--')) {
+  // INV-H2: <dir> must be a real token. Absent, exactly-empty,
+  // whitespace-only, or a leading flag is one grammar error — the value is
+  // used as a path, so it is rejected, never silently trimmed-and-used.
+  if (dir === undefined || dir.startsWith('--') || dir.trim() === '') {
     return err(`renew ${sub} requires the LCO project <dir> as its first argument (the analyzed repo is --target on init)`);
   }
   const grammar = RENEW_GRAMMAR[sub as RenewSub];
   const allowed = new Set([...grammar.valueFlags, ...grammar.boolFlags]);
+  const takesValue = new Set(grammar.valueFlags);
 
-  // Every flag must belong to THIS subcommand (M-04: no global allowlist).
-  for (const f of flags) {
-    if (f.startsWith('--') && !allowed.has(f)) {
-      return err(`flag ${f} is not valid for 'renew ${sub}' (allowed: ${[...allowed].sort().join(' ') || 'none'})`);
+  // INV-H2: one strict left-to-right walk over everything after <dir>:
+  // - a token that does not start with '--' is an extra positional
+  //   (previously silently ignored) — renew <sub> takes exactly one <dir>;
+  // - every flag must belong to THIS subcommand (M-04: no global allowlist);
+  // - each flag may appear once — a repeat is an ambiguous invocation,
+  //   never first-wins;
+  // - value flags need real values: missing, flag-like, exactly-empty, or
+  //   whitespace-only values are errors, never silent empties.
+  // Valid invocations parse to the exact same objects as before.
+  const seen = new Map<string, string>(); // flag name -> value ('' for bool flags)
+  for (let i = 0; i < flags.length; ) {
+    const token = flags[i];
+    if (!token.startsWith('--')) {
+      return err(`unexpected positional '${token}' — renew ${sub} takes exactly one <dir> argument`);
     }
-  }
-  // Value flags need real values — a missing value or one that is itself a
-  // flag is an error, never an ambiguity.
-  const flag = (name: string): string | undefined => {
-    const i = flags.indexOf(name);
-    if (i === -1) return undefined;
+    if (!allowed.has(token)) {
+      return err(`flag ${token} is not valid for 'renew ${sub}' (allowed: ${[...allowed].sort().join(' ') || 'none'})`);
+    }
+    if (seen.has(token)) {
+      return err(`flag ${token} appears more than once — ambiguous invocation`);
+    }
+    if (!takesValue.has(token)) {
+      seen.set(token, '');
+      i += 1;
+      continue;
+    }
     const value = flags[i + 1];
-    // An empty value is a MISSING value (same rule as the <dir> positional):
-    // `--target ''` must be a grammar error, never a silent empty string.
+    // A missing value or one that is itself a flag is an error, never an
+    // ambiguity; an exactly-empty value is the same MISSING-value case
+    // (`--target ''` was already a grammar error before INV-H2).
     if (value === undefined || value === '' || value.startsWith('--')) {
-      return undefined;
+      return err(`${token} requires a value for 'renew ${sub}'`);
     }
-    return value;
-  };
-  for (const name of grammar.valueFlags) {
-    const i = flags.indexOf(name);
-    if (i !== -1 && flag(name) === undefined) {
-      return err(`${name} requires a value for 'renew ${sub}'`);
+    // INV-H2: empty AFTER trim is still empty — reject, don't normalize.
+    if (value.trim() === '') {
+      return err(`${token} requires a non-empty value for 'renew ${sub}'`);
     }
+    seen.set(token, value);
+    i += 2;
   }
-  const has = (name: string): boolean => flags.includes(name);
+  const flag = (name: string): string | undefined => seen.get(name);
+  const has = (name: string): boolean => seen.has(name);
   for (const required of grammar.required ?? []) {
     if (!has(required)) {
       return err(`renew ${sub} requires ${required} (see: lco renew ${sub} --help)`);
