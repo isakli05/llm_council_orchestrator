@@ -54,7 +54,7 @@ import {
 import { writeSpecDir } from './write-spec';
 import { cmdFreeze } from './freeze';
 import { renderRenewalReport } from '../../renew/project/export';
-import { tryRealpath } from '../../storage/paths';
+import { assertDisjointRealRoots, resolveContainedOutputPath, tryRealpath } from '../../storage/paths';
 import { affectedReverse } from '../../renew/intel/graph-ops';
 
 export interface RenewCapabilities {
@@ -148,9 +148,17 @@ export async function cmdRenewInit(
     return { code: 2, output: `target repository not found: ${args.target}` };
   }
 
+  // Path-domain invariant (C-01): the project and the analyzed target are
+  // DISJOINT real-path domains — checked BEFORE any directory is created, so
+  // a refused init cannot have written anything anywhere.
+  const disjoint = assertDisjointRealRoots(args.dir, targetReal);
+  if (!disjoint.ok) {
+    return { code: 2, output: `refusing renewal init: ${disjoint.message}` };
+  }
+
   // Clean + rebuild the guarded workspace copy (regenerable substrate).
   if (existsSync(paths.workspace)) rmSync(paths.workspace, { recursive: true, force: true });
-  mkdirSync(paths.workspace, { recursive: true });
+  mkdirSync(paths.workspace, { recursive: true, mode: 0o700 });
   const walk = buildGuardedCopy(targetReal, paths.workspace, { limits: DEFAULT_INGEST_LIMITS });
   if (!walk.ok) return { code: 1, output: `renewal init failed: ${walk.message}` };
 
@@ -185,9 +193,9 @@ export async function cmdRenewInit(
     nowIso: caps.nowIso(),
   });
 
-  mkdirSync(join(args.dir, '.lco', 'renewal'), { recursive: true });
-  mkdirSync(paths.analyses, { recursive: true });
-  mkdirSync(paths.approvals, { recursive: true });
+  mkdirSync(join(args.dir, '.lco', 'renewal'), { recursive: true, mode: 0o700 });
+  mkdirSync(paths.analyses, { recursive: true, mode: 0o700 });
+  mkdirSync(paths.approvals, { recursive: true, mode: 0o700 });
   persistSnapshotFile(args.dir, snapshot);
   persistRenewalProject(args.dir, {
     schema_version: 1,
@@ -671,8 +679,17 @@ export async function cmdRenewExport(args: { dir: string; out?: string }, caps: 
   const archView = graph.ok ? buildArchitectureView(graph.graph, manifest, state.project.snapshot_id) : undefined;
   const report = renderRenewalReport(state, archView);
   if (args.out !== undefined) {
-    atomicWrite(args.out, report);
-    return { code: 0, output: `report written: ${args.out}` };
+    // Contained no-clobber output (C-02): inside the project root only,
+    // never into the target, never over an existing file, no symlink escapes.
+    const targetReal = tryRealpath(p.project.target_path);
+    const contained = resolveContainedOutputPath({
+      projectDir: args.dir,
+      ...(targetReal !== undefined ? { targetReal } : {}),
+      out: args.out,
+    });
+    if (!contained.ok) return { code: 2, output: `export refused: ${contained.message}` };
+    atomicWrite(contained.path, report);
+    return { code: 0, output: `report written: ${contained.path}` };
   }
   return { code: 0, output: report };
 }

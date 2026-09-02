@@ -146,8 +146,10 @@ export function buildGuardedCopy(
     }
     if (doCopy) {
       const dest = join(copyRoot, f.rel);
-      mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(dest, buf);
+      // M-05: the guarded copy can contain inline secret-shaped content —
+      // restrict at-rest exposure to the owning user (files 0600, dirs 0700).
+      mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+      writeFileSync(dest, buf, { mode: 0o600 });
     }
     manifest.push({ path: f.rel, sha256: `sha256:${createHash('sha256').update(buf).digest('hex')}` });
   }

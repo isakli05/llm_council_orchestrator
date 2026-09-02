@@ -2295,6 +2295,68 @@ describe('renew MCP tools', () => {
     expect(text(res)).toMatch(/not a renewal project|renew init/);
   });
 
+  it('export is READ-ONLY: an out argument is a -32602 schema refusal (C-02)', async () => {
+    const res = await callTool('lco_renew_export', { dir: freshRoot('renew-out'), out: '/etc/pwned.txt' });
+    expect(res.error?.code ?? res.result?.isError).toBeTruthy();
+    // additionalProperties:false → the unknown `out` is rejected at the schema.
+    expect(res.error?.code === -32602 || /out/.test(text(res))).toBe(true);
+    expect(existsSync('/etc/pwned.txt')).toBe(false);
+  });
+
+  it('export on a real project RETURNS content and writes NOTHING (read-only contract)', async () => {
+    // Initialize a renewal project via the pure command core (fixture graph
+    // provider — no graphify needed; cmdRenewExport only READS the graph file).
+    const { cmdRenewInit } = await import('../cli/commands/renew');
+    const { StaticGraphProvider } = await import('../renew/intel/fixture-provider');
+    const { parseGraphText } = await import('../renew/intel/graph-reader');
+    const { createHash } = await import('node:crypto');
+    const { lstatSync, readlinkSync } = await import('node:fs');
+
+    const project = freshRoot('renew-ro-project-');
+    const target = mkdtempSync(join(tmpdir(), 'lco-renew-ro-target-'));
+    tmpDirs.push(target);
+    mkdirSync(join(target, 'src'), { recursive: true });
+    writeFileSync(join(target, 'src', 'app.ts'), 'export const x = 1;\n');
+    const graphParsed = parseGraphText(
+      readFileSync(join(FIXTURES, 'legacy-app', 'graph-fixture.json'), 'utf8'),
+    );
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const init = await cmdRenewInit(
+      { dir: project, target, name: 'ro' },
+      {
+        nowIso: () => '2026-09-02T12:00:00.000Z',
+        provider: () => new StaticGraphProvider(graphParsed.graph, '0.9.50'),
+        gitCommit: () => undefined,
+      },
+    );
+    expect(init.code).toBe(0);
+
+    const hashTree = (root: string): string => {
+      const h = createHash('sha256');
+      const walk = (abs: string, rel: string): void => {
+        for (const ent of readdirSync(abs, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+          const rel2 = rel === '' ? ent.name : `${rel}/${ent.name}`;
+          const abs2 = join(abs, ent.name);
+          const st = lstatSync(abs2);
+          h.update(`E:${rel2}:${st.mode.toString(8)}\n`);
+          if (ent.isDirectory()) walk(abs2, rel2);
+          else if (ent.isSymbolicLink()) h.update(`L:${readlinkSync(abs2)}\n`);
+          else h.update(`F:${createHash('sha256').update(readFileSync(abs2)).digest('hex')}\n`);
+        }
+      };
+      walk(root, '');
+      return h.digest('hex');
+    };
+
+    const before = hashTree(project);
+    const targetBefore = hashTree(target);
+    const res = await callTool('lco_renew_export', { dir: project });
+    expect(res.result.isError).toBe(false);
+    expect(text(res).length).toBeGreaterThan(0);
+    expect(hashTree(project)).toBe(before);
+    expect(hashTree(target)).toBe(targetBefore);
+  });
+
   it('PAID analyze: missing consent → ZERO LLM calls, digest advertised', async () => {
     let calls = 0;
     const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };

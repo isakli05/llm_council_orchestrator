@@ -92,8 +92,6 @@ interface ToolInput {
   dir: string;
   task?: string;
   json?: boolean;
-  /** Legacy Renewal export target file (lco_renew_export). */
-  out?: string;
   /** Legacy Renewal analysis scope (lco_renew_analyze; 'whole' in V1). */
   scope?: string;
   /** SEC-002 execution consent / PROD-004 paid-call consent: { digest }. */
@@ -552,18 +550,18 @@ const TOOLS: readonly ToolDef[] = [
     name: 'lco_renew_export',
     description:
       'Legacy Renewal report (DETERMINISTIC, read-only, no LLM): renders the validated ' +
-      'modernization state as markdown; export never performs new analysis.',
+      'modernization state as markdown and RETURNS it as tool content; this tool never ' +
+      'writes files (use the CLI `lco renew export --out` for a contained file export).',
     inputSchema: {
       type: 'object',
       properties: {
         dir: RENEW_DIR_PROPERTY,
-        out: { type: 'string', description: 'write the report to this file path instead of returning it' },
       },
       required: ['dir'],
       additionalProperties: false,
     },
-    args: ['out'],
-    run: (input, nowIso) => cmdRenewExport({ dir: input.dir, ...(input.out !== undefined ? { out: input.out } : {}) }, renewCaps(input.dir, nowIso)),
+    args: [],
+    run: (input, nowIso) => cmdRenewExport({ dir: input.dir }, renewCaps(input.dir, nowIso)),
   },
   {
     name: 'lco_renew_analyze',
