@@ -43,6 +43,20 @@ export function serializeSourceDocumentSafe(value: unknown): string {
     .replace(/[\u0000-\u001f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
+/**
+ * Line-separator-safe rendering for repository-derived strings displayed OUTSIDE
+ * the JSON document (the anchorable-files table, diagnostics in retry prompts):
+ * every line separator and raw control char becomes a visible `\\uXXXX` escape,
+ * so hostile text (e.g. a POSIX filename containing a newline or U+2028) can
+ * never forge marker lines or reframe the trusted instruction region
+ * (verifier V3-F1).
+ */
+export function escapeLineUnsafe(text: string): string {
+  return text
+    .replace(/[\u2028\u2029]/g, (c) => (c === '\u2028' ? '\\u2028' : '\\u2029'))
+    .replace(/[\u0000-\u001f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 /** One context item as the source document serializes it, plus egress stats. */
 export interface EgressProjection {
   value: Record<string, unknown>;
@@ -122,7 +136,11 @@ export function buildRecoveryPrompt(args: RecoveryPromptArgs): string {
     anchorable.length === 0
       ? '  (no anchorable files in this scope — return only uncertainties with no file claims)'
       : anchorable
-          .map((s) => `  ${redactSecrets(s.path).text} → ${s.content_hash}`)
+          // V3-F1 (verifier): a POSIX filename may contain \n / U+2028 — the
+          // anchor table is repository-derived text in the TRUSTED region, so
+          // the rendered path is redacted AND line-separator-safe: a hostile
+          // filename can never forge marker lines or the table's framing.
+          .map((s) => `  ${escapeLineUnsafe(redactSecrets(s.path).text)} → ${s.content_hash}`)
           .join('\n');
 
   // H-07/S2-H-03: the untrusted material travels as ONE JSON document with
@@ -185,7 +203,10 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: reado
     '',
     '--- VALIDATION FAILURE ---',
     'Your previous response failed schema validation. Issues:',
-    ...issues.map((i) => `  - ${i}`),
+    // V3-F1 (verifier, minor channel): issue strings may echo model- or
+    // repository-controlled text — rendered line-unsafe-free so they cannot
+    // forge framing in the retry either.
+    ...issues.map((i) => `  - ${escapeLineUnsafe(i)}`),
     '',
     'Return the corrected JSON object only. Same rules as above — anchors must copy the',
     'ANCHORABLE FILES table verbatim; do not drop uncertainty material to "fix" the output.',

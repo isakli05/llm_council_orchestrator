@@ -95,18 +95,18 @@ describe('distiller sort and fallback arms', () => {
     expect(qs.map((q) => q.claimId)).toEqual(['OVL-0002', 'OVL-0005']);
   });
 
-  it('unresolved parity entries sort by id; UNC-linked ones STILL ask, only PAR-linked are skipped (S2-C-05)', () => {
+  it('unresolved parity entries sort by id; EVERY unresolved entry is asked — no link (UNC or PAR) suppresses a question (S2-C-05 + verifier V2-F1)', () => {
     const overlay = emptyOverlay(SNAP);
     const parity = {
       schema_version: 1 as const, snapshot_id: SNAP, records: [
-        { id: 'PAR-0009', behavior: 'b9', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0009' }], snapshot_id: SNAP, decision_claim_id: 'PAR-0009' }, // PAR-linked (answered canonical question) → skipped
+        { id: 'PAR-0009', behavior: 'b9', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0009' }], snapshot_id: SNAP, decision_claim_id: 'PAR-0009' }, // hand-edited PAR→PAR link → STILL asked (links never suppress or transfer authority)
         { id: 'PAR-0007', behavior: 'b7', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }], snapshot_id: SNAP },
         { id: 'PAR-0003', behavior: 'b3', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0002' }], snapshot_id: SNAP, decision_claim_id: 'UNC-0002' }, // UNC link is informational → STILL asked
         { id: 'PAR-0001', behavior: 'b1', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0003' }], snapshot_id: SNAP },
       ],
     };
     const qs = distillRenewalQuestions({ analyses: [], overlay, parity: parity as never });
-    expect(qs.map((q) => q.claimId)).toEqual(['PAR-0001', 'PAR-0003', 'PAR-0007']);
+    expect(qs.map((q) => q.claimId)).toEqual(['PAR-0001', 'PAR-0003', 'PAR-0007', 'PAR-0009']);
   });
 
   it('an option answer without selectedOption falls back to an empty answer text (honest evidence hash)', () => {

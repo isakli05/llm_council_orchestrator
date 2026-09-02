@@ -187,13 +187,11 @@ export function applyApprovalToParity(store: ParityStore, approvalRec: RenewalAp
     const ruledByApproval = rec.ruling !== 'unresolved' && rec.approval_id !== undefined;
     const sameApproval = rec.approval_id === approvalRec.approval_id;
     if (rec.ruling !== 'unresolved' && !ruledByApproval && !sameApproval) continue; // headless ruling — precedence kept
-    // A PARITY ruling is carried by a decision on THIS entry (PAR- id) or on a
-    // linked PAR claim. UNC/OVL-linked decisions are informational context —
-    // their options are not canonical ruling options and never rule.
-    const linkedParClaim = rec.decision_claim_id !== undefined && /^PAR-\d{4}$/.test(rec.decision_claim_id)
-      ? rec.decision_claim_id
-      : undefined;
-    const decision = byClaim.get(rec.id) ?? (linkedParClaim !== undefined ? byClaim.get(linkedParClaim) : undefined);
+    // INV-D2 (verifier finding): a PARITY ruling is carried ONLY by a decision
+    // on THIS entry's own claim id (rec.id). Linked claims (UNC/OVL context,
+    // or a hand-edited PAR→PAR link) NEVER transfer authority — one human
+    // answer rules exactly the behavior it was asked about.
+    const decision = byClaim.get(rec.id);
     if (decision === undefined) continue;
     const answer = decision.selected_option ?? decision.free_text ?? '';
     const ruling = canonicalRuling(decision.selected_option);
@@ -256,9 +254,10 @@ export function parityGate(store: ParityStore, targetRoot: string, approvals?: P
         blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} is bound to snapshot ${approval.snapshot_id}, not the active ${approvals.activeSnapshot}` });
         continue;
       }
-      // INV-D2: authorization compares the CANONICAL option id — the same
-      // identity check as the fold, never free-text interpretation.
-      const decision = approval.decisions.find((d) => d.claim_id === rec.id || d.claim_id === rec.decision_claim_id);
+      // INV-D2: authorization compares the CANONICAL option id on the entry's
+      // OWN claim decision — the same identity check as the fold, never
+      // free-text interpretation, never a linked claim's decision.
+      const decision = approval.decisions.find((d) => d.claim_id === rec.id);
       if (decision === undefined) {
         blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} contains no decision for this entry (${rec.decision_claim_id ?? rec.id})` });
         continue;

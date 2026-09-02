@@ -69,7 +69,10 @@ export function renderRenewalReport(state: RenewalState, archView: ArchitectureV
     lines.push('| id | behavior | ruling | support | rationale |');
     lines.push('|----|----------|--------|---------|-----------|');
     for (const r of state.parity.store.records) {
-      const support = r.ruling === 'unresolved' ? 'unvalidated' : (r.support_status ?? 'human_confirmed');
+      // INV-C honesty: support is reported as RECORDED, never inferred — a
+      // ruled entry lacking support_status (hand-edited/legacy store) shows
+      // 'unrecorded', not an implied human confirmation.
+      const support = r.ruling === 'unresolved' ? 'unvalidated' : (r.support_status ?? 'unrecorded');
       lines.push(`| ${r.id} | ${r.behavior.replace(/\|/g, '\\|')} | **${r.ruling}** | ${support} | ${(r.rationale ?? '').replace(/\|/g, '\\|')} |`);
     }
   } else {

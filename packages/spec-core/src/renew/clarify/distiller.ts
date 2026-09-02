@@ -106,12 +106,10 @@ export function distillRenewalQuestions(inputs: DistillerInputs): ClarificationQ
   if (inputs.parity !== undefined) {
     for (const rec of [...inputs.parity.records].sort((a, b) => (a.id < b.id ? -1 : 1))) {
       if (rec.ruling !== 'unresolved') continue;
-      // INV-D2: a PARITY ruling is asked ONLY as a canonical option-id
-      // question. An UNC-linked entry (its uncertainty was asked and answered
-      // as context) still needs the canonical ruling question — informational
-      // answers never rule the ledger. Only an already-linked PAR claim
-      // (answered canonical question) is not re-asked.
-      if (rec.decision_claim_id !== undefined && /^PAR-\d{4}$/.test(rec.decision_claim_id)) continue;
+      // INV-D2 (verifier finding): EVERY unresolved entry gets its own
+      // canonical option-id question — a linked claim (UNC context or a
+      // hand-edited PAR→PAR link) never suppresses an entry's question nor
+      // transfers its authority to another behavior's answer.
       questions.push({
         claimId: rec.id,
         question: `How should this discovered behavior be treated during modernization: ${rec.behavior}`,

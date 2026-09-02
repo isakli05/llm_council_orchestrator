@@ -215,11 +215,24 @@ export function authorizeRenewalPaths(args: { projectDir: string; destinations: 
   }
   if (real === undefined) return { ok: true };
   for (const dest of args.destinations) {
-    const rel = relative(real, resolve(dest));
+    // Containment compares the RESOLVED destination (existing ancestors
+    // through their symlinks — a legitimately symlinked project ROOT works,
+    // while a state-chain link resolving into the target or anywhere else
+    // outside the real root refuses). The no-follow walk below still names
+    // the offending link precisely for the common attack shapes.
+    let resolved: string;
+    try {
+      resolved = resolveNearestExisting(dest);
+    } catch (err) {
+      return { ok: false, message: `cannot resolve renewal state destination ${dest}: ${(err as Error).message}` };
+    }
+    const rel = relative(real, resolved);
     if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
       return {
         ok: false,
-        message: `renewal state destination ${dest} is outside the resolved project root ${real} — refusing`,
+        message:
+          `renewal state destination ${dest} resolves to ${resolved}, outside the resolved project root ` +
+          `${real} — refusing`,
       };
     }
     const segments = rel.split(sep);

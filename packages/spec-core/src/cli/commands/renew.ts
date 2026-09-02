@@ -84,6 +84,22 @@ export interface RenewResult {
 
 const REFRESH_REMEDY = "Run 'lco renew refresh <dir>' to re-snapshot and rebuild the graph, then retry.";
 
+/**
+ * INV-A write-time re-authorization (verifier F-1): the paid call / review
+ * round-trip takes wall-clock MINUTES — far wider than the microsecond
+ * check-then-write the TOCTOU residual note describes. Every trusted write
+ * re-asserts the real-dir chain IMMEDIATELY before persisting (under the
+ * renewal lock where one is held), so a state destination swapped for a
+ * symlink mid-operation refuses instead of redirecting the atomic write
+ * (e.g. into the analyzed target).
+ */
+function persistGuard(dir: string): void {
+  const auth = authorizeRenewalState(dir);
+  if (!auth.ok) {
+    throw new Error(`renewal state domain changed during the operation — refusing to write: ${auth.message}`);
+  }
+}
+
 function atomicWrite(path: string, text: string): void {
   mkdirSync(join(path, '..'), { recursive: true });
   const tmp = `${path}.tmp`;
@@ -204,6 +220,11 @@ export async function cmdRenewInit(
   const health = await caps.provider().graphHealth();
   const version = health.ok ? health.provider_version : probe.providerVersion ?? 'unknown';
 
+  // INV-A write-time re-authorization: the graph build spanned a subprocess
+  // — re-assert the real-dir chain immediately before the persist block.
+  const buildAuth = authorizeRenewalState(args.dir);
+  if (!buildAuth.ok) return { code: 2, output: `renewal init refused: ${buildAuth.message}` };
+
   // L-02: ONE git probe (repo kind and identity derive from the same answer).
   const gitCommit = caps.gitCommit(targetReal);
   const snapshot = createSnapshot({
@@ -261,6 +282,9 @@ export async function cmdRenewInit(
 }
 
 export const cmdRenewRefresh = async (args: { dir: string }, caps: RenewCapabilities): Promise<RenewResult> => {
+  // INV-A: authorize BEFORE the first trusted-state read (the project load).
+  const refreshAuth = authorizeRenewalState(args.dir);
+  if (!refreshAuth.ok) return { code: 2, output: `renewal refresh refused: ${refreshAuth.message}` };
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
   // Refresh re-validates the recorded target against the CURRENT project dir
@@ -362,13 +386,14 @@ export async function cmdRenewAnalyze(
   args: { dir: string; scope?: 'whole' },
   caps: RenewCapabilities,
 ): Promise<RenewResult> {
-  const p = loadRenewalProject(args.dir);
-  if (!p.ok) return { code: 2, output: p.message };
-  const paths = renewalPaths(args.dir);
-
-  // INV-A: state IO never traverses a symlinked state chain.
+  // INV-A: state IO (READS included) never traverses a symlinked state chain
+  // — authorized BEFORE the first trusted-state read, so foreign content
+  // never surfaces through a redirected chain.
   const stateAuth = authorizeRenewalState(args.dir);
   if (!stateAuth.ok) return { code: 2, output: `renewal analyze refused: ${stateAuth.message}` };
+  const p = loadRenewalProject(args.dir);
+  if (!p.ok) return { code: 2, output: p.message };
+
   // INV-B1 (S2-H-11): the mutable project pointer is joined to the snapshot's
   // recorded root identity before anything is walked or paid for.
   const joinSnap = loadSnapshotFile(args.dir);
@@ -488,7 +513,17 @@ export async function analyzeWithFresh(
       nowIso: caps.nowIso(),
       targetRoot,
       recheckFreshness,
-      persist: (record) => persistAnalysisRecord(paths.analyses, record),
+      persist: (record) => {
+        // INV-A write-time re-authorization: this persist can happen DURING
+        // the paid call (transport-failure trail) — the chain is re-asserted
+        // before every immutable analysis write.
+        try {
+          persistGuard(dir);
+        } catch (e) {
+          return { ok: false, code: 'state_domain_changed', message: (e as Error).message };
+        }
+        return persistAnalysisRecord(paths.analyses, record);
+      },
     },
   );
   if (!outcome.ok && outcome.code === 'persist_failed') {
@@ -559,6 +594,14 @@ export async function analyzeWithFresh(
     throw e;
   }
   try {
+    // INV-A write-time re-authorization: the paid call spanned the whole
+    // authorization-to-write window — re-assert the real-dir chain (tmp
+    // siblings included) under the lock, immediately before any persist.
+    try {
+      persistGuard(dir);
+    } catch (e) {
+      return { code: 1, output: `analysis promotion refused: ${(e as Error).message}` };
+    }
     const freshOverlay = loadOverlay(paths.overlay);
     if (!freshOverlay.ok) {
       return { code: 1, output: `overlay store changed to corrupt during the analysis (${freshOverlay.message}) — promotion refused; the analysis record is preserved` };
@@ -683,6 +726,13 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
     driver,
     nextApprovalId: () => nextRenewalApprovalId(paths.approvals),
     writeApproval: (record) => {
+      // INV-A write-time re-authorization: the interactive round-trip took
+      // wall-clock time — re-assert before the immutable approval write.
+      try {
+        persistGuard(args.dir);
+      } catch (e) {
+        return { ok: false as const, error: (e as Error).message };
+      }
       const result = writeRenewalApproval(paths.approvals, { ...record, approval_id: nextRenewalApprovalId(paths.approvals) });
       return result.ok ? { ok: true as const } : { ok: false as const, error: result.message };
     },
@@ -791,6 +841,9 @@ async function finishReview(
     throw e;
   }
   try {
+    // INV-A write-time re-authorization: the interactive round-trip spanned
+    // the authorization-to-write window — re-assert under the lock.
+    persistGuard(dir);
     // Fold parity — corrupt parity stops the fold (never empty-overwrite).
     const par = loadParity(paths.parity);
     if (!par.ok) return { code: 1, output: `parity store corrupt: ${par.message} — approval preserved, fold refused` };
@@ -837,15 +890,14 @@ export async function cmdRenewPlan(
   args: { dir: string; freeze?: boolean; strategy?: string; strategyRationale?: string },
   caps: RenewCapabilities,
 ): Promise<RenewResult> {
+  // INV-A: authorize BEFORE any trusted-state read (plan reads + writes).
+  const stateAuth = authorizeRenewalState(args.dir);
+  if (!stateAuth.ok) return { code: 2, output: `renewal plan refused: ${stateAuth.message}` };
   const state = safeState(args.dir);
   if (typeof state === 'string') return { code: 2, output: state };
   const paths = renewalPaths(args.dir);
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
-
-  // INV-A: the plan writes spec/ + reads trusted state — real-dir chain only.
-  const stateAuth = authorizeRenewalState(args.dir);
-  if (!stateAuth.ok) return { code: 2, output: `renewal plan refused: ${stateAuth.message}` };
 
   const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
   if (!stale.ok) return stale;

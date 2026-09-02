@@ -38,12 +38,15 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
-function renewProfileConfig(model: string): string {
+function renewProfileConfig(model: string, providerKey = 'or'): string {
   return JSON.stringify({
     llm: {
-      providers: { or: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY' } },
+      providers: {
+        or: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY' },
+        or2: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY_2' },
+      },
       profiles: {
-        'renew-route': { variant: 'renewal', roles: { renew_recover: { provider: 'or', model } } },
+        'renew-route': { variant: 'renewal', roles: { renew_recover: { provider: providerKey, model } } },
       },
     },
   });
@@ -93,6 +96,25 @@ describe('S2-H-02: consent binds the EFFECTUAL route (actual server call path)',
     // model-a's consent.
     expect(digestA).not.toBe(digestB);
     expect(llm).not.toHaveBeenCalled(); // zero calls in both
+  });
+
+  it('V3-F2: configs differing ONLY in gateway (same model) advertise different digests — the profile FINGERPRINT binds routing beyond the model', async () => {
+    const dir = freshDir('lco-eff-consent-gw-');
+    const llm = vi.fn();
+    const a = await callRenewAnalyze(
+      { dir, scope: 'whole', llmProfile: 'renew-route' },
+      { allowGenerate: true, llmConfigText: renewProfileConfig('same-model', 'or'), llm: llm as never, env: { LCO_MCP_EXEC_ROOT: TMP_PIN } as NodeJS.ProcessEnv },
+    );
+    const b = await callRenewAnalyze(
+      { dir, scope: 'whole', llmProfile: 'renew-route' },
+      { allowGenerate: true, llmConfigText: renewProfileConfig('same-model', 'or2'), llm: llm as never, env: { LCO_MCP_EXEC_ROOT: TMP_PIN } as NodeJS.ProcessEnv },
+    );
+    expect(a.result.isError).toBe(true);
+    expect(b.result.isError).toBe(true);
+    // Same resolved MODEL, different GATEWAY — only profileFingerprint
+    // distinguishes these; the digests must differ.
+    expect(advertisedDigest(a)).not.toBe(advertisedDigest(b));
+    expect(llm).not.toHaveBeenCalled();
   });
 
   it('a digest computed WITHOUT the resolved route no longer authorizes (old binding is stale)', async () => {
