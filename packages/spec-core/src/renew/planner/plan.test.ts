@@ -95,6 +95,7 @@ const strategy = buildStrategyDecision({
   selectedVia: 'workspace',
   snapshotId: SNAP_ID,
   nowIso: '2026-09-02T00:00:00Z',
+  approvalId: 'APPR-0002', // trust kernel: workspace selections carry their authorizing approval (S3-H-08)
 });
 
 function ruledParity() {

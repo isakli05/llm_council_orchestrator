@@ -131,8 +131,11 @@
               "minLength": 1
             },
             "hash_version": {
-              "type": "integer",
-              "exclusiveMinimum": 0
+              "type": "number",
+              "enum": [
+                1,
+                2
+              ]
             }
           },
           "required": [

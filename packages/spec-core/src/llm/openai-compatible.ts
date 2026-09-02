@@ -86,6 +86,17 @@ export interface OpenAiCompatibleConfig {
   backoffMs?: readonly number[];
   /** Provider-reported cost extraction (OpenRouter usage.cost → credits). */
   costExtractor?: CostExtractor;
+  /**
+   * TRUST KERNEL (S3-H-05): invoked ONCE per complete() call, immediately
+   * after the request object is serialized and BEFORE any fetch — the one
+   * place the EXACT wire bytes exist before transport. A throw aborts the
+   * completion with ZERO transport calls (over-budget refusals happen here,
+   * before a single byte is paid for). Adapters constructed by
+   * renew/trust/paid.ts install the measuring/capping hook; a bare adapter
+   * without one is a consumer the architecture tests forbid on renewal
+   * paths.
+   */
+  onSerializedWire?: (requestBody: string) => void;
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -191,6 +202,9 @@ export function createOpenAiCompatibleLlm(config: OpenAiCompatibleConfig): LlmAd
       if (opts?.max_tokens !== undefined) body.max_tokens = opts.max_tokens;
       else if (config.maxTokens !== undefined) body.max_tokens = config.maxTokens;
       const requestBody = JSON.stringify(body);
+      // TRUST KERNEL: measure/cap the ACTUAL serialized request (envelope,
+      // model, messages, extra body included) before any transport attempt.
+      config.onSerializedWire?.(requestBody);
 
       const startedAt = now();
       let lastError: Error | undefined;

@@ -4,37 +4,22 @@
  * UPGRADE / LANGUAGE MIGRATION). The system may propose; selection is a
  * recorded human act — via the clarification workspace or an explicit CLI
  * flag — never autonomous.
+ *
+ * TRUST KERNEL: the schema (including the workspace-approval requirement,
+ * S3-H-08) and authority verification live in trust/authority.ts; the
+ * persistence/read functions here are deprecated bypass shapes being
+ * migrated to trust/state + trust/fs.
  */
-import { z } from 'zod';
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  MODERNIZATION_STRATEGIES,
+  StrategyDecisionSchema,
+  type ModernizationStrategy,
+  type StrategyDecision,
+} from '../trust/authority';
 
-export const MODERNIZATION_STRATEGIES = [
-  'in_place',
-  'strangler',
-  'full_rewrite',
-  'service_extraction',
-  'framework_migration',
-  'language_migration',
-] as const;
-
-export type ModernizationStrategy = (typeof MODERNIZATION_STRATEGIES)[number];
-
-export const StrategyDecisionSchema = z
-  .object({
-    schema_version: z.literal(1),
-    strategy: z.enum(MODERNIZATION_STRATEGIES),
-    rationale: z.string().trim().min(1).max(4_000),
-    /** Structural invariant: only humans select strategies. */
-    selected_by: z.literal('human'),
-    /** How the human acted: workspace approval or explicit CLI flag. */
-    selected_via: z.enum(['workspace', 'flag']),
-    approval_id: z.string().regex(/^APPR-\d{4}$/).optional(),
-    selected_at: z.string().min(1),
-    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
-  })
-  .strict();
-
-export type StrategyDecision = z.infer<typeof StrategyDecisionSchema>;
+export { MODERNIZATION_STRATEGIES, StrategyDecisionSchema };
+export type { ModernizationStrategy, StrategyDecision };
 
 export interface BuildStrategyArgs {
   strategy: ModernizationStrategy;
@@ -58,9 +43,8 @@ export function buildStrategyDecision(args: BuildStrategyArgs): StrategyDecision
   });
 }
 
-export type StrategyPersist = { ok: true; path: string };
-
-export function persistStrategy(path: string, decision: StrategyDecision): StrategyPersist {
+/** @deprecated TRUST KERNEL: persist via the renewal state transaction. */
+export function persistStrategy(path: string, decision: StrategyDecision): { ok: true; path: string } {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(decision, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, path);
@@ -71,6 +55,7 @@ export type StrategyLoad =
   | { ok: true; decision: StrategyDecision }
   | { ok: false; code: 'strategy_missing' | 'strategy_corrupt'; message: string };
 
+/** @deprecated TRUST KERNEL: trusted reads route through trust/state.loadActiveState. */
 export function loadStrategy(path: string): StrategyLoad {
   let text: string;
   try {
@@ -78,6 +63,11 @@ export function loadStrategy(path: string): StrategyLoad {
   } catch {
     return { ok: false, code: 'strategy_missing', message: `no strategy selected yet (${path}) — selection is a human act (renew review or --strategy)` };
   }
+  return parseStrategyDecision(text);
+}
+
+/** Pure parse+validate of strategy.json TEXT. */
+export function parseStrategyDecision(text: string): StrategyLoad {
   try {
     return { ok: true, decision: StrategyDecisionSchema.parse(JSON.parse(text)) };
   } catch (e) {

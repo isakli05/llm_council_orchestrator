@@ -47,8 +47,11 @@ export const ManifestSchema = z
     /** INV-H1: algorithm version of `artifact_hashes`. 2 = canonical
      * (key-sorted) section hashing; absent = v1 legacy bytes as written by
      * pre-v2 builds (still accepted by verify's compatibility rule).
-     * Stamped by freeze; never authored by hand. */
-    hash_version: z.number().int().positive().optional(),
+     * S3-M-02 (trust kernel): only versions THIS build implements are
+     * representable — an unknown future version (3, 4, ...) is corrupt on
+     * its face, never "interpreted as v2". Stamped by freeze; never
+     * authored by hand. */
+    hash_version: z.union([z.literal(1), z.literal(2)]).optional(),
   })
   .strict();
 export type Manifest = z.infer<typeof ManifestSchema>;

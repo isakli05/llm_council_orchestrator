@@ -285,96 +285,26 @@ export function evaluateStaleness(snapshot: ProjectSnapshot, current: StalenessC
 }
 
 // --- graph manifest identity -----------------------------------------------------
+// Trust Kernel: the strict manifest parser and identity digests live in
+// src/renew/trust/structural.ts (ONE implementation). Re-exported here for
+// the snapshot module's existing import surface.
+export type { GraphManifestParse } from '../trust/structural';
+export { parseGraphManifestStrict } from '../trust/structural';
+import { parseGraphManifestStrict as strictParse } from '../trust/structural';
 
 export interface GraphManifestIdentity {
   digest: string;
   entries: number;
 }
 
-export type GraphManifestParse =
-  | { ok: true; identity: GraphManifestIdentity }
-  | { ok: false; code: 'manifest_missing' | 'manifest_invalid'; message: string };
-
 /**
- * STRICT manifest parsing for load-bearing identity (H-11 + S2-H-06/INV-G1):
- * an absent or malformed manifest is a typed failure — it must never silently
- * become an "empty manifest" identity that a fresh snapshot could bless, and
- * a malformed ENTRY (scalar, missing/non-string/empty `ast_hash`, `{}` as the
- * whole manifest) is just as fatal: identity over garbage is garbage. The
- * Graphify manifest contract is `{ <path>: { ast_hash: <string>, …volatile } }`
- * with at least one entry for any built graph.
- */
-export function parseGraphManifestStrict(text: string | undefined): GraphManifestParse {
-  if (text === undefined || text.trim() === '') {
-    return {
-      ok: false,
-      code: 'manifest_missing',
-      message: 'graphify-out/manifest.json is absent — the graph workspace is incomplete; rebuild it (lco renew refresh)',
-    };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (e) {
-    return {
-      ok: false,
-      code: 'manifest_invalid',
-      message: `graphify-out/manifest.json is not valid JSON (${(e as Error).message}) — rebuild it (lco renew refresh)`,
-    };
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return {
-      ok: false,
-      code: 'manifest_invalid',
-      message: 'graphify-out/manifest.json is not an object mapping paths to entries — rebuild it (lco renew refresh)',
-    };
-  }
-  const rawEntries = Object.entries(parsed as Record<string, unknown>);
-  if (rawEntries.length === 0) {
-    return {
-      ok: false,
-      code: 'manifest_invalid',
-      message: 'graphify-out/manifest.json has no entries ({}) — a built graph always records at least one file; rebuild it (lco renew refresh)',
-    };
-  }
-  const entries: [string, string][] = [];
-  for (const [path, value] of rawEntries) {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      return {
-        ok: false,
-        code: 'manifest_invalid',
-        message: `graphify-out/manifest.json entry for ${path} is not an object — the manifest contract is {path: {ast_hash: string}}; rebuild it (lco renew refresh)`,
-      };
-    }
-    const astHash = (value as { ast_hash?: unknown }).ast_hash;
-    if (typeof astHash !== 'string' || astHash === '') {
-      return {
-        ok: false,
-        code: 'manifest_invalid',
-        message: `graphify-out/manifest.json entry for ${path} has no non-empty string ast_hash — identity over a malformed entry is garbage; rebuild it (lco renew refresh)`,
-      };
-    }
-    entries.push([path, astHash]);
-  }
-  entries.sort((a, b) => (a[0] < b[0] ? -1 : 1));
-  return {
-    ok: true,
-    identity: {
-      digest: `sha256:${createHash('sha256').update(JSON.stringify(entries), 'utf8').digest('hex')}`,
-      entries: entries.length,
-    },
-  };
-}
-
-/**
- * Stable digest over Graphify's manifest.json: volatile fields (mtime/seen)
- * are projected out; identity = sorted [path, ast_hash] pairs. Kept for
- * non-load-bearing projections; identity-bearing callers use
- * {@link parseGraphManifestStrict} (fail-closed).
+ * @deprecated TRUST KERNEL MIGRATION: the non-strict fallback digest is a
+ * forbidden-bypass shape (S3-L-03 — malformed state must NEVER become an
+ * "empty manifest" digest). Remaining callers are being migrated to
+ * structuralIdentity(); this wrapper disappears with them.
  */
 export function digestGraphManifest(text: string): GraphManifestIdentity {
-  const strict = parseGraphManifestStrict(text);
+  const strict = strictParse(text);
   if (strict.ok) return strict.identity;
-  // Explicit empty-list constant (non-load-bearing projections only).
   return { digest: `sha256:${createHash('sha256').update(JSON.stringify([]), 'utf8').digest('hex')}`, entries: 0 };
 }

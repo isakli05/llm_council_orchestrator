@@ -329,7 +329,9 @@ export type ParityLoad =
   | { ok: false; code: 'parity_missing' | 'parity_corrupt'; message: string };
 
 /** D2: missing is NOT corrupt — callers decide init semantics for missing;
- * existing+corrupt always stops the operation. */
+ * existing+corrupt always stops the operation.
+ * @deprecated TRUST KERNEL: trusted reads route through
+ * trust/state.loadActiveState (authorizedRead + this parser). */
 export function loadParity(path: string): ParityLoad {
   let text: string;
   try {
@@ -339,6 +341,11 @@ export function loadParity(path: string): ParityLoad {
     if (err.code === 'ENOENT') return { ok: false, code: 'parity_missing', message: `no parity ledger at ${path}` };
     return { ok: false, code: 'parity_corrupt', message: `parity.json unreadable (${err.message})` };
   }
+  return parseParityStore(text);
+}
+
+/** Pure parse+validate of parity.json TEXT (schema + duplicate-authority checks). */
+export function parseParityStore(text: string): ParityLoad {
   let value: unknown;
   try {
     value = JSON.parse(text);

@@ -12,6 +12,7 @@ import {
   unlinkSync,
   writeSync,
 } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 /**
@@ -41,11 +42,14 @@ import { dirname, join } from 'node:path';
  *     one. Any failure during the swap ROLLS BACK every already-renamed file
  *     from its backup, leaving the previous state byte-identical.
  *
- * TIME: no clock and no randomness in here — staleness is decided from the
- * INJECTED `nowIso` (the repo-wide boundary-clock contract) and, for
- * unparseable lockfiles, the lockfile's own mtime. Temp/backup/stage names
- * are derived from pid + a module counter, so they are deterministic and
- * collision-free across and within processes.
+ * TIME: no clock in here — staleness is decided from the INJECTED `nowIso`
+ * (the repo-wide boundary-clock contract) and, for unparseable lockfiles,
+ * the lockfile's own mtime. Temp/backup/stage names carry pid + counter +
+ * CRYPTO RANDOM (trust-kernel hardening, S3-L-02): a deterministic
+ * pid-guessable name let a pre-planted occupant of the temp/backup slot
+ * either capture staged bytes or get DELETED by this code's failure
+ * cleanup. Random names make pre-creation influence infeasible, and the
+ * swap cleanup now unlinks ONLY entries this call created.
  *
  * SYNCHRONOUS ON PURPOSE: a fully sync critical section cannot interleave on
  * the event loop, so two concurrent MCP tool calls in ONE server process are
@@ -74,10 +78,12 @@ export const DEFAULT_STALE_MS = 10_000;
 /** Bounded stale-break retries: two racers must not ping-pong forever. */
 const MAX_ACQUIRE_ATTEMPTS = 5;
 
-/** Monotonic per-process suffix for temp/backup/stage names (no randomness). */
+/** Per-process counter + crypto randomness for temp/backup/stage names. The
+ *  counter keeps names distinct within a process; the random tail makes the
+ *  name unguessable in advance (a pre-planted occupant cannot be arranged). */
 let nameCounter = 0;
 function nextSuffix(): string {
-  return `${process.pid}-${++nameCounter}`;
+  return `${process.pid}-${++nameCounter}-${randomBytes(8).toString('hex')}`;
 }
 
 export interface LockIdentity {
@@ -258,7 +264,7 @@ function serialize(content: unknown): string {
 }
 
 /** Best-effort directory fsync (durability of the rename metadata itself). */
-function fsyncDir(dir: string): void {
+export function fsyncDir(dir: string): void {
   let fd: number | undefined;
   try {
     fd = openSync(dir, 'r');
@@ -271,10 +277,24 @@ function fsyncDir(dir: string): void {
   }
 }
 
-/** Write one file to `path` with exclusive create, fsync before close. */
-function writeTempFile(path: string, content: unknown, mode?: number): void {
+/**
+ * Write one file to `path` with exclusive create, fsync before close.
+ * `onCreated` fires immediately after the exclusive open succeeds — the
+ * caller's hook to register the entry as OURS (a later write/fsync failure
+ * must still clean the residue it created, while an EEXIST occupant — which
+ * never reaches this point — is never registered and never deleted).
+ */
+function writeTempFile(
+  path: string,
+  content: unknown,
+  mode?: number,
+  onCreated?: () => void,
+): void {
   const fd = openSync(path, 'wx', mode ?? 0o666);
+  let created = false;
   try {
+    onCreated?.();
+    created = true;
     const buf = Buffer.from(serialize(content), 'utf8');
     let offset = 0;
     while (offset < buf.length) {
@@ -283,6 +303,7 @@ function writeTempFile(path: string, content: unknown, mode?: number): void {
     fsyncSync(fd);
   } finally {
     closeSync(fd);
+    void created;
   }
 }
 
@@ -332,8 +353,10 @@ export function createDirAtomically(targetDir: string, files: StagedFile[]): voi
  */
 export function swapFilesAtomically(targetDir: string, files: StagedFile[]): void {
   const suffix = nextSuffix();
-  const temps = new Map<string, string>(); // name -> temp path
-  const backups = new Map<string, string | null>(); // name -> backup path (null: no prior file)
+  /** name → temp entry, with `created` true only once the exclusive open
+   *  succeeded (our residue is cleaned; a foreign EEXIST occupant never is). */
+  const temps = new Map<string, { path: string; created: boolean }>();
+  const backups = new Map<string, string>(); // name -> backup path WE CREATED
   const swapped: string[] = [];
 
   try {
@@ -341,25 +364,26 @@ export function swapFilesAtomically(targetDir: string, files: StagedFile[]): voi
     for (const staged of files) {
       const { name, content } = staged;
       const temp = join(targetDir, `.${name}.lco-tmp-${suffix}`);
-      // Register the temp BEFORE writing it: writeTempFile opens with 'wx'
-      // and can fail AFTER the file exists (writeSync ENOSPC mid-buffer,
-      // fsyncSync EIO), and the rollback below cleans only what is in this
-      // map — an unregistered temp would survive as residue, breaking the
-      // byte-identity contract this function promises.
-      temps.set(name, temp);
-      writeTempFile(temp, content, staged.mode);
-      backups.set(name, backupPathFor(targetDir, name, suffix));
+      temps.set(name, { path: temp, created: false });
+      // 'wx': success means WE created the entry; EEXIST means a foreign
+      // occupant of the (random, unguessable) name — it is never opened and
+      // never deleted by the cleanup below (S3-L-02). Registration flips to
+      // created=true the instant the open succeeds, so a failure AFTER
+      // creation (writeSync ENOSPC, fsync EIO) still cleans our own residue.
+      writeTempFile(temp, content, staged.mode, () => {
+        temps.get(name)!.created = true;
+      });
     }
 
     // --- 2. hardlink-backup the current live files ---------------------------
     for (const { name } of files) {
       const live = join(targetDir, name);
       if (!existsSync(live) || !statSync(live).isFile()) {
-        backups.set(name, null); // nothing (or not a regular file) to protect
-        continue;
+        continue; // nothing (or not a regular file) to protect
       }
-      const bak = backups.get(name)!;
-      linkSync(live, bak);
+      const bak = backupPathFor(targetDir, name, suffix);
+      linkSync(live, bak); // fresh random name; EEXIST would be foreign — surfaces
+      backups.set(name, bak); // registered only once WE created it
     }
 
     // --- 3. the swap — manifest.json LAST (the revision commit point) --------
@@ -367,7 +391,7 @@ export function swapFilesAtomically(targetDir: string, files: StagedFile[]): voi
       a.name === 'manifest.json' ? 1 : b.name === 'manifest.json' ? -1 : 0,
     );
     for (const { name } of ordered) {
-      renameSync(temps.get(name)!, join(targetDir, name));
+      renameSync(temps.get(name)!.path, join(targetDir, name));
       temps.delete(name);
       swapped.push(name);
     }
@@ -375,35 +399,37 @@ export function swapFilesAtomically(targetDir: string, files: StagedFile[]): voi
     // --- 4. durability + 5. drop backups --------------------------------------
     fsyncDir(targetDir);
     for (const bak of backups.values()) {
-      if (bak !== null) {
-        try {
-          unlinkSync(bak);
-        } catch {
-          // backup already gone — nothing to clean
-        }
+      try {
+        unlinkSync(bak);
+      } catch {
+        // backup already gone — nothing to clean
       }
     }
   } catch (err) {
-    // ROLLBACK: restore every already-swapped file, newest first. Backup
-    // null means the file did not exist before — remove it again.
+    // ROLLBACK: restore every already-swapped file from ITS backup. A file
+    // with no registered backup either was not swapped (untouched) or — for
+    // legacy shapes — did not exist before; only the swapped set is touched,
+    // newest first. Cleanup removes ONLY entries this call created (the
+    // registered temps/backups); a foreign occupant of any name is never
+    // unlinked (S3-L-02).
     for (const name of swapped.reverse()) {
-      const bak = backups.get(name) ?? null;
+      const bak = backups.get(name);
       try {
-        if (bak !== null && existsSync(bak)) renameSync(bak, join(targetDir, name));
+        if (bak !== undefined && existsSync(bak)) renameSync(bak, join(targetDir, name));
         else unlinkSync(join(targetDir, name));
       } catch {
         // Rollback is best-effort; the original error is the diagnosis.
       }
     }
     for (const temp of temps.values()) {
+      if (!temp.created) continue; // foreign EEXIST occupant: never ours to delete
       try {
-        unlinkSync(temp);
+        unlinkSync(temp.path);
       } catch {
         // already renamed away / gone
       }
     }
     for (const bak of backups.values()) {
-      if (bak === null) continue;
       try {
         unlinkSync(bak);
       } catch {

@@ -1,4 +1,5 @@
 import { artifactHashes, legacySectionHash } from './hash';
+import { isKnownHashVersion } from '../renew/trust/canonical';
 import type { SpecBundle } from '../schemas';
 
 export interface VerifyResult {
@@ -57,7 +58,19 @@ export function verifyFrozen(
 ): VerifyResult {
   const stored = b.manifest.artifact_hashes;
   const recomputed = artifactHashes(b);
-  const strict = (b.manifest.hash_version ?? 1) >= 2;
+  // S3-M-02 (trust kernel): a hash version this build does not implement is
+  // a refusal — never a guess that ">= 2 means v2". (zod already rejects
+  // unknown literals at parse; this guards direct callers with pre-parsed
+  // bundles and keeps verify's contract self-evident.)
+  const declaredVersion = b.manifest.hash_version ?? 1;
+  if (!isKnownHashVersion(declaredVersion)) {
+    return {
+      ok: false,
+      drifted: [`hash_version:${declaredVersion}`],
+      notFrozen: b.manifest.state !== 'frozen' || undefined,
+    };
+  }
+  const strict = declaredVersion >= 2;
   const keys = [...new Set([...Object.keys(recomputed), ...Object.keys(stored)])].sort();
   const drifted = keys.filter((key) => !storedHashAccepted(key));
   const result: VerifyResult = { ok: drifted.length === 0, drifted };

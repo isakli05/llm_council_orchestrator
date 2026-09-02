@@ -7,6 +7,7 @@ import {
   StrategyDecisionSchema,
   buildStrategyDecision,
   loadStrategy,
+  parseStrategyDecision,
   persistStrategy,
 } from './strategy';
 
@@ -57,11 +58,37 @@ describe('modernization strategy decision', () => {
       selectedVia: 'workspace',
       snapshotId: 'RSN-deadbeefdeadbeef',
       nowIso: '2026-09-02T00:00:00Z',
+      approvalId: 'APPR-0002',
     });
     expect(persistStrategy(path, d)).toMatchObject({ ok: true });
     const loaded = loadStrategy(path);
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.decision).toEqual(d);
     expect(loadStrategy(join(dir, 'missing.json')).ok).toBe(false);
+  });
+
+  it('trust kernel (S3-H-08): a workspace selection without an approval_id is unrepresentable', () => {
+    expect(() =>
+      buildStrategyDecision({
+        strategy: 'in_place',
+        rationale: 'risk-minimal first phase',
+        selectedVia: 'workspace',
+        snapshotId: 'RSN-deadbeefdeadbeef',
+        nowIso: '2026-09-02T00:00:00Z',
+      }),
+    ).toThrowError(/workspace strategy selection must carry the approval_id/);
+    // and a stored record of that shape no longer parses:
+    const parse = parseStrategyDecision(
+      JSON.stringify({
+        schema_version: 1,
+        strategy: 'in_place',
+        rationale: 'risk-minimal first phase',
+        selected_by: 'human',
+        selected_via: 'workspace',
+        selected_at: '2026-09-02T00:00:00Z',
+        snapshot_id: 'RSN-deadbeefdeadbeef',
+      }),
+    );
+    expect(parse.ok).toBe(false);
   });
 });

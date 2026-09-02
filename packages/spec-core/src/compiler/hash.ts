@@ -1,38 +1,16 @@
-import { createHash } from 'node:crypto';
 import type { SpecBundle } from '../schemas';
+// The canonical serialization/digest primitives live in the Trust Kernel
+// (src/renew/trust/canonical.ts) — ONE implementation product-wide. The
+// historical artifact-hash BYTES are unchanged (same algorithm); the import
+// + re-export keep every existing import stable.
+import { canonicalJson, sha256Content } from '../renew/trust/canonical';
+export { sha256Content, canonicalJson };
 
 /**
- * `sha256:<64 lowercase hex>` of the UTF-8 bytes of `content`.
- * Byte-exact contract: hex(sha256(content)) with no extra framing.
+ * `sha256:<64 lowercase hex>` of the UTF-8 bytes of `content` — see the
+ * re-export above (Trust Kernel canonical module) for the implementation.
+ * Documented here for readers of the artifact-hash contract.
  */
-export function sha256Content(content: string): `sha256:${string}` {
-  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
-}
-
-/**
- * Canonical JSON serialization (INV-H1, hash v2): every object's keys are
- * sorted lexicographically — recursively — while arrays keep their element
- * order and the whole value is pretty-printed with a 2-space indent. Two
- * JSON values that differ ONLY in object key order serialize to the exact
- * same bytes, so their hashes are equal. Sorting is the only transformation:
- * values, nesting, and array order are untouched.
- */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, canonicalReplacer, 2);
-}
-
-/** Replacer that hands the serializer a key-sorted clone of every object. */
-function canonicalReplacer(_key: string, value: unknown): unknown {
-  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    const src = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(src).sort()) {
-      sorted[key] = src[key];
-    }
-    return sorted;
-  }
-  return value;
-}
 
 /**
  * Sections whose hashes are recorded in `manifest.artifact_hashes`.
