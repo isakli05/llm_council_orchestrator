@@ -63,10 +63,34 @@ export type RecoveryUncertainty = z.infer<typeof RecoveryUncertaintySchema>;
 
 // --- persisted (immutable) analysis record -------------------------------------
 
+/**
+ * INV-C (S2-C-02): what an anchor verification PROVES. `ok` means PROVENANCE
+ * — the cited bytes exist at the cited state (hash recompute, supplied-node
+ * and range coherence). It says NOTHING about whether the source semantically
+ * SUPPORTS the claim: no deterministic algorithm proves business-rule
+ * entailment from code, and the system never pretends otherwise. `scope`
+ * states how claim-specific the anchor is — a whole-file anchor (no node, no
+ * range) proves the file was supplied, not that any particular statement in
+ * it backs the claim.
+ */
+export const AnchorScopeSchema = z.enum(['whole_file', 'range', 'node_range']);
+export type AnchorScope = z.infer<typeof AnchorScopeSchema>;
+
+/**
+ * INV-C: semantic support status of a promoted claim — always distinct from
+ * provenance. V1 contract: machine-recovered hypotheses are 'unvalidated'
+ * (the pipeline never sets 'validated' — it cannot know); a human parity
+ * ruling sets 'human_confirmed'; 'contradicted' is reserved for future
+ * explicit contradiction evidence.
+ */
+export const SupportStatusSchema = z.enum(['unvalidated', 'human_confirmed', 'contradicted']);
+
 export const AnchorResultSchema = z
   .object({
     path: z.string(),
     ok: z.boolean(),
+    /** Provenance scope of the verified anchor (INV-C). */
+    scope: AnchorScopeSchema,
     code: z.string().optional(),
   })
   .strict();
@@ -75,6 +99,8 @@ export type AnchorResult = z.infer<typeof AnchorResultSchema>;
 export const VerifiedHypothesisSchema = RecoveryHypothesisSchema.extend({
   status: z.literal('hypothesized'),
   anchor_results: z.array(AnchorResultSchema),
+  /** INV-C: semantic support is NOT machine-validated in V1 — ever. */
+  support_status: SupportStatusSchema,
 }).strict();
 
 export const VerifiedUncertaintySchema = RecoveryUncertaintySchema.extend({
@@ -106,6 +132,10 @@ export const AnalysisUsageSchema = z
     /** Resolved model actually serving the role (when the transport reports
      * one that differs from the requested route identity). */
     resolved_model: z.string().min(1).optional(),
+    /** Upstream provider that served the request, when reported (INV-F). */
+    upstream_provider: z.string().min(1).optional(),
+    /** Provider request/generation id, when reported (INV-F). */
+    request_id: z.string().min(1).optional(),
     /** Provider-reported reasoning/cache token detail, when available. */
     reasoning_tokens: z.number().int().nonnegative().optional(),
     cache_read_tokens: z.number().int().nonnegative().optional(),
@@ -143,7 +173,7 @@ export const AnalysisRecordSchema = z
         output_redactions: z.number().int().nonnegative().optional(),
       })
       .strict(),
-    outcome: z.enum(['validated', 'blocked_schema', 'blocked_stale', 'transport_failed', 'blocked_insufficient_context', 'blocked_empty']),
+    outcome: z.enum(['validated', 'blocked_schema', 'blocked_stale', 'transport_failed', 'blocked_insufficient_context', 'blocked_empty', 'blocked_prompt_budget']),
     validation: z
       .object({
         schema_ok: z.boolean(),

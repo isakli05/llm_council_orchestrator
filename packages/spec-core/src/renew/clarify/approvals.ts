@@ -53,10 +53,40 @@ export type RenewalDecision = z.infer<typeof RenewalDecisionSchema>;
 export type RenewalDecisionSet = z.infer<typeof RenewalDecisionSetSchema>;
 export type RenewalApprovalRecord = z.infer<typeof RenewalApprovalRecordSchema>;
 
-/** Digest over the canonical payload (stable key order, sorted claims). */
-export function renewalApprovalDigest(payload: RenewalDecisionSet): string {
+/**
+ * INV-D1 (S2-C-04, reopening C-08/H-09): the approval digest binds EVERY
+ * authority-bearing field of the record — identity (approval/session/round),
+ * the state it rules (project, snapshot), and the decisions themselves — over
+ * one canonical, field-order-stable, versioned serialization. Changing ANY of
+ * these fields moves authority to another state/decision and MUST invalidate
+ * the digest. `approved_at` is deliberately excluded (not authority-bearing;
+ * the answer evidence carries its own hash).
+ *
+ * v1 (decisions-only) digests are rejected at load: pre-remediation
+ * development records fail closed with a re-approve instruction.
+ */
+export const RENEWAL_APPROVAL_DIGEST_VERSION = 2;
+
+type AuthorityFields = Omit<RenewalApprovalRecord, 'approved_at' | 'content_digest'>;
+
+export function renewalApprovalDigest(record: AuthorityFields): string {
   const canonical = {
-    decisions: [...payload.decisions].sort((a, b) => (a.claim_id < b.claim_id ? -1 : 1)),
+    digest_version: RENEWAL_APPROVAL_DIGEST_VERSION,
+    schema_version: record.schema_version,
+    approval_id: record.approval_id,
+    session_id: record.session_id,
+    round_count: record.round_count,
+    ...(record.project_name !== undefined ? { project_name: record.project_name } : {}),
+    ...(record.snapshot_id !== undefined ? { snapshot_id: record.snapshot_id } : {}),
+    decisions: [...record.decisions]
+      .sort((a, b) => (a.claim_id < b.claim_id ? -1 : 1))
+      .map((d) => ({
+        claim_id: d.claim_id,
+        kind: d.kind,
+        ...(d.selected_option !== undefined ? { selected_option: d.selected_option } : {}),
+        ...(d.free_text !== undefined ? { free_text: d.free_text } : {}),
+        evidence: { source: d.evidence.source, answer_text: d.evidence.answer_text, hash: d.evidence.hash },
+      })),
   };
   return sha256Content(JSON.stringify(canonical));
 }
@@ -75,16 +105,19 @@ export function buildRenewalApprovalRecord(
   args: BuildRenewalApprovalArgs,
 ): RenewalApprovalRecord {
   const parsed = RenewalDecisionSetSchema.parse(payload);
-  return RenewalApprovalRecordSchema.parse({
-    schema_version: 1,
+  const body = {
+    schema_version: 1 as const,
     approval_id: args.approvalId,
     session_id: args.sessionId,
     round_count: args.roundCount,
-    approved_at: args.approvedAt,
     ...(args.projectName !== undefined ? { project_name: args.projectName } : {}),
     ...(args.snapshotId !== undefined ? { snapshot_id: args.snapshotId } : {}),
     decisions: [...parsed.decisions].sort((a, b) => (a.claim_id < b.claim_id ? -1 : 1)),
-    content_digest: renewalApprovalDigest(parsed),
+  };
+  return RenewalApprovalRecordSchema.parse({
+    ...body,
+    approved_at: args.approvedAt,
+    content_digest: renewalApprovalDigest(body),
   });
 }
 
@@ -152,7 +185,17 @@ export function loadRenewalApproval(path: string): RenewalApprovalLoad {
     return { ok: false, code: 'approval_corrupt', message: `approval record failed schema validation (${issue.path.join('.')}: ${issue.message})` };
   }
   const record = parsed.data;
-  const recomputed = renewalApprovalDigest({ decisions: record.decisions });
+  // INV-D1: recompute over ALL authority-bearing fields — any tampered
+  // identity/state/decision field fails the digest, fail-closed.
+  const recomputed = renewalApprovalDigest({
+    schema_version: record.schema_version,
+    approval_id: record.approval_id,
+    session_id: record.session_id,
+    round_count: record.round_count,
+    ...(record.project_name !== undefined ? { project_name: record.project_name } : {}),
+    ...(record.snapshot_id !== undefined ? { snapshot_id: record.snapshot_id } : {}),
+    decisions: record.decisions,
+  });
   if (recomputed !== record.content_digest) {
     return {
       ok: false,

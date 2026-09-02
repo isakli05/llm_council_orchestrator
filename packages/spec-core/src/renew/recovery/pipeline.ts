@@ -24,6 +24,7 @@ import {
   RecoveryOutputSchema,
   type AnalysisRecord,
   type AnchorResult,
+  type AnchorScope,
   type RecoveryOutput,
   type RecoveryUncertainty,
 } from './schemas';
@@ -59,7 +60,17 @@ export type RecoveryOutcome =
   | { ok: false; code: 'transport_failed'; record: AnalysisRecord }
   | { ok: false; code: 'blocked_insufficient_context'; record: AnalysisRecord }
   | { ok: false; code: 'blocked_empty'; record: AnalysisRecord }
+  | { ok: false; code: 'blocked_prompt_budget'; record: AnalysisRecord }
   | { ok: false; code: 'persist_failed'; message: string; record: AnalysisRecord };
+
+/**
+ * INV-E3 (S2-H-04): the paid-boundary byte cap applies to the ACTUAL
+ * serialized request — instructions + anchor table + the full source document,
+ * JSON overhead and graph strings included — measured immediately before the
+ * call. A prompt above this is a blocked outcome (zero calls), never a
+ * silent megabyte egress that the context accounting undercounts.
+ */
+export const MAX_RECOVERY_PROMPT_BYTES = 1_000_000;
 
 interface UsageState {
   calls: number;
@@ -72,6 +83,8 @@ interface UsageState {
   cost?: number;
   currency?: string;
   resolved_model?: string;
+  upstream_provider?: string;
+  request_id?: string;
   reasoning_tokens?: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
@@ -107,7 +120,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
         ...baseRecord,
         model: routeIdentity,
         outcome: 'transport_failed',
-        validation: { schema_ok: false, retry_used: false, issues: [`transport failure: ${(e as Error).message}`], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+        validation: { schema_ok: false, retry_used: false, issues: [`transport failure: ${scrubDiagnostic((e as Error).message)}`], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
         promoted: { hypotheses: [], uncertainties: [] },
         rejected: [],
         coverage_notes: [],
@@ -116,25 +129,34 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       deps.persist(failedRecord);
       throw e;
     }
-    usage.latency_ms = (usage.latency_ms ?? 0) + (Date.now() - startedAt);
+    usage.latency_ms = (usage.latency_ms ?? 0) + (res.latencyMs ?? (Date.now() - startedAt));
     const attempts = res.attempts ?? 1;
-    if (res.attempts === undefined) deps.budget?.chargeAttempts(1);
+    // INV-F1 (S2-H-01): the ONE ledger is charged the ACTUAL attempts the
+    // transport took — self-reported attempts are charged too (the old
+    // skip-when-reported path is exactly how maxAttempts=1 accepted
+    // attempts=2 with the ledger at 0). Charging past the cap throws the
+    // typed budget refusal; the caller never promotes an over-budget result.
+    deps.budget?.chargeAttempts(attempts);
     usage.calls += 1;
     usage.attempts += attempts;
+    // INV-F1: accounting consumes the REAL response structure —
+    // provenance.{resolvedModel, upstreamProvider, requestId, cost},
+    // usageDetails.{reasoning/cache}, latencyMs — never fields invented onto
+    // the wrong object. Unknown stays unknown (never fabricated zeros).
+    const prov = res.provenance;
+    if (prov?.resolvedModel !== undefined) usage.resolved_model = prov.resolvedModel;
+    if (prov?.upstreamProvider !== undefined) usage.upstream_provider = prov.upstreamProvider;
+    if (prov?.requestId !== undefined) usage.request_id = prov.requestId;
+    if (prov?.cost !== undefined) usage.cost = (usage.cost ?? 0) + prov.cost.amount;
+    if (prov?.cost !== undefined) usage.currency = prov.cost.currency;
+    const details = res.usageDetails;
+    if (details?.reasoningTokens !== undefined) usage.reasoning_tokens = (usage.reasoning_tokens ?? 0) + details.reasoningTokens;
+    if (details?.cacheReadTokens !== undefined) usage.cache_read_tokens = (usage.cache_read_tokens ?? 0) + details.cacheReadTokens;
+    if (details?.cacheWriteTokens !== undefined) usage.cache_write_tokens = (usage.cache_write_tokens ?? 0) + details.cacheWriteTokens;
     if (res.usage) {
       usage.in_tokens += res.usage.in_tokens;
       usage.out_tokens += res.usage.out_tokens;
       deps.budget?.chargeTokens(res.usage);
-      const detail = res.usage as {
-        reasoning_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number;
-        cost?: number; currency?: string; resolved_model?: string;
-      };
-      if (detail.reasoning_tokens !== undefined) usage.reasoning_tokens = (usage.reasoning_tokens ?? 0) + detail.reasoning_tokens;
-      if (detail.cache_read_tokens !== undefined) usage.cache_read_tokens = (usage.cache_read_tokens ?? 0) + detail.cache_read_tokens;
-      if (detail.cache_write_tokens !== undefined) usage.cache_write_tokens = (usage.cache_write_tokens ?? 0) + detail.cache_write_tokens;
-      if (detail.cost !== undefined) usage.cost = (usage.cost ?? 0) + detail.cost;
-      if (detail.currency !== undefined) usage.currency = detail.currency;
-      if (detail.resolved_model !== undefined) usage.resolved_model = detail.resolved_model;
     } else {
       usage.usage_known = false;
     }
@@ -155,6 +177,11 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       ? { ok: true, output: parsed.data }
       : { ok: false, issues: zodIssues(parsed.error) };
   };
+
+  // INV-E1 (S2-C-03, output side): persisted diagnostics (schema issues, JSON
+  // parse errors, transport messages) may ECHO untrusted repository or model
+  // text — the same egress policy applies before anything is persisted.
+  const scrubDiagnostic = (text: string): string => redactSecrets(text).text;
 
   const input = {
     context_digest: sha256Content(JSON.stringify(req.bundle)),
@@ -184,6 +211,34 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   })();
 
   const prompt = buildRecoveryPrompt({ scope: req.scope, bundle: req.bundle, nowIso: deps.nowIso });
+
+  // INV-E3 (S2-H-04): measure the ACTUAL serialized payload and gate it BEFORE
+  // the paid boundary — a prompt whose real bytes exceed the cap (graph
+  // strings, JSON overhead, labels — everything the char accounting missed)
+  // blocks with zero calls rather than egressing megabytes.
+  const promptBytes = Buffer.byteLength(prompt, 'utf8');
+  usage.prompt_bytes = promptBytes;
+  if (promptBytes > MAX_RECOVERY_PROMPT_BYTES) {
+    const budgetRecord: AnalysisRecord = {
+      ...baseRecord,
+      model: routeIdentity,
+      outcome: 'blocked_prompt_budget',
+      validation: {
+        schema_ok: false,
+        retry_used: false,
+        issues: [`serialized prompt is ${promptBytes} bytes; the paid-boundary cap is ${MAX_RECOVERY_PROMPT_BYTES} — the context accounting must bound the real payload, not only slice characters`],
+        anchors_total: 0,
+        anchors_ok: 0,
+        anchors_failed: 0,
+      },
+      promoted: { hypotheses: [], uncertainties: [] },
+      rejected: [],
+      coverage_notes: [],
+      usage: { ...usage },
+    };
+    const r = deps.persist(budgetRecord);
+    return r.ok ? { ok: false, code: 'blocked_prompt_budget', record: budgetRecord } : { ok: false, code: 'persist_failed', message: r.message, record: budgetRecord };
+  }
 
   // H-03/E4: a source-grounded scope with NO anchorable slice cannot produce
   // trustworthy anchored claims — block BEFORE the paid call (zero spend).
@@ -242,7 +297,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       retryText = await complete(buildValidationRetryPrompt(prompt, attempt.issues));
     } catch (e) {
       if (e instanceof BudgetExceededError) throw e;
-      return { ok: false, code: 'transport_failed', record: { ...baseRecord, model: routeIdentity, outcome: 'transport_failed', validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 }, promoted: { hypotheses: [], uncertainties: [] }, rejected: [], coverage_notes: [], usage: { ...usage } } };
+      return { ok: false, code: 'transport_failed', record: { ...baseRecord, model: routeIdentity, outcome: 'transport_failed', validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20).map(scrubDiagnostic), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 }, promoted: { hypotheses: [], uncertainties: [] }, rejected: [], coverage_notes: [], usage: { ...usage } } };
     }
     // The retry is ALSO a paid call: freshness re-verified again (C-10).
     const staleCheck2 = deps.recheckFreshness?.();
@@ -279,7 +334,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       validation: {
         schema_ok: false,
         retry_used: retryUsed,
-        issues: attempt.issues,
+        issues: attempt.issues.map(scrubDiagnostic),
         anchors_total: 0,
         anchors_ok: 0,
         anchors_failed: 0,
@@ -359,9 +414,14 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   const check = (anchors: { path: string; content_hash: string; node_id?: string; start_line?: number; end_line?: number }[]): { allOk: boolean; results: AnchorResult[] } => {
     const results = anchors.map((a) => {
       anchorsTotal += 1;
+      const hasRange = a.start_line !== undefined || a.end_line !== undefined;
+      // INV-C: the scope states how claim-specific the anchor is. A whole-file
+      // anchor (no node, no range) proves the file was SUPPLIED at those
+      // bytes — membership, never claim-specific support.
+      const scope: AnchorScope = a.node_id !== undefined && hasRange ? 'node_range' : hasRange ? 'range' : 'whole_file';
       const fail = (code: string): AnchorResult => {
         anchorsFailed += 1;
-        return { path: a.path, ok: false, code };
+        return { path: a.path, ok: false, scope, code };
       };
       // 1. Relevance/supply: the (path, hash) must be among the file slices
       //    actually placed in the prompt — a correct hash for an irrelevant
@@ -380,7 +440,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
         if (node.source_file !== undefined && node.source_file !== a.path) return fail('node_path_mismatch');
       }
       // 4. Range coherence: possible on disk; contains the node's line when linked.
-      if (a.start_line !== undefined || a.end_line !== undefined) {
+      if (hasRange) {
         const start = a.start_line ?? 1;
         const end = a.end_line ?? start;
         if (start < 1 || end < start || end > v.line_count) return fail('invalid_range');
@@ -394,7 +454,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
         }
       }
       anchorsOk += 1;
-      return { path: a.path, ok: true };
+      return { path: a.path, ok: true, scope };
     });
     return { allOk: results.every((r) => r.ok), results };
   };
@@ -402,7 +462,10 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   for (const h of output.hypotheses) {
     const { allOk, results } = check(h.anchors);
     if (allOk) {
-      promotedHypotheses.push({ ...h, status: 'hypothesized', anchor_results: results });
+      // INV-C: promotion means PROVENANCE verified — byte identity at the
+      // cited scope. Semantic support is NOT machine-validated (V1 contract);
+      // the hypothesis stays a hypothesis until a human rules its parity.
+      promotedHypotheses.push({ ...h, status: 'hypothesized', anchor_results: results, support_status: 'unvalidated' });
     } else {
       rejected.push({
         id: h.id,

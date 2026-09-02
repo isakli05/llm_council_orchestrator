@@ -104,20 +104,22 @@ export function distillRenewalQuestions(inputs: DistillerInputs): ClarificationQ
   }
 
   if (inputs.parity !== undefined) {
-    const linked = new Set(
-      inputs.parity.records.map((r) => r.decision_claim_id).filter((c): c is string => c !== undefined),
-    );
     for (const rec of [...inputs.parity.records].sort((a, b) => (a.id < b.id ? -1 : 1))) {
       if (rec.ruling !== 'unresolved') continue;
-      if (rec.decision_claim_id !== undefined && linked.has(rec.decision_claim_id)) continue;
+      // INV-D2: a PARITY ruling is asked ONLY as a canonical option-id
+      // question. An UNC-linked entry (its uncertainty was asked and answered
+      // as context) still needs the canonical ruling question — informational
+      // answers never rule the ledger. Only an already-linked PAR claim
+      // (answered canonical question) is not re-asked.
+      if (rec.decision_claim_id !== undefined && /^PAR-\d{4}$/.test(rec.decision_claim_id)) continue;
       questions.push({
         claimId: rec.id,
         question: `How should this discovered behavior be treated during modernization: ${rec.behavior}`,
         impact: 'medium',
         alternatives: [
-          { option: 'Preserve current behavior; verify parity during migration', rejected_because: 'safest default — the behavior exists in production' },
-          { option: 'Change the behavior deliberately; capture the new intent', rejected_because: 'modernizes, but must be a conscious product decision' },
-          { option: 'Drop the behavior as unused', rejected_because: 'destructive — requires strong evidence it is safe to remove' },
+          { option: 'preserve', rejected_because: 'safest default — keep the behavior and verify parity during migration' },
+          { option: 'change', rejected_because: 'modernize deliberately — a conscious product decision to alter the behavior' },
+          { option: 'drop', rejected_because: 'destructive — remove the behavior; requires strong evidence it is safe' },
         ],
       });
     }

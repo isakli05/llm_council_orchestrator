@@ -36,6 +36,14 @@ export const ParityEntrySchema = z
     /** The clarification claim whose approved answer rules this entry. */
     decision_claim_id: z.string().regex(/^(UNC|OVL|PAR)-\d{4}$/).optional(),
     approval_id: z.string().regex(/^APPR-\d{4}$/).optional(),
+    /**
+     * INV-C: semantic support status of the underlying claim — DISTINCT from
+     * provenance (the anchors' byte verification). 'unvalidated' is the honest
+     * default for machine-recovered behavior (no deterministic algorithm
+     * proves business-rule entailment from code); a human ruling sets
+     * 'human_confirmed'. Absent = unvalidated (pre-field records).
+     */
+    support_status: z.enum(['unvalidated', 'human_confirmed', 'contradicted']).optional(),
     note: z.string().max(4_000).optional(),
   })
   .strict()
@@ -81,6 +89,13 @@ export type NewParityEntry = Omit<ParityEntry, 'id' | 'ruling' | 'snapshot_id'> 
 };
 
 export function addParityEntry(store: ParityStore, entry: NewParityEntry): ParityEntry {
+  // INV-D3: the semantic identity of a parity entry is its BEHAVIOR — one
+  // behavior, one entry, ever (two active authorities for one behavior are
+  // ambiguous by definition and rejected at load). Re-adding an existing
+  // behavior is idempotent: the existing entry stands (its ruling — possibly
+  // a human one — is never replaced by a re-analysis).
+  const existing = store.records.find((r) => r.behavior === entry.behavior);
+  if (existing !== undefined) return existing;
   const full = ParityEntrySchema.parse({
     ruling: 'unresolved',
     ...entry,
@@ -124,47 +139,82 @@ export function setRuling(store: ParityStore, id: string, args: SetRulingArgs): 
   rec.ruling = args.ruling;
   rec.rationale = args.rationale;
   if (args.approvalId !== undefined) rec.approval_id = args.approvalId;
+  // INV-C: a human ruling is the only support validation V1 performs.
+  rec.support_status = 'human_confirmed';
   ParityEntrySchema.parse(rec); // invariants re-checked
 }
 
 export interface ApplyApprovalResult {
   updated: string[]; // entry ids touched
-  stillUnresolved: string[]; // ids whose approved text did not map to a ruling
+  stillUnresolved: string[]; // ids whose approved answer did not carry a canonical ruling
 }
 
 /**
- * Fold an approval record into the ledger. CANONICAL language maps:
- * 'preserve'/'keep'/'retain' → preserve; 'change'/'chang(e|ing)' → change;
- * 'drop'/'remove'/'delete' → drop; anything else stays UNRESOLVED with the
- * approved text recorded — visible and blocking, never guessed. All three
- * rulings round-trip through the workspace and headless --answers paths.
- * DROP-via-approval carries the approval lineage by construction.
+ * INV-D2 (S2-C-05): a parity ruling is authorized ONLY by the CANONICAL
+ * option id a human selected — 'preserve' | 'change' | 'drop' — never by
+ * interpreting free text ("do not drop; preserve" must never become DROP).
+ * Any other answer (free text, prose option, missing) leaves the entry
+ * UNRESOLVED, visibly, with the recorded answer — ambiguity blocks, it never
+ * guesses. This is the ONLY text→ruling mapping in the system and it is a
+ * pure identity check, not a parser.
  */
-export function rulingFromApprovedText(text: string): ParityEntry['ruling'] {
-  const lower = text.toLowerCase();
-  if (/\b(drop|remove|delete)\b/.test(lower)) return 'drop';
-  if (/\b(preserve|keep|retain)\b/.test(lower)) return 'preserve';
-  if (/\bchang(e|es|ed|ing)\b/.test(lower)) return 'change';
-  return 'unresolved';
+export const CANONICAL_PARITY_RULINGS: readonly ParityEntry['ruling'][] = ['preserve', 'change', 'drop'];
+
+export function canonicalRuling(selectedOption: string | undefined): ParityEntry['ruling'] | undefined {
+  return CANONICAL_PARITY_RULINGS.includes(selectedOption as ParityEntry['ruling'])
+    ? (selectedOption as ParityEntry['ruling'])
+    : undefined;
 }
 
+/**
+ * Fold an approval record into the ledger.
+ *
+ * INV-B5 human-authority precedence: only STILL-UNRESOLVED entries, entries
+ * re-folded from the SAME approval (idempotent retry), or entries previously
+ * ruled by an approval (a NEWER human approval may supersede an older one)
+ * are touched. A headless ruling (recorded human act without approval
+ * lineage) is never silently overwritten — its ordering vs this approval is
+ * unknowable, so it stands.
+ *
+ * INV-D2: only canonical selected_option ids rule (see canonicalRuling);
+ * non-canonical answers are recorded and stay unresolved.
+ */
 export function applyApprovalToParity(store: ParityStore, approvalRec: RenewalApprovalRecord): ApplyApprovalResult {
   const byClaim = new Map(approvalRec.decisions.map((d) => [d.claim_id, d]));
   const updated: string[] = [];
   const stillUnresolved: string[] = [];
   for (const rec of store.records) {
-    // Match by the linked claim id, or by the entry's OWN id (PAR questions
-    // the distiller derives directly from unresolved entries).
-    const decision = byClaim.get(rec.decision_claim_id ?? '') ?? byClaim.get(rec.id);
+    const ruledByApproval = rec.ruling !== 'unresolved' && rec.approval_id !== undefined;
+    const sameApproval = rec.approval_id === approvalRec.approval_id;
+    if (rec.ruling !== 'unresolved' && !ruledByApproval && !sameApproval) continue; // headless ruling — precedence kept
+    // A PARITY ruling is carried by a decision on THIS entry (PAR- id) or on a
+    // linked PAR claim. UNC/OVL-linked decisions are informational context —
+    // their options are not canonical ruling options and never rule.
+    const linkedParClaim = rec.decision_claim_id !== undefined && /^PAR-\d{4}$/.test(rec.decision_claim_id)
+      ? rec.decision_claim_id
+      : undefined;
+    const decision = byClaim.get(rec.id) ?? (linkedParClaim !== undefined ? byClaim.get(linkedParClaim) : undefined);
     if (decision === undefined) continue;
-    const text = decision.selected_option ?? decision.free_text ?? '';
-    const ruling = rulingFromApprovedText(text);
+    const answer = decision.selected_option ?? decision.free_text ?? '';
+    const ruling = canonicalRuling(decision.selected_option);
 
+    if (ruling === undefined) {
+      // Non-canonical answer: recorded, visible, and BLOCKING — a
+      // preserve/change/drop ruling requires the canonical option id.
+      rec.ruling = 'unresolved';
+      rec.rationale = `approval ${approvalRec.approval_id} answered "${answer}" — not a canonical preserve/change/drop option; rule it explicitly`;
+      rec.approval_id = approvalRec.approval_id;
+      updated.push(rec.id);
+      stillUnresolved.push(rec.id);
+      ParityEntrySchema.parse(rec);
+      continue;
+    }
     rec.ruling = ruling;
-    rec.rationale = `approved: "${text}"`;
+    rec.rationale = `approved: canonical '${ruling}'${decision.free_text !== undefined ? ` (${decision.free_text})` : ''}`;
     rec.approval_id = approvalRec.approval_id;
+    // INV-C: a human ruling is the only support validation V1 performs.
+    rec.support_status = 'human_confirmed';
     updated.push(rec.id);
-    if (ruling === 'unresolved') stillUnresolved.push(rec.id);
     ParityEntrySchema.parse(rec);
   }
   return { updated: updated.sort(), stillUnresolved: stillUnresolved.sort() };
@@ -206,14 +256,16 @@ export function parityGate(store: ParityStore, targetRoot: string, approvals?: P
         blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} is bound to snapshot ${approval.snapshot_id}, not the active ${approvals.activeSnapshot}` });
         continue;
       }
-      const decision = approval.decisions.find((d) => d.claim_id === (rec.decision_claim_id ?? rec.id));
+      // INV-D2: authorization compares the CANONICAL option id — the same
+      // identity check as the fold, never free-text interpretation.
+      const decision = approval.decisions.find((d) => d.claim_id === rec.id || d.claim_id === rec.decision_claim_id);
       if (decision === undefined) {
         blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} contains no decision for this entry (${rec.decision_claim_id ?? rec.id})` });
         continue;
       }
-      const authorized = rulingFromApprovedText(decision.selected_option ?? decision.free_text ?? '');
+      const authorized = canonicalRuling(decision.selected_option);
       if (authorized !== rec.ruling) {
-        blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} authorizes '${authorized}' but the entry is ruled '${rec.ruling}' — the approval does not authorize THIS ruling` });
+        blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} does not authorize '${rec.ruling}' (its canonical option is '${authorized ?? 'none'}') — the approval does not authorize THIS ruling` });
         continue;
       }
     }
@@ -303,8 +355,10 @@ export function loadParity(path: string): ParityLoad {
       message: `parity.json failed schema validation (${issue.path.join('.')}: ${issue.message})`,
     };
   }
-  // M-03: duplicate ids and contradictory active rulings for the same
-  // behavior are corrupt state — never silently resolved.
+  // M-03 + S2-M-02 (INV-D3): duplicate ids AND semantically duplicate entries
+  // — two records for the SAME behavior on one store, whatever their ids or
+  // rulings — are duplicated authority and corrupt state. Never silently
+  // resolved, never first-wins.
   const seenIds = new Set<string>();
   const byBehavior = new Map<string, { id: string; ruling: string }>();
   for (const rec of parsed.data.records) {
@@ -312,17 +366,22 @@ export function loadParity(path: string): ParityLoad {
       return { ok: false, code: 'parity_corrupt', message: `parity.json contains duplicate entry id ${rec.id} — refusing ambiguous state` };
     }
     seenIds.add(rec.id);
-    if (rec.ruling !== 'unresolved') {
-      const existing = byBehavior.get(rec.behavior);
-      if (existing !== undefined && existing.ruling !== rec.ruling) {
+    const existing = byBehavior.get(rec.behavior);
+    if (existing !== undefined) {
+      if (existing.ruling !== rec.ruling) {
         return {
           ok: false,
           code: 'parity_corrupt',
           message: `parity.json holds contradictory rulings for the same behavior (${existing.id}: ${existing.ruling} vs ${rec.id}: ${rec.ruling}) — resolve the conflict explicitly`,
         };
       }
-      byBehavior.set(rec.behavior, { id: rec.id, ruling: rec.ruling });
+      return {
+        ok: false,
+        code: 'parity_corrupt',
+        message: `parity.json holds semantically duplicate entries for the same behavior (${existing.id} and ${rec.id}, both '${rec.ruling}') — two active authorities for one behavior are ambiguous; dedupe explicitly`,
+      };
     }
+    byBehavior.set(rec.behavior, { id: rec.id, ruling: rec.ruling });
   }
   return { ok: true, store: parsed.data };
 }
