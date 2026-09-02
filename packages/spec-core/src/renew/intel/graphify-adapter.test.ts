@@ -141,9 +141,10 @@ describe('GraphifyAdapter.build', () => {
 describe('GraphifyAdapter graph reads', () => {
   it('graphHealth reads graph.json under the workspace and reports honest counts', async () => {
     const runner = fakeRunner(() => okVersion('0.9.50'));
-    let readPath = '';
+    const readPaths: string[] = [];
     const adapter = makeAdapter(runner, (p) => {
-      readPath = p;
+      readPaths.push(p);
+      if (p.endsWith('manifest.json')) return '{}';
       return fixtureGraphText;
     });
     const health = await adapter.graphHealth();
@@ -153,7 +154,11 @@ describe('GraphifyAdapter graph reads', () => {
     expect(health.edge_count).toBe(15);
     expect(health.languages).toEqual(['ts']);
     expect(health.communities).toBe(2);
-    expect(readPath).toBe(join('/tmp/ws', 'graphify-out', 'graph.json'));
+    // M-08: health ALSO reads the manifest so manifest_entries is real —
+    // the graph read happens first, the manifest read second.
+    expect(readPaths[0]).toBe(join('/tmp/ws', 'graphify-out', 'graph.json'));
+    expect(readPaths[1]).toBe(join('/tmp/ws', 'graphify-out', 'manifest.json'));
+    expect(health.manifest_entries).toBeGreaterThanOrEqual(0);
   });
 
   it('reports graph_missing when graph.json is absent', async () => {

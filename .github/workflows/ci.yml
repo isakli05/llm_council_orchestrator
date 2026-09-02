@@ -21,10 +21,28 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # H-13: one leg per Node version PAIRED with a Graphify pin — the
+      # supported FLOOR (0.9.50) and the newest release verified compatible
+      # (0.9.53 at the time of this change; re-check PyPI when bumping).
+      # Without an installed Graphify the real integration suite would
+      # silently skip — a release-critical dependency must actually run.
       matrix:
-        node: [22, 24]
+        include:
+          - node: 22
+            graphify: '0.9.50'
+          - node: 24
+            graphify: '0.9.53'
     steps:
       - uses: actions/checkout@v4
+
+      # H-13: install the pinned Graphify BEFORE tests so the renewal
+      # integration suite RUNS (not skips). The integration canary asserts
+      # availability inside CI (see graphify-adapter.integration.test.ts).
+      - name: Install pinned Graphify (${{ matrix.graphify }})
+        run: |
+          python3 -m pip install --user --disable-pip-version-check "graphifyy==${{ matrix.graphify }}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          graphify --version
 
       # Root package.json pins `packageManager: pnpm@10.17.1`; the explicit
       # version below is kept as a second pin so a stray edit to root

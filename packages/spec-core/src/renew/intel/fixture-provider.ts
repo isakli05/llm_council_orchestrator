@@ -9,6 +9,7 @@ import type {
   CodeIntelligenceProvider,
   GodNode,
   GraphHealth,
+  IntelFailure,
   IntelItems,
   IntelProbe,
 } from './provider';
@@ -135,7 +136,7 @@ export class StaticGraphProvider implements CodeIntelligenceProvider {
     return affectedReverse(this.fixtureGraph, seed, opts ?? {});
   }
 
-  async godNodes(top?: number): Promise<GodNode[]> {
+  async godNodes(top?: number): Promise<GodNode[] | IntelFailure> {
     return godNodes(this.fixtureGraph, top ?? 10);
   }
 

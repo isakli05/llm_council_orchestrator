@@ -48,17 +48,42 @@ export function runSubprocess(
 
   return new Promise<SubprocessResult>((resolve) => {
     let child;
+    // M-06: on POSIX the child is spawned DETACHED as its own process-group
+    // leader, so a timeout/output-cap kill can terminate the WHOLE group —
+    // a trusted tool that spawns descendants cannot outlive the boundary.
+    // Windows has no group semantics here: the direct kill stands (documented
+    // platform fallback).
+    const groupLeader = process.platform !== 'win32';
     try {
       child = spawn(executable, args, {
         cwd: opts.cwd,
         env: opts.env,
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...(groupLeader ? { detached: true } : {}),
       });
     } catch (e) {
       resolve({ status: 'spawn_failed', message: (e as Error).message });
       return;
     }
+
+    /** Kill the child; when it leads a process group, kill the GROUP. */
+    const killTree = (): void => {
+      const pid = child.pid;
+      try {
+        if (groupLeader && pid !== undefined) {
+          try {
+            process.kill(-pid, 'SIGKILL');
+            return; // group signalled — done
+          } catch {
+            /* group already gone: fall through to the direct kill */
+          }
+        }
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    };
 
     let stdout = '';
     let stderr = '';
@@ -76,11 +101,7 @@ export function runSubprocess(
           if (buf === 'stdout') stdout = next.slice(0, cap);
           else stderr = next.slice(0, cap);
           capped = true;
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            /* already gone */
-          }
+          killTree();
           return;
         }
         if (buf === 'stdout') stdout = next;
@@ -93,11 +114,7 @@ export function runSubprocess(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
+      killTree();
     }, opts.timeoutMs);
 
     const finish = (result: SubprocessResult) => {

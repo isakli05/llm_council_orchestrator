@@ -132,6 +132,6 @@ export interface CodeIntelligenceProvider {
   path(a: string, b: string): Promise<IntelItems>;
   explain(node: string): Promise<IntelItems>;
   affected(seed: string, opts?: AffectedOptions): Promise<AffectedResult>;
-  godNodes(top?: number): Promise<GodNode[]>;
+  godNodes(top?: number): Promise<GodNode[] | IntelFailure>;
   graphHealth(): Promise<GraphHealth | IntelFailure>;
 }

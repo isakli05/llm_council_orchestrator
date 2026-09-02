@@ -70,7 +70,7 @@ export function parseGraphFile(input: unknown): GraphParseResult {
 
   const nodeIds = new Set(parsed.data.nodes.map((n) => n.id));
   const edges: GraphEdgeRef[] = [];
-  let dangling = 0;
+  const dangling: string[] = [];
   for (const link of parsed.data.links) {
     if (nodeIds.has(link.source) && nodeIds.has(link.target)) {
       edges.push({
@@ -83,14 +83,23 @@ export function parseGraphFile(input: unknown): GraphParseResult {
         source_location: link.source_location,
       });
     } else {
-      dangling++;
+      dangling.push(`${link.source} → ${link.target}`);
     }
   }
 
-  const warnings =
-    dangling > 0
-      ? [`${dangling} dangling link(s) referenced unknown nodes and were dropped`]
-      : [];
+  // H-11: for load-bearing graph state, dangling links are a TYPED FAILURE —
+  // the graph is structurally incomplete and renewal must not silently
+  // proceed on a partial success. Rebuild the graph (lco renew refresh).
+  if (dangling.length > 0) {
+    const sample = dangling.sort().slice(0, 5).join(', ');
+    return {
+      ok: false,
+      code: 'graph_invalid',
+      message: `graph.json has ${dangling.length} dangling link(s) referencing unknown nodes (${sample}${dangling.length > 5 ? ` +${dangling.length - 5} more` : ''}) — the graph is structurally incomplete; rebuild it (lco renew refresh)`,
+    };
+  }
+
+  const warnings: string[] = [];
 
   return {
     ok: true,

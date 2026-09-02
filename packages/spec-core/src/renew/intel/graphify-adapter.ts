@@ -243,9 +243,11 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     return affectedReverse(g.graph, seed, opts ?? {});
   }
 
-  async godNodes(top?: number): Promise<GodNode[]> {
+  async godNodes(top?: number): Promise<GodNode[] | IntelFailure> {
+    // M-08: a graph read failure is a TYPED failure — empty and failure have
+    // different semantics and must never collapse to [].
     const g = this.loadGraph();
-    if (!g.ok) return [];
+    if (!g.ok) return g;
     return godNodes(g.graph, top ?? 10);
   }
 
@@ -267,7 +269,16 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
         };
       }
     }
-    return graphHealthOf(g.graph, version, 0);
+    // M-08: manifest entries come from the manifest itself when present —
+    // a fabricated 0 is never reported as health.
+    let manifestEntries = 0;
+    try {
+      const manifestText = this.readFileImpl(join(this.workspaceRoot, 'graphify-out', 'manifest.json'));
+      manifestEntries = Object.keys(JSON.parse(manifestText) as Record<string, unknown>).length;
+    } catch {
+      manifestEntries = 0;
+    }
+    return graphHealthOf(g.graph, version, manifestEntries);
   }
 
   private loadGraph(): { ok: true; graph: ParsedGraph } | IntelFailure {

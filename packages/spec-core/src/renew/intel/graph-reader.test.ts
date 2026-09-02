@@ -85,7 +85,7 @@ describe('parseGraphFile (defensive graph.json reader)', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('drops dangling links (endpoint not in the node set) and warns with a count', () => {
+  it('dangling links (endpoint not in the node set) are a typed failure — H-11', () => {
     const r = parseGraphFile({
       nodes: [{ id: 'a' }, { id: 'b' }],
       links: [
@@ -94,9 +94,11 @@ describe('parseGraphFile (defensive graph.json reader)', () => {
         { source: 'phantom', target: 'b', relation: 'imports' },
       ],
     });
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.graph.edges).toHaveLength(1);
-    expect(r.graph.warnings.join(' ')).toMatch(/2 dangling/);
+    // Load-bearing graph state never proceeds on a partial success: the
+    // graph is structurally incomplete and must be rebuilt.
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('graph_invalid');
+    expect(r.message).toMatch(/2 dangling/);
   });
 });

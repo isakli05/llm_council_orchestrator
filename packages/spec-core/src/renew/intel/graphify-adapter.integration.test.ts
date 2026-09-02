@@ -47,6 +47,20 @@ afterAll(() => {
   for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * H-13 canary: in CI the environment PROMISES a working Graphify (the
+ * workflow installs a pinned version). If this test runs and the probe
+ * fails, the release-critical integration silently skipped — fail loudly
+ * instead. (Locally, absence stays a documented skip.)
+ */
+describe('GraphifyAdapter × CI canary (H-13)', () => {
+  it('inside CI the pinned Graphify MUST be available — skipping is a CI bug', () => {
+    const inCi = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
+    if (!inCi) return; // local runs keep the documented skipIf behavior
+    expect(available).toBe(true);
+  });
+});
+
 describe.skipIf(!available)('GraphifyAdapter × real graphify (pinned, offline)', () => {
   const adapter = () => new GraphifyAdapter({ workspaceRoot });
 
