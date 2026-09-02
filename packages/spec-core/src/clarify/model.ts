@@ -151,7 +151,10 @@ export function validateAnswer(
   claimIdPattern: RegExp = DEC_ID,
 ): AnswerCheck {
   if (!claimIdPattern.test(answer.decisionId)) {
-    return { ok: false, error: `decision id '${answer.decisionId}' is not a recognized claim id` };
+    // L-03: the DEFAULT (greenfield) namespace keeps its exact historical
+    // wording; injected namespaces name themselves.
+    const what = claimIdPattern === DEC_ID ? 'a DEC-NNNN id' : `a recognized claim id (${claimIdPattern})`;
+    return { ok: false, error: `decision id '${answer.decisionId}' is not ${what}` };
   }
   if (answer.decisionId !== question.claimId) {
     return { ok: false, error: `answer targets ${answer.decisionId} but the question is ${question.claimId}` };

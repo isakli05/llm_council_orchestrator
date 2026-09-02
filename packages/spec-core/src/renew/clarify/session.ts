@@ -43,6 +43,9 @@ export interface RenewalClarifySessionOptions {
   nextApprovalId(): string;
   writeApproval: (record: RenewalApprovalRecord) => { ok: true } | { ok: false; error: string };
   maxRounds?: number;
+  /** F2/H-09: binds the written approval to the snapshot under which the
+   * questions were asked — post-refresh approvals cannot rule old state. */
+  snapshotId?: string;
 }
 
 export function createRenewalClarifySession(opts: RenewalClarifySessionOptions): ClarifySession {
@@ -185,6 +188,7 @@ export function createRenewalClarifySession(opts: RenewalClarifySessionOptions):
         roundCount: round,
         approvedAt: opts.nowIso(),
         ...(opts.projectName !== undefined ? { projectName: opts.projectName } : {}),
+        ...(opts.snapshotId !== undefined ? { snapshotId: opts.snapshotId } : {}),
       });
       const written = opts.writeApproval(record);
       if (!written.ok) {

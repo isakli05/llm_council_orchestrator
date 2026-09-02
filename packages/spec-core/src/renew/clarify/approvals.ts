@@ -6,6 +6,7 @@
  * same APPR-NNNN lineage discipline as the spec workspace.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sha256Content } from '../../compiler/hash';
@@ -40,6 +41,9 @@ export const RenewalApprovalRecordSchema = z
     round_count: z.number().int().positive(),
     approved_at: z.string().min(1),
     project_name: z.string().min(1).optional(),
+    /** F2/H-09: approvals bind to the snapshot they were given under — a
+     * post-refresh approval must not rule a different source state. */
+    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/).optional(),
     decisions: z.array(RenewalDecisionSchema).min(1),
     content_digest: Sha256,
   })
@@ -63,6 +67,7 @@ export interface BuildRenewalApprovalArgs {
   roundCount: number;
   approvedAt: string;
   projectName?: string;
+  snapshotId?: string;
 }
 
 export function buildRenewalApprovalRecord(
@@ -77,6 +82,7 @@ export function buildRenewalApprovalRecord(
     round_count: args.roundCount,
     approved_at: args.approvedAt,
     ...(args.projectName !== undefined ? { project_name: args.projectName } : {}),
+    ...(args.snapshotId !== undefined ? { snapshot_id: args.snapshotId } : {}),
     decisions: [...parsed.decisions].sort((a, b) => (a.claim_id < b.claim_id ? -1 : 1)),
     content_digest: renewalApprovalDigest(parsed),
   });
@@ -115,11 +121,54 @@ export function writeRenewalApproval(dir: string, record: RenewalApprovalRecord)
   return { ok: true, path };
 }
 
-export function loadRenewalApproval(path: string): RenewalApprovalRecord | undefined {
+export type RenewalApprovalLoad =
+  | { ok: true; record: RenewalApprovalRecord }
+  | { ok: false; code: 'approval_missing' | 'approval_corrupt' | 'digest_mismatch' | 'evidence_mismatch'; message: string };
+
+/**
+ * F3/H-09 — load an approval record SELF-VERIFYING: the stored
+ * `content_digest` is recomputed from the stored decisions and compared, and
+ * each decision's locally-hashed evidence (`evidence.hash` over
+ * `answer_text`) is recomputed too. A tampered digest, tampered answer text,
+ * or hand-written record fails closed — approval ids are never trusted as
+ * strings.
+ */
+export function loadRenewalApproval(path: string): RenewalApprovalLoad {
+  let text: string;
   try {
-    const parsed = RenewalApprovalRecordSchema.safeParse(JSON.parse(readFileSync(path, 'utf8')));
-    return parsed.success ? parsed.data : undefined;
+    text = readFileSync(path, 'utf8');
   } catch {
-    return undefined;
+    return { ok: false, code: 'approval_missing', message: `approval record not found: ${path}` };
   }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (e) {
+    return { ok: false, code: 'approval_corrupt', message: `approval record is not valid JSON (${(e as Error).message})` };
+  }
+  const parsed = RenewalApprovalRecordSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return { ok: false, code: 'approval_corrupt', message: `approval record failed schema validation (${issue.path.join('.')}: ${issue.message})` };
+  }
+  const record = parsed.data;
+  const recomputed = renewalApprovalDigest({ decisions: record.decisions });
+  if (recomputed !== record.content_digest) {
+    return {
+      ok: false,
+      code: 'digest_mismatch',
+      message: `approval ${record.approval_id} content digest does not match its decisions (stored ${record.content_digest.slice(0, 19)}…, recomputed ${recomputed.slice(0, 19)}…) — the record was tampered with or hand-edited`,
+    };
+  }
+  for (const d of record.decisions) {
+    const recomputedEvidence = `sha256:${createHash('sha256').update(d.evidence.answer_text, 'utf8').digest('hex')}`;
+    if (recomputedEvidence !== d.evidence.hash) {
+      return {
+        ok: false,
+        code: 'evidence_mismatch',
+        message: `approval ${record.approval_id} decision ${d.claim_id}: evidence hash does not match its answer text — the record was tampered with`,
+      };
+    }
+  }
+  return { ok: true, record };
 }

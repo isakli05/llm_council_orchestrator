@@ -576,6 +576,28 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
   const state = safeState(args.dir);
   if (typeof state === 'string') return { code: 2, output: state };
   const paths = renewalPaths(args.dir);
+  const p = loadRenewalProject(args.dir);
+  if (!p.ok) return { code: 2, output: p.message };
+
+  // H-09: review REVALIDATES the source state at entry — an approval given
+  // over a stale snapshot cannot bind trusted state.
+  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
+  if (!stale.ok) return stale;
+  if (!stale.fresh) {
+    return {
+      code: 1,
+      output: `review refused: renewal snapshot is stale.\n${(stale.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}`,
+    };
+  }
+  // Stores must be loadable AND bound to the active snapshot (B4).
+  if (!state.overlay.ok) return { code: 1, output: `overlay store corrupt: ${state.overlay.message}` };
+  if (state.snapshot !== undefined && state.overlay.store.snapshot_id !== state.snapshot.snapshot_id) {
+    return { code: 1, output: `overlay store is bound to snapshot ${state.overlay.store.snapshot_id} but the active snapshot is ${state.snapshot.snapshot_id} — refresh supersedes state; re-analyze and re-review` };
+  }
+  if (!state.parity.ok) return { code: 1, output: `parity store corrupt: ${state.parity.message}` };
+  if (state.snapshot !== undefined && state.parity.store.snapshot_id !== state.snapshot.snapshot_id) {
+    return { code: 1, output: `parity store is bound to snapshot ${state.parity.store.snapshot_id} but the active snapshot is ${state.snapshot.snapshot_id} — refresh supersedes state; re-analyze and re-review` };
+  }
 
   const driver = makeRenewalDriver({
     analyses: state.analyses.records,
@@ -595,6 +617,7 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
       const result = writeRenewalApproval(paths.approvals, { ...record, approval_id: nextRenewalApprovalId(paths.approvals) });
       return result.ok ? { ok: true as const } : { ok: false as const, error: result.message };
     },
+    ...(state.snapshot !== undefined ? { snapshotId: state.snapshot.snapshot_id } : {}),
   });
 
   if (args.interactive) {
@@ -622,7 +645,7 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
       };
       poll();
     });
-    return finishReview(args.dir, state, session.snapshot().state, paths);
+    return finishReview(args.dir, state, session.snapshot().state, paths, caps);
   }
 
   if (args.answersPath === undefined) {
@@ -645,7 +668,7 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
   if (!applied.ok) return { code: 1, output: `answers rejected: ${applied.error}` };
   const approved = session.approve({ pendingChangeIds: [] });
   if (!approved.ok) return { code: 1, output: `approval refused: ${approved.error}` };
-  return finishReview(args.dir, state, session.snapshot().state, paths);
+  return finishReview(args.dir, state, session.snapshot().state, paths, caps);
 }
 
 /** After approval: fold the record into parity + write the strategy decision. */
@@ -654,37 +677,72 @@ async function finishReview(
   state: Exclude<ReturnType<typeof loadRenewalState>, string>,
   finalState: string,
   paths: ReturnType<typeof renewalPaths>,
+  caps: RenewCapabilities,
 ): Promise<RenewResult> {
   if (finalState !== 'APPROVED') {
     return { code: 1, output: `review ended in state ${finalState} — nothing written` };
   }
-  // Newest approval record on disk.
+  // H-09: revalidate the source state BEFORE folding the approval — the
+  // interactive round-trip takes wall-clock time; a mutation that happened
+  // during it must not turn into trusted parity/strategy state.
+  const p = loadRenewalProject(dir);
+  if (!p.ok) return { code: 2, output: p.message };
+  const recheck = await currentStaleness(dir, p.project.target_path, caps.provider(), caps.gitCommit);
+  if (!recheck.ok) return recheck;
+  if (!recheck.fresh) {
+    return {
+      code: 1,
+      output: `review approval NOT folded: the source changed during the review (snapshot stale).\n${(recheck.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}\nThe approval record is preserved on disk and can guide the re-review after refresh.`,
+    };
+  }
+  // Newest approval record on disk — loaded SELF-VERIFYING (F3).
   const files = existsSync(paths.approvals)
     ? (await import('node:fs')).readdirSync(paths.approvals).filter((f) => /^APPR-\d{4}\.json$/.test(f)).sort()
     : [];
   if (files.length === 0) return { code: 1, output: 'internal: approval written but record not found' };
-  const record = loadRenewalApproval(join(paths.approvals, files[files.length - 1]!));
-  if (record === undefined) return { code: 1, output: 'internal: approval record unreadable' };
+  const loaded = loadRenewalApproval(join(paths.approvals, files[files.length - 1]!));
+  if (!loaded.ok) return { code: 1, output: `approval record failed verification (${loaded.code}): ${loaded.message} — refusing to fold` };
+  const record = loaded.record;
+  if (record.snapshot_id !== undefined && record.snapshot_id !== state.project.snapshot_id) {
+    return { code: 1, output: `approval ${record.approval_id} is bound to snapshot ${record.snapshot_id} but the active snapshot is ${state.project.snapshot_id} — the approval does not rule the current state` };
+  }
 
-  // Fold parity.
+  // Fold parity — corrupt parity stops the fold (never empty-overwrite).
   const par = loadParity(paths.parity);
-  const parityStore = par.ok ? par.store : emptyParity(state.project.snapshot_id);
+  if (!par.ok) return { code: 1, output: `parity store corrupt: ${par.message} — approval preserved, fold refused` };
+  const parityStore = par.store;
   const { applyApprovalToParity } = await import('../../renew/parity/ledger');
   applyApprovalToParity(parityStore, record);
-  persistParity(paths.parity, parityStore);
 
   // Strategy decision from the STG claim, if answered.
   const stg = record.decisions.find((d) => d.claim_id === STRATEGY_CLAIM_ID);
-  if (stg !== undefined && MODERNIZATION_STRATEGIES.includes(stg.selected_option as never)) {
-    const decision = buildStrategyDecision({
-      strategy: stg.selected_option as (typeof MODERNIZATION_STRATEGIES)[number],
-      rationale: `human selection via clarification (${stg.evidence.answer_text})`,
-      selectedVia: 'workspace',
-      snapshotId: state.project.snapshot_id,
-      nowIso: record.approved_at,
-      approvalId: record.approval_id,
-    });
-    persistStrategy(paths.strategy, decision);
+  const strategyDecision =
+    stg !== undefined && MODERNIZATION_STRATEGIES.includes(stg.selected_option as never)
+      ? buildStrategyDecision({
+          strategy: stg.selected_option as (typeof MODERNIZATION_STRATEGIES)[number],
+          rationale: `human selection via clarification (${stg.evidence.answer_text})`,
+          selectedVia: 'workspace',
+          snapshotId: state.project.snapshot_id,
+          nowIso: record.approved_at,
+          approvalId: record.approval_id,
+        })
+      : undefined;
+
+  // M-07: parity + strategy fold under the renewal store lock.
+  let lock: SpecRootLock | undefined;
+  try {
+    lock = acquireSpecRootLock(join(dir, '.lco', 'renewal'), caps.nowIso());
+  } catch (e) {
+    if (e instanceof LockHeldError) {
+      return { code: 1, output: `renewal state is locked by another writer (${e.message}) — the approval is preserved; re-run review to fold it` };
+    }
+    throw e;
+  }
+  try {
+    persistParity(paths.parity, parityStore);
+    if (strategyDecision !== undefined) persistStrategy(paths.strategy, strategyDecision);
+  } finally {
+    lock.release();
   }
 
   const unresolved = parityStore.records.filter((r) => r.ruling === 'unresolved').length;
@@ -741,8 +799,19 @@ export async function cmdRenewPlan(
   if (!strategyLoad.ok) return { code: 1, output: `plan refused: ${strategyLoad.message}` };
 
   if (!state.parity.ok) return { code: 1, output: `plan refused: ${state.parity.message}` };
+  const parityStoreForPlan = state.parity.store;
+  const snapForGate = loadSnapshotFile(args.dir);
+  if (!snapForGate.ok) return { code: 1, output: snapForGate.message };
+  // F4: approval references resolve to VERIFIED records bound to the active
+  // snapshot — a fabricated APPR-9999 blocks instead of authorizing.
   const gate = await import('../../renew/parity/ledger').then((m) =>
-    m.parityGate(state.parity.ok ? state.parity.store : m.emptyParity(state.project.snapshot_id), p.project.target_path),
+    m.parityGate(parityStoreForPlan, p.project.target_path, {
+      loadApproval: (approvalId) => {
+        const loaded = loadRenewalApproval(join(paths.approvals, `${approvalId}.json`));
+        return loaded.ok ? loaded.record : undefined;
+      },
+      activeSnapshot: snapForGate.snapshot.snapshot_id,
+    }),
   );
   if (!gate.ok) {
     return {
@@ -784,7 +853,7 @@ export async function cmdRenewPlan(
     snapshot: snap.snapshot,
     architectureView: archView,
     overlay: state.overlay.ok ? state.overlay.store : emptyOverlay(state.project.snapshot_id),
-    parity: state.parity.store,
+    parity: parityStoreForPlan,
     strategy: strategyLoad.decision,
     analyses: state.analyses.records,
     projectName: state.project.name,

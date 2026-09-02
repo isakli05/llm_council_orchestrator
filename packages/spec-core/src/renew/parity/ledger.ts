@@ -134,10 +134,20 @@ export interface ApplyApprovalResult {
 
 /**
  * Fold an approval record into the ledger. CANONICAL language maps:
- * 'preserve'/'keep' → preserve; 'drop'/'remove' → drop; anything else stays
- * UNRESOLVED with the approved text recorded — visible and blocking, never
- * guessed. DROP-via-approval carries the approval lineage by construction.
+ * 'preserve'/'keep'/'retain' → preserve; 'change'/'chang(e|ing)' → change;
+ * 'drop'/'remove'/'delete' → drop; anything else stays UNRESOLVED with the
+ * approved text recorded — visible and blocking, never guessed. All three
+ * rulings round-trip through the workspace and headless --answers paths.
+ * DROP-via-approval carries the approval lineage by construction.
  */
+export function rulingFromApprovedText(text: string): ParityEntry['ruling'] {
+  const lower = text.toLowerCase();
+  if (/\b(drop|remove|delete)\b/.test(lower)) return 'drop';
+  if (/\b(preserve|keep|retain)\b/.test(lower)) return 'preserve';
+  if (/\bchang(e|es|ed|ing)\b/.test(lower)) return 'change';
+  return 'unresolved';
+}
+
 export function applyApprovalToParity(store: ParityStore, approvalRec: RenewalApprovalRecord): ApplyApprovalResult {
   const byClaim = new Map(approvalRec.decisions.map((d) => [d.claim_id, d]));
   const updated: string[] = [];
@@ -148,11 +158,7 @@ export function applyApprovalToParity(store: ParityStore, approvalRec: RenewalAp
     const decision = byClaim.get(rec.decision_claim_id ?? '') ?? byClaim.get(rec.id);
     if (decision === undefined) continue;
     const text = decision.selected_option ?? decision.free_text ?? '';
-    const lower = text.toLowerCase();
-    let ruling: ParityEntry['ruling'];
-    if (/\b(preserve|keep|retain)\b/.test(lower)) ruling = 'preserve';
-    else if (/\b(drop|remove|delete)\b/.test(lower)) ruling = 'drop';
-    else ruling = 'unresolved';
+    const ruling = rulingFromApprovedText(text);
 
     rec.ruling = ruling;
     rec.rationale = `approved: "${text}"`;
@@ -171,13 +177,45 @@ export interface ParityBlocker {
 
 export type ParityGate = { ok: true } | { ok: false; blockers: ParityBlocker[] };
 
-/** Plan-finalization precondition: resolved rulings AND verifying anchors. */
-export function parityGate(store: ParityStore, targetRoot: string): ParityGate {
+/**
+ * F4 — approval context for the parity gate: a VERIFIED loader (records whose
+ * digest/evidence already revalidated) plus the active snapshot the rulings
+ * must be bound to.
+ */
+export interface ParityGateApprovals {
+  loadApproval: (approvalId: string) => RenewalApprovalRecord | undefined;
+  activeSnapshot: string;
+}
+
+/** Plan-finalization precondition: resolved rulings AND verifying anchors AND approval lineage that actually authorizes each ruling. */
+export function parityGate(store: ParityStore, targetRoot: string, approvals?: ParityGateApprovals): ParityGate {
   const blockers: ParityBlocker[] = [];
   for (const rec of store.records) {
     if (rec.ruling === 'unresolved') {
       blockers.push({ id: rec.id, reason: 'unresolved ruling — rule it preserve/change/drop (human act) before planning' });
       continue;
+    }
+    // F4: an approval_id is a REFERENCE, not authority — resolve and verify it.
+    if (approvals !== undefined && rec.approval_id !== undefined) {
+      const approval = approvals.loadApproval(rec.approval_id);
+      if (approval === undefined) {
+        blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} does not exist — fabricated approval ids do not authorize rulings` });
+        continue;
+      }
+      if (approval.snapshot_id !== undefined && approval.snapshot_id !== approvals.activeSnapshot) {
+        blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} is bound to snapshot ${approval.snapshot_id}, not the active ${approvals.activeSnapshot}` });
+        continue;
+      }
+      const decision = approval.decisions.find((d) => d.claim_id === (rec.decision_claim_id ?? rec.id));
+      if (decision === undefined) {
+        blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} contains no decision for this entry (${rec.decision_claim_id ?? rec.id})` });
+        continue;
+      }
+      const authorized = rulingFromApprovedText(decision.selected_option ?? decision.free_text ?? '');
+      if (authorized !== rec.ruling) {
+        blockers.push({ id: rec.id, reason: `approval ${rec.approval_id} authorizes '${authorized}' but the entry is ruled '${rec.ruling}' — the approval does not authorize THIS ruling` });
+        continue;
+      }
     }
     for (const ev of rec.evidence) {
       if (ev.kind !== 'code_anchor') continue;
