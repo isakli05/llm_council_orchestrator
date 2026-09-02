@@ -1,4 +1,4 @@
-# 11 — Test Coverage (H-01 status)
+# 11 — Test Coverage (H-01 status: CLOSED)
 
 ## Gate command
 
@@ -6,41 +6,51 @@
 pnpm --filter ./packages/spec-core test:coverage
 ```
 
-## Current result (final run this session)
+## Final result (exit 0 — thresholds UNCHANGED)
 
-| Metric | Actual | Threshold | Result |
-|---|---:|---:|---|
-| statements | 92.16% | 91% | pass |
-| lines | 92.16% | 91% | pass |
-| branches | **86.56%** | 89% | **FAIL — 131 branch points short** |
-| functions | **95.12%** | 96% | **FAIL — 7 functions short** |
+| Metric | Before (audit) | Before this task | AFTER | Threshold | Result |
+|---|---:|---:|---:|---:|---|
+| statements | 91.81% | 92.16% | **93.64%** | 91% | pass |
+| lines | 91.81% | 92.16% | **93.64%** | 91% | pass |
+| branches | 85.98% | 86.56% | **89.17–89.19%** (3 runs) | 89% | **pass** |
+| functions | 94.28% | 95.12% | **96.08%** | 96% | **pass** |
 
-Thresholds are UNCHANGED (vitest.config.ts untouched on this branch — diff-verifiable).
+Stability: three consecutive full coverage runs stayed ≥ 89.17% branches
+and exactly 96.08% functions. Thresholds/config untouched (diff-verifiable:
+`git diff 4ab1eed..HEAD -- packages/spec-core/vitest.config.ts` is empty);
+no ignore directives added anywhere.
 
-## Trajectory (audit baseline → now)
+## Tests
 
-branches 85.98 → 86.56 (+0.58 absolute, on a LARGER pool: the branch pool grew from new trust code), functions 94.28 → 95.12. Tests grew 1822 → 1956 (134 new, all trust/error-path assertions; no superficial filler — each asserts a refusal code, a tamper detection, or a containment behavior).
+1956 → **2053** (+97, 8 new files): every one asserts a documented
+refusal code, state shape, containment behavior, or timing bound — no
+line-touching filler.
 
-## Where the remaining 131 branch points live (measured, `coverage-final.json`)
+## How the gap closed (by pool)
 
-| File | Uncovered branches | Notes |
-|---|---:|---|
-| `src/cli/commands/renew.ts` | ~85 | The interactive-review flow (server start/poll/approve wiring) and several fold branches are the dominant block; needs an HTTP-driving e2e test against the loopback workspace |
-| `src/renew/planner/plan.ts` | ~15 | remaining overlay-consumption permutations |
-| `src/mcp/server.ts` | ~20 | renewal-consent error orderings |
-| `src/cli/args.ts` | ~15 | non-renew grammar branches (pre-existing) |
-| `src/server/http.ts`, `clarify/session/orchestrator.ts` | ~45 combined | shared clarify-server branches (pre-existing lows) |
-| `src/renew/recovery/pipeline.ts`, `intel/graphify-adapter.ts`, `intel/fixture-provider.ts`, `parity/ledger.ts`, `clarify/session.ts` | ~50 combined | residual error permutations |
-| browser-client, eval/live-experiment, generate-interactive, doctor | remainder | pre-existing lows outside the renewal scope |
+| Pool | Closed by |
+|---|---|
+| `renew review --interactive` (largest) | `review-interactive.test.ts` — REAL command core + REAL loopback workspace, HTTP-driven (round/apply + approve + cancel); openBrowser is the only seam |
+| renew.ts command arms | `renew-branches.test.ts` + `renew-richstate.test.ts` — status over rich state, analyze/plan/review/export refusal arms, sabotage (probe/graph/lock/mid-call) |
+| CLI boundary wiring | `runcli-renew.test.ts` — in-process `runCli` (caps closures: clock/provider/git/budget/llm) |
+| pipeline/adapter/fixture | `tranche5.test.ts` — usage-detail fields, persist_failed per outcome, minimal-graph contracts, per-method typed failures |
+| planner/ledger/session/distiller/archview/graph-ops/approvals/export/ingest/verifier/prompts/graph-reader | `tranche6/7.test.ts` + verifier/redact additions |
 
-## Recommended closure plan (next session)
+## Two genuine defects the new tests found (fixed in production code)
 
-1. **Interactive review e2e** (~35–40 branches): drive `cmdRenewReview --interactive` with a real HTTP client against its loopback server (capture the URL from stderr, POST answers + approve). The shared round-trip test is the precedent.
-2. **finishReview/export/plan command permutations** (~30): approval-not-found, no-strategy-answer, review cancellation state, `--freeze` happy path.
-3. **Pipeline/adapter/ledger residuals** (~35): error permutations reachable only through specific fixture shapes.
-4. **Functions (7)**: uncovered functions concentrate in `browser-client/app.ts` (error screens), `eval/report.ts`, and one pipeline closure — small jsdom/unit additions close them.
-5. If the shared-file lows (orchestrator/http) are chosen instead, they are equally honest targets — but the audit's guidance prioritizes the renewal modules.
+1. **`args.ts` empty-value hole (M-04 gap):** `--target ''` was silently
+   accepted — an empty flag value is now a missing-value grammar error.
+2. **`redact.ts` ReDoS (C-07 hardening):** the L3 credential-name rule used
+   a nested-quantifier ends-with-keyword pattern with catastrophic
+   backtracking on long identifier-like runs (minified code) — a hang in
+   the egress path. Replaced with a linear identifier match + credential
+   tail check; a 20k-char identifier run now redacts in milliseconds
+   (regression test bounds it at <2s).
 
-## What will NOT be done
+## Remaining uncovered (accepted, not hidden)
 
-Thresholds are not lowered; `skipIf` is not added anywhere new; no test-only production branches; no assertions deleted to shrink the pool.
+Long-tail single arms in shared non-renewal surfaces (browser-client UI
+callbacks, eval live-experiment, mcp stdio plumbing) and defensive arms
+provably unreachable through public flows (e.g. the command-level
+`persist_failed` after `nextAnalysisId` always yields max+1). No
+exclusions or ignores were introduced for any of them.

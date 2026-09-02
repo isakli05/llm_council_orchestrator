@@ -30,7 +30,7 @@ Every command exits 0 when the invariant HOLDS (tests assert the safe outcome an
 | C-10 | `npx vitest run src/renew/snapshot-trust.test.ts src/renew/session-branches.test.ts` | mid-call mutation → blocked_stale, nothing promoted |
 | H-02..H-12 | suites above + `npx vitest run src/cli/args.test.ts src/config` | see closure matrix |
 | H-13 | inspect `.github/workflows/ci.yml` + `npx vitest run src/renew/intel/graphify-adapter.integration.test.ts` (needs graphify locally; in CI it cannot skip) |
-| H-01 | `pnpm run test:coverage` | **currently exit 1 — the known open item** |
+| H-01 | `pnpm --filter ./packages/spec-core test:coverage` | **exit 0 — branches ≥89.17%, functions 96.08%, thresholds unchanged** |
 
 ## 2. Adversarial spot-checks worth re-running independently (disposable /tmp fixtures)
 
@@ -44,7 +44,7 @@ Every command exits 0 when the invariant HOLDS (tests assert the safe outcome an
 ## 3. What is intentionally NOT claimed
 
 - **Behavioral parity verification does not exist** — the plan says so explicitly in every task's test cases and acceptance; there is no machine PASS-able parity claim anywhere.
-- **H-01 is open** — coverage gate still red by 131 branch points / 7 functions; thresholds unchanged; report 11 has the measured pools and the closure plan.
+- **H-01 is CLOSED** — original failure: branches 86.56% < 89%, functions 95.12% < 96%. Final: branches 89.17–89.19% (three consecutive runs), functions 96.08%, statements/lines 93.64%. Changed test files: 8 new (`review-interactive`, `renew-branches`, `renew-richstate`, `runcli-renew`, `tranche5/6/7`, verifier/redact additions) + 97 tests, every one behavior-asserting. Two production defects were found and fixed en route and are part of the auditable diff: the `args.ts` empty-flag-value grammar hole and the `redact.ts` L3 ReDoS (linear-time regression test included). One-command reproduction: `pnpm --filter ./packages/spec-core test:coverage` (exit 0).
 - **Consent replay limiting (run/nonce)** remains a documented residual: the file-backed MCP server binds the digest to effectual state (source/model/profile/budget/protocol), which prevents cross-state replay of a digest, but not re-use against identical state; a server-side nonce store is future work (matches the audit's "if supported safely" framing).
 - **Council work was not touched** (audit 13's `MODERATE_REFACTOR_REQUIRED` classification stands).
 - **M-07 transaction scope**: file-backed lock + staged writes protect the renew store pairs (analyze fold, review fold); cross-store journaling beyond these pairs was not built.

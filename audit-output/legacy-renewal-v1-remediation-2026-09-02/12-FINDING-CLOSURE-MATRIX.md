@@ -18,11 +18,11 @@ Runtime verification commands are listed per finding; every one was executed thi
 | C-09 invalid plan write/success | **CLOSED** | `unscoped_tasks` up-front refusal; `SpecBundleSchema.parse` before lint before any write; pre-write freshness recheck (`859f2e3`) | planner-trust.test.ts — unscoped parity refuses with `spec/` absent; mid-plan mutation writes NOTHING; healthy path compiles | `npx vitest run src/renew/planner-trust.test.ts` |
 | C-10 mid-call mutation promotion | **CLOSED** | `recheckFreshness` bracket after call AND after retry; `blocked_stale` record w/ usage; no promotion (`a862dc9`, `62c14ab`) | snapshot-trust.test.ts mid-call test; session-branches.test.ts retry-bracket test | `npx vitest run src/renew/snapshot-trust.test.ts src/renew/session-branches.test.ts` |
 
-## HIGH — 12/13 CLOSED, H-01 OPEN
+## HIGH — 13/13 CLOSED
 
 | ID | Status | Fix (commit) | Tests / proof |
 |---|---|---|---|
-| H-01 coverage gate | **NOT CLOSED** | tranches `44424cc`/`62c14ab` moved branches 85.98→86.56, functions 94.28→95.12; **131 branches + 7 functions short**; thresholds untouched | `pnpm --filter ./packages/spec-core test:coverage` (still exit 1) — see report 11 |
+| H-01 coverage gate | **CLOSED** | closure tranche `a96dfaa` (+8 test files, 97 tests): branches 86.56→**89.17–89.19%** (3 stable runs), functions 95.12→**96.08%**; thresholds untouched; two genuine defects found and fixed (args empty-value grammar hole; redact L3 ReDoS) | `pnpm --filter ./packages/spec-core test:coverage` → exit 0 — see report 11 |
 | H-02 Graphify prerequisite bypass | **CLOSED** | analyze (CLI+MCP) probes before any LLM route (`a862dc9`) | unit: probe refusal paths in intel-contract.test.ts; command-level covered by analyze gate ordering |
 | H-03 context truncation empty success | **CLOSED** | slices reserved first; `insufficient_context` flag → `blocked_insufficient_context` pre-call (`868e607`) | egress.test.ts H-03 describe (>200 nodes keep slices; no-slice scope flagged) |
 | H-04 unusable renewal profiles | **CLOSED** | `variant:'renewal'` (exactly `renew_recover`) in config schema + resolver; both boundaries consume typed roles; casts removed (`8e850ee`) | config/cli/mcp suites green; `as unknown as` removed from both boundaries (diff-verifiable) |

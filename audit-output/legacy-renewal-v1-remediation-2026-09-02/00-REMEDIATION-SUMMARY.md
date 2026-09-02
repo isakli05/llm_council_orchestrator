@@ -8,7 +8,7 @@
 
 ## Verdict
 
-**NOT_READY_FOR_SECOND_AUDIT** — 10/10 Critical findings CLOSED with negative mutation tests; 12/13 High findings CLOSED; **H-01 (coverage gate) remains OPEN**: branches 86.56% < 89% and functions 95.12% < 96% with thresholds untouched. Every other gate is green (build, lint, 1956/1956 tests, schema freshness, packed install + MCP handshake). The precise remaining gap and the file-by-file pools are documented in report 11.
+**READY_FOR_SECOND_INDEPENDENT_AUDIT** — 10/10 Critical findings CLOSED with negative mutation tests; **13/13 High findings CLOSED** (H-01 coverage gate closed: branches 89.17–89.19% ≥ 89%, functions 96.08% ≥ 96%, thresholds untouched — three consecutive stable runs); 8/8 Medium and 3/3 Low CLOSED. All gates green: build, lint, 2053/2053 tests, coverage, schema freshness, packed install + MCP handshake, real Graphify integration. The closure tranche also found and fixed two genuine production defects (an args empty-value grammar hole and a ReDoS in the secret-redaction path) with regression tests — see report 11. This is a readiness claim for a NEW independent audit only, not a release verdict.
 
 ## What changed (by trust invariant)
 
@@ -33,10 +33,10 @@
 |---|---|
 | build | PASS |
 | lint (both tsconfigs) | PASS |
-| tests | PASS — 143 files / 1956 tests (baseline at audit: 133/1822) |
+| tests | PASS — 150 files / 2053 tests (baseline at audit: 133/1822) |
 | generated schema freshness | PASS |
 | smoke:packed (pack → install → lco init → lco-mcp handshake → renewal offline surface) | PASS |
-| test:coverage | **FAIL** — branches 86.56% < 89%; functions 95.12% < 96% (thresholds unchanged; audit baseline was 85.98/94.28) |
+| test:coverage | **PASS (exit 0)** — branches 89.17–89.19%, functions 96.08%, statements/lines 93.64% (thresholds unchanged; audit baseline was 85.98/94.28) |
 | real Graphify 0.9.50 integration | 7/7 PASS (incl. the new CI canary logic) |
 | CI Graphify install | workflow updated (floor 0.9.50 + current 0.9.53, both re-verified on PyPI this session) |
 
