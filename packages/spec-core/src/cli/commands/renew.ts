@@ -195,10 +195,12 @@ export async function cmdRenewInit(
   const health = await caps.provider().graphHealth();
   const version = health.ok ? health.provider_version : probe.providerVersion ?? 'unknown';
 
+  // L-02: ONE git probe (repo kind and identity derive from the same answer).
+  const gitCommit = caps.gitCommit(targetReal);
   const snapshot = createSnapshot({
     rootRealpath: targetReal,
-    repoKind: caps.gitCommit(targetReal) !== undefined ? 'git' : 'plain',
-    gitCommit: caps.gitCommit(targetReal),
+    repoKind: gitCommit !== undefined ? 'git' : 'plain',
+    gitCommit,
     files: walk.manifest,
     filesTruncated: false,
     graph: {

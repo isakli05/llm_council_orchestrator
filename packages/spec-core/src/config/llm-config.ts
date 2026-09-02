@@ -145,11 +145,12 @@ const RoleSchema = z
   })
   .strict();
 
-const VariantSchema = z.enum(['single', 'council']);
+const VariantSchema = z.enum(['single', 'council', 'renewal']);
 
 const ProfileSchema = z
   .object({
     variant: VariantSchema,
+    /** Renewal only: no topology (a single recovery role). */
     /** Council only: 'fused' (historical, default) or 'decomposed' (v4). */
     topology: z.enum(['fused', 'decomposed']).optional(),
     /** 'product' (default; fallbacks allowed) or 'evaluation' (reproducible). */
@@ -218,16 +219,19 @@ export interface ResolvedRole {
 
 export interface ResolvedProfile {
   name: string;
-  variant: 'single' | 'council';
+  variant: 'single' | 'council' | 'renewal';
   /** Present only for council profiles ('fused' default). */
   topology?: CouncilTopology;
   routingMode: RoutingMode;
   roles: Partial<Record<LlmRole, ResolvedRole>>;
 }
 
-/** Role sets each variant/topology requires — exactly these, no more. */
+/** Role sets each variant/topology requires — exactly these, no more.
+ * H-04: 'renewal' is a first-class variant — exactly the renew_recover role —
+ * so named Renewal profiles are validated, resolvable config, not casts. */
 const REQUIRED_ROLES: Record<string, readonly LlmRole[]> = {
   single: ['single'],
+  renewal: ['renew_recover'],
   'council:fused': ['classifier', 'proposal_a', 'judge'],
   'council:decomposed': ['classifier', 'proposal_a', 'proposal_b', 'judge'],
 };
@@ -247,7 +251,10 @@ export function resolveProfile(
 
   const topology: CouncilTopology | undefined =
     profile.variant === 'council' ? (profile.topology ?? 'fused') : undefined;
-  const required = REQUIRED_ROLES[profile.variant === 'single' ? 'single' : `council:${topology}`]!;
+  const required =
+    profile.variant === 'renewal'
+      ? REQUIRED_ROLES.renewal!
+      : REQUIRED_ROLES[profile.variant === 'single' ? 'single' : `council:${topology}`]!;
 
   const given = Object.keys(profile.roles).sort();
   const expected = [...required].sort();

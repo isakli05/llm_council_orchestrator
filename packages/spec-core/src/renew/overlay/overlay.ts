@@ -123,14 +123,24 @@ export function persistOverlay(path: string, store: OverlayStore): PersistResult
 
 export type OverlayLoad =
   | { ok: true; store: OverlayStore }
-  | { ok: false; code: 'overlay_corrupt'; message: string };
+  | { ok: false; code: 'overlay_missing' | 'overlay_corrupt'; message: string };
 
+/** D2: missing is NOT corrupt — callers give missing domain-specific init
+ * semantics; existing+corrupt always stops the operation. */
 export function loadOverlay(path: string): OverlayLoad {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return { ok: false, code: 'overlay_missing', message: `no overlay store at ${path}` };
+    return { ok: false, code: 'overlay_corrupt', message: `overlay.json unreadable (${err.message})` };
+  }
   let value: unknown;
   try {
-    value = JSON.parse(readFileSync(path, 'utf8'));
+    value = JSON.parse(text);
   } catch (e) {
-    return { ok: false, code: 'overlay_corrupt', message: `overlay.json unreadable/invalid JSON (${(e as Error).message})` };
+    return { ok: false, code: 'overlay_corrupt', message: `overlay.json is not valid JSON (${(e as Error).message})` };
   }
   const parsed = OverlayStoreSchema.safeParse(value);
   if (!parsed.success) {
@@ -141,6 +151,23 @@ export function loadOverlay(path: string): OverlayLoad {
       code: 'overlay_corrupt',
       message: `overlay.json failed schema validation (${where ? `${where}: ` : ''}${issue.message})`,
     };
+  }
+  // M-02: duplicate record ids and duplicate ACTIVE (relation, subject) pairs
+  // are corrupt state, not silent last-write-wins.
+  const seenIds = new Set<string>();
+  const seenActive = new Set<string>();
+  for (const rec of parsed.data.records) {
+    if (seenIds.has(rec.id)) {
+      return { ok: false, code: 'overlay_corrupt', message: `overlay.json contains duplicate record id ${rec.id} — refusing ambiguous state` };
+    }
+    seenIds.add(rec.id);
+    if (rec.status === 'active') {
+      const key = `${rec.relation}|${rec.subject.path}${rec.subject.symbol ?? ''}`;
+      if (seenActive.has(key)) {
+        return { ok: false, code: 'overlay_corrupt', message: `overlay.json contains duplicate active ${rec.relation} record for ${rec.subject.path} — resolve the conflict explicitly` };
+      }
+      seenActive.add(key);
+    }
   }
   return { ok: true, store: parsed.data };
 }

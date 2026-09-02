@@ -431,13 +431,53 @@ export type GenerateVariant = 'single' | 'council';
  * llmProfile?} — deliberately a DIFFERENT payload shape from generate/check,
  * so no cross-tool digest replay is possible by construction.
  */
-export function renewConsentDigest(
-  dir: string,
-  scope: string,
-  llmProfile?: string,
-): `sha256:${string}` {
+/**
+ * H-10 — the paid Renewal consent digest binds the EFFECTUAL operation, not
+ * just its name: tool protocol, normalized project root, the ACTIVE snapshot
+ * and graph identity, scope, prompt protocol, profile fingerprint, resolved
+ * model, and the budget envelope. Changing the source (snapshot), the
+ * profile routing, the model, the budget, or any protocol invalidates prior
+ * consent — a stale digest can never authorize a different paid call.
+ */
+export interface RenewConsentInputs {
+  dir: string;
+  scope: string;
+  /** Active snapshot id (RSN-…). */
+  snapshotId?: string;
+  /** sha256 of the structural graph (identity of the analyzed source). */
+  graphDigest?: string;
+  /** Named profile routing this call. */
+  llmProfile?: string;
+  /** Fingerprint of the resolved profile (config digest). */
+  profileFingerprint?: string;
+  /** Resolved gateway/model actually serving the role. */
+  resolvedModel?: string;
+  /** Budget envelope (serialized canonically). */
+  budget?: { maxAttempts?: number; maxTokens?: number; maxWallMs?: number };
+}
+
+/** Protocol version of the renewal consent binding itself. */
+export const RENEW_CONSENT_PROTOCOL = 'lco-renew/consent-v2';
+
+export function renewConsentDigest(args: RenewConsentInputs): `sha256:${string}` {
+  const dir = args.dir === '' ? '' : args.dir.replace(/\/+$/, '');
   return sha256Content(
-    JSON.stringify({ renew: 'analyze', dir, scope, ...(llmProfile !== undefined ? { llmProfile } : {}) }, null, 2),
+    JSON.stringify(
+      {
+        renew: 'analyze',
+        consentProtocol: RENEW_CONSENT_PROTOCOL,
+        dir,
+        scope: args.scope,
+        ...(args.snapshotId !== undefined ? { snapshotId: args.snapshotId } : {}),
+        ...(args.graphDigest !== undefined ? { graphDigest: args.graphDigest } : {}),
+        ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
+        ...(args.profileFingerprint !== undefined ? { profileFingerprint: args.profileFingerprint } : {}),
+        ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
+        ...(args.budget !== undefined ? { budget: args.budget } : {}),
+      },
+      null,
+      2,
+    ),
   );
 }
 

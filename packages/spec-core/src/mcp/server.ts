@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { cmdCompile } from '../cli/commands/compile';
 import { cmdLint } from '../cli/commands/lint';
 import { cmdFreeze } from '../cli/commands/freeze';
@@ -43,6 +45,7 @@ import { renewalPaths } from '../renew/project/project';
 import { singleRoutePlan } from '../llm/plan';
 import { createHttpLlm } from '../eval/llm/http';
 import { renewConsentDigest } from './consent';
+import { createBudgetLedger } from '../eval/budget';
 import { execFileSync } from 'node:child_process';
 import { parseLlmConfig, resolveProfile } from '../config/llm-config';
 import type { LlmConfig, ResolvedProfile } from '../config/llm-config';
@@ -195,9 +198,54 @@ const RENEW_DIR_PROPERTY = {
   description: 'path to the LCO renewal project directory (contains .lco/renewal/; created by `lco renew init`)',
 } as const;
 
+/**
+ * H-05: the default Renewal budget envelope — a paid Renewal call is NEVER
+ * unbounded. The pipeline makes at most 2 logical calls (initial + one
+ * validation-informed retry); each may retry at the HTTP layer, so the
+ * attempt ceiling is bounded above that, and the wall ceiling bounds the
+ * whole paid stage.
+ */
+function defaultRenewalBudget(): { maxAttempts: number; maxWallMs: number } {
+  return { maxAttempts: 8, maxWallMs: 15 * 60_000 };
+}
+
+/**
+ * H-10: the read-only state the paid consent digest binds: the normalized
+ * project root, the ACTIVE snapshot id, and the structural graph digest.
+ * (Profile/model fingerprints are added by the caller when a profile routes
+ * the call.)
+ */
+async function renewalConsentState(dir: string): Promise<{
+  dirReal: string;
+  snapshotId?: string;
+  graphDigest?: string;
+  profileFingerprint?: string;
+  resolvedModel?: string;
+}> {
+  const dirReal = realpathSync(dir);
+  let snapshotId: string | undefined;
+  let graphDigest: string | undefined;
+  try {
+    const { loadRenewalProject, loadSnapshotFile, renewalPaths: paths } = await import('../renew/project/project');
+    const p = loadRenewalProject(dir);
+    if (p.ok) {
+      const snap = loadSnapshotFile(dir);
+      if (snap.ok) snapshotId = snap.snapshot.snapshot_id;
+      const graphPath = join(paths(dir).workspace, 'graphify-out', 'graph.json');
+      try {
+        graphDigest = `sha256:${createHash('sha256').update(readFileSync(graphPath)).digest('hex')}`;
+      } catch {
+        graphDigest = undefined;
+      }
+    }
+  } catch {
+    // unresolvable state digests without it — consent stays root-bound only.
+  }
+  return { dirReal, snapshotId, graphDigest };
+}
+
 /** Boundary capabilities for renewal tools: clock, GraphifyAdapter, git. */
-function renewCaps(dir: string, nowIso: string): RenewCapabilities {
-  return {
+function renewCaps(dir: string, nowIso: string): RenewCapabilities {  return {
     nowIso: () => nowIso,
     provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(dir).workspace }),
     gitCommit: (root) => {
@@ -567,9 +615,10 @@ const TOOLS: readonly ToolDef[] = [
     name: 'lco_renew_analyze',
     description:
       'Legacy Renewal analysis (PAID — makes LLM calls). Requires the renewal snapshot to be ' +
-      'fresh. Consent chain: LCO_MCP_ALLOW_GENERATE=1 AND consent.digest = the advertised ' +
-      'renewConsentDigest(dir, scope, llmProfile?) — every refusal happens BEFORE any LLM ' +
-      'adapter exists (ZERO calls).',
+      'fresh and Graphify present. Consent chain: LCO_MCP_ALLOW_GENERATE=1 AND consent.digest = ' +
+      'the advertised renewConsentDigest — the digest binds the tool protocol, project root, ' +
+      'ACTIVE snapshot + graph identity, scope, prompt protocol, resolved profile/model, and ' +
+      'the budget envelope; every refusal happens BEFORE any LLM adapter exists (ZERO calls).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -577,10 +626,10 @@ const TOOLS: readonly ToolDef[] = [
         scope: { type: 'string', description: "'whole' (V1)" },
         llmProfile: {
           type: 'string',
-          description: 'named profile from the operator config — must route the renew_recover role',
+          description: 'named profile from the operator config (variant: renewal — routes renew_recover)',
         },
         consent: CONSENT_PROPERTY(
-          'paid-analysis consent: { digest } — the consent digest this tool advertised for the SAME {dir, scope, llmProfile}',
+          'paid-analysis consent: { digest } — the consent digest this tool advertised for the SAME effectual operation (snapshot, profile, model, budget)',
         ),
       },
       required: ['dir'],
@@ -589,13 +638,27 @@ const TOOLS: readonly ToolDef[] = [
     args: ['scope', 'llmProfile', 'consent'],
     run: async (input, nowIso, call) => {
       const scope = (input.scope as string | undefined) ?? 'whole';
-      const expected = renewConsentDigest(input.dir, scope, input.llmProfile);
+
+      // H-10: compute the digest from the EFFECTUAL operation state — the
+      // active snapshot + graph identity of THIS project right now (read-only).
+      const consentState = await renewalConsentState(input.dir);
+      const budget = defaultRenewalBudget();
+      const expected = renewConsentDigest({
+        dir: consentState.dirReal,
+        scope,
+        ...(consentState.snapshotId !== undefined ? { snapshotId: consentState.snapshotId } : {}),
+        ...(consentState.graphDigest !== undefined ? { graphDigest: consentState.graphDigest } : {}),
+        ...(input.llmProfile !== undefined ? { llmProfile: input.llmProfile } : {}),
+        ...(consentState.profileFingerprint !== undefined ? { profileFingerprint: consentState.profileFingerprint } : {}),
+        ...(consentState.resolvedModel !== undefined ? { resolvedModel: consentState.resolvedModel } : {}),
+        budget,
+      });
       if (input.consent === undefined) {
         return {
           code: 2,
           output:
             `renewal analysis is a PAID operation and was NOT performed (zero LLM calls).\n` +
-            `Consent digest for this exact request:\n  ${expected}\n` +
+            `Consent digest for this exact request (binds snapshot ${consentState.snapshotId ?? 'unknown'}, scope, profile/model, budget):\n  ${expected}\n` +
             'Re-send with consent: { digest } and the server started with LCO_MCP_ALLOW_GENERATE=1.',
         };
       }
@@ -612,11 +675,12 @@ const TOOLS: readonly ToolDef[] = [
           code: 2,
           output:
             `renewal analysis refused: consent digest mismatch (got ${input.consent.digest}, expected ${expected}). ` +
-            'The digest binds {dir, scope, llmProfile} — zero LLM calls were made.',
+            'The digest binds the protocol, root, ACTIVE snapshot/graph identity, profile routing, resolved model, and budget — zero LLM calls were made.',
         };
       }
-      // LLM resolution (after the gate): test-injected adapter, named profile
-      // with a renew_recover route, or the legacy env (fail-closed, no invented keys).
+      // LLM resolution (after the gate): test-injected adapter, a VALIDATED
+      // renewal-variant named profile (no casts — H-04), or the legacy env
+      // (fail-closed, no invented keys). The budget ledger is INJECTED (H-05).
       const caps = renewCaps(input.dir, nowIso);
       let llmPlan;
       if (call.llm !== undefined) {
@@ -624,7 +688,14 @@ const TOOLS: readonly ToolDef[] = [
       } else if (input.llmProfile !== undefined) {
         const resolved = call.resolveLlmProfile(input.llmProfile);
         if (!resolved.ok) return { code: 2, output: resolved.output };
-        const role = (resolved.profile.resolved as unknown as { roles?: Record<string, unknown> }).roles?.['renew_recover'];
+        const { resolved: profile } = resolved.profile;
+        if (profile.variant !== 'renewal') {
+          return {
+            code: 2,
+            output: `renewal analysis refused: llm profile '${resolved.profile.name}' has variant '${profile.variant}' — Renewal requires a variant 'renewal' profile (exactly the renew_recover role); zero LLM calls were made`,
+          };
+        }
+        const role = profile.roles['renew_recover'];
         if (role === undefined) {
           return {
             code: 2,
@@ -633,9 +704,14 @@ const TOOLS: readonly ToolDef[] = [
         }
         const { buildRoleAdapter } = await import('../llm/providers');
         const { createBudgetLedger } = await import('../eval/budget');
-        const ledger = createBudgetLedger({}, {});
-        const adapter = buildRoleAdapter(role as never, process.env, { routingMode: resolved.profile.resolved.routingMode, budget: ledger });
-        llmPlan = { forRole: () => ({ adapter, identity: { gateway: (role as { gateway?: string }).gateway ?? 'unknown', providerKind: (resolved.profile.resolved as unknown as { routingMode: string }).routingMode as never, requestedModel: (role as { model?: string }).model ?? 'unknown' } }) };
+        const ledger = createBudgetLedger(budget, { nowMs: Date.now });
+        const adapter = buildRoleAdapter(role, process.env, { routingMode: profile.routingMode, budget: ledger });
+        llmPlan = {
+          forRole: () => ({
+            adapter,
+            identity: { gateway: role.gateway, providerKind: 'openai-compatible' as const, requestedModel: role.model },
+          }),
+        };
       } else {
         try {
           llmPlan = singleRoutePlan(createHttpLlm());
@@ -643,7 +719,11 @@ const TOOLS: readonly ToolDef[] = [
           return { code: 2, output: `renewal analysis refused: no LLM route (${(e as Error).message}) — zero calls were made` };
         }
       }
-      const capsWithLlm: RenewCapabilities = { ...caps, llm: () => llmPlan };
+      const capsWithLlm: RenewCapabilities = {
+        ...caps,
+        llm: () => llmPlan,
+        budget: () => createBudgetLedger(budget, { nowMs: Date.now }),
+      };
       return cmdRenewAnalyze({ dir: input.dir, scope: 'whole' }, capsWithLlm);
     },
   },

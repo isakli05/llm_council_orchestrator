@@ -2382,12 +2382,40 @@ describe('renew MCP tools', () => {
     expect(calls).toBe(0);
   });
 
+  it('H-10: the consent digest BINDS the active snapshot — a root-only digest no longer matches', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    // A REAL renewal project: the server-side digest now binds its snapshot id.
+    const { cmdRenewInit } = await import('../cli/commands/renew');
+    const { StaticGraphProvider } = await import('../renew/intel/fixture-provider');
+    const { parseGraphText } = await import('../renew/intel/graph-reader');
+    const project = freshRoot('renew-consent-bind-');
+    const target = mkdtempSync(join(tmpdir(), 'lco-consent-target-'));
+    tmpDirs.push(target);
+    mkdirSync(join(target, 'src'), { recursive: true });
+    writeFileSync(join(target, 'src', 'app.ts'), 'export const x = 1;\n');
+    const graphParsed = parseGraphText(readFileSync(join(FIXTURES, 'legacy-app', 'graph-fixture.json'), 'utf8'));
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    await cmdRenewInit({ dir: project, target, name: 'consent' }, {
+      nowIso: () => '2026-09-02T12:00:00.000Z',
+      provider: () => new StaticGraphProvider(graphParsed.graph, '0.9.50'),
+      gitCommit: () => undefined,
+    });
+    // The OLD (root+scope only) digest must NOT authorize the call anymore.
+    const { renewConsentDigest } = await import('./consent');
+    const staleDigest = renewConsentDigest({ dir: project, scope: 'whole' });
+    const res = await callTool('lco_renew_analyze', { dir: project, consent: { digest: staleDigest } }, { allowGenerate: true, llm });
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/digest mismatch/);
+    expect(calls).toBe(0);
+  });
+
   it('PAID analyze: server not opted in → ZERO LLM calls even WITH a valid digest', async () => {
     let calls = 0;
     const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
     const dir = freshRoot('renew-consent3');
     const { renewConsentDigest } = await import('./consent');
-    const digest = renewConsentDigest(dir, 'whole');
+    const digest = renewConsentDigest({ dir, scope: 'whole' });
     const res = await callTool('lco_renew_analyze', { dir, consent: { digest } }, { llm }); // no allowGenerate
     expect(res.result.isError).toBe(true);
     expect(text(res)).toMatch(/LCO_MCP_ALLOW_GENERATE=1/);

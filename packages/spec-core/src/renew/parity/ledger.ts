@@ -273,14 +273,26 @@ export function persistParity(path: string, store: ParityStore): PersistParityRe
   return { ok: true, path };
 }
 
-export type ParityLoad = { ok: true; store: ParityStore } | { ok: false; code: 'parity_corrupt'; message: string };
+export type ParityLoad =
+  | { ok: true; store: ParityStore }
+  | { ok: false; code: 'parity_missing' | 'parity_corrupt'; message: string };
 
+/** D2: missing is NOT corrupt — callers decide init semantics for missing;
+ * existing+corrupt always stops the operation. */
 export function loadParity(path: string): ParityLoad {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return { ok: false, code: 'parity_missing', message: `no parity ledger at ${path}` };
+    return { ok: false, code: 'parity_corrupt', message: `parity.json unreadable (${err.message})` };
+  }
   let value: unknown;
   try {
-    value = JSON.parse(readFileSync(path, 'utf8'));
+    value = JSON.parse(text);
   } catch (e) {
-    return { ok: false, code: 'parity_corrupt', message: `parity.json unreadable/invalid JSON (${(e as Error).message})` };
+    return { ok: false, code: 'parity_corrupt', message: `parity.json is not valid JSON (${(e as Error).message})` };
   }
   const parsed = ParityStoreSchema.safeParse(value);
   if (!parsed.success) {
@@ -290,6 +302,27 @@ export function loadParity(path: string): ParityLoad {
       code: 'parity_corrupt',
       message: `parity.json failed schema validation (${issue.path.join('.')}: ${issue.message})`,
     };
+  }
+  // M-03: duplicate ids and contradictory active rulings for the same
+  // behavior are corrupt state — never silently resolved.
+  const seenIds = new Set<string>();
+  const byBehavior = new Map<string, { id: string; ruling: string }>();
+  for (const rec of parsed.data.records) {
+    if (seenIds.has(rec.id)) {
+      return { ok: false, code: 'parity_corrupt', message: `parity.json contains duplicate entry id ${rec.id} — refusing ambiguous state` };
+    }
+    seenIds.add(rec.id);
+    if (rec.ruling !== 'unresolved') {
+      const existing = byBehavior.get(rec.behavior);
+      if (existing !== undefined && existing.ruling !== rec.ruling) {
+        return {
+          ok: false,
+          code: 'parity_corrupt',
+          message: `parity.json holds contradictory rulings for the same behavior (${existing.id}: ${existing.ruling} vs ${rec.id}: ${rec.ruling}) — resolve the conflict explicitly`,
+        };
+      }
+      byBehavior.set(rec.behavior, { id: rec.id, ruling: rec.ruling });
+    }
   }
   return { ok: true, store: parsed.data };
 }

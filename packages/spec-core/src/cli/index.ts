@@ -30,8 +30,8 @@ import { createHttpLlm } from '../eval/llm/http';
 import { buildRoleAdapter } from '../llm/providers';
 import { execFileSync, spawn } from 'node:child_process';
 import { cmdGenerateInteractive } from './commands/generate-interactive';
-import { parseArgs, commandHelp, USAGE } from './args';
-import type { RunBudgetSpec } from '../eval/budget';
+import { parseArgs, commandHelp, renewSubHelp, USAGE } from './args';
+import { createBudgetLedger, type RunBudgetSpec } from '../eval/budget';
 import { parseLlmConfig, resolveProfile } from '../config/llm-config';
 import type { ResolvedProfile } from '../config/llm-config';
 import { parseAnswersFile } from '../eval/answers';
@@ -125,6 +125,10 @@ export async function runCli(argv: string[]): Promise<number> {
   }
   if ('version' in parsed) {
     console.log(await readVersion());
+    return 0;
+  }
+  if ('renewSubHelp' in parsed) {
+    console.log(renewSubHelp(parsed.renewSubHelp));
     return 0;
   }
   if ('commandHelp' in parsed) {
@@ -304,19 +308,46 @@ export async function runCli(argv: string[]): Promise<number> {
       const caps: RenewCapabilities = {
         nowIso: () => new Date().toISOString(),
         provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(r.dir).workspace }),
+        // L-02: a QUIET, single-purpose probe — non-Git targets produce a
+        // structured repo_kind:'plain' in the snapshot, never raw Git fatal
+        // stderr noise on the operator's terminal.
         gitCommit: (root) => {
           try {
-            return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', timeout: 5000 }).trim();
+            return execFileSync('git', ['rev-parse', 'HEAD'], {
+              cwd: root,
+              encoding: 'utf8',
+              timeout: 5000,
+              stdio: ['ignore', 'pipe', 'ignore'],
+            }).trim();
           } catch {
             return undefined;
           }
         },
         ...(r.sub === 'analyze'
           ? {
+              // H-05: a paid Renewal call is never unbounded — explicit CLI
+              // flags win over the documented defaults (8 attempts / 15 min).
+              budget: () =>
+                createBudgetLedger(
+                  {
+                    maxAttempts: r.budget?.maxAttempts ?? 8,
+                    ...(r.budget?.maxTokens !== undefined ? { maxTokens: r.budget.maxTokens } : {}),
+                    ...(r.budget?.maxWallMs !== undefined ? { maxWallMs: r.budget.maxWallMs } : {}),
+                  },
+                  { nowMs: Date.now },
+                ),
               llm: () => {
                 // Named profile (must route renew_recover) or the legacy env —
                 // both fail closed; keys are never invented here.
                 if (r.llmProfile !== undefined) {
+                  const ledger = createBudgetLedger(
+                    {
+                      maxAttempts: r.budget?.maxAttempts ?? 8,
+                      ...(r.budget?.maxTokens !== undefined ? { maxTokens: r.budget.maxTokens } : {}),
+                      ...(r.budget?.maxWallMs !== undefined ? { maxWallMs: r.budget.maxWallMs } : {}),
+                    },
+                    { nowMs: Date.now },
+                  );
                   let text: string;
                   try {
                     text = require('node:fs').readFileSync(join(r.dir, 'lco.config.json'), 'utf8');
@@ -331,19 +362,25 @@ export async function runCli(argv: string[]): Promise<number> {
                   if (!('resolved' in resolved)) {
                     throw new Error(resolved.error);
                   }
-                  const role = (resolved.resolved as unknown as { roles?: Record<string, unknown> }).roles?.['renew_recover'];
+                  // H-04: typed resolution — a renewal-variant profile with
+                  // exactly the renew_recover role; no unsafe casts anywhere.
+                  if (resolved.resolved.variant !== 'renewal') {
+                    throw new Error(
+                      `llm profile '${r.llmProfile}' has variant '${resolved.resolved.variant}' — Renewal requires a variant 'renewal' profile (exactly the renew_recover role)`,
+                    );
+                  }
+                  const role = resolved.resolved.roles['renew_recover'];
                   if (role === undefined) {
                     throw new Error(`llm profile '${r.llmProfile}' has no route for role 'renew_recover' (analyze made zero calls)`);
                   }
-                  const roleCfg = role as { gateway?: string; model?: string; providerKind?: string };
-                  const adapter = buildRoleAdapter(role as never, process.env, { routingMode: resolved.resolved.routingMode });
+                  const adapter = buildRoleAdapter(role, process.env, { routingMode: resolved.resolved.routingMode, budget: ledger });
                   const plan: LlmPlan = {
                     forRole: () => ({
                       adapter,
                       identity: {
-                        gateway: roleCfg.gateway ?? 'configured',
-                        providerKind: (roleCfg.providerKind ?? 'openai-compatible') as LlmRoute['identity']['providerKind'],
-                        requestedModel: roleCfg.model ?? 'configured',
+                        gateway: role.gateway,
+                        providerKind: 'openai-compatible' as LlmRoute['identity']['providerKind'],
+                        requestedModel: role.model,
                       },
                     }),
                   };

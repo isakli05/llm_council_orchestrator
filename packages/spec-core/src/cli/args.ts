@@ -220,6 +220,7 @@ export type ParseResult =
   | { help: true }
   | { version: true }
   | { commandHelp: Command }
+  | { renewSubHelp: (typeof RENEW_SUBS)[number] }
   | { command: SingleDirCommand; dir: string }
   | { command: 'change'; dir: string; changesetPath: string }
   | { command: 'plan'; dir: string; json: boolean }
@@ -260,7 +261,7 @@ export type RenewParsedArgs =
   | { sub: 'init'; dir: string; target: string; name?: string }
   | { sub: 'refresh'; dir: string }
   | { sub: 'status'; dir: string; json: boolean }
-  | { sub: 'analyze'; dir: string; llmProfile?: string }
+  | { sub: 'analyze'; dir: string; llmProfile?: string; budget?: { maxAttempts?: number; maxTokens?: number; maxWallMs?: number } }
   | { sub: 'review'; dir: string; answersFile?: string; interactive: boolean; noOpen: boolean }
   | { sub: 'plan'; dir: string; strategy?: string; strategyRationale?: string; freeze: boolean }
   | { sub: 'export'; dir: string; out?: string };
@@ -285,6 +286,11 @@ export function parseArgs(argv: string[]): ParseResult {
   // name (the old behavior literally scaffolded a spec into ./--help/).
   // An unknown command still falls through to the usage error above.
   if (rest.includes('--help') || rest.includes('-h')) {
+    // L-01: `renew <sub> --help` prints the SUBCOMMAND's own help (the
+    // generic family block otherwise repeated stale `models` prose).
+    if (command === 'renew' && (RENEW_SUBS as readonly string[]).includes(rest[0] ?? '')) {
+      return { renewSubHelp: rest[0] as (typeof RENEW_SUBS)[number] };
+    }
     // Same cast idiom as the SingleDirCommand return below: COMMANDS.includes
     // above guarantees the literal, but does not narrow `string` for TS.
     return { commandHelp: command as Command };
@@ -580,6 +586,114 @@ export { USAGE };
 
 
 const RENEW_SUBS = ['init', 'refresh', 'status', 'analyze', 'review', 'plan', 'export'] as const;
+type RenewSub = (typeof RENEW_SUBS)[number];
+
+/** M-04: per-subcommand grammar — allowed/required flags, value vs boolean
+ * flags, exclusivity and dependency rules. No global allowlist: a flag that
+ * does not belong to THIS subcommand is an error, not noise. */
+interface RenewGrammar {
+  valueFlags: readonly string[];
+  boolFlags: readonly string[];
+  required?: readonly string[];
+  conflicts?: readonly (readonly [string, string])[];
+  requiresWith?: readonly (readonly [string, string])[]; // [flag, prerequisite]
+}
+
+const RENEW_GRAMMAR: Record<RenewSub, RenewGrammar> = {
+  init: {
+    valueFlags: ['--target', '--name'],
+    boolFlags: [],
+    required: ['--target'],
+  },
+  refresh: { valueFlags: [], boolFlags: [] },
+  status: { valueFlags: [], boolFlags: ['--json'] },
+  analyze: {
+    valueFlags: ['--llm-profile', '--max-attempts', '--max-tokens', '--max-wall-ms'],
+    boolFlags: [],
+  },
+  review: {
+    valueFlags: ['--answers'],
+    boolFlags: ['--interactive', '--no-open'],
+    conflicts: [['--answers', '--interactive']],
+    requiresWith: [['--no-open', '--interactive']],
+  },
+  plan: { valueFlags: ['--strategy', '--strategy-rationale'], boolFlags: ['--freeze'] },
+  export: { valueFlags: ['--out'], boolFlags: [] },
+};
+
+/** L-01: per-subcommand help — specific usage + honest command-class labels. */
+const RENEW_HELP: Record<RenewSub, string> = {
+  init: [
+    'usage: lco renew init <dir> --target <legacy-repo> [--name <name>]',
+    '',
+    'OFFLINE · deterministic · writes LCO state only (never the target).',
+    'Scaffolds the renewal project, snapshots the target (content hashes +',
+    'graph identity), and builds the Graphify graph in the guarded copy.',
+    '  <dir>           the LCO renewal project directory (must be OUTSIDE the target)',
+    '  --target        the analyzed legacy repository (read-only)',
+    '  --name          project name (default: legacy-renewal)',
+  ].join('\n'),
+  refresh: [
+    'usage: lco renew refresh <dir>',
+    '',
+    'OFFLINE · deterministic · writes LCO state only.',
+    'Re-snapshots the target and SUPERSEDES prior overlay/parity/strategy',
+    '(archived under their old snapshot id); analyses/approvals are kept as',
+    'history. Re-analyze (PAID) and re-select strategy afterwards.',
+  ].join('\n'),
+  status: [
+    'usage: lco renew status <dir> [--json]',
+    '',
+    'OFFLINE · read-only.',
+    'Snapshot freshness, graph state, active analyses, overlay/parity state,',
+    'strategy, and plan presence.',
+    '  --json   machine-readable output',
+  ].join('\n'),
+  analyze: [
+    'usage: lco renew analyze <dir> [--llm-profile <name>] [--max-attempts N]',
+    '                      [--max-tokens N] [--max-wall-ms N]',
+    '',
+    'PAID — makes real LLM calls through role renew_recover.',
+    'Requires a fresh snapshot; verifies Graphify first; re-checks source',
+    'state AFTER the call (mid-call mutations block promotion).',
+    '  --llm-profile    named profile from the operator config (variant: renewal)',
+    '  --max-attempts   budget ceiling on paid attempts',
+    '  --max-tokens     budget ceiling on tokens',
+    '  --max-wall-ms    budget ceiling on wall-clock time',
+  ].join('\n'),
+  review: [
+    'usage: lco renew review <dir> (--interactive [--no-open] | --answers <file>)',
+    '',
+    'INTERACTIVE (browser workspace) or HEADLESS — human decisions either way.',
+    'Rulings and the strategy selection are human acts recorded immutably.',
+    '  --interactive   open the clarification workspace in a browser',
+    '  --no-open       with --interactive: print the URL, do not open a browser',
+    '  --answers       headless twin: {"answers":[{decisionId,kind,selectedOption|freeText}]}',
+  ].join('\n'),
+  plan: [
+    'usage: lco renew plan <dir> [--strategy <s> --strategy-rationale <text>] [--freeze]',
+    '',
+    'OFFLINE · deterministic · writes the spec (LCO state only).',
+    'Refuses on stale state, unresolved parity, unverified approvals, or',
+    'schema-invalid candidates (nothing is written on refusal).',
+    '  --strategy              explicit strategy (in_place|strangler|full_rewrite|',
+    '                          service_extraction|framework_migration|language_migration)',
+    '  --strategy-rationale    required with --strategy (a human act, explained)',
+    '  --freeze                freeze the written plan as an immutable revision',
+  ].join('\n'),
+  export: [
+    'usage: lco renew export <dir> [--out <file>]',
+    '',
+    'OFFLINE · read-only unless --out is given.',
+    'Renders the modernization report as markdown. --out must land inside',
+    'the project root and never overwrites an existing file.',
+  ].join('\n'),
+};
+
+/** L-01: the per-subcommand help text for `lco renew <sub> --help`. */
+export function renewSubHelp(sub: RenewSub): string {
+  return `${RENEW_HELP[sub]}\n\n(run \`lco --help\` for the full command overview)`;
+}
 
 function parseRenew(rest: string[]): ParseResult {
   const err = (message: string): ParseResult => ({ error: message });
@@ -590,27 +704,89 @@ function parseRenew(rest: string[]): ParseResult {
   if (dir === undefined || dir === '' || dir.startsWith('--')) {
     return err(`renew ${sub} requires the LCO project <dir> as its first argument (the analyzed repo is --target on init)`);
   }
+  const grammar = RENEW_GRAMMAR[sub as RenewSub];
+  const allowed = new Set([...grammar.valueFlags, ...grammar.boolFlags]);
+
+  // Every flag must belong to THIS subcommand (M-04: no global allowlist).
+  for (const f of flags) {
+    if (f.startsWith('--') && !allowed.has(f)) {
+      return err(`flag ${f} is not valid for 'renew ${sub}' (allowed: ${[...allowed].sort().join(' ') || 'none'})`);
+    }
+  }
+  // Value flags need real values — a missing value or one that is itself a
+  // flag is an error, never an ambiguity.
   const flag = (name: string): string | undefined => {
     const i = flags.indexOf(name);
-    return i >= 0 && i + 1 < flags.length ? flags[i + 1] : undefined;
+    if (i === -1) return undefined;
+    const value = flags[i + 1];
+    if (value === undefined || value.startsWith('--')) {
+      return undefined;
+    }
+    return value;
   };
-  const has = (name: string): boolean => flags.includes(name);
-  const known = new Set(['--target', '--name', '--json', '--llm-profile', '--answers', '--interactive', '--no-open', '--strategy', '--strategy-rationale', '--freeze', '--out']);
-  for (const f of flags) {
-    if (f.startsWith('--') && !known.has(f)) return err(`unknown flag for 'renew ${sub}': ${f}`);
+  for (const name of grammar.valueFlags) {
+    const i = flags.indexOf(name);
+    if (i !== -1 && flag(name) === undefined) {
+      return err(`${name} requires a value for 'renew ${sub}'`);
+    }
   }
-  switch (sub as (typeof RENEW_SUBS)[number]) {
+  const has = (name: string): boolean => flags.includes(name);
+  for (const required of grammar.required ?? []) {
+    if (!has(required)) {
+      return err(`renew ${sub} requires ${required} (see: lco renew ${sub} --help)`);
+    }
+  }
+  for (const [a, b] of grammar.conflicts ?? []) {
+    if (has(a) && has(b)) {
+      return err(`'renew ${sub}': ${a} and ${b} are mutually exclusive (interactive browser session or headless answers — pick one)`);
+    }
+  }
+  for (const [flagName, prerequisite] of grammar.requiresWith ?? []) {
+    if (has(flagName) && !has(prerequisite)) {
+      return err(`'renew ${sub}': ${flagName} is only meaningful with ${prerequisite}`);
+    }
+  }
+
+  const numericFlag = (name: string): number | undefined => {
+    const raw = flag(name);
+    if (raw === undefined) return undefined;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0 || String(n) !== raw.trim()) {
+      return -1; // signal: present but invalid
+    }
+    return n;
+  };
+
+  switch (sub as RenewSub) {
     case 'init': {
-      const target = flag('--target');
-      if (target === undefined) return err("renew init requires --target <legacy-repo> (the analyzed repository, read-only)");
+      const target = flag('--target')!;
       return { command: 'renew', renew: { sub: 'init', dir, target, ...(flag('--name') !== undefined ? { name: flag('--name') } : {}) } };
     }
     case 'refresh':
       return { command: 'renew', renew: { sub: 'refresh', dir } };
     case 'status':
       return { command: 'renew', renew: { sub: 'status', dir, json: has('--json') } };
-    case 'analyze':
-      return { command: 'renew', renew: { sub: 'analyze', dir, ...(flag('--llm-profile') !== undefined ? { llmProfile: flag('--llm-profile') } : {}) } };
+    case 'analyze': {
+      const budget: { maxAttempts?: number; maxTokens?: number; maxWallMs?: number } = {};
+      for (const [name, key] of [
+        ['--max-attempts', 'maxAttempts'],
+        ['--max-tokens', 'maxTokens'],
+        ['--max-wall-ms', 'maxWallMs'],
+      ] as const) {
+        const n = numericFlag(name);
+        if (n === -1) return err(`${name} requires a positive integer for 'renew analyze'`);
+        if (n !== undefined) budget[key] = n;
+      }
+      return {
+        command: 'renew',
+        renew: {
+          sub: 'analyze',
+          dir,
+          ...(flag('--llm-profile') !== undefined ? { llmProfile: flag('--llm-profile') } : {}),
+          ...(Object.keys(budget).length > 0 ? { budget } : {}),
+        },
+      };
+    }
     case 'review':
       return {
         command: 'renew',
