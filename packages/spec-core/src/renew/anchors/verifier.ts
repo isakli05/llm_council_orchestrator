@@ -34,7 +34,7 @@ export type AnchorFailureCode =
   | 'hash_mismatch';
 
 export type AnchorVerification =
-  | { ok: true; anchor: CodeAnchorInput; computed_hash: string }
+  | { ok: true; anchor: CodeAnchorInput; computed_hash: string; line_count: number }
   | { ok: false; anchor: CodeAnchorInput; code: AnchorFailureCode; message: string };
 
 /** Canonical hash: sha256 over raw bytes — the ONE documented algorithm. */
@@ -109,7 +109,8 @@ export function verifyAnchor(anchor: CodeAnchorInput, targetRoot: string): Ancho
     };
   }
 
-  const computed = canonicalFileHash(readFileSync(real));
+  const bytes = readFileSync(real);
+  const computed = canonicalFileHash(bytes);
   if (computed !== anchor.content_hash) {
     return {
       ok: false,
@@ -118,7 +119,16 @@ export function verifyAnchor(anchor: CodeAnchorInput, targetRoot: string): Ancho
       message: `anchor ${anchor.path} is stale: stored ${anchor.content_hash.slice(0, 19)}… but computed ${computed.slice(0, 19)}…`,
     };
   }
-  return { ok: true, anchor, computed_hash: computed };
+  return { ok: true, anchor, computed_hash: computed, line_count: countLines(bytes) };
+}
+
+/** Line count by newline occurrences (a trailing newline does not open a new line). */
+function countLines(bytes: Buffer): number {
+  if (bytes.length === 0) return 0;
+  let n = 1;
+  for (const b of bytes) if (b === 0x0a) n++;
+  if (bytes[bytes.length - 1] === 0x0a) n--;
+  return Math.max(1, n);
 }
 
 export interface AnchorBatchResult {

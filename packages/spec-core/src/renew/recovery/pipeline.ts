@@ -274,6 +274,10 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   }
 
   // --- anchor verification: the gate that assigns trust ------------------------
+  // C-03: byte existence is NECESSARY but not SUFFICIENT. A promoted claim's
+  // anchors must ALSO come from the context actually supplied to the model
+  // (relevance), bind to real graph nodes when node-linked (provenance), and
+  // carry line ranges that are possible on disk (coherence).
   const output = attempt.output;
   const promotedHypotheses: AnalysisRecord['promoted']['hypotheses'] = [];
   const promotedUncertainties: AnalysisRecord['promoted']['uncertainties'] = [];
@@ -282,16 +286,56 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   let anchorsOk = 0;
   let anchorsFailed = 0;
 
-  const check = (anchors: { path: string; content_hash: string }[]): { allOk: boolean; results: AnchorResult[] } => {
+  const suppliedSlices = new Map(
+    req.bundle.items
+      .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
+      .map((i) => [`${i.path}|${i.content_hash}`, i] as const),
+  );
+  const nodeIndex = new Map(
+    req.bundle.items
+      .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'node' }> => i.kind === 'node')
+      .map((i) => [i.node_id, i] as const),
+  );
+
+  const check = (anchors: { path: string; content_hash: string; node_id?: string; start_line?: number; end_line?: number }[]): { allOk: boolean; results: AnchorResult[] } => {
     const results = anchors.map((a) => {
-      const v = verifyAnchor(a as CodeAnchorInput, deps.targetRoot);
       anchorsTotal += 1;
-      if (v.ok) {
-        anchorsOk += 1;
-        return { path: a.path, ok: true };
+      const fail = (code: string): AnchorResult => {
+        anchorsFailed += 1;
+        return { path: a.path, ok: false, code };
+      };
+      // 1. Relevance/supply: the (path, hash) must be among the file slices
+      //    actually placed in the prompt — a correct hash for an irrelevant
+      //    or unsupplied file is not evidence for this claim.
+      if (!suppliedSlices.has(`${a.path}|${a.content_hash}`)) {
+        return fail('not_in_context');
       }
-      anchorsFailed += 1;
-      return { path: a.path, ok: false, code: v.code };
+      // 2. Bytes: recompute against the live target (never trust stored hashes).
+      const v = verifyAnchor(a as CodeAnchorInput, deps.targetRoot);
+      if (!v.ok) return fail(v.code);
+      // 3. Node provenance: a node-linked anchor binds to a node that was
+      //    supplied AND maps to the anchored file.
+      if (a.node_id !== undefined) {
+        const node = nodeIndex.get(a.node_id);
+        if (node === undefined) return fail('unknown_node');
+        if (node.source_file !== undefined && node.source_file !== a.path) return fail('node_path_mismatch');
+      }
+      // 4. Range coherence: possible on disk; contains the node's line when linked.
+      if (a.start_line !== undefined || a.end_line !== undefined) {
+        const start = a.start_line ?? 1;
+        const end = a.end_line ?? start;
+        if (start < 1 || end < start || end > v.line_count) return fail('invalid_range');
+        if (a.node_id !== undefined) {
+          const node = nodeIndex.get(a.node_id);
+          const m = /^L(\d+)$/.exec(node?.source_location ?? '');
+          if (m !== null) {
+            const line = Number.parseInt(m[1], 10);
+            if (!(start <= line && line <= end)) return fail('invalid_range');
+          }
+        }
+      }
+      anchorsOk += 1;
+      return { path: a.path, ok: true };
     });
     return { allOk: results.every((r) => r.ok), results };
   };

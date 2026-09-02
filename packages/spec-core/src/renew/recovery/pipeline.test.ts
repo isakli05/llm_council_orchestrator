@@ -219,6 +219,9 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
           statement: 'Claim anchored to yesterday’s bytes.',
           category: 'business_rule',
           confidence: 'medium',
+          // The bundle supplied the CURRENT hash; a model echo of an OLD hash
+          // was never in the ANCHORABLE FILES table → not_in_context (which
+          // subsumes the stale-hash case: invented hashes are rejected).
           anchors: [{ path: 'src/pricing.ts', content_hash: sha('older bytes') }],
           rationale: 'stale',
         },
@@ -231,7 +234,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
-    expect(outcome.record.rejected[0].reasons.join(' ')).toMatch(/hash_mismatch|stale/);
+    expect(outcome.record.rejected[0].reasons.join(" ")).toMatch(/not_in_context|hash_mismatch|stale/);
   });
 
   it('transport failure: typed failure + honest spend record persisted, nothing promoted (H-05)', async () => {
@@ -316,5 +319,130 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     expect(outcome.record.input.slice_count).toBe(2);
     expect(outcome.record.input.context_digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(JSON.stringify(outcome.record)).not.toContain(prompts[0].slice(0, 400));
+  });
+});
+
+// --- C-03: evidence trust — anchors bind to supplied context, real nodes, possible ranges ---
+
+describe('anchor evidence trust (C-03)', () => {
+  const hypothesisWith = (anchor: Record<string, unknown>): string =>
+    JSON.stringify({
+      hypotheses: [
+        {
+          id: 'BHV-0001',
+          statement: 'Fabricated business rule unrelated to the anchored file.',
+          category: 'business_rule',
+          confidence: 'high',
+          anchors: [anchor],
+          rationale: 'source',
+        },
+      ],
+      uncertainties: [],
+      coverage_notes: [],
+    });
+
+  it('a correct hash for an IRRELEVANT (unsupplied) file never promotes', async () => {
+    const hashes = setupTarget();
+    // The model anchors to a real file with a correct hash that was NEVER
+    // supplied in the context bundle (copied identical content elsewhere).
+    const foreign = freshDir();
+    mkdirSync(join(foreign, 'other'));
+    writeFileSync(join(foreign, 'other', 'twin.ts'), PRICING);
+    const { adapter } = scripted([hypothesisWith({ path: 'other/twin.ts', content_hash: hashes.pricing })]);
+    const outcome = await runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.record.promoted.hypotheses).toHaveLength(0);
+    expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/not_in_context/);
+  });
+
+  it('a fabricated node id is rejected (unknown_node)', async () => {
+    const hashes = setupTarget();
+    const { adapter } = scripted([
+      hypothesisWith({ path: 'src/pricing.ts', content_hash: hashes.pricing, node_id: 'totally_fabricated_graph_node' }),
+    ]);
+    const outcome = await runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.record.promoted.hypotheses).toHaveLength(0);
+    expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/unknown_node/);
+  });
+
+  it('a VALID node paired with the WRONG path is rejected (node_path_mismatch)', async () => {
+    const hashes = setupTarget();
+    const { adapter } = scripted([
+      hypothesisWith({ path: 'src/orders.ts', content_hash: hashes.orders, node_id: 'src_pricing_applydiscount' }),
+    ]);
+    const outcome = await runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/node_path_mismatch/);
+  });
+
+  it('an impossible line range (end beyond the file) is rejected (invalid_range)', async () => {
+    const hashes = setupTarget();
+    const { adapter } = scripted([
+      hypothesisWith({ path: 'src/pricing.ts', content_hash: hashes.pricing, start_line: 1, end_line: 9999 }),
+    ]);
+    const outcome = await runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/invalid_range/);
+  });
+
+  it('a range that does not contain the linked node line is rejected', async () => {
+    const hashes = setupTarget();
+    // The supplied node has no source_location in the base bundle — add one.
+    const bundle: ContextBundle = {
+      ...makeBundle(hashes),
+      items: makeBundle(hashes).items.map((i) =>
+        i.kind === 'node' && i.node_id === 'src_pricing_applydiscount' ? { ...i, source_location: 'L2' } : i,
+      ),
+    };
+    const { adapter } = scripted([
+      hypothesisWith({ path: 'src/pricing.ts', content_hash: hashes.pricing, node_id: 'src_pricing_applydiscount', start_line: 1, end_line: 1 }),
+    ]);
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/invalid_range/);
+  });
+
+  it('mixed valid/invalid anchors reject the whole claim (no partial promotion)', async () => {
+    const hashes = setupTarget();
+    const { adapter } = scripted([
+      JSON.stringify({
+        hypotheses: [
+          {
+            id: 'BHV-0001',
+            statement: 'Mixed claim: one real anchor, one fabricated node.',
+            category: 'business_rule',
+            confidence: 'high',
+            anchors: [
+              { path: 'src/pricing.ts', content_hash: hashes.pricing },
+              { path: 'src/orders.ts', content_hash: hashes.orders, node_id: 'no_such_node' },
+            ],
+            rationale: 'source',
+          },
+        ],
+        uncertainties: [],
+        coverage_notes: [],
+      }),
+    ]);
+    const outcome = await runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.record.promoted.hypotheses).toHaveLength(0);
+    expect(outcome.record.rejected).toHaveLength(1);
+  });
+
+  it('an anchor from a stale (mutated) file still fails hash_mismatch — not_in_context never masks it', async () => {
+    const hashes = setupTarget();
+    writeFileSync(join(targetRoot, 'src', 'pricing.ts'), `${PRICING}\n// mutation\n`);
+    const { adapter } = scripted([hypothesisWith({ path: 'src/pricing.ts', content_hash: hashes.pricing })]);
+    const outcome = await runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/not_in_context|hash_mismatch/);
   });
 });
