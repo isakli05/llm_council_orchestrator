@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /**
  * Path safety for the spec tree (SEC-003, binding).
@@ -180,6 +180,64 @@ export function assertWritableSpecDir(root: string, fileNames: readonly string[]
   for (const name of fileNames) {
     assertNoSymlinkBelow(root, ['spec', name]);
   }
+}
+
+// --- Renewal trust-domain authorization (second audit INV-A / S2-C-01) ----------------
+
+/** The verdict of {@link authorizeRenewalPaths}: the state domain is real-dir contained, or a refusal naming the link. */
+export type RenewalPathAuth = { ok: true } | { ok: false; message: string };
+
+/**
+ * INV-A (second audit S2-C-01): every Renewal state destination — read OR
+ * write — must live under a REAL-directory chain below the resolved project
+ * root. Root disjointness (`assertDisjointRealRoots`) is necessary but not
+ * sufficient: a pre-existing symlink at `<project>/.lco`, `.lco/renewal`,
+ * `analyses`, `approvals`, `spec`, or any intermediate component redirects
+ * trusted state IO (including the atomic tmp+rename siblings) out of the
+ * project domain — historically straight into the read-only analyzed target.
+ *
+ * The walk is NO-FOLLOW per component (`assertNoSymlinkBelow`, dangling links
+ * included): every existing component of every destination, final component
+ * included, must be a real file/directory. A destination outside the resolved
+ * project root refuses outright. TOCTOU is the documented spec-write residual
+ * (check-then-write; a racing local writer is outside the threat model) — the
+ * check deliberately runs immediately before the first write of each command.
+ *
+ * A project root that does not exist yet authorizes trivially: nothing can be
+ * pre-planted below a nonexistent root, and creation happens underneath it.
+ */
+export function authorizeRenewalPaths(args: { projectDir: string; destinations: readonly string[] }): RenewalPathAuth {
+  let real: string | undefined;
+  try {
+    real = tryRealpath(args.projectDir);
+  } catch (err) {
+    return { ok: false, message: `cannot resolve the renewal project root ${args.projectDir}: ${(err as Error).message}` };
+  }
+  if (real === undefined) return { ok: true };
+  for (const dest of args.destinations) {
+    const rel = relative(real, resolve(dest));
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      return {
+        ok: false,
+        message: `renewal state destination ${dest} is outside the resolved project root ${real} — refusing`,
+      };
+    }
+    const segments = rel.split(sep);
+    try {
+      assertNoSymlinkBelow(real, segments);
+    } catch (err) {
+      if (err instanceof PathEscapeError) {
+        return {
+          ok: false,
+          message:
+            `renewal state domain refused: ${err.message} — renewal never reads or writes trusted state ` +
+            `through a symlink (remove the link, or point the project at a clean directory)`,
+        };
+      }
+      throw err;
+    }
+  }
+  return { ok: true };
 }
 
 // --- Renewal project/target disjointness (release audit C-01) -------------------------

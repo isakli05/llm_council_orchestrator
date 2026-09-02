@@ -26,11 +26,18 @@ export function renderRenewalReport(state: RenewalState, archView: ArchitectureV
     lines.push('');
   }
 
-  const validated = state.analyses.records.filter((a) => a.outcome === 'validated');
-  lines.push('## Recovered business behavior (hypotheses, evidence-anchored)');
+  // INV-B4 (S2-H-10): the CURRENT section renders only the ACTIVE snapshot's
+  // validated analyses. Cross-snapshot analyses are HISTORY — after a refresh
+  // the default report must never present Snapshot A's analysis under
+  // Snapshot B's header. History is retained but explicitly labeled with its
+  // own snapshot id, never interleaved as current.
+  const activeId = state.snapshot?.snapshot_id ?? state.project.snapshot_id;
+  const validated = state.analyses.records.filter((a) => a.outcome === 'validated' && a.snapshot_id === activeId);
+  const historical = state.analyses.records.filter((a) => a.outcome === 'validated' && a.snapshot_id !== activeId);
+  lines.push('## Recovered business behavior (hypotheses, provenance-verified — semantic support NOT machine-validated)');
   lines.push('');
   if (validated.length === 0) {
-    lines.push('_No validated analyses yet._');
+    lines.push('_No validated analyses for the active snapshot yet._');
   } else {
     for (const a of validated) {
       lines.push(`### ${a.analysis_id} — ${a.promoted.hypotheses.length} hypothesis(ies), ${a.promoted.uncertainties.length} question(s)`);
@@ -47,13 +54,23 @@ export function renderRenewalReport(state: RenewalState, archView: ArchitectureV
     }
   }
 
+  if (historical.length > 0) {
+    lines.push(`## Historical analyses (prior snapshots — NOT current state)`);
+    lines.push('');
+    for (const a of historical) {
+      lines.push(`- ${a.analysis_id} (snapshot ${a.snapshot_id}): ${a.promoted.hypotheses.length} hypothesis(ies), ${a.promoted.uncertainties.length} question(s) — superseded by refresh; retained as lineage only`);
+    }
+    lines.push('');
+  }
+
   lines.push('## Parity ledger (preserve / change / drop)');
   lines.push('');
   if (state.parity.ok) {
-    lines.push('| id | behavior | ruling | rationale |');
-    lines.push('|----|----------|--------|-----------|');
+    lines.push('| id | behavior | ruling | support | rationale |');
+    lines.push('|----|----------|--------|---------|-----------|');
     for (const r of state.parity.store.records) {
-      lines.push(`| ${r.id} | ${r.behavior.replace(/\|/g, '\\|')} | **${r.ruling}** | ${(r.rationale ?? '').replace(/\|/g, '\\|')} |`);
+      const support = r.ruling === 'unresolved' ? 'unvalidated' : (r.support_status ?? 'human_confirmed');
+      lines.push(`| ${r.id} | ${r.behavior.replace(/\|/g, '\\|')} | **${r.ruling}** | ${support} | ${(r.rationale ?? '').replace(/\|/g, '\\|')} |`);
     }
   } else {
     lines.push(`_parity ledger unreadable: ${state.parity.message}_`);

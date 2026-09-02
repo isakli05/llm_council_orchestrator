@@ -53,6 +53,9 @@ import {
   renewalPaths,
   loadSnapshotFile,
   supersedeRenewalStores,
+  authorizeRenewalState,
+  assertTargetSnapshotJoin,
+  bumpStateRevision,
 } from '../../renew/project/project';
 import { writeSpecDir } from './write-spec';
 import { cmdFreeze } from './freeze';
@@ -154,6 +157,12 @@ export async function cmdRenewInit(
   if (!args.force && existsSync(paths.projectJson)) {
     return { code: 2, output: `refusing: ${paths.projectJson} already exists — 'lco renew refresh ${args.dir}' re-snapshots an existing project` };
   }
+  // INV-A (S2-C-01): authorize the ENTIRE internal state domain (no-follow,
+  // every destination incl. tmp siblings) BEFORE the first write — a
+  // pre-existing symlink at .lco/.lco/renewal/analyses/approvals/… must never
+  // redirect state IO into the analyzed target or anywhere else.
+  const stateAuth = authorizeRenewalState(args.dir);
+  if (!stateAuth.ok) return { code: 2, output: `renewal init refused: ${stateAuth.message}` };
   const probe = await caps.provider().probe();
   if (!probe.ok) {
     return { code: 2, output: `Graphify prerequisite failed (${probe.code}): ${probe.message}${probe.hint ? `\n  ${probe.hint}` : ''}` };
@@ -236,6 +245,8 @@ export async function cmdRenewInit(
   // Overlay/parity stores are created empty on FIRST init only.
   if (!existsSync(paths.overlay)) persistOverlay(paths.overlay, emptyOverlay(snapshot.snapshot_id));
   if (!existsSync(paths.parity)) persistParity(paths.parity, emptyParity(snapshot.snapshot_id));
+  // INV-B2: init/refresh is itself a trusted-state transition.
+  bumpStateRevision(args.dir);
 
   const excluded = walk.excluded;
   return {
@@ -268,6 +279,9 @@ export const cmdRenewRefresh = async (args: { dir: string }, caps: RenewCapabili
 // --- status -----------------------------------------------------------------------
 
 export async function cmdRenewStatus(args: { dir: string; json?: boolean }, caps: RenewCapabilities): Promise<RenewResult> {
+  // INV-A: trusted state is never read through a symlinked state chain.
+  const stateAuth = authorizeRenewalState(args.dir);
+  if (!stateAuth.ok) return { code: 2, output: `renewal status refused: ${stateAuth.message}` };
   const state = safeState(args.dir);
   if (typeof state === 'string') return { code: 2, output: state };
   const p = loadRenewalProject(args.dir);
@@ -278,9 +292,18 @@ export async function cmdRenewStatus(args: { dir: string; json?: boolean }, caps
   // snapshot, invalid manifest, failed walk), status reports the failure and
   // exits non-zero — never "unknown but green" (audit exit semantics).
   if (!stale.ok) return { code: 1, output: `renewal status failed: ${stale.output}` };
+  // INV-B4 / S2-M-05: open questions are ACTIVE UNRESOLVED work — an
+  // uncertainty whose linked parity entry has since been RULED (by approval
+  // projection, headless ruling, or supersession) is resolved current state,
+  // not an open question. Derived: active validated analyses' uncertainties
+  // minus those whose parity entry (linked via decision_claim_id) is ruled.
+  const activeParity = state.parity.ok ? state.parity.store.records : [];
+  const ruledClaimIds = new Set(
+    activeParity.filter((r) => r.ruling !== 'unresolved' && r.decision_claim_id !== undefined).map((r) => r.decision_claim_id!),
+  );
   const openQuestions = state.analyses.records
     .filter((a) => a.outcome === 'validated' && a.snapshot_id === (state.snapshot?.snapshot_id ?? ''))
-    .reduce((n, a) => n + a.promoted.uncertainties.length, 0);
+    .reduce((n, a) => n + a.promoted.uncertainties.filter((u) => !ruledClaimIds.has(u.id)).length, 0);
   const activeAnalyses = state.analyses.records.filter((a) => a.snapshot_id === (state.snapshot?.snapshot_id ?? ''));
   const parityCounts = { preserve: 0, change: 0, drop: 0, unresolved: 0 };
   for (const r of state.parity.ok ? state.parity.store.records : []) {
@@ -342,6 +365,19 @@ export async function cmdRenewAnalyze(
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
   const paths = renewalPaths(args.dir);
+
+  // INV-A: state IO never traverses a symlinked state chain.
+  const stateAuth = authorizeRenewalState(args.dir);
+  if (!stateAuth.ok) return { code: 2, output: `renewal analyze refused: ${stateAuth.message}` };
+  // INV-B1 (S2-H-11): the mutable project pointer is joined to the snapshot's
+  // recorded root identity before anything is walked or paid for.
+  const joinSnap = loadSnapshotFile(args.dir);
+  if (!joinSnap.ok) return { code: 1, output: joinSnap.message };
+  try {
+    assertTargetSnapshotJoin(p.project, joinSnap.snapshot);
+  } catch (e) {
+    return { code: 2, output: `renewal analyze refused: ${(e as Error).message}` };
+  }
 
   const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
   if (!stale.ok) return stale;
@@ -497,8 +533,22 @@ export async function analyzeWithFresh(
       output: `analysis ${record.analysis_id} BLOCKED (schema): see ${join(paths.analyses, `${record.analysis_id}.json`)}\n  issues: ${record.validation.issues.slice(0, 5).join('; ')}`,
     };
   }
+  if (!outcome.ok && outcome.code === 'blocked_prompt_budget') {
+    return {
+      code: 1,
+      output: `analysis ${record.analysis_id} BLOCKED (prompt budget): the serialized prompt exceeded the paid-boundary byte cap (${record.usage.prompt_bytes} bytes) — the actual payload (graph strings, JSON overhead, labels), not just slice characters, must fit the budget. Narrow the scope or widen the context limits. See ${join(paths.analyses, `${record.analysis_id}.json`)}`,
+    };
+  }
 
   // --- promotion fold (overlay + parity) under the renewal store lock (M-07) ---
+  // INV-B5 (S2-M-01): the paid call took wall-clock time and the stores were
+  // read BEFORE it. The lock alone does not close the lost-update window — the
+  // stores are RE-READ under the lock and the fold is applied to the FRESH
+  // state. The fold is additive + dedup-keyed, so it merges with any valid
+  // concurrent change (a human review ruling lands first and SURVIVES: the
+  // fold never mutates an existing ruling, it only adds new entries and links
+  // still-unresolved ones). A store that became corrupt or cross-snapshot
+  // mid-call refuses the fold rather than overwriting trusted state.
   let lock: SpecRootLock | undefined;
   try {
     lock = acquireSpecRootLock(join(dir, '.lco', 'renewal'), caps.nowIso());
@@ -509,13 +559,22 @@ export async function analyzeWithFresh(
     throw e;
   }
   try {
-    const overlayStore = ovl.store;
-    const parityStore = par.store;
-    // M-03: dedup key includes anchor PATHS + hashes + node ids (a hash-only
-    // key both misses real duplicates and false-positives on shared hashes).
-    const anchorKeyOf = (anchors: { path: string; content_hash: string; node_id?: string }[]) =>
-      anchors.map((a) => `${a.path}|${a.content_hash}${a.node_id !== undefined ? `|${a.node_id}` : ''}`).sort().join(',');
-    const knownParity = new Set(parityStore.records.map((r) => `${r.behavior}|${anchorKeyOf(r.evidence.filter((e): e is Extract<typeof e, { kind: 'code_anchor' }> => e.kind === 'code_anchor').map((e) => e.anchor))}`));
+    const freshOverlay = loadOverlay(paths.overlay);
+    if (!freshOverlay.ok) {
+      return { code: 1, output: `overlay store changed to corrupt during the analysis (${freshOverlay.message}) — promotion refused; the analysis record is preserved` };
+    }
+    const freshParity = loadParity(paths.parity);
+    if (!freshParity.ok) {
+      return { code: 1, output: `parity store changed to corrupt during the analysis (${freshParity.message}) — promotion refused; the analysis record is preserved` };
+    }
+    if (freshOverlay.store.snapshot_id !== activeSnapshot) {
+      return { code: 1, output: `overlay store was superseded to snapshot ${freshOverlay.store.snapshot_id} during the analysis (active: ${activeSnapshot}) — refresh re-binds state; re-analyze after it` };
+    }
+    if (freshParity.store.snapshot_id !== activeSnapshot) {
+      return { code: 1, output: `parity store was superseded to snapshot ${freshParity.store.snapshot_id} during the analysis (active: ${activeSnapshot}) — refresh re-binds state; re-analyze after it` };
+    }
+    const overlayStore = freshOverlay.store;
+    const parityStore = freshParity.store;
 
     for (const h of record.promoted.hypotheses) {
       addOverlayRecord(overlayStore, {
@@ -528,17 +587,19 @@ export async function analyzeWithFresh(
         status: 'active',
         lineage: { analysis_id: record.analysis_id },
       });
-      if (!knownParity.has(`${h.statement}|${anchorKeyOf(h.anchors)}`)) {
-        addParityEntry(parityStore, {
-          behavior: h.statement,
-          evidence: h.anchors.map((a) => ({ kind: 'code_anchor' as const, anchor: { ...a } })),
-          source_analysis: record.analysis_id,
-        });
-      }
+      // INV-D3: addParityEntry is idempotent BY BEHAVIOR (semantic identity) —
+      // a re-analysis never duplicates an entry nor disturbs a human ruling.
+      addParityEntry(parityStore, {
+        behavior: h.statement,
+        evidence: h.anchors.map((a) => ({ kind: 'code_anchor' as const, anchor: { ...a } })),
+        source_analysis: record.analysis_id,
+      });
     }
     // Deterministic linking: an uncertainty rules the parity entry whose
     // anchors overlap it (same file bytes) — the question and the behavior it
-    // asks about share evidence.
+    // asks about share evidence. INV-B5 human-authority precedence: only
+    // still-UNRESOLVED, still-unlinked entries are linked — a ruling made
+    // while the paid call ran is never overwritten.
     for (const a of record.promoted.uncertainties) {
       const uHashes = new Set(a.anchors.map((x) => `${x.path}|${x.content_hash}`));
       const target = parityStore.records.find(
@@ -551,6 +612,7 @@ export async function analyzeWithFresh(
     }
     persistOverlay(paths.overlay, overlayStore);
     persistParity(paths.parity, parityStore);
+    bumpStateRevision(dir);
   } finally {
     lock.release();
   }
@@ -558,7 +620,9 @@ export async function analyzeWithFresh(
   return {
     code: 0,
     output: [
-      `analysis ${record.analysis_id}: ${record.promoted.hypotheses.length} hypothesis(ies) verified, ${record.promoted.uncertainties.length} question(s) for review, ${record.rejected.length} rejected (anchor failures)`,
+      // INV-C: "verified" would claim semantic support; the machine proves
+      // PROVENANCE only. Support is validated by the human parity ruling.
+      `analysis ${record.analysis_id}: ${record.promoted.hypotheses.length} hypothesis(ies) provenance-verified (semantic support NOT machine-validated), ${record.promoted.uncertainties.length} question(s) for review, ${record.rejected.length} rejected (anchor failures)`,
       `  usage: ${record.usage.calls} call(s), ${record.usage.attempts} attempt(s), tokens ${record.usage.usage_known ? `${record.usage.in_tokens} in / ${record.usage.out_tokens} out` : 'unknown'}${record.usage.latency_ms !== undefined ? `, ${record.usage.latency_ms}ms` : ''}${record.usage.cost !== undefined ? `, cost ${record.usage.cost}${record.usage.currency ?? ''}` : ''}`,
       record.promoted.uncertainties.length > 0 ? `  next: lco renew review ${dir}` : `  next: rule parity, then lco renew plan ${dir}`,
     ].join('\n'),
@@ -575,6 +639,9 @@ export interface RenewReviewArgs {
 }
 
 export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilities): Promise<RenewResult> {
+  // INV-A: approvals/parity are trusted state — never through a symlink chain.
+  const stateAuth = authorizeRenewalState(args.dir);
+  if (!stateAuth.ok) return { code: 2, output: `renewal review refused: ${stateAuth.message}` };
   const state = safeState(args.dir);
   if (typeof state === 'string') return { code: 2, output: state };
   const paths = renewalPaths(args.dir);
@@ -709,28 +776,11 @@ async function finishReview(
     return { code: 1, output: `approval ${record.approval_id} is bound to snapshot ${record.snapshot_id} but the active snapshot is ${state.project.snapshot_id} — the approval does not rule the current state` };
   }
 
-  // Fold parity — corrupt parity stops the fold (never empty-overwrite).
-  const par = loadParity(paths.parity);
-  if (!par.ok) return { code: 1, output: `parity store corrupt: ${par.message} — approval preserved, fold refused` };
-  const parityStore = par.store;
-  const { applyApprovalToParity } = await import('../../renew/parity/ledger');
-  applyApprovalToParity(parityStore, record);
-
-  // Strategy decision from the STG claim, if answered.
-  const stg = record.decisions.find((d) => d.claim_id === STRATEGY_CLAIM_ID);
-  const strategyDecision =
-    stg !== undefined && MODERNIZATION_STRATEGIES.includes(stg.selected_option as never)
-      ? buildStrategyDecision({
-          strategy: stg.selected_option as (typeof MODERNIZATION_STRATEGIES)[number],
-          rationale: `human selection via clarification (${stg.evidence.answer_text})`,
-          selectedVia: 'workspace',
-          snapshotId: state.project.snapshot_id,
-          nowIso: record.approved_at,
-          approvalId: record.approval_id,
-        })
-      : undefined;
-
-  // M-07: parity + strategy fold under the renewal store lock.
+  // INV-B5 (S2-M-01): the fold happens under the lock, over a FRESH parity
+  // read taken AFTER the lock is held — the interactive round-trip took
+  // wall-clock time, and a concurrent analyze must neither lose this approval
+  // nor be lost by a stale fold. Human-authority precedence lives in
+  // applyApprovalToParity (it only rules still-unresolved entries).
   let lock: SpecRootLock | undefined;
   try {
     lock = acquireSpecRootLock(join(dir, '.lco', 'renewal'), caps.nowIso());
@@ -741,20 +791,44 @@ async function finishReview(
     throw e;
   }
   try {
+    // Fold parity — corrupt parity stops the fold (never empty-overwrite).
+    const par = loadParity(paths.parity);
+    if (!par.ok) return { code: 1, output: `parity store corrupt: ${par.message} — approval preserved, fold refused` };
+    if (state.snapshot !== undefined && par.store.snapshot_id !== state.snapshot.snapshot_id) {
+      return { code: 1, output: `parity store was superseded to snapshot ${par.store.snapshot_id} during the review (active: ${state.snapshot.snapshot_id}) — approval preserved; refresh, re-analyze, re-review` };
+    }
+    const parityStore = par.store;
+    const { applyApprovalToParity } = await import('../../renew/parity/ledger');
+    applyApprovalToParity(parityStore, record);
+
+    // Strategy decision from the STG claim, if answered.
+    const stg = record.decisions.find((d) => d.claim_id === STRATEGY_CLAIM_ID);
+    const strategyDecision =
+      stg !== undefined && MODERNIZATION_STRATEGIES.includes(stg.selected_option as never)
+        ? buildStrategyDecision({
+            strategy: stg.selected_option as (typeof MODERNIZATION_STRATEGIES)[number],
+            rationale: `human selection via clarification (${stg.evidence.answer_text})`,
+            selectedVia: 'workspace',
+            snapshotId: state.project.snapshot_id,
+            nowIso: record.approved_at,
+            approvalId: record.approval_id,
+          })
+        : undefined;
+
     persistParity(paths.parity, parityStore);
     if (strategyDecision !== undefined) persistStrategy(paths.strategy, strategyDecision);
+    bumpStateRevision(dir);
+    const unresolved = parityStore.records.filter((r) => r.ruling === 'unresolved').length;
+    return {
+      code: 0,
+      output: [
+        `review approved: ${record.approval_id} (${record.decisions.length} decision(s) recorded immutably)`,
+        `  parity: ${unresolved} still unresolved — rule them (explicit lco renew review answers or edit rulings) before planning`,
+      ].join('\n'),
+    };
   } finally {
     lock.release();
   }
-
-  const unresolved = parityStore.records.filter((r) => r.ruling === 'unresolved').length;
-  return {
-    code: 0,
-    output: [
-      `review approved: ${record.approval_id} (${record.decisions.length} decision(s) recorded immutably)`,
-      `  parity: ${unresolved} still unresolved — rule them (explicit lco renew review answers or edit rulings) before planning`,
-    ].join('\n'),
-  };
 }
 
 // --- plan ----------------------------------------------------------------------------
@@ -768,6 +842,10 @@ export async function cmdRenewPlan(
   const paths = renewalPaths(args.dir);
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
+
+  // INV-A: the plan writes spec/ + reads trusted state — real-dir chain only.
+  const stateAuth = authorizeRenewalState(args.dir);
+  if (!stateAuth.ok) return { code: 2, output: `renewal plan refused: ${stateAuth.message}` };
 
   const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
   if (!stale.ok) return stale;
@@ -910,6 +988,9 @@ function affectedSync(
 // --- export ---------------------------------------------------------------------------
 
 export async function cmdRenewExport(args: { dir: string; out?: string }, caps: RenewCapabilities): Promise<RenewResult> {
+  // INV-A: state reads (and any --out write) never traverse a symlink chain.
+  const stateAuth = authorizeRenewalState(args.dir);
+  if (!stateAuth.ok) return { code: 2, output: `renewal export refused: ${stateAuth.message}` };
   const state = safeState(args.dir);
   if (typeof state === 'string') return { code: 2, output: state };
   const p = loadRenewalProject(args.dir);
