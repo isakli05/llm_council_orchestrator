@@ -31,6 +31,7 @@ import {
   type RenewCapabilities,
 } from '../cli/commands/renew';
 import { StaticGraphProvider } from './intel/fixture-provider';
+import { singleRoutePlan } from '../llm/plan';
 import { buildModernizationPlan } from './planner/plan';
 import { addOverlayRecord, markSuperseded, evaluateOverlayStaleness } from './overlay/overlay';
 import { setRuling, parityFromAnalyses } from './parity/ledger';
@@ -537,4 +538,111 @@ describe('distiller payload combinations', () => {
     expect(ids).toContain('PAR-0001');
     expect(strategyQuestion().claimId).toBe('STG-0001');
   });
+});
+
+// --- renew command error/edge branches (analyze/plan/status/export) -------------------
+
+describe('renew command edge branches', () => {
+  it('analyze without LLM route refuses with ZERO calls (fail-closed)', async () => {
+    const target = makeTarget();
+    const project = freshDir('lco-edge-1-');
+    const c = caps();
+    expect((await cmdRenewInit({ dir: project, target, name: 'e1' }, c)).code).toBe(0);
+    const r = await (await import('../cli/commands/renew')).cmdRenewAnalyze({ dir: project }, c);
+    expect(r.code).toBe(2);
+    expect(r.output).toMatch(/no LLM route|ZERO calls/);
+  });
+
+  const llmCaps = () => {
+    const scripted = {
+      complete: async () => ({ text: JSON.stringify({ hypotheses: [], uncertainties: [], coverage_notes: [] }) }),
+    };
+    return { ...caps(), llm: () => singleRoutePlan(scripted as never, { gateway: 'g', providerKind: 'openai-compatible' as const, requestedModel: 'm' }) };
+  };
+
+  it('analyze refuses over a CORRUPT analysis record (never silently replaced)', async () => {
+    const { cmdRenewAnalyze } = await import('../cli/commands/renew');
+    const target = makeTarget();
+    const project = freshDir('lco-edge-2-');
+    const c = llmCaps();
+    expect((await cmdRenewInit({ dir: project, target, name: 'e2' }, c)).code).toBe(0);
+    writeFileSync(join(project, '.lco', 'renewal', 'analyses', 'AN-0007.json'), '{corrupt');
+    const r = await cmdRenewAnalyze({ dir: project }, c);
+    expect(r.code).toBe(1);
+    expect(r.output).toMatch(/analysis store corrupt.*AN-0007/);
+  });
+
+  it('analyze refuses over a CORRUPT overlay store with the file preserved byte-identical', async () => {
+    const { cmdRenewAnalyze } = await import('../cli/commands/renew');
+    const target = makeTarget();
+    const project = freshDir('lco-edge-3-');
+    const c = llmCaps();
+    expect((await cmdRenewInit({ dir: project, target, name: 'e3' }, c)).code).toBe(0);
+    const overlayPath = join(project, '.lco', 'renewal', 'overlay.json');
+    const sentinel = 'CORRUPT-SENTINEL-{';
+    writeFileSync(overlayPath, sentinel);
+    const r = await cmdRenewAnalyze({ dir: project }, c);
+    expect(r.code).toBe(1);
+    expect(r.output).toMatch(/overlay store corrupt/);
+    expect(readFileSync(overlayPath, 'utf8')).toBe(sentinel); // never overwritten
+  });
+
+  it('plan on a corrupt snapshot refuses (identity/tamper), and status exit code reflects it', async () => {
+    const { cmdRenewPlan } = await import('../cli/commands/renew');
+    const target = makeTarget();
+    const project = freshDir('lco-edge-4-');
+    const c = caps();
+    expect((await cmdRenewInit({ dir: project, target, name: 'e4' }, c)).code).toBe(0);
+    const snapPath = join(project, '.lco', 'renewal', 'snapshot.json');
+    const snap = JSON.parse(readFileSync(snapPath, 'utf8')) as { snapshot_id: string };
+    snap.snapshot_id = 'RSN-0123456789abcdef';
+    writeFileSync(snapPath, JSON.stringify(snap, null, 2));
+    const plan = await cmdRenewPlan({ dir: project }, c);
+    expect(plan.code).not.toBe(0);
+    const status = await cmdRenewStatus({ dir: project }, c);
+    expect(status.code).toBe(1); // fail-closed status on uncomputable state
+  });
+
+  it('plan with --strategy requires --strategy-rationale and rejects unknown strategies', async () => {
+    const { cmdRenewPlan } = await import('../cli/commands/renew');
+    const target = makeTarget();
+    const project = freshDir('lco-edge-5-');
+    const c = caps();
+    expect((await cmdRenewInit({ dir: project, target, name: 'e5' }, c)).code).toBe(0);
+    const r1 = await cmdRenewPlan({ dir: project, strategy: 'strangler' }, c);
+    expect(r1.code).toBe(2);
+    expect(r1.output).toMatch(/--strategy-rationale/);
+    const r2 = await cmdRenewPlan({ dir: project, strategy: 'agile_bigbang', strategyRationale: 'x' }, c);
+    expect(r2.code).toBe(2);
+    expect(r2.output).toMatch(/unknown strategy/);
+  });
+
+  it('status --json emits parseable JSON with snapshot/parity fields', async () => {
+    const target = makeTarget();
+    const project = freshDir('lco-edge-6-');
+    const c = caps();
+    expect((await cmdRenewInit({ dir: project, target, name: 'e6' }, c)).code).toBe(0);
+    const r = await cmdRenewStatus({ dir: project, json: true }, c);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.output) as Record<string, unknown>;
+    expect(parsed.snapshot_state).toBe('fresh');
+    expect(parsed.parity).toBeTruthy();
+    expect(parsed.overlay).toMatch(/0 record/);
+  });
+
+  it('export renders the report and refuses an out-of-project --out', async () => {
+    const { cmdRenewExport } = await import('../cli/commands/renew');
+    const target = makeTarget();
+    const project = freshDir('lco-edge-7-');
+    const c = caps();
+    expect((await cmdRenewInit({ dir: project, target, name: 'e7' }, c)).code).toBe(0);
+    const out = join(project, 'reports', 'r.md');
+    const ok = await cmdRenewExport({ dir: project, out }, c);
+    expect(ok.code).toBe(0);
+    expect(existsSync(out)).toBe(true);
+    const bad = await cmdRenewExport({ dir: project, out: join(target, 'x.md') }, c);
+    expect(bad.code).toBe(2);
+  });
+
+
 });
