@@ -192,7 +192,7 @@ export function buildArchitectureView(
     warnings.push(
       `${unsupported.length} guarded file(s) absent from the graph (unsupported language, empty, or extraction gap): ${unsupported
         .slice(0, 20)
-        .join(', ')}`,
+        .join(', ')}${unsupported.length > 20 ? ` (+${unsupported.length - 20} more — complete list in coverage.unsupported_files)` : ''}`,
     );
   }
 
@@ -206,7 +206,10 @@ export function buildArchitectureView(
     coverage: {
       guarded_files: manifest.length,
       graph_files: graphFiles.size,
-      unsupported_files: unsupported.slice(0, 100),
+      // INV-E4 (S2-H-05): the COMPLETE identity set — count and list always
+      // agree. Silent truncation here is how 150 unsupported files became a
+      // 100-entry list and a 50-path task scope with nothing flagged lost.
+      unsupported_files: unsupported,
     },
     warnings: [...new Set(warnings)].sort(),
   };

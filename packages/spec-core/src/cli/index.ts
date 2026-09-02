@@ -324,31 +324,39 @@ export async function runCli(argv: string[]): Promise<number> {
           }
         },
         ...(r.sub === 'analyze'
-          ? {
-              // H-05: a paid Renewal call is never unbounded — explicit CLI
-              // flags win over the documented defaults (8 attempts / 15 min).
-              budget: () =>
-                createBudgetLedger(
-                  {
-                    maxAttempts: r.budget?.maxAttempts ?? 8,
-                    ...(r.budget?.maxTokens !== undefined ? { maxTokens: r.budget.maxTokens } : {}),
-                    ...(r.budget?.maxWallMs !== undefined ? { maxWallMs: r.budget.maxWallMs } : {}),
-                  },
-                  { nowMs: Date.now },
-                ),
-              llm: () => {
-                // Named profile (must route renew_recover) or the legacy env —
-                // both fail closed; keys are never invented here.
-                if (r.llmProfile !== undefined) {
-                  const ledger = createBudgetLedger(
-                    {
-                      maxAttempts: r.budget?.maxAttempts ?? 8,
-                      ...(r.budget?.maxTokens !== undefined ? { maxTokens: r.budget.maxTokens } : {}),
-                      ...(r.budget?.maxWallMs !== undefined ? { maxWallMs: r.budget.maxWallMs } : {}),
-                    },
-                    { nowMs: Date.now },
-                  );
-                  let text: string;
+          ? (() => {
+              // INV-F1 (S2-H-01): ONE budget envelope and ONE accounting
+              // lineage per paid operation — the SAME ledger instance charges
+              // the transport (HTTP attempts) and the pipeline (logical calls,
+              // validation retry, tokens, wall). Separate transport/profile/
+              // pipeline ledgers are exactly how maxAttempts=1 accepted
+              // attempts=2 while a disconnected counter stayed at 0.
+              let sharedLedger: ReturnType<typeof createBudgetLedger> | undefined;
+              const renewalBudget = () => ({
+                maxAttempts: r.budget?.maxAttempts ?? 8,
+                ...(r.budget?.maxTokens !== undefined ? { maxTokens: r.budget.maxTokens } : {}),
+                // The documented 15-minute default wall cap applies when the
+                // operator did not override it (the audit found the default
+                // existed only in prose).
+                maxWallMs: r.budget?.maxWallMs ?? 15 * 60_000,
+              });
+              const oneLedger = () => {
+                if (sharedLedger === undefined) {
+                  sharedLedger = createBudgetLedger(renewalBudget(), { nowMs: Date.now });
+                }
+                return sharedLedger;
+              };
+              return {
+                // H-05: a paid Renewal call is never unbounded — explicit CLI
+                // flags win over the documented defaults (8 attempts / 15 min).
+                budget: oneLedger,
+                llm: () => {
+                  // Named profile (must route renew_recover) or the legacy env —
+                  // both fail closed; keys are never invented here. Both routes
+                  // share the ONE ledger above.
+                  if (r.llmProfile !== undefined) {
+                    const ledger = oneLedger();
+                    let text: string;
                   try {
                     text = require('node:fs').readFileSync(join(r.dir, 'lco.config.json'), 'utf8');
                   } catch (err) {
@@ -386,9 +394,15 @@ export async function runCli(argv: string[]): Promise<number> {
                   };
                   return plan;
                 }
-                return singleRoutePlan(createHttpLlm());
+                // Legacy env route — the SAME one-ledger envelope (default
+                // wall cap included; INV-F1 closes the documented-but-absent
+                // CLI default by construction: renewalBudget() always sets
+                // maxAttempts and the ledger enforces wall via the shared
+                // clocked construction).
+                return singleRoutePlan(createHttpLlm(oneLedger()));
               },
-            }
+              };
+            })()
           : {}),
         ...(r.sub === 'review'
           ? {

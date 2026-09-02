@@ -334,11 +334,24 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
   }));
   const unsupported = inputs.architectureView.coverage.unsupported_files;
   if (unsupported.length > 0) {
-    manualSeeds.push({
-      id: 'COVERAGE',
-      paths: [...unsupported].sort().slice(0, 50),
-      what: `${unsupported.length} guarded file(s) are NOT represented in the structural graph (unsupported language or unparseable) — behavior in these files was never analyzed; characterize them manually before claiming coverage`,
-    });
+    // INV-E4 (S2-H-05): every unsupported path MUST appear in a task —
+    // coverage loss is chunked into explicit manual-review units (≤50 paths
+    // each), never silently truncated. The task text always states the TRUE
+    // total; omitting paths here is how 150 files became "100 listed, 50
+    // gone" with no signal.
+    const sorted = [...unsupported].sort();
+    const CHUNK = 50;
+    const chunks = Math.ceil(sorted.length / CHUNK);
+    for (let i = 0; i < chunks; i++) {
+      const slice = sorted.slice(i * CHUNK, (i + 1) * CHUNK);
+      manualSeeds.push({
+        id: chunks === 1 ? 'COVERAGE' : `COVERAGE-${String(i + 1).padStart(2, '0')}`,
+        paths: slice,
+        what:
+          `${sorted.length} guarded file(s) are NOT represented in the structural graph (unsupported language or unparseable) — behavior in these files was never analyzed; characterize them manually before claiming coverage. ` +
+          `This task covers ${slice.length} of ${sorted.length} file(s)${chunks > 1 ? ` (part ${i + 1} of ${chunks})` : ''}`,
+      });
+    }
   }
   for (const m of manualSeeds) {
     const taskIdx = tasks.length + 1;

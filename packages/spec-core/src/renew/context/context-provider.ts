@@ -4,15 +4,18 @@
  * fully deterministic (graph + manifest + injected slice reader; no clock, no
  * randomness, no embeddings — the semantic-provider seam stays a seam).
  *
- * Prompt-context safety: bounded items/chars, per-slice line+char caps,
- * manifest-contained slice reads ONLY (nothing outside the guarded copy is
- * ever read), secret redaction applied to every slice with the count recorded.
+ * Prompt-context safety: bounded items/chars (measured as the SERIALIZED
+ * contribution of each item — the same projection the recovery prompt sends),
+ * per-slice line+char caps, manifest-contained slice reads ONLY (nothing
+ * outside the guarded copy is ever read), secret redaction applied to every
+ * slice with the count recorded.
  */
 import type { ParsedGraph } from '../intel/graph-reader';
 import { godNodes } from '../intel/graph-ops';
 import type { FileManifest } from '../ingest/workspace-copy';
 import { RENEW_CONTEXT_LIMITS, type ContextBundle, type ContextItem, type ContextLimits } from './bundle';
 import { redactSecrets } from './redact';
+import { serializedSizeOfItem } from '../recovery/prompts';
 
 export { RENEW_CONTEXT_LIMITS } from './bundle';
 
@@ -43,8 +46,6 @@ export interface GraphContextProviderOptions {
 /** Lines of context around a node's location; hard window before the cap. */
 const CONTEXT_BEFORE = 4;
 const CONTEXT_AFTER = 45;
-/** Fixed per-item accounting overhead in total_chars. */
-const ITEM_OVERHEAD = 40;
 
 function parseLoc(loc: string | undefined): number | undefined {
   if (loc === undefined) return undefined;
@@ -103,17 +104,25 @@ export class GraphContextProvider implements ContextProvider {
     // fill maxItems and the "validated" analysis has nothing to anchor to).
     // Shedding order from the END therefore drops facts → edges → nodes;
     // slices survive unless they alone exceed the budget.
-    let items: ContextItem[] = [...sliceItems, ...nodeItems, ...edgeItems, ...factItems];
+    //
+    // S2-H-04: the budget counts the SERIALIZED contribution of every item —
+    // labels, paths, ids, relations, and JSON overhead — via the same
+    // projection the recovery prompt serializes (serializedSizeOfItem), never
+    // a flat per-item constant: a 250-node graph once declared 8k characters
+    // while the prompt serialized megabytes. Shedding only drops from the
+    // END, so prefix sums give an O(1) budget check per shed step.
+    const ordered: ContextItem[] = [...sliceItems, ...nodeItems, ...edgeItems, ...factItems];
+    const prefix: number[] = new Array(ordered.length + 1).fill(0);
+    for (let i = 0; i < ordered.length; i++) {
+      prefix[i + 1] = prefix[i] + serializedSizeOfItem(ordered[i]);
+    }
+    let keep = ordered.length;
     let truncated = false;
-    const totalOf = (list: ContextItem[]): number =>
-      list.reduce((sum, i) => sum + ITEM_OVERHEAD + ('text' in i ? i.text.length : 0), 0);
-    while (
-      items.length > 0 &&
-      (items.length > this.limits.maxItems || totalOf(items) > this.limits.maxTotalChars)
-    ) {
-      items = items.slice(0, -1);
+    while (keep > 0 && (keep > this.limits.maxItems || prefix[keep] > this.limits.maxTotalChars)) {
+      keep--;
       truncated = true;
     }
+    const items = ordered.slice(0, keep);
 
     // H-03/E4: a scope that claims source-grounded recovery but produced NO
     // anchorable slice is flagged — the pipeline turns this into a BLOCKED
@@ -129,7 +138,7 @@ export class GraphContextProvider implements ContextProvider {
       scope: scope as unknown as Record<string, unknown>,
       items,
       truncated,
-      total_chars: totalOf(items),
+      total_chars: prefix[keep],
       warnings: [...warnings].sort(),
       ...(insufficientContext ? { insufficient_context: true } : {}),
     };
