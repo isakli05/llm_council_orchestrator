@@ -28,7 +28,12 @@ export type IntelFailureCode =
  * graphHealthOf, non-health failures) stays assignable; consumers tighten
  * onto it incrementally.
  */
-export type GraphHealthStatus = 'healthy' | 'missing' | 'malformed' | 'incompatible';
+export type GraphHealthStatus = 'healthy' | 'missing' | 'malformed' | 'incompatible' | 'probe_unavailable';
+
+/** A graph-HEALTH failure: like IntelFailure but with a REQUIRED state —
+ *  every arm of graphHealth() classifies itself (S3-M-01: generic probe
+ *  failures are 'probe_unavailable', never statusless). */
+export type HealthFailure = IntelFailure & { status: GraphHealthStatus };
 
 /** Every failure carries an actionable, human-readable message. */
 export interface IntelFailure {
@@ -104,9 +109,10 @@ export type IntelItems =
 
 export interface GraphHealth {
   ok: true;
-  /** INV-G3: explicit classification — a real provider reports 'healthy'
-   * only when graph AND manifest both parse (manifest entries ≥ 1). */
-  status?: GraphHealthStatus;
+  /** S3-M-01 (trust kernel): REQUIRED on every success shape — 'healthy'
+   * only when graph AND manifest both parse (manifest entries ≥ 1). The
+   * "ok with status undefined" shape is no longer representable. */
+  status: 'healthy';
   provider_version: string;
   node_count: number;
   edge_count: number;
@@ -148,5 +154,5 @@ export interface CodeIntelligenceProvider {
   explain(node: string): Promise<IntelItems>;
   affected(seed: string, opts?: AffectedOptions): Promise<AffectedResult>;
   godNodes(top?: number): Promise<GodNode[] | IntelFailure>;
-  graphHealth(): Promise<GraphHealth | IntelFailure>;
+  graphHealth(): Promise<GraphHealth | HealthFailure>;
 }

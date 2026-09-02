@@ -168,6 +168,7 @@ export function graphHealthOf(
   graph: ParsedGraph,
   providerVersion: string,
   manifestEntries: number,
+  manifestDigest?: string,
 ): GraphHealth {
   const languages = new Set<string>();
   for (const n of graph.nodes) {
@@ -182,6 +183,8 @@ export function graphHealthOf(
   }
   return {
     ok: true,
+    status: 'healthy',
+    ...(manifestDigest !== undefined ? { manifest_digest: manifestDigest } : {}),
     provider_version: providerVersion,
     node_count: graph.nodes.length,
     edge_count: graph.edges.length,

@@ -37,8 +37,13 @@ interface Rule {
 
 const RULES: readonly Rule[] = [
   // --- L2: structured secret shapes (flat patterns only) ---------------------------
+  //
+  // S3-M-06 (bounded by construction): the PEM region quantifier is BOUNDED
+  // (64 KiB — far beyond any real key material) so a marker-heavy input with
+  // no terminator costs O(markers · 64KiB), not a quadratic scan; every other
+  // rule is a single forward pass with bounded character classes.
   {
-    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,65536}?-----END [A-Z ]*PRIVATE KEY-----/g,
     replacement: '[REDACTED:private-key]',
   },
   {

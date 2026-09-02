@@ -51,6 +51,16 @@ export interface ContextRecord {
   node_id?: string;
 }
 
+/** The server-computed trusted anchor payload (path/hash/range/node shape
+ *  identical to the persisted CodeAnchorPayload — the kernel's term for it). */
+export type TrustedAnchorPayload = {
+  path: string;
+  content_hash: string;
+  start_line?: number;
+  end_line?: number;
+  node_id?: string;
+};
+
 /** The model-side citation claim: a context id, optionally narrowed. */
 export const CitationClaimSchema = z
   .object({

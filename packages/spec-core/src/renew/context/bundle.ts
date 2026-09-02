@@ -40,6 +40,14 @@ export const ContextItemSchema = z.discriminatedUnion('kind', [
        * handle the recovery prompt exposes and the AnchorVerifier recomputes. */
       content_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
       redactions: z.number().int().nonnegative(),
+      /** TRUST KERNEL (S3-H-01): identity of the EXACT supplied material —
+       *  hash over the slice text as supplied and the file's true line count.
+       *  Context records are built from these; citations may never cover
+       *  bytes outside [start_line, end_line]. */
+      slice_text_hash: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+      file_line_count: z.number().int().positive().optional(),
+      /** The node whose location selected this slice (bound at supply). */
+      node_id: z.string().optional(),
       provenance: z.literal('file-read'),
     })
     .strict(),

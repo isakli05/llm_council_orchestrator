@@ -23,8 +23,9 @@ import type {
   IntelItems,
   IntelProbe,
 } from './provider';
-import type { IntelFailure } from './provider';
+import type { HealthFailure, IntelFailure } from './provider';
 import { parseGraphText, type ParsedGraph } from './graph-reader';
+import { parseGraphManifestStrict } from '../trust/structural';
 import { affectedReverse, godNodes, graphHealthOf, neighborhood, querySeeds, shortestPath } from './graph-ops';
 import { runSubprocess, type SubprocessRunner } from './subprocess';
 
@@ -251,7 +252,7 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     return godNodes(g.graph, top ?? 10);
   }
 
-  async graphHealth(): Promise<GraphHealth | IntelFailure> {
+  async graphHealth(): Promise<GraphHealth | HealthFailure> {
     // INV-G3 (S2-H-06/M-08): health is EXPLICITLY classified — a malformed
     // manifest/graph must never collapse to a healthy-looking
     // manifest_entries: 0. Every failing arm returns a typed failure whose
@@ -270,13 +271,17 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     if (version === undefined) {
       const p = await this.probe();
       if (!p.ok) {
-        const failure: IntelFailure = {
+        // S3-M-01: total classification — unsupported versions are
+        // 'incompatible'; every other probe failure is 'probe_unavailable'
+        // (a tool problem, not a verdict about graph state). Statusless
+        // health failures are unrepresentable.
+        const failure: HealthFailure = {
           ok: false,
           code: p.code,
+          status: p.code === 'unsupported_version' ? 'incompatible' : 'probe_unavailable',
           message: `graph exists but the provider probe failed: ${p.message}`,
           hint: p.hint,
         };
-        if (p.code === 'unsupported_version') failure.status = 'incompatible';
         return failure;
       }
       version = p.providerVersion;

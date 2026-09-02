@@ -15,6 +15,7 @@ import { godNodes } from '../intel/graph-ops';
 import type { FileManifest } from '../ingest/workspace-copy';
 import { RENEW_CONTEXT_LIMITS, type ContextBundle, type ContextItem, type ContextLimits } from './bundle';
 import { redactSecrets } from './redact';
+import { sha256Content } from '../../compiler/hash';
 import { serializedSizeOfItem } from '../recovery/prompts';
 
 export { RENEW_CONTEXT_LIMITS } from './bundle';
@@ -30,7 +31,7 @@ export type SliceReader = (
   path: string,
   startLine: number,
   endLine: number,
-) => { text: string; startLine: number; endLine: number } | undefined;
+) => { text: string; startLine: number; endLine: number; fileLineCount?: number } | undefined;
 
 export interface ContextProvider {
   contextFor(scope: AnalysisScope): ContextBundle;
@@ -213,8 +214,10 @@ export class GraphContextProvider implements ContextProvider {
         .sort((a, b) => (a.node_id < b.node_id ? -1 : 1));
     }
 
-    // Merge per-file line windows from node locations.
-    const windows = new Map<string, { start: number; end: number }>();
+    // Merge per-file line windows from node locations. The FIRST node that
+    // selects a file binds its node_id onto that file's slice (context
+    // records use the binding for node_range citations).
+    const windows = new Map<string, { start: number; end: number; node_id?: string }>();
     const fileOrder: string[] = [];
     for (const n of ordered) {
       if (n.source_file === undefined) continue;
@@ -227,7 +230,7 @@ export class GraphContextProvider implements ContextProvider {
       const end = start + CONTEXT_BEFORE + CONTEXT_AFTER;
       const existing = windows.get(n.source_file);
       if (existing === undefined) {
-        windows.set(n.source_file, { start, end });
+        windows.set(n.source_file, { start, end, node_id: n.node_id });
         fileOrder.push(n.source_file);
       } else {
         existing.start = Math.min(existing.start, start);
@@ -257,6 +260,10 @@ export class GraphContextProvider implements ContextProvider {
         content_hash: this.manifestHashes.get(path)!,
         redactions: redacted.count,
         provenance: 'file-read',
+        // Trust kernel (S3-H-01): slice identity + whole-file truth.
+        slice_text_hash: sha256Content(text),
+        ...(slice.fileLineCount !== undefined ? { file_line_count: slice.fileLineCount } : {}),
+        ...(win.node_id !== undefined ? { node_id: win.node_id } : {}),
       });
     }
     return items;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { redactSecrets } from '../renew/context/redact';
 import { SpecBundleSchema, ComplexityProfileSchema } from '../schemas';
 import type { SpecBundle } from '../schemas';
 import { lintBundle } from '../lint/engine';
@@ -258,7 +259,10 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: strin
     '',
     'RETRY REQUEST (your previous output was rejected):',
     'The validator reported these EXACT problems:',
-    issues.map((s) => `- ${s}`).join('\n'),
+    // S3-C-03 (trust kernel): issue strings may echo model- or repository-
+    // controlled text back onto the WIRE — redact like every other outbound
+    // string before they re-enter a paid request.
+    issues.map((s) => `- ${redactSecrets(s).text}`).join('\n'),
     'Output the corrected FULL bundle again — same rules as before: only a single JSON value, no prose, no fences. Fix ONLY the validator-listed problems.',
     'Unresolved material is out of bounds for this retry: every item that was UNRESOLVED must remain UNRESOLVED with the same claim_id, and the manifest counters must not be cleared — silently resolving, renaming, re-id-ing, or dropping unresolved material will be rejected.',
   ].join('\n');

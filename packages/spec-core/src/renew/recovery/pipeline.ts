@@ -14,6 +14,8 @@
  */
 import { sha256Content } from '../../compiler/hash';
 import { accountCompletionAttempts } from '../trust/paid';
+import { resolveCitation, type ContextRecord, type ResolvedCitation, type TrustedAnchorPayload } from '../trust/evidence';
+import { TrustCitationError } from '../trust/errors';
 import { stripJsonFences } from '../../eval/runner';
 import { BudgetExceededError, type BudgetLedger } from '../../eval/budget';
 import type { LlmPlan } from '../../llm/plan';
@@ -52,6 +54,12 @@ export interface RecoveryDeps {
    */
   recheckFreshness?: () => { ok: true } | { ok: false; reasons: string[] };
   persist: (record: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string };
+  /**
+   * S3-H-01 (trust kernel): the server-owned context records assigned to
+   * THIS analysis's supplied slices — the only material citations may cover.
+   * Required: resolution (and therefore promotion) is impossible without it.
+   */
+  contextRecords: readonly ContextRecord[];
 }
 
 export type RecoveryOutcome =
@@ -213,7 +221,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     };
   })();
 
-  const prompt = buildRecoveryPrompt({ scope: req.scope, bundle: req.bundle, nowIso: deps.nowIso });
+  const prompt = buildRecoveryPrompt({ scope: req.scope, bundle: req.bundle, nowIso: deps.nowIso, contextRecords: deps.contextRecords });
 
   // INV-E3 (S2-H-04): measure the ACTUAL serialized payload and gate it BEFORE
   // the paid boundary — a prompt whose real bytes exceed the cap (graph
@@ -403,52 +411,67 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   let anchorsOk = 0;
   let anchorsFailed = 0;
 
-  const suppliedSlices = new Map(
-    req.bundle.items
-      .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
-      .map((i) => [`${i.path}|${i.content_hash}`, i] as const),
-  );
   const nodeIndex = new Map(
     req.bundle.items
       .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'node' }> => i.kind === 'node')
       .map((i) => [i.node_id, i] as const),
   );
 
-  const check = (anchors: { path: string; content_hash: string; node_id?: string; start_line?: number; end_line?: number }[]): { allOk: boolean; results: AnchorResult[] } => {
-    const results = anchors.map((a) => {
+  /**
+   * S3-H-01 (trust kernel): the verification core. Step 1 RESOLVES the
+   * model's citation claim against the server-owned context records —
+   * the cited context must exist and any claimed subrange must be CONTAINED
+   * in the supplied window (the T3-1 shape — shown 1-2, claimed 10-10 — is
+   * unrepresentable). The SERVER then computes the trusted anchor; live-tree
+   * byte verification, node provenance, and disk-range coherence run over
+   * the RESOLVED coordinates.
+   */
+  const check = (
+    claims: readonly { context_id: string; start_line?: number; end_line?: number }[],
+  ): { allOk: boolean; results: AnchorResult[]; resolved: TrustedAnchorPayload[] } => {
+    const resolved: TrustedAnchorPayload[] = [];
+    const results = claims.map((claim) => {
       anchorsTotal += 1;
-      const hasRange = a.start_line !== undefined || a.end_line !== undefined;
-      // INV-C: the scope states how claim-specific the anchor is. A whole-file
-      // anchor (no node, no range) proves the file was SUPPLIED at those
-      // bytes — membership, never claim-specific support.
-      const scope: AnchorScope = a.node_id !== undefined && hasRange ? 'node_range' : hasRange ? 'range' : 'whole_file';
+      let citation: ResolvedCitation;
+      try {
+        citation = resolveCitation(deps.contextRecords, claim);
+      } catch (e) {
+        anchorsFailed += 1;
+        const code = e instanceof TrustCitationError ? e.code : 'citation_refused';
+        return { path: `<unresolved:${claim.context_id}>`, ok: false, scope: 'whole_file' as AnchorScope, code };
+      }
+      const scope = citation.scope;
       const fail = (code: string): AnchorResult => {
         anchorsFailed += 1;
-        return { path: a.path, ok: false, scope, code };
+        return { path: citation.path, ok: false, scope, code };
       };
-      // 1. Relevance/supply: the (path, hash) must be among the file slices
-      //    actually placed in the prompt — a correct hash for an irrelevant
-      //    or unsupplied file is not evidence for this claim.
-      if (!suppliedSlices.has(`${a.path}|${a.content_hash}`)) {
-        return fail('not_in_context');
-      }
-      // 2. Bytes: recompute against the live target (never trust stored hashes).
-      const v = verifyAnchor(a as CodeAnchorInput, deps.targetRoot);
+      const anchor: TrustedAnchorPayload = {
+        path: citation.path,
+        content_hash: citation.content_hash,
+        ...(citation.start_line !== undefined ? { start_line: citation.start_line } : {}),
+        ...(citation.end_line !== undefined ? { end_line: citation.end_line } : {}),
+        ...(citation.node_id !== undefined ? { node_id: citation.node_id } : {}),
+      };
+      // 2. Bytes: recompute the whole-file hash against the live target
+      //    (never trust stored hashes).
+      const v = verifyAnchor(anchor as CodeAnchorInput, deps.targetRoot);
       if (!v.ok) return fail(v.code);
-      // 3. Node provenance: a node-linked anchor binds to a node that was
-      //    supplied AND maps to the anchored file.
-      if (a.node_id !== undefined) {
-        const node = nodeIndex.get(a.node_id);
+      // 3. Node provenance: a node-bound citation must bind to a node that
+      //    was supplied AND maps to the cited file.
+      if (citation.node_id !== undefined) {
+        const node = nodeIndex.get(citation.node_id);
         if (node === undefined) return fail('unknown_node');
-        if (node.source_file !== undefined && node.source_file !== a.path) return fail('node_path_mismatch');
+        if (node.source_file !== undefined && node.source_file !== citation.path) return fail('node_path_mismatch');
       }
-      // 4. Range coherence: possible on disk; contains the node's line when linked.
-      if (hasRange) {
-        const start = a.start_line ?? 1;
-        const end = a.end_line ?? start;
+      // 4. Range coherence on disk (defense in depth — containment within the
+      //    SUPPLIED window was already proven at resolution): possible on
+      //    disk; contains the node's line when linked.
+      if (citation.start_line !== undefined) {
+        const start = citation.start_line;
+        const end = citation.end_line ?? start;
         if (start < 1 || end < start || end > v.line_count) return fail('invalid_range');
-        if (a.node_id !== undefined) {
-          const node = nodeIndex.get(a.node_id);
+        if (citation.node_id !== undefined) {
+          const node = nodeIndex.get(citation.node_id);
           const m = /^L(\d+)$/.exec(node?.source_location ?? '');
           if (m !== null) {
             const line = Number.parseInt(m[1], 10);
@@ -457,18 +480,30 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
         }
       }
       anchorsOk += 1;
-      return { path: a.path, ok: true, scope };
+      resolved.push(anchor);
+      return { path: citation.path, ok: true, scope };
     });
-    return { allOk: results.every((r) => r.ok), results };
+    return { allOk: results.every((r) => r.ok), results, resolved };
   };
 
   for (const h of output.hypotheses) {
-    const { allOk, results } = check(h.anchors);
+    const { allOk, results, resolved } = check(h.anchors);
     if (allOk) {
       // INV-C: promotion means PROVENANCE verified — byte identity at the
-      // cited scope. Semantic support is NOT machine-validated (V1 contract);
-      // the hypothesis stays a hypothesis until a human rules its parity.
-      promotedHypotheses.push({ ...h, status: 'hypothesized', anchor_results: results, support_status: 'unvalidated' });
+      // cited scope, resolved from the EXACT supplied material. Semantic
+      // support is NOT machine-validated (V1 contract); the hypothesis stays
+      // a hypothesis until a human rules its parity.
+      promotedHypotheses.push({
+        id: h.id,
+        statement: h.statement,
+        category: h.category,
+        confidence: h.confidence,
+        rationale: h.rationale,
+        anchors: resolved,
+        status: 'hypothesized',
+        anchor_results: results,
+        support_status: 'unvalidated',
+      });
     } else {
       rejected.push({
         id: h.id,
@@ -478,9 +513,16 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     }
   }
   for (const u of output.uncertainties) {
-    const { allOk, results } = check(u.anchors);
+    const { allOk, results, resolved } = check(u.anchors);
     if (allOk) {
-      promotedUncertainties.push({ ...(u as RecoveryUncertainty), anchor_results: results });
+      promotedUncertainties.push({
+        id: u.id,
+        question: u.question,
+        impact: u.impact,
+        options: u.options,
+        anchors: resolved,
+        anchor_results: results,
+      });
     } else {
       rejected.push({
         id: u.id,

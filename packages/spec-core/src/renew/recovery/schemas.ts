@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { CodeAnchorPayloadSchema } from '../../schemas/evidence';
+import { CitationClaimSchema } from '../trust/evidence';
 
 const Sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const Id = (prefix: string) => z.string().regex(new RegExp(`^${prefix}-\\d{4}$`));
@@ -21,13 +22,20 @@ export const RECOVERY_CATEGORIES = [
 
 // --- LLM output contract (validated; no status field by design) --------------
 
+/**
+ * S3-H-01 (trust kernel): the MODEL-SIDE anchor is a CITATION CLAIM — a
+ * context id the server supplied (plus an optional subrange NARROWING).
+ * Model-authored paths/hashes/node ids are not trusted coordinates; the wire
+ * schema does not carry them. The pipeline resolves claims through
+ * trust/evidence.resolveCitation into the persisted CodeAnchorPayload.
+ */
 export const RecoveryHypothesisSchema = z
   .object({
     id: Id('BHV'),
     statement: z.string().min(1).max(2_000),
     category: z.enum(RECOVERY_CATEGORIES),
     confidence: z.enum(['low', 'medium', 'high']),
-    anchors: z.array(CodeAnchorPayloadSchema).min(1).max(20),
+    anchors: z.array(CitationClaimSchema).min(1).max(20),
     rationale: z.string().min(1).max(4_000),
   })
   .strict();
@@ -45,7 +53,7 @@ export const RecoveryUncertaintySchema = z
       )
       .min(2)
       .max(6),
-    anchors: z.array(CodeAnchorPayloadSchema).min(1).max(20),
+    anchors: z.array(CitationClaimSchema).min(1).max(20),
   })
   .strict();
 
@@ -96,16 +104,25 @@ export const AnchorResultSchema = z
   .strict();
 export type AnchorResult = z.infer<typeof AnchorResultSchema>;
 
-export const VerifiedHypothesisSchema = RecoveryHypothesisSchema.extend({
-  status: z.literal('hypothesized'),
-  anchor_results: z.array(AnchorResultSchema),
-  /** INV-C: semantic support is NOT machine-validated in V1 — ever. */
-  support_status: SupportStatusSchema,
-}).strict();
+/** A promoted claim's anchors are the SERVER-RESOLVED citations (path,
+ *  whole-file hash, contained range, node binding) — never the model's raw
+ *  context-id claims (S3-H-01: resolution happens in trust/evidence). */
+export const VerifiedHypothesisSchema = RecoveryHypothesisSchema.omit({ anchors: true })
+  .extend({
+    anchors: z.array(CodeAnchorPayloadSchema).min(1).max(20),
+    status: z.literal('hypothesized'),
+    anchor_results: z.array(AnchorResultSchema),
+    /** INV-C: semantic support is NOT machine-validated in V1 — ever. */
+    support_status: SupportStatusSchema,
+  })
+  .strict();
 
-export const VerifiedUncertaintySchema = RecoveryUncertaintySchema.extend({
-  anchor_results: z.array(AnchorResultSchema),
-}).strict();
+export const VerifiedUncertaintySchema = RecoveryUncertaintySchema.omit({ anchors: true })
+  .extend({
+    anchors: z.array(CodeAnchorPayloadSchema).min(1).max(20),
+    anchor_results: z.array(AnchorResultSchema),
+  })
+  .strict();
 
 export const RejectedItemSchema = z
   .object({

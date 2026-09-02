@@ -51,6 +51,7 @@ import {
 import { authorizedRead, authorizedWrite, authorizedEnsureDir, authorizedRemoveTree } from '../../renew/trust/fs';
 import { validateRenewalApproval } from '../../renew/trust/authority';
 import { structuralIdentity } from '../../renew/trust/structural';
+import { assignContextRecords } from '../../renew/trust/evidence';
 import { stageSpecDir } from './write-spec';
 import { cmdFreeze } from './freeze';
 import { renderRenewalReport } from '../../renew/project/export';
@@ -481,10 +482,26 @@ export async function analyzeWithFresh(
     const start = Math.max(1, startLine);
     const end = Math.min(endLine, lines.length);
     if (start > end) return undefined;
-    return { text: lines.slice(start - 1, end).join('\n'), startLine: start, endLine: end };
+    return { text: lines.slice(start - 1, end).join('\n'), startLine: start, endLine: end, fileLineCount: lines.length };
   };
   const context = new GraphContextProvider({ graph: graph.graph, manifest, readSlice: sliceReader });
   const bundle = context.contextFor({ type: 'whole' });
+  // S3-H-01 (trust kernel): assign the immutable server-owned context records
+  // for EXACTLY the slices supplied — the model will cite these ids, and
+  // resolution can never cover bytes outside the supplied windows.
+  const contextRecords = assignContextRecords(
+    bundle.items
+      .filter((i): i is Extract<typeof bundle.items[number], { kind: 'file_slice' }> => i.kind === 'file_slice')
+      .map((i) => ({
+        path: i.path,
+        whole_file_hash: i.content_hash,
+        start_line: i.start_line,
+        end_line: i.end_line,
+        slice_text_hash: i.slice_text_hash ?? 'sha256:unknown',
+        file_line_count: i.file_line_count ?? i.end_line,
+        ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
+      })),
+  );
 
   const llm = caps.llm?.();
   if (llm === undefined) {
@@ -568,6 +585,7 @@ export async function analyzeWithFresh(
       nowIso: caps.nowIso(),
       targetRoot,
       recheckFreshness,
+      contextRecords,
       persist: (record) => {
         // UX preflight re-run: this persist can happen DURING the paid call
         // (transport-failure trail); the per-write authorization inside

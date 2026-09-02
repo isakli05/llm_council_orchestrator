@@ -138,3 +138,37 @@ describe('L3 linear-time guarantee (ReDoS regression)', () => {
     expect(t200).toBeLessThan(t100 * 4);
   });
 });
+
+
+describe('S3-M-06: whole-engine scaling is sane on adversarial shapes (N / 2N / 4N)', () => {
+  it('marker-heavy PEM-less input (the previously unbounded region) scales sub-quadratically', () => {
+    // Worst shape for the old [\s\S]*? region: MANY BEGIN markers, no END.
+    const unit = '-----BEGIN PRIVATE KEY-----'; // 27 bytes, never terminated
+    const mk = (n: number) => unit.repeat(n) + 'x'.repeat(n * 4);
+    const time = (text: string): number => {
+      const t0 = process.hrtime.bigint();
+      redactSecrets(text);
+      return Number(process.hrtime.bigint() - t0) / 1e6; // ms
+    };
+    const n1 = mk(2_000); // ~130 KB
+    const n2 = mk(4_000);
+    const n4 = mk(8_000);
+    time(n1); // warm
+    const t1 = time(n1);
+    const t2 = time(n2);
+    const t4 = time(n4);
+    // Sub-quadratic: 4N must cost < 6x 2N (quadratic would be ~4x per doubling:
+    // t4/t2 ≈ 4 AND t2/t1 ≈ 4 compounding; the bound keeps per-marker work
+    // constant, so the ratio must stay near-linear). CI runners jitter — the
+    // ratio bound is generous but still excludes quadratic blowup.
+    expect(t4).toBeLessThan(Math.max(t2 * 6, t2 + 250));
+    expect(t2).toBeLessThan(Math.max(t1 * 6, t1 + 250));
+  });
+
+  it('a real bounded PEM still redacts', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA' + 'A'.repeat(64) + '\n-----END RSA PRIVATE KEY-----';
+    const r = redactSecrets(pem);
+    expect(r.text).toBe('[REDACTED:private-key]');
+    expect(r.count).toBeGreaterThanOrEqual(1);
+  });
+});

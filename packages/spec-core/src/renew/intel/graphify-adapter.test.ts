@@ -308,7 +308,7 @@ describe('GraphifyAdapter.graphHealth typed statuses (INV-G3: S2-H-06/M-08)', ()
     expect(health.status).toBe('incompatible');
   });
 
-  it('probe failure that is NOT a version mismatch keeps its own code and no health status', async () => {
+  it('S3-M-01: probe failure that is NOT a version mismatch is TOTAL — own code plus probe_unavailable (never statusless)', async () => {
     const health = await makeAdapter(
       fakeRunner(() => ({ status: 'spawn_failed', message: 'ENOENT' })),
       (p) => (p.endsWith('manifest.json') ? validManifestText : fixtureGraphText),
@@ -316,7 +316,9 @@ describe('GraphifyAdapter.graphHealth typed statuses (INV-G3: S2-H-06/M-08)', ()
     expect(health.ok).toBe(false);
     if (health.ok) return;
     expect(health.code).toBe('not_installed');
-    expect(health.status).toBeUndefined();
+    // The health discriminant is REQUIRED on every failure arm; a generic
+    // probe failure is a tool problem, not a graph verdict.
+    expect(health.status).toBe('probe_unavailable');
   });
 
   it('matrix: no malformed manifest shape can ever produce ok:true (fail-closed sweep)', async () => {
