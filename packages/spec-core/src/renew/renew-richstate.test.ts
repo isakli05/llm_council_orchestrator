@@ -81,8 +81,8 @@ const analysisRecord = (id: string, snapshotId: string, outcome: 'validated' | '
     promoted:
       outcome === 'validated'
         ? {
-            hypotheses: [{ id: 'BHV-0001', statement: 'Fee under $25.', category: 'business_rule', confidence: 'high', anchors: [{ path: 'src/orders.ts', content_hash: sha('orders') }], rationale: 'r', status: 'hypothesized', anchor_results: [{ path: 'src/orders.ts', ok: true }] }],
-            uncertainties: [{ id: 'UNC-0001', question: 'Keep the fee?', impact: 'low', options: [{ option: 'yes' }, { option: 'no' }], anchors: [{ path: 'src/orders.ts', content_hash: sha('orders') }], anchor_results: [{ path: 'src/orders.ts', ok: true }] }],
+            hypotheses: [{ id: 'BHV-0001', statement: 'Fee under $25.', category: 'business_rule', confidence: 'high', anchors: [{ path: 'src/orders.ts', content_hash: sha('orders') }], rationale: 'r', status: 'hypothesized', anchor_results: [{ path: 'src/orders.ts', ok: true, scope: 'whole_file' as const }], support_status: 'unvalidated' as const }],
+            uncertainties: [{ id: 'UNC-0001', question: 'Keep the fee?', impact: 'low', options: [{ option: 'yes' }, { option: 'no' }], anchors: [{ path: 'src/orders.ts', content_hash: sha('orders') }], anchor_results: [{ path: 'src/orders.ts', ok: true, scope: 'whole_file' as const }] }],
           }
         : { hypotheses: [], uncertainties: [] },
     rejected: [],

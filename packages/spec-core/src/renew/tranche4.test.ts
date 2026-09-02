@@ -103,7 +103,7 @@ describe('export renderer states', () => {
       outcome: 'validated',
       validation: { schema_ok: true, retry_used: false, issues: [], anchors_total: 1, anchors_ok: 1, anchors_failed: 0 },
       promoted: {
-        hypotheses: [{ id: 'BHV-0001', statement: 's', category: 'business_rule', confidence: 'high', anchors: [{ path: 'a.ts', content_hash: sha('a') }], rationale: 'r', status: 'hypothesized', anchor_results: [{ path: 'a.ts', ok: true }] }],
+        hypotheses: [{ id: 'BHV-0001', statement: 's', category: 'business_rule', confidence: 'high', anchors: [{ path: 'a.ts', content_hash: sha('a') }], rationale: 'r', status: 'hypothesized', anchor_results: [{ path: 'a.ts', ok: true, scope: 'whole_file' as const }], support_status: 'unvalidated' as const }],
         uncertainties: [],
       },
       rejected: [{ id: 'BHV-0002', kind: 'hypothesis', reasons: ['anchor a.ts: hash_mismatch'] }],
@@ -120,6 +120,8 @@ describe('export renderer states', () => {
     expect(report).toMatch(/AN-0001/);
     expect(report).toMatch(/1 hypothesis|BHV/);
     expect(report).toMatch(/business_rule|business behavior/i);
+    // S2-H-10/INV-C: current section is honest about machine validation.
+    expect(report).toMatch(/provenance-verified — semantic support NOT machine-validated/);
     expect(report).toContain('rep');
     // And WITHOUT the view (graph unavailable): still renders.
     const bare = renderRenewalReport(loadRenewalState(dir), undefined);
@@ -257,7 +259,7 @@ describe('strategy + analysis store edges', () => {
 // --- planner residual branches + provider edges ----------------------------------------
 
 describe('planner residual branches', () => {
-          
+
   const g = graphOf();
   if (!g.ok) throw new Error(g.message);
   const MANIFEST = ['src/a.ts', 'src/gen/generated.ts', 'src/vendor/lib.ts', 'plain.ts'].map((p) => ({ path: p, sha256: sha(p) }));

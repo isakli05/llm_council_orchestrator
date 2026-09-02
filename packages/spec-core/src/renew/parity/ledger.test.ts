@@ -16,7 +16,7 @@ import {
   setRuling,
 } from './ledger';
 import type { AnalysisRecord } from '../recovery/schemas';
-import type { RenewalApprovalRecord } from '../clarify/approvals';
+import { buildRenewalApprovalRecord, type RenewalApprovalRecord } from '../clarify/approvals';
 
 const tmpDirs: string[] = [];
 function freshDir(): string {
@@ -69,21 +69,26 @@ function hypothesisAnalysis(): AnalysisRecord {
   ) as AnalysisRecord;
 }
 
-function approval(decisions: { claim_id: string; selected_option: string }[]): RenewalApprovalRecord {
-  return {
-    schema_version: 1,
-    approval_id: 'APPR-0001',
-    session_id: 's1',
-    round_count: 1,
-    approved_at: '2026-09-02T00:00:00Z',
-    decisions: decisions.map((d) => ({
-      claim_id: d.claim_id,
-      kind: 'uncertainty',
-      selected_option: d.selected_option,
-      evidence: { source: 'renewal-clarify:s1/round1', answer_text: d.selected_option, hash: sha(d.selected_option) },
-    })),
-    content_digest: sha(JSON.stringify(decisions)),
-  } as RenewalApprovalRecord;
+function approval(
+  decisions: { claim_id: string; selected_option?: string; free_text?: string }[],
+  approvalId = 'APPR-0001',
+): RenewalApprovalRecord {
+  return buildRenewalApprovalRecord(
+    {
+      decisions: decisions.map((d) => ({
+        claim_id: d.claim_id,
+        kind: 'parity',
+        ...(d.selected_option !== undefined ? { selected_option: d.selected_option } : {}),
+        ...(d.free_text !== undefined ? { free_text: d.free_text } : {}),
+        evidence: {
+          source: 'renewal-clarify:s1/round1',
+          answer_text: d.selected_option ?? d.free_text ?? '',
+          hash: sha(d.selected_option ?? d.free_text ?? ''),
+        },
+      })),
+    },
+    { approvalId, sessionId: 's1', roundCount: 1, approvedAt: '2026-09-02T00:00:00Z' },
+  );
 }
 
 function stageTarget(): string {
@@ -141,30 +146,50 @@ describe('ruling invariants', () => {
 });
 
 describe('applyApprovalToParity (approval decisions drive rulings)', () => {
-  it('canonical preserve/drop language maps to rulings with lineage', () => {
+  it('canonical option ids rule with lineage; a UNC-linked decision is informational and never rules', () => {
     const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
-    // Link the entry to the decision by seeding the uncertainty path: the
-    // entry is hypothesis-derived; the approval decides the linked question.
+    // UNC/OVL-linked decisions carry non-canonical options — informational
+    // context only, never a parity ruling.
     store.records[0].decision_claim_id = 'UNC-0001';
-    const r = applyApprovalToParity(store, approval([{ claim_id: 'UNC-0001', selected_option: 'Preserve the fee exactly' }]));
+    expect(applyApprovalToParity(store, approval([{ claim_id: 'UNC-0001', selected_option: 'Preserve the fee exactly' }])).updated).toEqual([]);
+    expect(store.records[0].ruling).toBe('unresolved');
+
+    // The canonical option id on the parity claim rules.
+    const r = applyApprovalToParity(
+      store,
+      approval([{ claim_id: 'PAR-0001', selected_option: 'preserve', free_text: 'Preserve the fee exactly' }]),
+    );
     expect(r.updated).toEqual(['PAR-0001']);
+    expect(r.stillUnresolved).toEqual([]);
     expect(store.records[0].ruling).toBe('preserve');
     expect(store.records[0].approval_id).toBe('APPR-0001');
+    expect(store.records[0].support_status).toBe('human_confirmed');
+    expect(store.records[0].rationale).toContain("canonical 'preserve'");
     expect(store.records[0].rationale).toContain('Preserve the fee exactly');
   });
 
-  it('DROP language only maps with the word drop — never by omission', () => {
-    const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
-    store.records[0].decision_claim_id = 'UNC-0001';
-    applyApprovalToParity(store, approval([{ claim_id: 'UNC-0001', selected_option: 'Drop the fee entirely' }]));
-    expect(store.records[0].ruling).toBe('drop');
+  it('DROP is authorized only by the canonical option id — negated prose never authorizes drop', () => {
+    // 'Do not drop; preserve' contains the drop keyword — under free-text
+    // interpretation that mapped to DROP; it must stay UNRESOLVED now.
+    const negated = parityFromAnalyses([hypothesisAnalysis()], SNAP);
+    const r = applyApprovalToParity(negated, approval([{ claim_id: 'PAR-0001', selected_option: 'Do not drop; preserve' }]));
+    expect(r.stillUnresolved).toEqual(['PAR-0001']);
+    expect(negated.records[0].ruling).toBe('unresolved');
+    expect(negated.records[0].rationale).toContain('not a canonical');
+
+    // Canonical 'drop' still rules drop (with lineage).
+    const canonical = parityFromAnalyses([hypothesisAnalysis()], SNAP);
+    const applied = applyApprovalToParity(canonical, approval([{ claim_id: 'PAR-0001', selected_option: 'drop' }]));
+    expect(applied.updated).toEqual(['PAR-0001']);
+    expect(canonical.records[0].ruling).toBe('drop');
+    expect(canonical.records[0].approval_id).toBe('APPR-0001');
   });
 
-  it('ambiguous approved text stays UNRESOLVED and visible (blocks, never guesses)', () => {
+  it('non-canonical approved text stays UNRESOLVED and visible (blocks, never guesses)', () => {
     const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
-    store.records[0].decision_claim_id = 'UNC-0001';
-    const r = applyApprovalToParity(store, approval([{ claim_id: 'UNC-0001', selected_option: 'Revisit the threshold later' }]));
+    const r = applyApprovalToParity(store, approval([{ claim_id: 'PAR-0001', selected_option: 'Revisit the threshold later' }]));
     expect(r.updated).toEqual(['PAR-0001']);
+    expect(r.stillUnresolved).toEqual(['PAR-0001']);
     expect(store.records[0].ruling).toBe('unresolved');
     expect(store.records[0].rationale).toContain('Revisit the threshold later');
   });
@@ -182,8 +207,7 @@ describe('parityGate (plan finalization precondition)', () => {
 
   it('blocks on stale anchors (verified against the live tree)', () => {
     const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
-    store.records[0].decision_claim_id = 'UNC-0001';
-    applyApprovalToParity(store, approval([{ claim_id: 'UNC-0001', selected_option: 'Preserve it' }]));
+    applyApprovalToParity(store, approval([{ claim_id: 'PAR-0001', selected_option: 'preserve' }]));
     const root = stageTarget();
     writeFileSync(join(root, 'src', 'orders.ts'), 'CHANGED');
     const gate = parityGate(store, root);
@@ -192,8 +216,7 @@ describe('parityGate (plan finalization precondition)', () => {
 
   it('passes when every entry is ruled and anchored to current source', () => {
     const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
-    store.records[0].decision_claim_id = 'UNC-0001';
-    applyApprovalToParity(store, approval([{ claim_id: 'UNC-0001', selected_option: 'Preserve it' }]));
+    applyApprovalToParity(store, approval([{ claim_id: 'PAR-0001', selected_option: 'preserve' }]));
     expect(parityGate(store, stageTarget()).ok).toBe(true);
   });
 });
@@ -201,8 +224,7 @@ describe('parityGate (plan finalization precondition)', () => {
 describe('projection to the spec legacy package + persistence', () => {
   it('projects ruled entries to preserve_change_drop items', () => {
     const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
-    store.records[0].decision_claim_id = 'UNC-0001';
-    applyApprovalToParity(store, approval([{ claim_id: 'UNC-0001', selected_option: 'Preserve it' }]));
+    applyApprovalToParity(store, approval([{ claim_id: 'PAR-0001', selected_option: 'preserve' }]));
     const projection = parityProjection(store);
     expect(projection.items).toHaveLength(1);
     expect(projection.items[0]).toMatchObject({ behavior: expect.stringContaining('small-order'), decision: 'preserve' });

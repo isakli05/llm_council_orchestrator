@@ -29,11 +29,11 @@ import { singleRoutePlan } from '../llm/plan';
 import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 import {
   applyApprovalToParity,
+  canonicalRuling,
   emptyParity,
   parityGate,
-  rulingFromApprovedText,
 } from './parity/ledger';
-import { buildRenewalApprovalRecord, loadRenewalApproval } from './clarify/approvals';
+import { buildRenewalApprovalRecord, loadRenewalApproval, renewalApprovalDigest, type RenewalApprovalRecord } from './clarify/approvals';
 
 const tmpDirs: string[] = [];
 function freshDir(p: string): string {
@@ -66,14 +66,20 @@ function makeTarget(): string {
   return target;
 }
 
-describe('canonical ruling language (H-08)', () => {
-  it('PRESERVE / CHANGE / DROP all map from the canonical option language', () => {
-    expect(rulingFromApprovedText('Preserve current behavior; verify parity during migration')).toBe('preserve');
-    expect(rulingFromApprovedText('Change the behavior deliberately; capture the new intent')).toBe('change');
-    expect(rulingFromApprovedText('Drop the behavior as unused')).toBe('drop');
-    expect(rulingFromApprovedText('keep it as-is')).toBe('preserve');
-    expect(rulingFromApprovedText('remove this dead path')).toBe('drop');
-    expect(rulingFromApprovedText('maybe look at it later')).toBe('unresolved');
+describe('canonical ruling language (H-08 / S2-C-05)', () => {
+  it('only the canonical option ids authorize — prose NEVER maps (free text cannot rule)', () => {
+    // S2-C-05: rulingFromApprovedText is deleted; the ONLY text→ruling mapping
+    // left in the system is this pure identity check on canonical option ids.
+    expect(canonicalRuling('preserve')).toBe('preserve');
+    expect(canonicalRuling('change')).toBe('change');
+    expect(canonicalRuling('drop')).toBe('drop');
+    // Prose that used to keyword-match — and once authorized DROP — must not.
+    expect(canonicalRuling('Preserve current behavior; verify parity during migration')).toBeUndefined();
+    expect(canonicalRuling('keep it as-is')).toBeUndefined();
+    expect(canonicalRuling('Drop the behavior as unused')).toBeUndefined();
+    expect(canonicalRuling('remove this dead path')).toBeUndefined();
+    expect(canonicalRuling('maybe look at it later')).toBeUndefined();
+    expect(canonicalRuling(undefined)).toBeUndefined();
   });
 
   it('a CHANGE approval actually produces a change ruling in the ledger', () => {
@@ -92,8 +98,9 @@ describe('canonical ruling language (H-08)', () => {
           {
             claim_id: 'PAR-0001',
             kind: 'parity',
-            selected_option: 'Change the behavior deliberately; capture the new intent',
-            evidence: { source: 'test', answer_text: 'Change the behavior deliberately; capture the new intent', hash: sha('Change the behavior deliberately; capture the new intent') },
+            selected_option: 'change',
+            free_text: 'Change the behavior deliberately; capture the new intent',
+            evidence: { source: 'test', answer_text: 'change', hash: sha('change') },
           },
         ],
       },
@@ -103,6 +110,7 @@ describe('canonical ruling language (H-08)', () => {
     expect(result.stillUnresolved).toHaveLength(0);
     expect(store.records[0]!.ruling).toBe('change');
     expect(store.records[0]!.approval_id).toBe('APPR-0001');
+    expect(store.records[0]!.support_status).toBe('human_confirmed');
   });
 });
 
@@ -142,32 +150,36 @@ describe('approval record self-verification (F3)', () => {
 
   it('tampered answer TEXT is refused (digest or evidence hash catches it)', () => {
     const dir = freshDir('lco-appr-');
-    const rec = buildRecord() as unknown as {
-      content_digest: string;
-      decisions: { evidence: { answer_text: string } }[];
-    };
+    const rec = buildRecord() as unknown as RenewalApprovalRecord;
     rec.decisions[0]!.evidence.answer_text = 'Drop everything instead';
-    // Keep the digest CONSISTENT with the tampered decisions so the per-decision
-    // evidence-hash layer is the one that fires (both layers must detect).
-    rec.content_digest = `sha256:${createHash('sha256')
-      .update(
-        JSON.stringify({
-          decisions: [
-            {
-              claim_id: 'PAR-0001',
-              kind: 'parity',
-              selected_option: 'Preserve current behavior',
-              evidence: { source: 'test', answer_text: 'Drop everything instead', hash: sha('Preserve current behavior') },
-            },
-          ].sort((a, b) => (a.claim_id < b.claim_id ? -1 : 1)),
-        }),
-      )
-      .digest('hex')}`;
+    // Keep the digest CONSISTENT with the tampered decisions (v2 binds ALL
+    // authority fields) so the per-decision evidence-hash layer is the one
+    // that fires (both layers must detect).
+    rec.content_digest = renewalApprovalDigest({
+      schema_version: rec.schema_version,
+      approval_id: rec.approval_id,
+      session_id: rec.session_id,
+      round_count: rec.round_count,
+      ...(rec.project_name !== undefined ? { project_name: rec.project_name } : {}),
+      ...(rec.snapshot_id !== undefined ? { snapshot_id: rec.snapshot_id } : {}),
+      decisions: rec.decisions,
+    });
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(rec));
     const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.code).toBe('evidence_mismatch');
+  });
+
+  it('a tampered authority field (snapshot_id) is refused by the v2 digest (S2-C-04)', () => {
+    const dir = freshDir('lco-appr-');
+    const rec = buildRecord() as unknown as RenewalApprovalRecord;
+    rec.snapshot_id = 'RSN-ffffffffffffffff'; // moved authority to another state
+    writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(rec));
+    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('digest_mismatch');
   });
 });
 
@@ -201,8 +213,8 @@ describe('approval referential integrity at the gate (F4 / C-08)', () => {
           {
             claim_id: 'PAR-0001',
             kind: 'parity',
-            selected_option: 'Drop the behavior as unused',
-            evidence: { source: 't', answer_text: 'Drop the behavior as unused', hash: sha('Drop the behavior as unused') },
+            selected_option: 'drop', // canonical — the snapshot binding is the ONLY blocker
+            evidence: { source: 't', answer_text: 'drop', hash: sha('drop') },
           },
         ],
       },
@@ -234,8 +246,8 @@ describe('approval referential integrity at the gate (F4 / C-08)', () => {
           {
             claim_id: 'PAR-0001',
             kind: 'parity',
-            selected_option: 'Preserve current behavior',
-            evidence: { source: 't', answer_text: 'Preserve current behavior', hash: sha('Preserve current behavior') },
+            selected_option: 'preserve', // canonical preserve cannot authorize entry ruling 'drop'
+            evidence: { source: 't', answer_text: 'preserve', hash: sha('preserve') },
           },
         ],
       },
@@ -305,10 +317,10 @@ describe('review revalidates source state (H-09)', () => {
     };
     expect((await cmdRenewAnalyze({ dir: project }, analyzeCaps)).code).toBe(0);
 
-    // Headless review: CHANGE the behavior + select a strategy.
+    // Headless review: CHANGE the behavior (canonical option id) + select a strategy.
     const answers = {
       answers: [
-        { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'Change the behavior deliberately; capture the new intent' },
+        { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'change' },
         { decisionId: 'STG-0001', kind: 'option', selectedOption: 'strangler' },
       ],
     };

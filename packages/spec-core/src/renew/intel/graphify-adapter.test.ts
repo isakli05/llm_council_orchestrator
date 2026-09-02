@@ -28,6 +28,12 @@ const okVersion = (v: string): SubprocessResult => ({
 
 const goodFile = () => fixtureGraphText;
 
+/** Real graphify manifest shape: file path → { mtime, seen, ast_hash, … }. */
+const validManifestText = JSON.stringify({
+  'src/orders.ts': { mtime: 1, seen: 1, ast_hash: 'a1b2c3', semantic_hash: 'a1b2c3' },
+  'src/pricing.ts': { mtime: 2, seen: 2, ast_hash: 'd4e5f6', semantic_hash: '' },
+});
+
 function makeAdapter(runner: SubprocessRunner, readFile: (p: string) => string = goodFile) {
   return new GraphifyAdapter({ workspaceRoot: '/tmp/ws', runner, readFile });
 }
@@ -144,12 +150,13 @@ describe('GraphifyAdapter graph reads', () => {
     const readPaths: string[] = [];
     const adapter = makeAdapter(runner, (p) => {
       readPaths.push(p);
-      if (p.endsWith('manifest.json')) return '{}';
+      if (p.endsWith('manifest.json')) return validManifestText;
       return fixtureGraphText;
     });
     const health = await adapter.graphHealth();
     expect(health.ok).toBe(true);
     if (!health.ok) return;
+    expect(health.status).toBe('healthy');
     expect(health.node_count).toBe(11);
     expect(health.edge_count).toBe(15);
     expect(health.languages).toEqual(['ts']);
@@ -158,7 +165,7 @@ describe('GraphifyAdapter graph reads', () => {
     // the graph read happens first, the manifest read second.
     expect(readPaths[0]).toBe(join('/tmp/ws', 'graphify-out', 'graph.json'));
     expect(readPaths[1]).toBe(join('/tmp/ws', 'graphify-out', 'manifest.json'));
-    expect(health.manifest_entries).toBeGreaterThanOrEqual(0);
+    expect(health.manifest_entries).toBe(2);
   });
 
   it('reports graph_missing when graph.json is absent', async () => {
@@ -170,12 +177,13 @@ describe('GraphifyAdapter graph reads', () => {
     expect(health.ok).toBe(false);
     if (health.ok) return;
     expect(health.code).toBe('graph_missing');
+    expect(health.status).toBe('missing');
   });
 
   it('reports graph_invalid on malformed graph.json (never a partial success)', async () => {
     const runner = fakeRunner(() => okVersion('0.9.50'));
     const health = makeAdapter(runner, () => '{"nodes":[]}').graphHealth();
-    await expect(health).resolves.toMatchObject({ ok: false, code: 'graph_invalid' });
+    await expect(health).resolves.toMatchObject({ ok: false, code: 'graph_invalid', status: 'malformed' });
   });
 
   it('serves affected/godNodes/path/explain deterministically from the graph file', async () => {
@@ -197,5 +205,136 @@ describe('GraphifyAdapter graph reads', () => {
     });
     await adapter.probe();
     expect(runner.calls[0].exe).toBe('/opt/graphify/bin/graphify');
+  });
+});
+
+describe('GraphifyAdapter.graphHealth typed statuses (INV-G3: S2-H-06/M-08)', () => {
+  /** graph.json serves the committed fixture; manifest.json serves `manifest`. */
+  const healthWithManifest = (manifest: string) =>
+    makeAdapter(fakeRunner(() => okVersion('0.9.50')), (p) =>
+      p.endsWith('manifest.json') ? manifest : fixtureGraphText,
+    ).graphHealth();
+
+  it('healthy: valid graph + valid non-empty manifest + supported version', async () => {
+    const health = await healthWithManifest(validManifestText);
+    expect(health.ok).toBe(true);
+    if (!health.ok) return;
+    expect(health.status).toBe('healthy');
+    expect(health.manifest_entries).toBe(2);
+    expect(health.provider_version).toBe('0.9.50');
+  });
+
+  it('missing: no manifest.json beside a parsed graph is incomplete state, not healthy', async () => {
+    const health = await makeAdapter(fakeRunner(() => okVersion('0.9.50')), (p) => {
+      if (p.endsWith('manifest.json')) throw new Error('ENOENT');
+      return fixtureGraphText;
+    }).graphHealth();
+    expect(health.ok).toBe(false);
+    if (health.ok) return;
+    expect(health.code).toBe('graph_missing');
+    expect(health.status).toBe('missing');
+    expect(health.message).toContain('manifest');
+  });
+
+  it('malformed: manifest.json that is not valid JSON', async () => {
+    const health = await healthWithManifest('{ not json');
+    expect(health.ok).toBe(false);
+    if (health.ok) return;
+    expect(health.code).toBe('graph_invalid');
+    expect(health.status).toBe('malformed');
+    expect(health.message).toContain('not valid JSON');
+  });
+
+  it('malformed: manifest {} beside a parsed graph (a built graph has ≥1 entry)', async () => {
+    const health = await healthWithManifest('{}');
+    expect(health.ok).toBe(false);
+    if (health.ok) return;
+    expect(health.status).toBe('malformed');
+    expect(health.message).toMatch(/0 entries/);
+  });
+
+  it('mutation-sensitivity: a HEALTHY verdict is impossible when the manifest is {}', async () => {
+    const health = await healthWithManifest('{}');
+    // Kills any mutant that recomputes counts but still returns ok:true for
+    // an empty manifest: the verdict itself must be a typed failure.
+    expect(health.ok).toBe(false);
+    expect((health as { status?: string }).status).not.toBe('healthy');
+    expect((health as { manifest_entries?: number }).manifest_entries).toBeUndefined();
+  });
+
+  it.each([
+    ['non-object manifest (array)', '[]'],
+    ['non-object manifest (string)', '"nope"'],
+    ['null manifest', 'null'],
+    ['scalar entry value', '{"src/orders.ts": "hash-not-object"}'],
+    ['entry missing ast_hash', '{"src/orders.ts": {"mtime": 1, "seen": 1}}'],
+    ['entry with non-string ast_hash', '{"src/orders.ts": {"ast_hash": 42}}'],
+    ['entry with empty ast_hash', '{"src/orders.ts": {"ast_hash": ""}}'],
+  ])('malformed: %s is never healthy', async (_label, manifest) => {
+    const health = await healthWithManifest(manifest as string);
+    expect(health.ok).toBe(false);
+    if (health.ok) return;
+    expect(health.code).toBe('graph_invalid');
+    expect(health.status).toBe('malformed');
+    expect(health.message).toMatch(/ast_hash|object|entries/);
+  });
+
+  it('malformed: duplicate node ids in graph.json surface through health', async () => {
+    const dupGraph = JSON.stringify({
+      nodes: [
+        { id: 'src_orders_createorder', label: 'createOrder', source_file: 'src/orders.ts' },
+        { id: 'src_orders_createorder', label: 'createOrder', source_file: 'src/orders.ts' },
+      ],
+      links: [],
+    });
+    const health = await makeAdapter(fakeRunner(() => okVersion('0.9.50')), (p) =>
+      p.endsWith('manifest.json') ? validManifestText : dupGraph,
+    ).graphHealth();
+    expect(health.ok).toBe(false);
+    if (health.ok) return;
+    expect(health.code).toBe('graph_invalid');
+    expect(health.status).toBe('malformed');
+    expect(health.message).toContain('duplicate node id');
+    expect(health.message).toContain('src_orders_createorder');
+  });
+
+  it('incompatible: an unsupported provider version is a typed failure, not healthy-unknown', async () => {
+    const health = await makeAdapter(fakeRunner(() => okVersion('0.10.0')), (p) =>
+      p.endsWith('manifest.json') ? validManifestText : fixtureGraphText,
+    ).graphHealth();
+    expect(health.ok).toBe(false);
+    if (health.ok) return;
+    expect(health.code).toBe('unsupported_version');
+    expect(health.status).toBe('incompatible');
+  });
+
+  it('probe failure that is NOT a version mismatch keeps its own code and no health status', async () => {
+    const health = await makeAdapter(
+      fakeRunner(() => ({ status: 'spawn_failed', message: 'ENOENT' })),
+      (p) => (p.endsWith('manifest.json') ? validManifestText : fixtureGraphText),
+    ).graphHealth();
+    expect(health.ok).toBe(false);
+    if (health.ok) return;
+    expect(health.code).toBe('not_installed');
+    expect(health.status).toBeUndefined();
+  });
+
+  it('matrix: no malformed manifest shape can ever produce ok:true (fail-closed sweep)', async () => {
+    const badManifests = [
+      '{',
+      '[]',
+      '"nope"',
+      'null',
+      '{}',
+      '{"src/a.ts": "scalar"}',
+      '{"src/a.ts": {}}',
+      '{"src/a.ts": { "ast_hash": 7 }}',
+      '{"src/a.ts": { "ast_hash": "" }}',
+    ];
+    for (const manifest of badManifests) {
+      const health = await healthWithManifest(manifest);
+      expect(health.ok, `manifest ${manifest} must not be healthy`).toBe(false);
+      if (!health.ok) expect(health.status).toBe('malformed');
+    }
   });
 });

@@ -69,11 +69,16 @@ describe('pipeline usage and persist arms', () => {
     const adapter: LlmAdapter = {
       complete: async () => ({
         text: JSON.stringify({ hypotheses: [], uncertainties: [{ id: 'UNC-0001', question: 'q?', impact: 'low', options: [{ option: 'x' }, { option: 'y' }], anchors: [{ path: 'src/a.ts', content_hash: hash }] }], coverage_notes: [] }),
-        usage: {
-          in_tokens: 10, out_tokens: 5,
-          reasoning_tokens: 7, cache_read_tokens: 3, cache_write_tokens: 2,
-          cost: 0.0125, currency: 'USD', resolved_model: 'served-model-x',
-        } as never,
+        usage: { in_tokens: 10, out_tokens: 5 },
+        // INV-F1: accounting reads the REAL response shape — provenance and
+        // usageDetails objects, latencyMs — never flat usage.* fields.
+        provenance: {
+          gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm',
+          resolvedModel: 'served-model-x', upstreamProvider: 'vendor-a', requestId: 'req-1',
+          cost: { amount: 0.0125, currency: 'USD' },
+        },
+        usageDetails: { reasoningTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 2 },
+        latencyMs: 42,
       }),
     };
     let saved: AnalysisRecord | undefined;
@@ -85,6 +90,7 @@ describe('pipeline usage and persist arms', () => {
     expect(saved!.usage).toMatchObject({
       reasoning_tokens: 7, cache_read_tokens: 3, cache_write_tokens: 2,
       cost: 0.0125, currency: 'USD', resolved_model: 'served-model-x',
+      upstream_provider: 'vendor-a', request_id: 'req-1', latency_ms: 42,
     });
   });
 
@@ -185,8 +191,15 @@ describe('provider contracts over a MINIMAL graph (no labels/locations)', () => 
     expect(a.ok).toBe(true);
     const gods = await adapter.godNodes(2);
     expect(Array.isArray(gods) && gods.length).toBeGreaterThan(0);
+    // S2-H-06/INV-G1: a '{}' manifest beside a built graph is INCONSISTENT
+    // state — typed malformed, never a healthy zero-entry metric.
     const h = await adapter.graphHealth();
-    expect(h.ok).toBe(true);
+    expect(h.ok).toBe(false);
+    if (!h.ok) {
+      expect(h.code).toBe('graph_invalid');
+      expect(h.status).toBe('malformed');
+      expect(h.message).toMatch(/0 entries/);
+    }
   });
 
   it('per-method failure arms: a missing graph yields typed failures everywhere', async () => {

@@ -114,7 +114,18 @@ describe('renewal clarify session state machine', () => {
     const payload = { decisions: [{ claim_id: 'STG-0001', kind: 'strategy' as const, selected_option: 'strangler', evidence: { source: 't', answer_text: 'strangler', hash: sha('strangler') } }] };
     const record = buildRenewalApprovalRecord(payload, { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: 't', snapshotId: 'RSN-aaaaaaaaaaaaaaaa' });
     expect(record.snapshot_id).toBe('RSN-aaaaaaaaaaaaaaaa');
-    expect(renewalApprovalDigest({ decisions: record.decisions })).toBe(record.content_digest);
+    // Digest v2 (S2-C-04): recomputation must pass the FULL authority body —
+    // identity, snapshot binding, and decisions — not decisions alone.
+    expect(
+      renewalApprovalDigest({
+        schema_version: record.schema_version,
+        approval_id: record.approval_id,
+        session_id: record.session_id,
+        round_count: record.round_count,
+        snapshot_id: record.snapshot_id,
+        decisions: record.decisions,
+      }),
+    ).toBe(record.content_digest);
   });
 });
 

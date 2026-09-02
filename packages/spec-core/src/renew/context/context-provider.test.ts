@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseGraphFile } from '../intel/graph-reader';
+import { parseGraphFile, parseGraphText } from '../intel/graph-reader';
 import {
   GraphContextProvider,
   RENEW_CONTEXT_LIMITS,
   type SliceReader,
 } from './context-provider';
 import { ContextBundleSchema } from './bundle';
+import { buildRecoveryPrompt, serializedSizeOfItem } from '../recovery/prompts';
 import type { FileManifest } from '../ingest/workspace-copy';
 
 const fixturePath = join(__dirname, '..', '..', '..', 'fixtures', 'legacy-app', 'graph-fixture.json');
@@ -123,17 +124,21 @@ describe('GraphContextProvider (deterministic, provenance-carrying)', () => {
     expect(slice ? slice.start_line <= 21 : false).toBe(true);
   });
 
-  it('enforces caps and reports truncation honestly', () => {
+  it('enforces caps and reports truncation honestly (S2-H-04: serialized-size budget)', () => {
     const provider = new GraphContextProvider({
       graph,
       manifest,
       readSlice: reader,
-      limits: { maxItems: 5, maxTotalChars: 400, maxFileSliceChars: 8_000, maxSliceLines: 200, maxSliceFiles: 12 },
+      limits: { maxItems: 5, maxTotalChars: 3_000, maxFileSliceChars: 8_000, maxSliceLines: 200, maxSliceFiles: 12 },
     });
     const bundle = provider.contextFor({ type: 'whole' });
     expect(bundle.items.length).toBeLessThanOrEqual(5);
-    expect(bundle.total_chars).toBeLessThanOrEqual(400 + 5 * 200); // overhead allowance per kept item
     expect(bundle.truncated).toBe(true);
+    // total_chars is the sum of SERIALIZED item sizes — labels, paths, ids,
+    // and JSON overhead included — never a flat per-item constant.
+    const expected = bundle.items.reduce((sum, i) => sum + serializedSizeOfItem(i), 0);
+    expect(bundle.total_chars).toBe(expected);
+    expect(bundle.total_chars).toBeLessThanOrEqual(3_000);
   });
 
   it('respects per-slice line and char caps', () => {
@@ -150,6 +155,68 @@ describe('GraphContextProvider (deterministic, provenance-carrying)', () => {
         expect(item.text.length).toBeLessThanOrEqual(5_000);
       }
     }
+  });
+});
+
+// --- S2-H-04: honest serialized-size accounting -----------------------------------------
+
+describe('context accounting counts serialized bytes (S2-H-04)', () => {
+  const GITHUB_LABEL = 'ghp_Synthet1cLabelToken0123456789abcdef';
+
+  const makeLabeledGraph = (symbolNodes: number, secretLabelIndex = -1) => {
+    const nodes: { id: string; label: string; source_file: string; source_location: string }[] = [];
+    const links: { source: string; target: string; relation?: string }[] = [];
+    for (let i = 0; i < symbolNodes; i++) {
+      const label = i === secretLabelIndex ? GITHUB_LABEL : `businessRuleHandlerWithLongDescriptiveName${i}`;
+      nodes.push({ id: `n${i}`, label, source_file: 'src/domain.ts', source_location: `L${(i % 50) + 1}` });
+      links.push({ source: `n${i}`, target: `n${(i + 1) % symbolNodes}`, relation: 'calls' });
+    }
+    const parsed = parseGraphText(JSON.stringify({ directed: true, nodes, links }));
+    if (!parsed.ok) throw new Error(parsed.message);
+    return parsed.graph;
+  };
+
+  const tinyReader: SliceReader = (path, startLine, endLine) => ({
+    text: `slice of ${path} lines ${startLine}-${endLine}`,
+    startLine,
+    endLine,
+  });
+
+  it('total_chars equals the serialized sizes and EXCEEDS raw text when labels/paths dominate', () => {
+    const provider = new GraphContextProvider({
+      graph: makeLabeledGraph(120),
+      manifest: [{ path: 'src/domain.ts', sha256: 'sha256:3333333333333333333333333333333333333333333333333333333333333333' }],
+      readSlice: tinyReader,
+    });
+    const bundle = provider.contextFor({ type: 'whole' });
+    expect(ContextBundleSchema.safeParse(bundle).success).toBe(true);
+
+    const serialized = bundle.items.reduce((sum, i) => sum + serializedSizeOfItem(i), 0);
+    expect(bundle.total_chars).toBe(serialized); // accounting == what the prompt serializes
+
+    // The audited failure mode: 40-char flat overhead ignored labels/paths.
+    const rawText = bundle.items.reduce((sum, i) => sum + ('text' in i ? i.text.length : 0), 0);
+    expect(bundle.total_chars).toBeGreaterThan(rawText); // labels/paths/ids/overhead counted
+
+    // And it is the right ORDER: the built prompt's document grows with it.
+    const doc = buildRecoveryPrompt({ scope: bundle.scope, bundle, nowIso: '2026-09-02T00:00:00Z' });
+    const start = doc.indexOf('UNTRUSTED SOURCE DATA START');
+    const end = doc.lastIndexOf('UNTRUSTED SOURCE DATA END');
+    const docBytes = end - start;
+    expect(docBytes).toBeGreaterThan(bundle.total_chars); // document ⊇ item projections
+    expect(docBytes).toBeLessThan(bundle.total_chars + bundle.items.length * 4 + 200); // wrapper+separators only
+  });
+
+  it('a graph label containing a secret is redacted when the bundle is serialized into a prompt', () => {
+    const provider = new GraphContextProvider({
+      graph: makeLabeledGraph(8, /* secretLabelIndex */ 3),
+      manifest: [{ path: 'src/domain.ts', sha256: 'sha256:4444444444444444444444444444444444444444444444444444444444444444' }],
+      readSlice: tinyReader,
+    });
+    const bundle = provider.contextFor({ type: 'whole' });
+    const prompt = buildRecoveryPrompt({ scope: bundle.scope, bundle, nowIso: '2026-09-02T00:00:00Z' });
+    expect(prompt).not.toContain(GITHUB_LABEL);
+    expect(prompt).toMatch(/\[REDACTED:github-token\]/);
   });
 });
 

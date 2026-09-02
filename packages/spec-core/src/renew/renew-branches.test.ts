@@ -140,12 +140,14 @@ describe('status variants', () => {
 });
 
 describe('analyze refusal arms', () => {
-  it('a failed walk (target vanished) fails with the walk error', async () => {
+  it('a vanished target is the typed identity gate (S2-H-11): code 2, renewal target missing', async () => {
     const { project, target } = await initProject('gone');
     rmSync(target, { recursive: true, force: true });
     const r = await cmdRenewAnalyze({ dir: project }, caps());
-    expect(r.code).toBe(1);
-    expect(r.output).toMatch(/walk failed|target repository not found/);
+    // The target-identity join fires BEFORE the walk — a project pointing at
+    // nothing never reaches analysis.
+    expect(r.code).toBe(2);
+    expect(r.output).toMatch(/renewal target missing/);
   });
 
   it('a graph that becomes unreadable mid-flow fails closed at analyze', async () => {
@@ -334,13 +336,15 @@ describe('export arms', () => {
     expect(r.output.length).toBeGreaterThan(50);
   });
 
-  it('export containment still holds when the recorded target no longer exists', async () => {
+  it('export refuses (typed, zero writes) when the recorded target no longer exists', async () => {
     const { project, target } = await initProject('expnotarget');
     rmSync(target, { recursive: true, force: true });
     const outside = freshDir('lco-rb-out-');
     const r = await cmdRenewExport({ dir: project, out: join(outside, 'escape.md') }, caps());
+    // S2-H-11: the target-identity gate fires before any export path is
+    // resolved or written — containment is subsumed by the typed refusal.
     expect(r.code).toBe(2);
-    expect(r.output).toMatch(/outside the project/);
+    expect(r.output).toMatch(/renewal target missing/);
     expect(existsSync(join(outside, 'escape.md'))).toBe(false);
   });
 });

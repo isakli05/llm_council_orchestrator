@@ -116,7 +116,7 @@ describe('renewal V1 end-to-end (fixture app, scripted LLM, injected provider)',
     // 2. analyze — PAID; scripted LLM; anchors must verify against the real target
     const analyze = await cmdRenewAnalyze({ dir: project }, caps);
     expect(analyze.code).toBe(0);
-    expect(analyze.output).toMatch(/2 hypothesis\(ies\) verified, 1 question\(s\)/);
+    expect(analyze.output).toMatch(/2 hypothesis\(ies\) provenance-verified \(semantic support NOT machine-validated\), 1 question\(s\)/);
     expect(llmCalls).toBe(1);
     expect(existsSync(join(project, '.lco', 'renewal', 'analyses', 'AN-0001.json'))).toBe(true);
 
@@ -125,14 +125,17 @@ describe('renewal V1 end-to-end (fixture app, scripted LLM, injected provider)',
     expect(status1.output).toMatch(/open questions: 1/);
     expect(status1.output).toMatch(/2 UNRESOLVED/);
 
-    // 4. review (headless answers: preserve the fee; strategy strangler)
+    // 4. review (headless answers). S2-C-05: the UNC answer is informational
+    // context only — EVERY parity entry needs its own canonical ruling, so
+    // PAR-0001 (uncertainty-linked) is asked and answered too.
     const answersFile = join(project, 'answers.json');
     writeFileSync(
       answersFile,
       JSON.stringify({
         answers: [
           { decisionId: 'UNC-0001', kind: 'option', selectedOption: 'Preserve the fee exactly' },
-          { decisionId: 'PAR-0002', kind: 'option', selectedOption: 'Preserve current behavior; verify parity during migration' },
+          { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'preserve' },
+          { decisionId: 'PAR-0002', kind: 'option', selectedOption: 'preserve' },
           { decisionId: 'STG-0001', kind: 'option', selectedOption: 'strangler' },
         ],
       }),

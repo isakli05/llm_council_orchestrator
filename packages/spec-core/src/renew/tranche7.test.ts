@@ -95,17 +95,18 @@ describe('distiller sort and fallback arms', () => {
     expect(qs.map((q) => q.claimId)).toEqual(['OVL-0002', 'OVL-0005']);
   });
 
-  it('multiple unresolved parity entries sort by id; LINKED entries are skipped', () => {
+  it('unresolved parity entries sort by id; UNC-linked ones STILL ask, only PAR-linked are skipped (S2-C-05)', () => {
     const overlay = emptyOverlay(SNAP);
     const parity = {
       schema_version: 1 as const, snapshot_id: SNAP, records: [
+        { id: 'PAR-0009', behavior: 'b9', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0009' }], snapshot_id: SNAP, decision_claim_id: 'PAR-0009' }, // PAR-linked (answered canonical question) → skipped
         { id: 'PAR-0007', behavior: 'b7', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }], snapshot_id: SNAP },
-        { id: 'PAR-0003', behavior: 'b3', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0002' }], snapshot_id: SNAP, decision_claim_id: 'UNC-0002' }, // linked → skipped
+        { id: 'PAR-0003', behavior: 'b3', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0002' }], snapshot_id: SNAP, decision_claim_id: 'UNC-0002' }, // UNC link is informational → STILL asked
         { id: 'PAR-0001', behavior: 'b1', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0003' }], snapshot_id: SNAP },
       ],
     };
     const qs = distillRenewalQuestions({ analyses: [], overlay, parity: parity as never });
-    expect(qs.map((q) => q.claimId)).toEqual(['PAR-0001', 'PAR-0007']);
+    expect(qs.map((q) => q.claimId)).toEqual(['PAR-0001', 'PAR-0003', 'PAR-0007']);
   });
 
   it('an option answer without selectedOption falls back to an empty answer text (honest evidence hash)', () => {
@@ -132,20 +133,38 @@ describe('distiller sort and fallback arms', () => {
 });
 
 describe('buffer arms (variance margin)', () => {
-  it('parseGraphManifestStrict: non-object manifests and odd entries are typed invalid; missing ast_hash degrades to empty', async () => {
+  it('parseGraphManifestStrict: malformed entries, {} and missing ast_hash are manifest_invalid (never zero-entry healthy)', async () => {
     const { parseGraphManifestStrict } = await import('./snapshot/snapshot');
     const bad = parseGraphManifestStrict('[1,2]');
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.code).toBe('manifest_invalid');
     const missing = parseGraphManifestStrict('null');
     expect(missing.ok).toBe(false);
+    // S2-H-06: a scalar entry and a null entry are malformed ENTRIES — typed
+    // invalid naming the path; they must never degrade to empty ast hashes.
     const odd = parseGraphManifestStrict('{"a.ts": "just-a-string", "b.ts": {"ast_hash": "x"}, "c.ts": null}');
-    expect(odd.ok).toBe(true);
-    if (odd.ok) {
-      // All three entries count; non-entry values degrade to empty ast hashes
-      // inside the digest payload (identity stays total, never throws).
-      expect(odd.identity.entries).toBe(3);
-      expect(odd.identity.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(odd.ok).toBe(false);
+    if (!odd.ok) {
+      expect(odd.code).toBe('manifest_invalid');
+      expect(odd.message).toMatch(/a\.ts.*not an object/);
+    }
+    // A missing/non-string ast_hash is just as fatal.
+    const noHash = parseGraphManifestStrict('{"b.ts": {"ast_hash": ""}}');
+    expect(noHash.ok).toBe(false);
+    if (!noHash.ok) expect(noHash.code).toBe('manifest_invalid');
+    // {} is NOT a healthy zero-entry manifest — a built graph records ≥1 file.
+    const emptyObj = parseGraphManifestStrict('{}');
+    expect(emptyObj.ok).toBe(false);
+    if (!emptyObj.ok) {
+      expect(emptyObj.code).toBe('manifest_invalid');
+      expect(emptyObj.message).toMatch(/no entries/);
+    }
+    // A well-formed manifest still parses with full identity.
+    const good = parseGraphManifestStrict('{"b.ts": {"ast_hash": "x"}, "a.ts": {"ast_hash": "y"}}');
+    expect(good.ok).toBe(true);
+    if (good.ok) {
+      expect(good.identity.entries).toBe(2);
+      expect(good.identity.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     }
     expect(parseGraphManifestStrict(undefined).code ?? '').toBe('manifest_missing');
   });

@@ -101,4 +101,45 @@ describe('parseGraphFile (defensive graph.json reader)', () => {
     expect(r.code).toBe('graph_invalid');
     expect(r.message).toMatch(/2 dangling/);
   });
+
+  it('duplicate node ids are a typed failure — S2-H-06 (id-keyed joins are lossy)', () => {
+    const r = parseGraphFile({
+      nodes: [{ id: 'src_orders_createorder' }, { id: 'src_pricing_applydiscount' }, { id: 'src_orders_createorder' }],
+      links: [{ source: 'src_orders_createorder', target: 'src_pricing_applydiscount' }],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('graph_invalid');
+    expect(r.message).toContain('duplicate node id');
+    expect(r.message).toContain('src_orders_createorder');
+    expect(r.message).toMatch(/rebuild the graph/);
+  });
+
+  it('distinct node ids still parse (regression — the guard must not over-fire)', () => {
+    const r = parseGraphFile({
+      nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      links: [{ source: 'a', target: 'b' }],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.graph.nodes).toHaveLength(3);
+    expect(r.graph.edges).toHaveLength(1);
+  });
+
+  it('lists at most 5 duplicate ids, then +N more (bounded message)', () => {
+    const nodes = [
+      { id: 'a' }, { id: 'a' },
+      { id: 'b' }, { id: 'b' },
+      { id: 'c' }, { id: 'c' },
+      { id: 'd' }, { id: 'd' },
+      { id: 'e' }, { id: 'e' },
+      { id: 'f' }, { id: 'f' },
+    ];
+    const r = parseGraphFile({ nodes, links: [] });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.message).toContain('a, b, c, d, e');
+    expect(r.message).toContain('+1 more');
+    expect(r.message).not.toContain('(f');
+  });
 });

@@ -95,7 +95,8 @@ async function rulePreserve(project: string, base: RenewCapabilities): Promise<v
     answersPath,
     JSON.stringify({
       answers: [
-        { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'Preserve current behavior; verify parity during migration' },
+        // S2-C-05: PAR rulings are authorized by the CANONICAL option id only.
+        { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'preserve' },
         { decisionId: 'STG-0001', kind: 'option', selectedOption: 'strangler' },
       ],
     }),

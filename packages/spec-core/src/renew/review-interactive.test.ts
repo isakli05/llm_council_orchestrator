@@ -133,7 +133,8 @@ describe('renew review --interactive (real loopback workspace)', () => {
       headers: ws.headers,
       body: JSON.stringify({
         answers: [
-          { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'Preserve current behavior; verify parity during migration' },
+          // S2-C-05: PAR rulings go through the canonical option ids.
+          { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'preserve' },
           { decisionId: 'STG-0001', kind: 'option', selectedOption: 'strangler' },
         ],
       }),
@@ -237,7 +238,7 @@ describe('renew review --interactive (real loopback workspace)', () => {
         headers,
         body: JSON.stringify({
           answers: [
-            { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'Drop the behavior as unused' },
+            { decisionId: 'PAR-0001', kind: 'option', selectedOption: 'drop' },
             { decisionId: 'STG-0001', kind: 'option', selectedOption: 'in_place' },
           ],
         }),

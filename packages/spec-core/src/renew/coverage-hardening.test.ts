@@ -467,7 +467,7 @@ describe('overlay record lifecycle', () => {
 // --- parity ruling lifecycle -----------------------------------------------------------
 
 describe('parity ruling lifecycle', () => {
-  
+
   it('setRuling enforces DROP approval lineage and unknown-id errors', () => {
     const store = emptyParity('RSN-aaaaaaaaaaaaaaaa');
     addParityEntry(store, { behavior: 'b', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }] });
@@ -483,7 +483,7 @@ describe('parity ruling lifecycle', () => {
 // --- analysis store edge cases ---------------------------------------------------------
 
 describe('analysis store edges', () => {
-  
+
   it('a corrupt record is reported, never loaded; ids sequence past gaps', () => {
     const dir = freshDir('lco-an-store-');
     mkdirSync(dir, { recursive: true });
@@ -500,7 +500,7 @@ describe('analysis store edges', () => {
 // --- distiller approval payload combinations --------------------------------------------
 
 describe('distiller payload combinations', () => {
-  
+
   it('option + freeText answers carry both, sorted by claim id', () => {
     const driver = makeRenewalDriver({ analyses: [], overlay: emptyOverlay('RSN-aaaaaaaaaaaaaaaa'), includeStrategy: true });
     const payload = driver.approvalPayload(

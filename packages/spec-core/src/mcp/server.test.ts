@@ -2313,8 +2313,10 @@ describe('renew MCP tools', () => {
     const { lstatSync, readlinkSync } = await import('node:fs');
 
     const project = freshRoot('renew-ro-project-');
-    const target = mkdtempSync(join(tmpdir(), 'lco-renew-ro-target-'));
-    tmpDirs.push(target);
+    // S2-M-04: the recorded target must resolve INSIDE the pinned root — a
+    // sibling in os.tmpdir() would be refused by transitive containment before
+    // this read-only contract is even exercised.
+    const target = freshRoot('lco-renew-ro-target-');
     mkdirSync(join(target, 'src'), { recursive: true });
     writeFileSync(join(target, 'src', 'app.ts'), 'export const x = 1;\n');
     const graphParsed = parseGraphText(
@@ -2390,8 +2392,9 @@ describe('renew MCP tools', () => {
     const { StaticGraphProvider } = await import('../renew/intel/fixture-provider');
     const { parseGraphText } = await import('../renew/intel/graph-reader');
     const project = freshRoot('renew-consent-bind-');
-    const target = mkdtempSync(join(tmpdir(), 'lco-consent-target-'));
-    tmpDirs.push(target);
+    // Inside the pin (S2-M-04) so the refusal under test is the DIGEST, not
+    // transitive containment.
+    const target = freshRoot('lco-consent-target-');
     mkdirSync(join(target, 'src'), { recursive: true });
     writeFileSync(join(target, 'src', 'app.ts'), 'export const x = 1;\n');
     const graphParsed = parseGraphText(readFileSync(join(FIXTURES, 'legacy-app', 'graph-fixture.json'), 'utf8'));

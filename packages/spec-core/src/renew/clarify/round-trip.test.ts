@@ -51,7 +51,8 @@ function analysis(): AnalysisRecord {
           impact: 'medium',
           options: [{ option: 'Preserve the fee exactly' }, { option: 'Revisit the threshold' }],
           anchors: [{ path: 'src/orders.ts', content_hash: `sha256:${'b'.repeat(64)}` }],
-          anchor_results: [{ path: 'src/orders.ts', ok: true }],
+          // INV-C: every anchor result states its provenance scope.
+          anchor_results: [{ path: 'src/orders.ts', ok: true, scope: 'whole_file' }],
         },
       ],
     },

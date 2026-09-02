@@ -11,8 +11,8 @@ import { buildArchitectureView } from '../archview/architecture-view';
 import { emptyOverlay } from '../overlay/overlay';
 import { parityFromAnalyses, applyApprovalToParity } from '../parity/ledger';
 import { createSnapshot } from '../snapshot/snapshot';
+import { buildRenewalApprovalRecord } from '../clarify/approvals';
 import type { AnalysisRecord } from '../recovery/schemas';
-import type { RenewalApprovalRecord } from '../clarify/approvals';
 import type { FileManifest } from '../ingest/workspace-copy';
 
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
@@ -99,20 +99,17 @@ const strategy = buildStrategyDecision({
 
 function ruledParity() {
   const store = parityFromAnalyses([twoHypothesisAnalysis()], SNAP_ID);
-  const approval = {
-    schema_version: 1,
-    approval_id: 'APPR-0001',
-    session_id: 's1',
-    round_count: 1,
-    approved_at: '2026-09-02T00:00:00Z',
-    decisions: [
-      { claim_id: 'UNC-0001', kind: 'uncertainty' as const, selected_option: 'Preserve the fee', evidence: { source: 's', answer_text: 'Preserve the fee', hash: sha('p') } },
-      { claim_id: 'UNC-0002', kind: 'uncertainty' as const, selected_option: 'Preserve the discount', evidence: { source: 's', answer_text: 'Preserve the discount', hash: sha('d') } },
-    ],
-    content_digest: sha('cd'),
-  } as RenewalApprovalRecord;
-  store.records[0].decision_claim_id = 'UNC-0001';
-  store.records[1].decision_claim_id = 'UNC-0002';
+  // S2-C-05: rulings are authorized by CANONICAL option ids on the PAR claims
+  // (a digest-verified record via the real builder, not a hand-crafted one).
+  const approval = buildRenewalApprovalRecord(
+    {
+      decisions: [
+        { claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('preserve-1') } },
+        { claim_id: 'PAR-0002', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('preserve-2') } },
+      ],
+    },
+    { approvalId: 'APPR-0001', sessionId: 's1', roundCount: 1, approvedAt: '2026-09-02T00:00:00Z' },
+  );
   applyApprovalToParity(store, approval);
   return store;
 }
@@ -227,20 +224,15 @@ describe('buildModernizationPlan (deterministic, zero LLM calls)', () => {
     // Force both hypotheses onto the same file.
     analysis.promoted.hypotheses[1].anchors = [{ path: 'src/orders.ts', content_hash: sha(ORDERS) }];
     const store = parityFromAnalyses([analysis], SNAP_ID);
-    const approval = {
-      schema_version: 1,
-      approval_id: 'APPR-0001',
-      session_id: 's1',
-      round_count: 1,
-      approved_at: '2026-09-02T00:00:00Z',
-      decisions: [
-        { claim_id: 'UNC-0001', kind: 'uncertainty' as const, selected_option: 'Preserve it', evidence: { source: 's', answer_text: 'Preserve it', hash: sha('p') } },
-        { claim_id: 'UNC-0002', kind: 'uncertainty' as const, selected_option: 'Keep it too', evidence: { source: 's', answer_text: 'Keep it too', hash: sha('d') } },
-      ],
-      content_digest: sha('cd'),
-    } as RenewalApprovalRecord;
-    store.records[0].decision_claim_id = 'UNC-0001';
-    store.records[1].decision_claim_id = 'UNC-0002';
+    const approval = buildRenewalApprovalRecord(
+      {
+        decisions: [
+          { claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('p') } },
+          { claim_id: 'PAR-0002', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('d') } },
+        ],
+      },
+      { approvalId: 'APPR-0001', sessionId: 's1', roundCount: 1, approvedAt: '2026-09-02T00:00:00Z' },
+    );
     applyApprovalToParity(store, approval);
 
     const inputs = baseInputs();

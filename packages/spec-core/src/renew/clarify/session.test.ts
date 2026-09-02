@@ -34,7 +34,8 @@ function uncertaintyAnalysis(): AnalysisRecord {
             impact: 'medium',
             options: [{ option: 'Preserve it' }, { option: 'Drop it' }],
             anchors: [{ path: 'src/orders.ts', content_hash: `sha256:${'b'.repeat(64)}` }],
-            anchor_results: [{ path: 'src/orders.ts', ok: true }],
+            // INV-C: anchor results state their provenance scope.
+            anchor_results: [{ path: 'src/orders.ts', ok: true, scope: 'whole_file' }],
           },
         ],
       },
