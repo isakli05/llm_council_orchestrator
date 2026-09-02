@@ -97,7 +97,13 @@ export class GraphContextProvider implements ContextProvider {
 
     const sliceItems = this.sliceItems(scope, selection, warnings);
 
-    let items: ContextItem[] = [...nodeItems, ...edgeItems, ...sliceItems, ...factItems];
+    // H-03: FILE SLICES ARE RESERVED FIRST. The whole point of a bounded
+    // source-grounded context is anchorable material — a >200-node graph must
+    // never crowd out every slice (the audited failure mode: node refs alone
+    // fill maxItems and the "validated" analysis has nothing to anchor to).
+    // Shedding order from the END therefore drops facts → edges → nodes;
+    // slices survive unless they alone exceed the budget.
+    let items: ContextItem[] = [...sliceItems, ...nodeItems, ...edgeItems, ...factItems];
     let truncated = false;
     const totalOf = (list: ContextItem[]): number =>
       list.reduce((sum, i) => sum + ITEM_OVERHEAD + ('text' in i ? i.text.length : 0), 0);
@@ -105,8 +111,18 @@ export class GraphContextProvider implements ContextProvider {
       items.length > 0 &&
       (items.length > this.limits.maxItems || totalOf(items) > this.limits.maxTotalChars)
     ) {
-      items = items.slice(0, -1); // drop from the end: facts → slices → edges first
+      items = items.slice(0, -1);
       truncated = true;
+    }
+
+    // H-03/E4: a scope that claims source-grounded recovery but produced NO
+    // anchorable slice is flagged — the pipeline turns this into a BLOCKED
+    // outcome, never an empty validated success.
+    const insufficientContext = sliceItems.length === 0;
+    if (insufficientContext) {
+      warnings.add(
+        'no anchorable file slice could be assembled for this scope — source-grounded recovery is not possible with the current context budget',
+      );
     }
 
     return {
@@ -115,6 +131,7 @@ export class GraphContextProvider implements ContextProvider {
       truncated,
       total_chars: totalOf(items),
       warnings: [...warnings].sort(),
+      ...(insufficientContext ? { insufficient_context: true } : {}),
     };
   }
 

@@ -139,9 +139,11 @@ export const AnalysisRecordSchema = z
         slice_count: z.number().int().nonnegative(),
         truncated: z.boolean(),
         warnings: z.array(z.string()).max(50),
+        /** L4 output redactions applied before persistence (C-07). */
+        output_redactions: z.number().int().nonnegative().optional(),
       })
       .strict(),
-    outcome: z.enum(['validated', 'blocked_schema', 'blocked_stale', 'transport_failed']),
+    outcome: z.enum(['validated', 'blocked_schema', 'blocked_stale', 'transport_failed', 'blocked_insufficient_context', 'blocked_empty']),
     validation: z
       .object({
         schema_ok: z.boolean(),

@@ -61,6 +61,12 @@ export const ContextBundleSchema = z
     truncated: z.boolean(),
     total_chars: z.number().int().nonnegative(),
     warnings: z.array(z.string()),
+    /**
+     * H-03: true when the scope claims source-grounded recovery but NO
+     * anchorable file slice could fit the budget — an empty-anchored
+     * "validated success" is forbidden downstream (the pipeline blocks).
+     */
+    insufficient_context: z.boolean().optional(),
   })
   .strict();
 

@@ -477,6 +477,18 @@ export async function analyzeWithFresh(
       output: `analysis ${record.analysis_id} transport failure — spend recorded in the immutable record; nothing promoted. See ${join(paths.analyses, `${record.analysis_id}.json`)}`,
     };
   }
+  if (!outcome.ok && outcome.code === 'blocked_insufficient_context') {
+    return {
+      code: 1,
+      output: `analysis ${record.analysis_id} BLOCKED (UNRESOLVED_INSUFFICIENT_CONTEXT): no anchorable file slice fit the context budget — an empty anchored success is never reported. Widen the context budget or narrow the scope. See ${join(paths.analyses, `${record.analysis_id}.json`)}`,
+    };
+  }
+  if (!outcome.ok && outcome.code === 'blocked_empty') {
+    return {
+      code: 1,
+      output: `analysis ${record.analysis_id} BLOCKED (UNRESOLVED): the model returned an empty analysis — this is unresolved, not success. Re-run, widen the scope, or record uncertainties. See ${join(paths.analyses, `${record.analysis_id}.json`)}`,
+    };
+  }
   if (!outcome.ok && outcome.code === 'blocked_schema') {
     return {
       code: 1,

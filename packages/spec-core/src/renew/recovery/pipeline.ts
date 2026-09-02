@@ -17,6 +17,7 @@ import { stripJsonFences } from '../../eval/runner';
 import { BudgetExceededError, type BudgetLedger } from '../../eval/budget';
 import type { LlmPlan } from '../../llm/plan';
 import type { ContextBundle } from '../context/bundle';
+import { redactSecrets } from '../context/redact';
 import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
 import { buildRecoveryPrompt, buildValidationRetryPrompt, RECOVERY_PROMPT_PROTOCOL } from './prompts';
 import {
@@ -56,6 +57,8 @@ export type RecoveryOutcome =
   | { ok: false; code: 'blocked_schema'; record: AnalysisRecord }
   | { ok: false; code: 'blocked_stale'; record: AnalysisRecord }
   | { ok: false; code: 'transport_failed'; record: AnalysisRecord }
+  | { ok: false; code: 'blocked_insufficient_context'; record: AnalysisRecord }
+  | { ok: false; code: 'blocked_empty'; record: AnalysisRecord }
   | { ok: false; code: 'persist_failed'; message: string; record: AnalysisRecord };
 
 interface UsageState {
@@ -182,6 +185,23 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
 
   const prompt = buildRecoveryPrompt({ scope: req.scope, bundle: req.bundle, nowIso: deps.nowIso });
 
+  // H-03/E4: a source-grounded scope with NO anchorable slice cannot produce
+  // trustworthy anchored claims — block BEFORE the paid call (zero spend).
+  if (req.bundle.insufficient_context === true) {
+    const blockedRecord: AnalysisRecord = {
+      ...baseRecord,
+      model: routeIdentity,
+      outcome: 'blocked_insufficient_context',
+      validation: { schema_ok: false, retry_used: false, issues: ['no anchorable file slice fit the context budget — UNRESOLVED_INSUFFICIENT_CONTEXT'], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+      promoted: { hypotheses: [], uncertainties: [] },
+      rejected: [],
+      coverage_notes: req.bundle.warnings.slice(0, 20),
+      usage: { ...usage },
+    };
+    const r = deps.persist(blockedRecord);
+    return r.ok ? { ok: false, code: 'blocked_insufficient_context', record: blockedRecord } : { ok: false, code: 'persist_failed', message: r.message, record: blockedRecord };
+  }
+
   let responseText: string;
   try {
     responseText = await complete(prompt);
@@ -273,12 +293,51 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     return r.ok ? { ok: false, code: 'blocked_schema', record: blocked } : r;
   }
 
+  // --- L4 output redaction (C-07): the model may echo source secrets into any
+  // free-text field — sanitize before anything is promoted or persisted. The
+  // explicit [REDACTED:*] markers keep the redaction visible, never silent.
+  let outputRedactions = 0;
+  const scrub = (text: string): string => {
+    const r = redactSecrets(text);
+    outputRedactions += r.count;
+    return r.text;
+  };
+  let output: RecoveryOutput = {
+    hypotheses: attempt.output.hypotheses.map((h) => ({ ...h, statement: scrub(h.statement), rationale: scrub(h.rationale) })),
+    uncertainties: attempt.output.uncertainties.map((u) => ({
+      ...u,
+      question: scrub(u.question),
+      options: u.options.map((o) => ({ ...o, option: scrub(o.option), ...(o.note !== undefined ? { note: scrub(o.note) } : {}) })),
+    })),
+    coverage_notes: attempt.output.coverage_notes.map((n) => scrub(n)),
+  };
+
+  // --- E5: an empty analysis is NOT success. A non-empty supplied context
+  // with zero hypotheses AND zero uncertainties means the model resolved
+  // nothing — deterministic coverage cannot prove there is genuinely nothing
+  // to recover, so the run blocks rather than "validating" emptiness.
+  if (output.hypotheses.length === 0 && output.uncertainties.length === 0 && input.slice_count > 0) {
+    const emptyRecord: AnalysisRecord = {
+      ...baseRecord,
+      model: routeIdentity,
+      outcome: 'blocked_empty',
+      validation: { schema_ok: true, retry_used: retryUsed, issues: ['model returned an empty analysis — UNRESOLVED, not success (re-run, widen the scope, or record uncertainties)'], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+      promoted: { hypotheses: [], uncertainties: [] },
+      rejected: [],
+      coverage_notes: output.coverage_notes,
+      usage: { ...usage },
+      input: { ...input, output_redactions: outputRedactions },
+    };
+    const r = deps.persist(emptyRecord);
+    return r.ok ? { ok: false, code: 'blocked_empty', record: emptyRecord } : { ok: false, code: 'persist_failed', message: r.message, record: emptyRecord };
+  }
+
   // --- anchor verification: the gate that assigns trust ------------------------
   // C-03: byte existence is NECESSARY but not SUFFICIENT. A promoted claim's
   // anchors must ALSO come from the context actually supplied to the model
   // (relevance), bind to real graph nodes when node-linked (provenance), and
   // carry line ranges that are possible on disk (coherence).
-  const output = attempt.output;
+  // (`output` was sanitized/redacted and reassigned above.)
   const promotedHypotheses: AnalysisRecord['promoted']['hypotheses'] = [];
   const promotedUncertainties: AnalysisRecord['promoted']['uncertainties'] = [];
   const rejected: AnalysisRecord['rejected'] = [];
@@ -380,6 +439,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     promoted: { hypotheses: promotedHypotheses, uncertainties: promotedUncertainties },
     rejected,
     coverage_notes: output.coverage_notes,
+    input: { ...input, ...(outputRedactions > 0 ? { output_redactions: outputRedactions } : {}) },
     usage: { ...usage },
   };
   return persistRecord(record);
