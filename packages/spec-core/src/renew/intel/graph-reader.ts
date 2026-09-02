@@ -68,7 +68,23 @@ export function parseGraphFile(input: unknown): GraphParseResult {
     };
   }
 
-  const nodeIds = new Set(parsed.data.nodes.map((n) => n.id));
+  const nodeIds = new Set<string>();
+  const duplicateIds = new Set<string>();
+  for (const n of parsed.data.nodes) {
+    if (nodeIds.has(n.id)) duplicateIds.add(n.id);
+    else nodeIds.add(n.id);
+  }
+  // S2-H-06: node ids are the join key for every downstream consumer
+  // (Map/Set lookups by node_id) — duplicates are silently lossy there, so
+  // they are a TYPED FAILURE here. Rebuild the graph (lco renew refresh).
+  if (duplicateIds.size > 0) {
+    const sample = [...duplicateIds].sort().slice(0, 5).join(', ');
+    return {
+      ok: false,
+      code: 'graph_invalid',
+      message: `graph.json contains duplicate node id(s) (${sample}${duplicateIds.size > 5 ? ` +${duplicateIds.size - 5} more` : ''}) — id-keyed consumers are lossy on duplicates; rebuild the graph (lco renew refresh)`,
+    };
+  }
   const edges: GraphEdgeRef[] = [];
   const dangling: string[] = [];
   for (const link of parsed.data.links) {

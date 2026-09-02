@@ -252,33 +252,94 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
   }
 
   async graphHealth(): Promise<GraphHealth | IntelFailure> {
+    // INV-G3 (S2-H-06/M-08): health is EXPLICITLY classified — a malformed
+    // manifest/graph must never collapse to a healthy-looking
+    // manifest_entries: 0. Every failing arm returns a typed failure whose
+    // `status` names the arm; only graph+manifest both parsing (entries ≥ 1)
+    // can report healthy.
     const g = this.loadGraph();
-    if (!g.ok) return g;
-    // Honest provider identity: probe once if we haven't; a failed probe is
-    // disclosed as a warning, never fabricated as a version.
+    if (!g.ok) {
+      return g.code === 'graph_missing'
+        ? { ...g, status: 'missing' }
+        : { ...g, status: 'malformed' };
+    }
+    // Honest provider identity: probe once if we haven't; a failed probe is a
+    // typed failure (unsupported ⇒ 'incompatible'), never fabricated as a
+    // version on a healthy report.
     let version = this.probedVersion;
     if (version === undefined) {
       const p = await this.probe();
-      version = p.ok ? p.providerVersion : 'unknown';
-      if (!p.ok && g.graph.warnings.length === 0) {
-        return {
+      if (!p.ok) {
+        const failure: IntelFailure = {
           ok: false,
           code: p.code,
           message: `graph exists but the provider probe failed: ${p.message}`,
           hint: p.hint,
         };
+        if (p.code === 'unsupported_version') failure.status = 'incompatible';
+        return failure;
       }
+      version = p.providerVersion;
     }
-    // M-08: manifest entries come from the manifest itself when present —
-    // a fabricated 0 is never reported as health.
-    let manifestEntries = 0;
+    const manifestPath = join(this.workspaceRoot, 'graphify-out', 'manifest.json');
+    let manifestText: string;
     try {
-      const manifestText = this.readFileImpl(join(this.workspaceRoot, 'graphify-out', 'manifest.json'));
-      manifestEntries = Object.keys(JSON.parse(manifestText) as Record<string, unknown>).length;
+      manifestText = this.readFileImpl(manifestPath);
     } catch {
-      manifestEntries = 0;
+      return {
+        ok: false,
+        code: 'graph_missing',
+        status: 'missing',
+        message: `no graphify manifest at ${manifestPath} — graph state is incomplete; rebuild it (lco renew refresh)`,
+      };
     }
-    return graphHealthOf(g.graph, version, manifestEntries);
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(manifestText);
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'graph_invalid',
+        status: 'malformed',
+        message: `manifest.json is not valid JSON (${(e as Error).message}); rebuild the graph (lco renew refresh)`,
+      };
+    }
+    if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
+      return {
+        ok: false,
+        code: 'graph_invalid',
+        status: 'malformed',
+        message: `manifest.json is not an object mapping file paths to entries (${JSON.stringify(manifest).slice(0, 60)}); rebuild the graph (lco renew refresh)`,
+      };
+    }
+    const entries = manifest as Record<string, unknown>;
+    const entryPaths = Object.keys(entries);
+    if (entryPaths.length === 0) {
+      // INV-G1: a built graph has ≥1 manifest entry — an empty manifest
+      // beside a parsed graph is inconsistent state, NOT a healthy 0.
+      return {
+        ok: false,
+        code: 'graph_invalid',
+        status: 'malformed',
+        message: `manifest.json has 0 entries while graph.json has ${g.graph.nodes.length} node(s) — a built graph always has ≥1 manifest entry; rebuild the graph (lco renew refresh)`,
+      };
+    }
+    const malformed = entryPaths.filter((p) => {
+      const v = entries[p];
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) return true;
+      const hash = (v as { ast_hash?: unknown }).ast_hash;
+      return typeof hash !== 'string' || hash.length === 0;
+    });
+    if (malformed.length > 0) {
+      const sample = malformed.sort().slice(0, 5).join(', ');
+      return {
+        ok: false,
+        code: 'graph_invalid',
+        status: 'malformed',
+        message: `manifest.json has ${malformed.length} malformed ${malformed.length === 1 ? 'entry' : 'entries'} (${sample}${malformed.length > 5 ? ` +${malformed.length - 5} more` : ''}) — every entry must be an object with a non-empty string ast_hash; rebuild the graph (lco renew refresh)`,
+      };
+    }
+    return { ...graphHealthOf(g.graph, version, entryPaths.length), status: 'healthy' };
   }
 
   private loadGraph(): { ok: true; graph: ParsedGraph } | IntelFailure {

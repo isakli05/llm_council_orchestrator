@@ -21,6 +21,15 @@ export type IntelFailureCode =
   | 'output_cap'
   | 'cancelled';
 
+/**
+ * INV-G3 (S2-H-06/M-08): explicit graph-health classification, carried by
+ * `graphHealth()` results — healthy reports say 'healthy'; failures say which
+ * arm failed. Optional so every pre-existing producer (fixture providers,
+ * graphHealthOf, non-health failures) stays assignable; consumers tighten
+ * onto it incrementally.
+ */
+export type GraphHealthStatus = 'healthy' | 'missing' | 'malformed' | 'incompatible';
+
 /** Every failure carries an actionable, human-readable message. */
 export interface IntelFailure {
   ok: false;
@@ -30,6 +39,9 @@ export interface IntelFailure {
   stderr?: string;
   /** Actionable remediation (install/pin instructions). */
   hint?: string;
+  /** Present only on failures returned by graphHealth(): the explicit
+   * INV-G3 classification of the failing arm. */
+  status?: GraphHealthStatus;
 }
 
 export type IntelProbe =
@@ -92,6 +104,9 @@ export type IntelItems =
 
 export interface GraphHealth {
   ok: true;
+  /** INV-G3: explicit classification — a real provider reports 'healthy'
+   * only when graph AND manifest both parse (manifest entries ≥ 1). */
+  status?: GraphHealthStatus;
   provider_version: string;
   node_count: number;
   edge_count: number;

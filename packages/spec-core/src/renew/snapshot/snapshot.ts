@@ -296,9 +296,13 @@ export type GraphManifestParse =
   | { ok: false; code: 'manifest_missing' | 'manifest_invalid'; message: string };
 
 /**
- * STRICT manifest parsing for load-bearing identity (H-11): an absent or
- * malformed manifest is a typed failure — it must never silently become an
- * "empty manifest" identity that a fresh snapshot could bless.
+ * STRICT manifest parsing for load-bearing identity (H-11 + S2-H-06/INV-G1):
+ * an absent or malformed manifest is a typed failure — it must never silently
+ * become an "empty manifest" identity that a fresh snapshot could bless, and
+ * a malformed ENTRY (scalar, missing/non-string/empty `ast_hash`, `{}` as the
+ * whole manifest) is just as fatal: identity over garbage is garbage. The
+ * Graphify manifest contract is `{ <path>: { ast_hash: <string>, …volatile } }`
+ * with at least one entry for any built graph.
  */
 export function parseGraphManifestStrict(text: string | undefined): GraphManifestParse {
   if (text === undefined || text.trim() === '') {
@@ -325,12 +329,31 @@ export function parseGraphManifestStrict(text: string | undefined): GraphManifes
       message: 'graphify-out/manifest.json is not an object mapping paths to entries — rebuild it (lco renew refresh)',
     };
   }
+  const rawEntries = Object.entries(parsed as Record<string, unknown>);
+  if (rawEntries.length === 0) {
+    return {
+      ok: false,
+      code: 'manifest_invalid',
+      message: 'graphify-out/manifest.json has no entries ({}) — a built graph always records at least one file; rebuild it (lco renew refresh)',
+    };
+  }
   const entries: [string, string][] = [];
-  for (const [path, value] of Object.entries(parsed as Record<string, unknown>)) {
-    const astHash =
-      value !== null && typeof value === 'object' && typeof (value as { ast_hash?: unknown }).ast_hash === 'string'
-        ? (value as { ast_hash: string }).ast_hash
-        : '';
+  for (const [path, value] of rawEntries) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return {
+        ok: false,
+        code: 'manifest_invalid',
+        message: `graphify-out/manifest.json entry for ${path} is not an object — the manifest contract is {path: {ast_hash: string}}; rebuild it (lco renew refresh)`,
+      };
+    }
+    const astHash = (value as { ast_hash?: unknown }).ast_hash;
+    if (typeof astHash !== 'string' || astHash === '') {
+      return {
+        ok: false,
+        code: 'manifest_invalid',
+        message: `graphify-out/manifest.json entry for ${path} has no non-empty string ast_hash — identity over a malformed entry is garbage; rebuild it (lco renew refresh)`,
+      };
+    }
     entries.push([path, astHash]);
   }
   entries.sort((a, b) => (a[0] < b[0] ? -1 : 1));

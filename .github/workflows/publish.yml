@@ -58,6 +58,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      # S2-H-09 (ci.yml parity): install the pinned Graphify BEFORE tests —
+      # the renewal integration canary asserts graphify availability whenever
+      # GITHUB_ACTIONS/CI is set (see graphify-adapter.integration.test.ts),
+      # so without this step the gate fails on a clean runner before any
+      # publish. 0.9.53 is the newest release inside the supported range
+      # >=0.9.50 <0.10.0 (verified against PyPI and GitHub releases
+      # 2026-09-02; same pin as ci.yml's newest leg).
+      - name: Install pinned Graphify (0.9.53)
+        run: |
+          python3 -m pip install --user --disable-pip-version-check "graphifyy==0.9.53"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          graphify --version
+
       # Same double pin as ci.yml: root packageManager pins pnpm@10.17.1;
       # this explicit version must agree with it. pnpm before setup-node
       # so the pnpm store path resolves for caching.
@@ -96,7 +109,11 @@ jobs:
           fi
 
       - run: pnpm --filter ./packages/spec-core lint
-      - run: pnpm --filter ./packages/spec-core test
+      # ci.yml parity (S2-H-09): the release gate must enforce the same
+      # coverage policy CI enforces — `test` alone is coverage-free; this
+      # runs the suite with v8 coverage and the threshold ratchet from
+      # vitest.config.ts.
+      - run: pnpm --filter ./packages/spec-core test:coverage
       - run: pnpm --filter ./packages/spec-core smoke:packed
 
       # --- release readiness: clean tree + exact tag == package version ---
