@@ -234,11 +234,18 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     expect(outcome.record.rejected[0].reasons.join(' ')).toMatch(/hash_mismatch|stale/);
   });
 
-  it('propagates transport failures WITHOUT persisting anything', async () => {
+  it('transport failure: typed failure + honest spend record persisted, nothing promoted (H-05)', async () => {
     const hashes = setupTarget();
     const { adapter } = scripted([new Error('connection reset')]);
-    await expect(runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter))).rejects.toThrow('connection reset');
-    expect(persisted).toHaveLength(0);
+    const outcome = await runRecovery(requestFor(makeBundle(hashes)), depsFor(adapter));
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.code).toBe('transport_failed');
+    // The failed call's honest trail persists (counters only — no content):
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]!.outcome).toBe('transport_failed');
+    expect(persisted[0]!.usage.transport_failed).toBe(true);
+    expect(persisted[0]!.promoted.hypotheses).toHaveLength(0);
   });
 
   it('enforces the budget ledger across the retry', async () => {

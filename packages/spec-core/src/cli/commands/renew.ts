@@ -13,6 +13,7 @@
  *   plan — offline deterministic; refuses on stale state or unresolved parity.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { CodeIntelligenceProvider } from '../../renew/intel/provider';
 import type { LlmPlan } from '../../llm/plan';
@@ -23,6 +24,7 @@ import {
   createSnapshot,
   digestGraphManifest,
   evaluateStaleness,
+  parseGraphManifestStrict,
 } from '../../renew/snapshot/snapshot';
 import { GraphContextProvider } from '../../renew/context/context-provider';
 import { buildArchitectureView } from '../../renew/archview/architecture-view';
@@ -50,11 +52,13 @@ import {
   persistSnapshotFile,
   renewalPaths,
   loadSnapshotFile,
+  supersedeRenewalStores,
 } from '../../renew/project/project';
 import { writeSpecDir } from './write-spec';
 import { cmdFreeze } from './freeze';
 import { renderRenewalReport } from '../../renew/project/export';
 import { assertDisjointRealRoots, resolveContainedOutputPath, tryRealpath } from '../../storage/paths';
+import { acquireSpecRootLock, LockHeldError, type SpecRootLock } from '../../storage/revision';
 import { affectedReverse } from '../../renew/intel/graph-ops';
 
 export interface RenewCapabilities {
@@ -89,6 +93,7 @@ async function currentStaleness(
   dir: string,
   targetRoot: string,
   provider: CodeIntelligenceProvider,
+  gitCommit?: (targetRoot: string) => string | undefined,
 ): Promise<
   | { ok: true; fresh: boolean; reasons?: string[]; manifest: FileManifest; graphDigest: string }
   | { ok: false; code: number; output: string }
@@ -97,13 +102,19 @@ async function currentStaleness(
   const walk = buildGuardedCopy(targetRoot, paths.workspace, { copy: false, limits: DEFAULT_INGEST_LIMITS });
   if (!walk.ok) return { ok: false, code: 1, output: `renewal walk failed: ${walk.message}` };
 
-  let graphDigest = digestGraphManifest('').digest;
   const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
   const manifestJson = join(paths.workspace, 'graphify-out', 'manifest.json');
-  let graphPresent = existsSync(graphJson);
-  if (graphPresent && existsSync(manifestJson)) {
-    graphDigest = digestGraphManifest(readFileSync(manifestJson, 'utf8')).digest;
+  const graphPresent = existsSync(graphJson);
+  // H-11/C-04: identity-bearing manifest parsing is STRICT — a malformed or
+  // absent manifest never becomes an empty-identity "fresh" verdict.
+  const manifestText = existsSync(manifestJson) ? readFileSync(manifestJson, 'utf8') : undefined;
+  const manifestId = parseGraphManifestStrict(manifestText);
+  if (graphPresent && !manifestId.ok) {
+    return { ok: false, code: 1, output: `renewal graph workspace problem (${manifestId.code}): ${manifestId.message}` };
   }
+  const graphDigest = graphPresent
+    ? `sha256:${createHash('sha256').update(readFileSync(graphJson)).digest('hex')}`
+    : digestGraphManifest('').digest;
   let graphValid = graphPresent;
   if (graphPresent) {
     const g = await provider.graph();
@@ -114,16 +125,20 @@ async function currentStaleness(
   if (!stored.ok) return { ok: false, code: 1, output: `Renewal snapshot problem: ${stored.message}` };
 
   const verdict = evaluateStaleness(stored.snapshot, {
-    gitCommit: undefined, // commit drift is subsumed by content-hash drift; hashes are ground truth
+    // M-01: the current Git commit participates in the verdict whenever the
+    // boundary can see one — content hashes stay ground truth; commit drift
+    // is surfaced in addition (history moved even if the tree content matches).
+    gitCommit: gitCommit !== undefined ? gitCommit(targetRoot) : undefined,
     files: walk.manifest,
-    graphManifestDigest: graphDigest,
+    graphManifestDigest: manifestId.ok ? manifestId.identity.digest : digestGraphManifest('').digest,
+    graphDigest,
     graphPresent,
     graphValid,
   });
   return {
     ok: true,
     fresh: verdict.status === 'fresh',
-    reasons: verdict.status === 'stale' ? verdict.reasons.map((r) => `${r.code}${r.paths?.length ? ` (${r.paths.slice(0, 5).join(', ')}${r.more ? ` +${r.more}` : ''})` : ''}`) : undefined,
+    reasons: verdict.status === 'stale' ? verdict.reasons.map((r) => `${r.code}${r.paths?.length ? ` (${r.paths.slice(0, 5).join(', ')}${r.more ? ` +${r.more}` : ''})` : ''}${r.detail ? `: ${r.detail}` : ''}`) : undefined,
     manifest: walk.manifest,
     graphDigest,
   };
@@ -170,10 +185,12 @@ export async function cmdRenewInit(
   const graph = await caps.provider().graph();
   if (!graph.ok) return { code: 1, output: `graph unreadable: ${graph.message}` };
 
+  const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
   const manifestJson = join(paths.workspace, 'graphify-out', 'manifest.json');
-  const gm = existsSync(manifestJson)
-    ? digestGraphManifest(readFileSync(manifestJson, 'utf8'))
-    : digestGraphManifest('');
+  // H-11: init refuses to bless a malformed/absent manifest as identity.
+  const gm = parseGraphManifestStrict(existsSync(manifestJson) ? readFileSync(manifestJson, 'utf8') : undefined);
+  if (!gm.ok) return { code: 1, output: `renewal init failed (${gm.code}): ${gm.message}` };
+  const graphDigest = `sha256:${createHash('sha256').update(readFileSync(graphJson)).digest('hex')}`;
 
   const health = await caps.provider().graphHealth();
   const version = health.ok ? health.provider_version : probe.providerVersion ?? 'unknown';
@@ -188,14 +205,24 @@ export async function cmdRenewInit(
       graphifyVersion: version,
       nodeCount: graph.graph.nodes.length,
       edgeCount: graph.graph.edges.length,
+      graphDigest,
     },
-    graphManifest: { digest: gm.digest, entries: gm.entries },
+    graphManifest: { digest: gm.identity.digest, entries: gm.identity.entries },
     nowIso: caps.nowIso(),
   });
 
   mkdirSync(join(args.dir, '.lco', 'renewal'), { recursive: true, mode: 0o700 });
   mkdirSync(paths.analyses, { recursive: true, mode: 0o700 });
   mkdirSync(paths.approvals, { recursive: true, mode: 0o700 });
+  if (args.force) {
+    // C-05: refresh is an EXPLICIT state transition. Per-snapshot stores are
+    // archived under their old snapshot id (forensic history, never silently
+    // reused); analyses/approvals are retained as immutable history. Fresh
+    // empty stores for the NEW snapshot are created below.
+    const old = loadSnapshotFile(args.dir);
+    const oldId = old.ok ? old.snapshot.snapshot_id : 'unknown';
+    supersedeRenewalStores(paths, oldId);
+  }
   persistSnapshotFile(args.dir, snapshot);
   persistRenewalProject(args.dir, {
     schema_version: 1,
@@ -220,10 +247,20 @@ export async function cmdRenewInit(
   };
 }
 
-export const cmdRenewRefresh = (args: { dir: string }, caps: RenewCapabilities): Promise<RenewResult> => {
+export const cmdRenewRefresh = async (args: { dir: string }, caps: RenewCapabilities): Promise<RenewResult> => {
   const p = loadRenewalProject(args.dir);
-  if (!p.ok) return Promise.resolve({ code: 2, output: p.message });
-  return cmdRenewInit({ dir: args.dir, target: p.project.target_path, name: p.project.name, force: true }, caps);
+  if (!p.ok) return { code: 2, output: p.message };
+  // Refresh re-validates the recorded target against the CURRENT project dir
+  // (disjointness re-asserted inside init) and performs the explicit C-05
+  // supersession (see the force branch in cmdRenewInit).
+  const result = await cmdRenewInit({ dir: args.dir, target: p.project.target_path, name: p.project.name, force: true }, caps);
+  if (result.code === 0) {
+    return {
+      code: 0,
+      output: `${result.output}\n  superseded state: overlay/parity/strategy archived under their old snapshot id; re-analyze (PAID) and re-select strategy before planning`,
+    };
+  }
+  return result;
 };
 
 // --- status -----------------------------------------------------------------------
@@ -234,22 +271,35 @@ export async function cmdRenewStatus(args: { dir: string; json?: boolean }, caps
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
 
-  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider());
+  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
+  // Fail-closed status: when trustworthy state CANNOT be computed (corrupt
+  // snapshot, invalid manifest, failed walk), status reports the failure and
+  // exits non-zero — never "unknown but green" (audit exit semantics).
+  if (!stale.ok) return { code: 1, output: `renewal status failed: ${stale.output}` };
   const openQuestions = state.analyses.records
-    .filter((a) => a.outcome === 'validated')
+    .filter((a) => a.outcome === 'validated' && a.snapshot_id === (state.snapshot?.snapshot_id ?? ''))
     .reduce((n, a) => n + a.promoted.uncertainties.length, 0);
+  const activeAnalyses = state.analyses.records.filter((a) => a.snapshot_id === (state.snapshot?.snapshot_id ?? ''));
   const parityCounts = { preserve: 0, change: 0, drop: 0, unresolved: 0 };
   for (const r of state.parity.ok ? state.parity.store.records : []) {
     parityCounts[r.ruling] = (parityCounts[r.ruling] ?? 0) + 1;
   }
+  const storeBinding =
+    state.overlay.ok && state.snapshot !== undefined && state.overlay.store.snapshot_id !== state.snapshot.snapshot_id
+      ? `superseded (bound to ${state.overlay.store.snapshot_id})`
+      : state.overlay.ok
+        ? `${state.overlay.store.records.length} record(s)`
+        : 'corrupt';
   const status = {
     project: state.project.name,
     snapshot_id: state.snapshot?.snapshot_id ?? null,
-    snapshot_state: !stale.ok ? 'unknown' : stale.fresh ? 'fresh' : 'stale',
-    staleness_reasons: stale.ok ? (stale.reasons ?? []) : [stale.output],
+    snapshot_state: stale.fresh ? 'fresh' : 'stale',
+    staleness_reasons: stale.reasons ?? [],
     graphify: (await caps.provider().probe()).ok ? 'available' : 'unavailable',
-    analyses: state.analyses.records.length,
+    analyses: activeAnalyses.length,
+    analyses_total: state.analyses.records.length,
     open_questions: openQuestions,
+    overlay: storeBinding,
     overlay_records: state.overlay.ok ? state.overlay.store.records.length : -1,
     overlay_stale: state.overlay.ok ? state.overlay.store.records.filter((r) => r.status === 'stale').length : -1,
     parity: parityCounts,
@@ -262,8 +312,9 @@ export async function cmdRenewStatus(args: { dir: string; json?: boolean }, caps
     `  snapshot: ${status.snapshot_state}${status.snapshot_id ? ` (${status.snapshot_id})` : ''}`,
     ...status.staleness_reasons.map((r) => `    - ${r}`),
     `  graphify: ${status.graphify}`,
-    `  analyses: ${status.analyses} (${status.open_questions} open question(s))`,
-    `  overlay: ${status.overlay_records} record(s)${status.overlay_stale > 0 ? `, ${status.overlay_stale} STALE` : ''}`,
+    `  analyses: ${status.analyses} active (${state.analyses.records.length} total, cross-snapshot history retained)`,
+    `  open questions: ${status.open_questions}`,
+    `  overlay: ${storeBinding}${status.overlay_stale > 0 ? `, ${status.overlay_stale} STALE` : ''}`,
     `  parity: ${parityCounts.preserve} preserve / ${parityCounts.change} change / ${parityCounts.drop} drop / ${parityCounts.unresolved} UNRESOLVED`,
     `  strategy: ${status.strategy ?? 'not selected (human act — lco renew review)'}`,
     `  plan: ${status.plan}`,
@@ -290,7 +341,7 @@ export async function cmdRenewAnalyze(
   if (!p.ok) return { code: 2, output: p.message };
   const paths = renewalPaths(args.dir);
 
-  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider());
+  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
   if (!stale.ok) return stale;
   if (!stale.fresh) {
     return {
@@ -301,6 +352,12 @@ export async function cmdRenewAnalyze(
         REFRESH_REMEDY,
       ].join('\n'),
     };
+  }
+  // H-02: a PAID call requires the Graphify prerequisite itself — a cached
+  // graph never substitutes for a working, version-supported provider.
+  const probe = await caps.provider().probe();
+  if (!probe.ok) {
+    return { code: 2, output: `analyze refused: Graphify prerequisite failed (${probe.code}): ${probe.message}${probe.hint ? `\n  ${probe.hint}` : ''} — ZERO LLM calls were made` };
   }
   return analyzeWithFresh(args.dir, p.project.target_path, stale.manifest, caps);
 }
@@ -336,17 +393,63 @@ export async function analyzeWithFresh(
     };
   }
   const existing = loadAnalysisRecords(paths.analyses);
+  if (existing.corrupt.length > 0) {
+    return {
+      code: 1,
+      output: `analysis store corrupt: ${existing.corrupt.join(', ')} — refusing to proceed (corrupt records are never silently replaced; inspect or remove them, then re-run)`,
+    };
+  }
   const analysisId = nextAnalysisId(existing.records.map((r) => r.analysis_id));
   const snapshotId = loadSnapshotFile(dir);
   if (!snapshotId.ok) return { code: 1, output: snapshotId.message };
+  const activeSnapshot = snapshotId.snapshot.snapshot_id;
+
+  // C-06 + B4: existing stores load OR the operation stops. A corrupt store
+  // is NEVER replaced with an empty one; a cross-snapshot store is refused
+  // (refresh supersedes state explicitly).
+  const ovl = loadOverlay(paths.overlay);
+  if (!ovl.ok) {
+    return { code: 1, output: `overlay store corrupt (${paths.overlay}): ${ovl.message} — refusing to analyze over corrupt state (recover the file or remove it after inspection)` };
+  }
+  const par = loadParity(paths.parity);
+  if (!par.ok) {
+    return { code: 1, output: `parity store corrupt (${paths.parity}): ${par.message} — refusing to analyze over corrupt state (recover the file or remove it after inspection)` };
+  }
+  if (ovl.store.snapshot_id !== activeSnapshot) {
+    return { code: 1, output: `overlay store is bound to snapshot ${ovl.store.snapshot_id} but the active snapshot is ${activeSnapshot} — run 'lco renew refresh ${dir}' (state was superseded; it is archived, not lost)` };
+  }
+  if (par.store.snapshot_id !== activeSnapshot) {
+    return { code: 1, output: `parity store is bound to snapshot ${par.store.snapshot_id} but the active snapshot is ${activeSnapshot} — run 'lco renew refresh ${dir}' (state was superseded; it is archived, not lost)` };
+  }
+
+  // C-10: the freshness re-check handed to the paid pipeline — re-walks the
+  // target and re-digests the graph; any drift blocks promotion.
+  const recheckFreshness = (): { ok: true } | { ok: false; reasons: string[] } => {
+    const walk = buildGuardedCopy(targetRoot, paths.workspace, { copy: false, limits: DEFAULT_INGEST_LIMITS });
+    if (!walk.ok) return { ok: false, reasons: [`re-walk failed: ${walk.message}`] };
+    const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
+    if (!existsSync(graphJson)) return { ok: false, reasons: ['graph_missing: graph.json vanished mid-analysis'] };
+    const graphDigestNow = `sha256:${createHash('sha256').update(readFileSync(graphJson)).digest('hex')}`;
+    const verdict = evaluateStaleness(snapshotId.snapshot, {
+      gitCommit: caps.gitCommit(targetRoot),
+      files: walk.manifest,
+      graphManifestDigest: digestGraphManifest(existsSync(join(paths.workspace, 'graphify-out', 'manifest.json')) ? readFileSync(join(paths.workspace, 'graphify-out', 'manifest.json'), 'utf8') : '').digest,
+      graphDigest: graphDigestNow,
+      graphPresent: true,
+      graphValid: true,
+    });
+    if (verdict.status === 'fresh') return { ok: true };
+    return { ok: false, reasons: verdict.reasons.map((r) => r.code) };
+  };
 
   const outcome = await runRecovery(
-    { analysisId, snapshotId: snapshotId.snapshot.snapshot_id, scope: { type: 'whole' }, bundle },
+    { analysisId, snapshotId: activeSnapshot, scope: { type: 'whole' }, bundle },
     {
       llm,
       budget: caps.budget?.(),
       nowIso: caps.nowIso(),
       targetRoot,
+      recheckFreshness,
       persist: (record) => persistAnalysisRecord(paths.analyses, record),
     },
   );
@@ -355,61 +458,94 @@ export async function analyzeWithFresh(
   }
   const record = outcome.record;
 
-  // Fold into overlay + parity (dedup by behavior+anchor identity).
-  const ovl = loadOverlay(paths.overlay);
-  const overlayStore = ovl.ok ? ovl.store : emptyOverlay(record.snapshot_id);
-  const par = loadParity(paths.parity);
-  const parityStore = par.ok ? par.store : emptyParity(record.snapshot_id);
-
-  const knownParity = new Set(parityStore.records.map((r) => `${r.behavior}|${r.evidence.map((e) => (e.kind === 'code_anchor' ? e.anchor.content_hash : e.claim_id)).join(',')}`));
-
-  for (const h of record.promoted.hypotheses) {
-    const anchorKey = h.anchors.map((a) => a.content_hash).join(',');
-    addOverlayRecord(overlayStore, {
-      relation: 'business_rule',
-      subject: { path: h.anchors[0]!.path, ...(h.anchors[0]?.node_id !== undefined ? { node_id: h.anchors[0].node_id } : {}) },
-      value: h.statement,
-      anchors: h.anchors.map((a) => ({ ...a })),
-      snapshot_id: record.snapshot_id,
-      confidence: h.confidence,
-      status: 'active',
-      lineage: { analysis_id: record.analysis_id },
-    });
-    if (!knownParity.has(`${h.statement}|${anchorKey}`)) {
-      addParityEntry(parityStore, {
-        behavior: h.statement,
-        evidence: h.anchors.map((a) => ({ kind: 'code_anchor' as const, anchor: { ...a } })),
-        source_analysis: record.analysis_id,
-      });
-    }
+  // Blocked-stale / transport-failed runs promote NOTHING and write no
+  // overlay/parity state (usage lived in the immutable record).
+  if (!outcome.ok && outcome.code === 'blocked_stale') {
+    return {
+      code: 1,
+      output: [
+        `analysis ${record.analysis_id} BLOCKED (stale): the source changed DURING the paid call — the response was not promoted.`,
+        ...record.staleness_reasons?.map((r) => `  - ${r}`) ?? [],
+        `  usage (consumed): ${record.usage.calls} call(s), ${record.usage.attempts} attempt(s)${record.usage.usage_known ? `, tokens ${record.usage.in_tokens} in / ${record.usage.out_tokens} out` : ', tokens unknown'}`,
+        REFRESH_REMEDY,
+      ].join('\n'),
+    };
   }
-  // Deterministic linking: an uncertainty rules the parity entry whose
-  // anchors overlap it (same file bytes) — the question and the behavior it
-  // asks about share evidence.
-  for (const a of record.promoted.uncertainties) {
-    const uHashes = new Set(a.anchors.map((x) => `${x.path}|${x.content_hash}`));
-    const target = parityStore.records.find(
-      (r) =>
-        r.ruling === 'unresolved' &&
-        r.decision_claim_id === undefined &&
-        r.evidence.some((ev) => ev.kind === 'code_anchor' && uHashes.has(`${ev.anchor.path}|${ev.anchor.content_hash}`)),
-    );
-    if (target !== undefined) target.decision_claim_id = a.id;
+  if (!outcome.ok && outcome.code === 'transport_failed') {
+    return {
+      code: 2,
+      output: `analysis ${record.analysis_id} transport failure — spend recorded in the immutable record; nothing promoted. See ${join(paths.analyses, `${record.analysis_id}.json`)}`,
+    };
   }
-  persistOverlay(paths.overlay, overlayStore);
-  persistParity(paths.parity, parityStore);
-
-  if (!outcome.ok) {
+  if (!outcome.ok && outcome.code === 'blocked_schema') {
     return {
       code: 1,
       output: `analysis ${record.analysis_id} BLOCKED (schema): see ${join(paths.analyses, `${record.analysis_id}.json`)}\n  issues: ${record.validation.issues.slice(0, 5).join('; ')}`,
     };
   }
+
+  // --- promotion fold (overlay + parity) under the renewal store lock (M-07) ---
+  let lock: SpecRootLock | undefined;
+  try {
+    lock = acquireSpecRootLock(join(dir, '.lco', 'renewal'), caps.nowIso());
+  } catch (e) {
+    if (e instanceof LockHeldError) {
+      return { code: 1, output: `renewal state is locked by another writer (${e.message}) — retry when it completes` };
+    }
+    throw e;
+  }
+  try {
+    const overlayStore = ovl.store;
+    const parityStore = par.store;
+    // M-03: dedup key includes anchor PATHS + hashes + node ids (a hash-only
+    // key both misses real duplicates and false-positives on shared hashes).
+    const anchorKeyOf = (anchors: { path: string; content_hash: string; node_id?: string }[]) =>
+      anchors.map((a) => `${a.path}|${a.content_hash}${a.node_id !== undefined ? `|${a.node_id}` : ''}`).sort().join(',');
+    const knownParity = new Set(parityStore.records.map((r) => `${r.behavior}|${anchorKeyOf(r.evidence.filter((e): e is Extract<typeof e, { kind: 'code_anchor' }> => e.kind === 'code_anchor').map((e) => e.anchor))}`));
+
+    for (const h of record.promoted.hypotheses) {
+      addOverlayRecord(overlayStore, {
+        relation: 'business_rule',
+        subject: { path: h.anchors[0]!.path, ...(h.anchors[0]?.node_id !== undefined ? { node_id: h.anchors[0].node_id } : {}) },
+        value: h.statement,
+        anchors: h.anchors.map((a) => ({ ...a })),
+        snapshot_id: record.snapshot_id,
+        confidence: h.confidence,
+        status: 'active',
+        lineage: { analysis_id: record.analysis_id },
+      });
+      if (!knownParity.has(`${h.statement}|${anchorKeyOf(h.anchors)}`)) {
+        addParityEntry(parityStore, {
+          behavior: h.statement,
+          evidence: h.anchors.map((a) => ({ kind: 'code_anchor' as const, anchor: { ...a } })),
+          source_analysis: record.analysis_id,
+        });
+      }
+    }
+    // Deterministic linking: an uncertainty rules the parity entry whose
+    // anchors overlap it (same file bytes) — the question and the behavior it
+    // asks about share evidence.
+    for (const a of record.promoted.uncertainties) {
+      const uHashes = new Set(a.anchors.map((x) => `${x.path}|${x.content_hash}`));
+      const target = parityStore.records.find(
+        (r) =>
+          r.ruling === 'unresolved' &&
+          r.decision_claim_id === undefined &&
+          r.evidence.some((ev) => ev.kind === 'code_anchor' && uHashes.has(`${ev.anchor.path}|${ev.anchor.content_hash}`)),
+      );
+      if (target !== undefined) target.decision_claim_id = a.id;
+    }
+    persistOverlay(paths.overlay, overlayStore);
+    persistParity(paths.parity, parityStore);
+  } finally {
+    lock.release();
+  }
+
   return {
     code: 0,
     output: [
       `analysis ${record.analysis_id}: ${record.promoted.hypotheses.length} hypothesis(ies) verified, ${record.promoted.uncertainties.length} question(s) for review, ${record.rejected.length} rejected (anchor failures)`,
-      `  usage: ${record.usage.calls} call(s), ${record.usage.attempts} attempt(s), tokens ${record.usage.usage_known ? `${record.usage.in_tokens} in / ${record.usage.out_tokens} out` : 'unknown'}`,
+      `  usage: ${record.usage.calls} call(s), ${record.usage.attempts} attempt(s), tokens ${record.usage.usage_known ? `${record.usage.in_tokens} in / ${record.usage.out_tokens} out` : 'unknown'}${record.usage.latency_ms !== undefined ? `, ${record.usage.latency_ms}ms` : ''}${record.usage.cost !== undefined ? `, cost ${record.usage.cost}${record.usage.currency ?? ''}` : ''}`,
       record.promoted.uncertainties.length > 0 ? `  next: lco renew review ${dir}` : `  next: rule parity, then lco renew plan ${dir}`,
     ].join('\n'),
   };
@@ -561,7 +697,7 @@ export async function cmdRenewPlan(
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
 
-  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider());
+  const stale = await currentStaleness(args.dir, p.project.target_path, caps.provider(), caps.gitCommit);
   if (!stale.ok) return stale;
   if (!stale.fresh) {
     return { code: 1, output: `plan refused: snapshot is stale.\n${(stale.reasons ?? []).map((r) => `  - ${r}`).join('\n')}\n${REFRESH_REMEDY}` };

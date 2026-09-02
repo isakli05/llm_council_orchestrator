@@ -55,6 +55,34 @@ export type ProjectLoad =
   | { ok: true; project: RenewalProject }
   | { ok: false; code: 'project_missing' | 'project_corrupt'; message: string };
 
+/**
+ * C-05 — explicit refresh supersession: per-snapshot stores (overlay, parity,
+ * strategy) are ARCHIVED under their old snapshot id, never silently reused
+ * across a snapshot change. Analyses and approvals are immutable human/LLM
+ * history: retained in place, but consumers bind them to the ACTIVE snapshot
+ * only (cross-snapshot records are historical, never planning inputs).
+ */
+export interface SupersessionResult {
+  archived: string[]; // "overlay → overlay.json.RSN-….superseded"
+  retained: string[]; // store names kept as history
+}
+
+export function supersedeRenewalStores(paths: RenewalPaths, oldSnapshotId: string): SupersessionResult {
+  const archived: string[] = [];
+  const perSnapshot: Array<[string, string]> = [
+    ['overlay', paths.overlay],
+    ['parity', paths.parity],
+    ['strategy', paths.strategy],
+  ];
+  for (const [name, path] of perSnapshot) {
+    if (!existsSync(path)) continue;
+    const target = `${path}.${oldSnapshotId}.superseded`;
+    renameSync(path, target);
+    archived.push(`${name} → ${target.split(/[\\/]/).pop()}`);
+  }
+  return { archived, retained: ['analyses (immutable history)', 'approvals (immutable human history)'] };
+}
+
 export function loadRenewalProject(dir: string): ProjectLoad {
   const path = renewalPaths(dir).projectJson;
   if (!existsSync(path)) {

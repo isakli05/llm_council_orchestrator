@@ -96,6 +96,23 @@ export const AnalysisUsageSchema = z
     in_tokens: z.number().int().nonnegative(),
     out_tokens: z.number().int().nonnegative(),
     usage_known: z.boolean(),
+    /** Wall-clock duration of the paid portion (ms) when measurable. */
+    latency_ms: z.number().int().nonnegative().optional(),
+    /** Byte size of the final assembled prompt (the paid payload). */
+    prompt_bytes: z.number().int().nonnegative().optional(),
+    /** Provider-reported cost in its own currency, when reported. */
+    cost: z.number().nonnegative().optional(),
+    currency: z.string().min(1).max(10).optional(),
+    /** Resolved model actually serving the role (when the transport reports
+     * one that differs from the requested route identity). */
+    resolved_model: z.string().min(1).optional(),
+    /** Provider-reported reasoning/cache token detail, when available. */
+    reasoning_tokens: z.number().int().nonnegative().optional(),
+    cache_read_tokens: z.number().int().nonnegative().optional(),
+    cache_write_tokens: z.number().int().nonnegative().optional(),
+    /** True when the transport failed before returning a usable response —
+     * spend happened but no content was produced (honest failure trail). */
+    transport_failed: z.boolean().optional(),
   })
   .strict();
 
@@ -124,7 +141,7 @@ export const AnalysisRecordSchema = z
         warnings: z.array(z.string()).max(50),
       })
       .strict(),
-    outcome: z.enum(['validated', 'blocked_schema']),
+    outcome: z.enum(['validated', 'blocked_schema', 'blocked_stale', 'transport_failed']),
     validation: z
       .object({
         schema_ok: z.boolean(),
@@ -135,6 +152,8 @@ export const AnalysisRecordSchema = z
         anchors_failed: z.number().int().nonnegative(),
       })
       .strict(),
+    /** Why a blocked_stale run refused promotion (C-10). */
+    staleness_reasons: z.array(z.string()).max(20).optional(),
     promoted: z
       .object({
         hypotheses: z.array(VerifiedHypothesisSchema),

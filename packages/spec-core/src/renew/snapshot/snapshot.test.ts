@@ -23,7 +23,12 @@ function baseInputs() {
     gitCommit: '0f1e2d3c4b5a6978879a6b5c4d3e2f100f1e2d3c',
     files: FILES,
     filesTruncated: false,
-    graph: { graphifyVersion: '0.9.50', nodeCount: 11, edgeCount: 15 },
+    graph: {
+      graphifyVersion: '0.9.50',
+      nodeCount: 11,
+      edgeCount: 15,
+      graphDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    },
     graphManifest: { digest: MANIFEST_DIGEST, entries: 4 },
     nowIso: '2026-09-02T10:00:00.000Z',
   };

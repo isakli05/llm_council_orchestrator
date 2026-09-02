@@ -122,7 +122,7 @@ describe('renewal V1 end-to-end (fixture app, scripted LLM, injected provider)',
 
     // 3. status shows the open question + unresolved parity
     const status1 = await cmdRenewStatus({ dir: project }, caps);
-    expect(status1.output).toMatch(/1 open question/);
+    expect(status1.output).toMatch(/open questions: 1/);
     expect(status1.output).toMatch(/2 UNRESOLVED/);
 
     // 4. review (headless answers: preserve the fee; strategy strangler)

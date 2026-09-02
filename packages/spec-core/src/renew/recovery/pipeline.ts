@@ -14,7 +14,7 @@
  */
 import { sha256Content } from '../../compiler/hash';
 import { stripJsonFences } from '../../eval/runner';
-import type { BudgetLedger } from '../../eval/budget';
+import { BudgetExceededError, type BudgetLedger } from '../../eval/budget';
 import type { LlmPlan } from '../../llm/plan';
 import type { ContextBundle } from '../context/bundle';
 import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
@@ -42,12 +42,20 @@ export interface RecoveryDeps {
   nowIso: string;
   /** The REAL target root anchors verify against (never the workspace copy). */
   targetRoot: string;
+  /**
+   * C-10 — post-call freshness bracket: re-verify the source state AFTER the
+   * paid call returns (and after a validation retry). A stale verdict means
+   * the response is NOT promoted and NOT trusted; usage is still recorded.
+   */
+  recheckFreshness?: () => { ok: true } | { ok: false; reasons: string[] };
   persist: (record: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string };
 }
 
 export type RecoveryOutcome =
   | { ok: true; record: AnalysisRecord }
   | { ok: false; code: 'blocked_schema'; record: AnalysisRecord }
+  | { ok: false; code: 'blocked_stale'; record: AnalysisRecord }
+  | { ok: false; code: 'transport_failed'; record: AnalysisRecord }
   | { ok: false; code: 'persist_failed'; message: string; record: AnalysisRecord };
 
 interface UsageState {
@@ -56,6 +64,15 @@ interface UsageState {
   in_tokens: number;
   out_tokens: number;
   usage_known: boolean;
+  latency_ms?: number;
+  prompt_bytes?: number;
+  cost?: number;
+  currency?: string;
+  resolved_model?: string;
+  reasoning_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  transport_failed?: boolean;
 }
 
 function zodIssues(error: { issues: { path: (string | number)[]; message: string }[] }, cap = 20): string[] {
@@ -69,7 +86,34 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     const route = deps.llm.forRole('renew_recover');
     deps.budget?.checkWall();
     deps.budget?.ensureAttemptAdmissible();
-    const res = await route.adapter.complete(prompt);
+    const startedAt = Date.now();
+    usage.prompt_bytes = Buffer.byteLength(prompt, 'utf8');
+    let res;
+    try {
+      res = await route.adapter.complete(prompt);
+    } catch (e) {
+      // Budget exhaustion is an in-process refusal, not a transport failure:
+      // nothing was spent on the wire — propagate unchanged, persist nothing.
+      if (e instanceof BudgetExceededError) throw e;
+      // H-05: a transport failure still consumed wall-clock and possibly
+      // spend — record the honest failed-call trail, then surface the typed
+      // failure to the caller.
+      usage.transport_failed = true;
+      usage.latency_ms = Date.now() - startedAt;
+      const failedRecord: AnalysisRecord = {
+        ...baseRecord,
+        model: routeIdentity,
+        outcome: 'transport_failed',
+        validation: { schema_ok: false, retry_used: false, issues: [`transport failure: ${(e as Error).message}`], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+        promoted: { hypotheses: [], uncertainties: [] },
+        rejected: [],
+        coverage_notes: [],
+        usage: { ...usage },
+      };
+      deps.persist(failedRecord);
+      throw e;
+    }
+    usage.latency_ms = (usage.latency_ms ?? 0) + (Date.now() - startedAt);
     const attempts = res.attempts ?? 1;
     if (res.attempts === undefined) deps.budget?.chargeAttempts(1);
     usage.calls += 1;
@@ -78,6 +122,16 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       usage.in_tokens += res.usage.in_tokens;
       usage.out_tokens += res.usage.out_tokens;
       deps.budget?.chargeTokens(res.usage);
+      const detail = res.usage as {
+        reasoning_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number;
+        cost?: number; currency?: string; resolved_model?: string;
+      };
+      if (detail.reasoning_tokens !== undefined) usage.reasoning_tokens = (usage.reasoning_tokens ?? 0) + detail.reasoning_tokens;
+      if (detail.cache_read_tokens !== undefined) usage.cache_read_tokens = (usage.cache_read_tokens ?? 0) + detail.cache_read_tokens;
+      if (detail.cache_write_tokens !== undefined) usage.cache_write_tokens = (usage.cache_write_tokens ?? 0) + detail.cache_write_tokens;
+      if (detail.cost !== undefined) usage.cost = (usage.cost ?? 0) + detail.cost;
+      if (detail.currency !== undefined) usage.currency = detail.currency;
+      if (detail.resolved_model !== undefined) usage.resolved_model = detail.resolved_model;
     } else {
       usage.usage_known = false;
     }
@@ -128,11 +182,66 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
 
   const prompt = buildRecoveryPrompt({ scope: req.scope, bundle: req.bundle, nowIso: deps.nowIso });
 
-  let attempt = parse(await complete(prompt));
+  let responseText: string;
+  try {
+    responseText = await complete(prompt);
+  } catch (e) {
+    // Budget refusal: nothing spent — propagate (existing contract).
+    if (e instanceof BudgetExceededError) throw e;
+    // Transport failure: the failed-call record was already persisted by
+    // complete(); surface the typed outcome so callers exit non-zero.
+    return { ok: false, code: 'transport_failed', record: { ...baseRecord, model: routeIdentity, outcome: 'transport_failed', validation: { schema_ok: false, retry_used: false, issues: ['transport failure'], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 }, promoted: { hypotheses: [], uncertainties: [] }, rejected: [], coverage_notes: [], usage: { ...usage } } };
+  }
+
+  // C-10 — the paid call has returned: re-verify freshness BEFORE any
+  // validation, promotion, or trusted write. Stale ⇒ blocked_stale (usage
+  // recorded, nothing promoted).
+  const staleCheck = deps.recheckFreshness?.();
+  if (staleCheck !== undefined && !staleCheck.ok) {
+    const staleRecord: AnalysisRecord = {
+      ...baseRecord,
+      model: routeIdentity,
+      outcome: 'blocked_stale',
+      validation: { schema_ok: false, retry_used: false, issues: [], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+      staleness_reasons: staleCheck.reasons.slice(0, 20),
+      promoted: { hypotheses: [], uncertainties: [] },
+      rejected: [],
+      coverage_notes: [],
+      usage: { ...usage },
+    };
+    const r = deps.persist(staleRecord);
+    return r.ok ? { ok: false, code: 'blocked_stale', record: staleRecord } : { ok: false, code: 'persist_failed', message: r.message, record: staleRecord };
+  }
+
+  let attempt = parse(responseText);
   let retryUsed = false;
   if (!attempt.ok) {
     retryUsed = true;
-    attempt = parse(await complete(buildValidationRetryPrompt(prompt, attempt.issues)));
+    let retryText: string;
+    try {
+      retryText = await complete(buildValidationRetryPrompt(prompt, attempt.issues));
+    } catch (e) {
+      if (e instanceof BudgetExceededError) throw e;
+      return { ok: false, code: 'transport_failed', record: { ...baseRecord, model: routeIdentity, outcome: 'transport_failed', validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 }, promoted: { hypotheses: [], uncertainties: [] }, rejected: [], coverage_notes: [], usage: { ...usage } } };
+    }
+    // The retry is ALSO a paid call: freshness re-verified again (C-10).
+    const staleCheck2 = deps.recheckFreshness?.();
+    if (staleCheck2 !== undefined && !staleCheck2.ok) {
+      const staleRecord: AnalysisRecord = {
+        ...baseRecord,
+        model: routeIdentity,
+        outcome: 'blocked_stale',
+        validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+        staleness_reasons: staleCheck2.reasons.slice(0, 20),
+        promoted: { hypotheses: [], uncertainties: [] },
+        rejected: [],
+        coverage_notes: [],
+        usage: { ...usage },
+      };
+      const r = deps.persist(staleRecord);
+      return r.ok ? { ok: false, code: 'blocked_stale', record: staleRecord } : { ok: false, code: 'persist_failed', message: r.message, record: staleRecord };
+    }
+    attempt = parse(retryText);
   }
 
   const persistRecord = (record: AnalysisRecord): RecoveryOutcome => {

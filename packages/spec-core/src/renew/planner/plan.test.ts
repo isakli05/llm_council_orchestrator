@@ -38,7 +38,7 @@ const snapshot = createSnapshot({
   gitCommit: 'a'.repeat(40),
   files: MANIFEST,
   filesTruncated: false,
-  graph: { graphifyVersion: '0.9.50', nodeCount: 11, edgeCount: 15 },
+  graph: { graphifyVersion: '0.9.50', nodeCount: 11, edgeCount: 15, graphDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
   graphManifest: { digest: sha('manifest'), entries: 4 },
   nowIso: '2026-09-02T00:00:00.000Z',
 });
