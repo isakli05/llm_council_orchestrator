@@ -17,6 +17,7 @@ import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
 import type { AnalysisRecord } from '../recovery/schemas';
 import type { RenewalApprovalRecord } from '../clarify/approvals';
 import { canonicalRuling } from '../trust/authority';
+import { assertSupportPolicy } from '../trust/evidence';
 
 export { CANONICAL_PARITY_RULINGS, canonicalRuling } from '../trust/authority';
 export type { CanonicalParityRuling } from '../trust/authority';
@@ -215,16 +216,19 @@ export function parityGate(store: ParityStore, targetRoot: string, approvals?: P
         continue;
       }
     }
-    // Verifier C-2: the support axis is LOAD-BEARING — a ruled entry used
-    // for planning must carry human_confirmed support ('contradicted'
-    // authorizes nothing; machine stages never set it themselves). Runs
-    // AFTER approval-reference integrity so the more specific authority
-    // blockers surface first.
-    if (rec.support_status !== 'human_confirmed') {
+    // Verifier C-2 + S4-M-01 (bypass 4 closed): the support axis is
+    // LOAD-BEARING through the KERNEL policy — assertSupportPolicy is the
+    // ONE implementation ('unvalidated' may hypothesize, never feed
+    // planning; 'contradicted' authorizes nothing; machine stages never set
+    // human_confirmed themselves). Runs AFTER approval-reference integrity
+    // so the more specific authority blockers surface first.
+    try {
+      assertSupportPolicy('planning_input', rec.support_status, `ruling '${rec.ruling}' on ${rec.id}`);
+    } catch (e) {
       blockers.push({
         id: rec.id,
         reason:
-          `ruling '${rec.ruling}' lacks human-confirmed support (support_status: ${rec.support_status ?? 'unrecorded'}) — ` +
+          `${(e as Error).message} (support_status: ${rec.support_status ?? 'unrecorded'}) — ` +
           `re-run the review so the approval sets it; a ruled entry without recorded human confirmation is not plannable`,
       });
       continue;

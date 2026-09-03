@@ -307,7 +307,7 @@ describe('strategy + analysis store edges', () => {
     const second = persistAnalysisRecord(dir, dir, record);
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.code).toBe('already_exists');
-    expect(loadAnalysisRecords(dir).records).toHaveLength(1);
+    expect(loadAnalysisRecords(dir, dir).records).toHaveLength(1);
   });
 });
 // --- planner residual branches + provider edges ----------------------------------------

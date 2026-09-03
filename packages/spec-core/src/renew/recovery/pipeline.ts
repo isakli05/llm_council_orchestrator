@@ -17,6 +17,7 @@ import { accountCompletionAttempts } from '../trust/paid';
 import { TrustPaidError } from '../trust/errors';
 import { resolveCitation, type ResolvedCitation, type TrustedAnchorPayload, type SealedContext } from '../trust/evidence';
 import { TrustCitationError } from '../trust/errors';
+import { domainDigest } from '../trust/canonical';
 import { stripJsonFences } from '../../eval/runner';
 import { BudgetExceededError, type BudgetLedger } from '../../eval/budget';
 import type { LlmPlan } from '../../llm/plan';
@@ -230,7 +231,9 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   const scrubDiagnostic = (text: string): string => redactSecrets(text).text;
 
   const input = {
-    context_digest: sha256Content(JSON.stringify(req.bundle)),
+    // S4-M-02: the persisted context identity is a canonical domain digest
+    // (LCO:PAID_CONTEXT) — no ad-hoc JSON framing for trust-bearing digests.
+    context_digest: domainDigest('LCO:PAID_CONTEXT', 1, req.bundle),
     item_count: req.bundle.items.length,
     slice_count: req.bundle.items.filter((i) => i.kind === 'file_slice').length,
     truncated: req.bundle.truncated,

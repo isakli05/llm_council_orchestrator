@@ -58,7 +58,7 @@ describe('analysis store (immutable, write-once)', () => {
     persistAnalysisRecord(dir, dir, record('AN-0002'));
     persistAnalysisRecord(dir, dir, record('AN-0001'));
     writeFileSync(join(dir, 'AN-0003.json'), '{corrupt');
-    const loaded = loadAnalysisRecords(dir);
+    const loaded = loadAnalysisRecords(dir, dir);
     expect(loaded.records.map((r) => r.analysis_id)).toEqual(['AN-0001', 'AN-0002']);
     expect(loaded.corrupt).toEqual(['AN-0003.json']);
   });

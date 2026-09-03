@@ -184,7 +184,7 @@ describe('loadAnalysisRecords interop (analyses feed the distiller)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'lco-sess-store-'));
     try {
       persistAnalysisRecord(dir, dir, uncertaintyAnalysis());
-      const loaded = loadAnalysisRecords(dir);
+      const loaded = loadAnalysisRecords(dir, dir);
       expect(loaded.records).toHaveLength(1);
       expect(loaded.records[0].promoted.uncertainties).toHaveLength(1);
     } finally {

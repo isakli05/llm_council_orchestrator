@@ -467,12 +467,12 @@ describe('analysis store edges', () => {
     const dir = freshDir('lco-an-store-');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'AN-0002.json'), '{corrupt');
-    const loaded = loadAnalysisRecords(dir);
+    const loaded = loadAnalysisRecords(dir, dir);
     expect(loaded.records).toHaveLength(0);
     expect(loaded.corrupt).toEqual(['AN-0002.json']);
     expect(nextAnalysisId(['AN-0002', 'AN-0010'])).toBe('AN-0011');
     expect(nextAnalysisId(['bogus'])).toBe('AN-0001');
-    expect(loadAnalysisRecords(join(dir, 'missing')).records).toHaveLength(0);
+    expect(loadAnalysisRecords(dir, join(dir, 'missing')).records).toHaveLength(0);
   });
 });
 // --- distiller approval payload combinations --------------------------------------------

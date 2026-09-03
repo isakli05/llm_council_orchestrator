@@ -4,13 +4,16 @@
  * re-analysis creates a NEW record; current state may POINT at the active one.
  *
  * TRUST KERNEL: writes go through the authorized exclusive-create primitive;
- * trusted reads route through trust/state.loadActiveState (this module's
- * directory loader remains for diagnostics/tests).
+ * reads — including the analysis-ID collision-recovery enumeration the
+ * analyze path performs DURING the paid call — go through the authorized
+ * reader below (S4-M-01 bypass 3 closed: this is the explicit trusted
+ * analysis-store reader owned at the storage boundary, not a diagnostics
+ * exception).
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { AnalysisRecordSchema, type AnalysisRecord } from './schemas';
-import { authorizedCreateExclusive } from '../trust/fs';
+import { authorizedCreateExclusive, authorizedRead } from '../trust/fs';
 
 export function nextAnalysisId(existingIds: readonly string[]): string {
   let max = 0;
@@ -48,7 +51,7 @@ export interface LoadedAnalyses {
   corrupt: string[]; // file names that failed JSON/schema validation
 }
 
-export function loadAnalysisRecords(dir: string): LoadedAnalyses {
+export function loadAnalysisRecords(projectDir: string, dir: string): LoadedAnalyses {
   if (!existsSync(dir)) return { records: [], corrupt: [] };
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.json'))
@@ -57,7 +60,7 @@ export function loadAnalysisRecords(dir: string): LoadedAnalyses {
   const corrupt: string[] = [];
   for (const file of files) {
     try {
-      const parsed = AnalysisRecordSchema.safeParse(JSON.parse(readFileSync(join(dir, file), 'utf8')));
+      const parsed = AnalysisRecordSchema.safeParse(JSON.parse(authorizedRead({ projectDir, path: join(dir, file) })));
       if (parsed.success) records.push(parsed.data);
       else corrupt.push(file);
     } catch {

@@ -39,7 +39,7 @@ describe('verifier-fix regressions (A–F wave)', () => {
     delete tampered.records[0].approval_id;
     const gate = parityGate(tampered, '/nonexistent-target', { loadApproval: () => undefined, activeSnapshot: 'RSN-0123456789abcdef' });
     expect(gate.ok).toBe(false);
-    if (!gate.ok) expect(gate.blockers.some((b) => /lacks human-confirmed support/.test(b.reason))).toBe(true);
+    if (!gate.ok) expect(gate.blockers.some((b) => /support_status|planning_input/.test(b.reason))).toBe(true);
   });
 
   it('C-4: duplicate model claim ids are a schema failure (never a silent merge)', async () => {

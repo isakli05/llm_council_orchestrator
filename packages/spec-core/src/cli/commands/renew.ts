@@ -702,7 +702,7 @@ export async function analyzeWithFresh(
         if (first.ok) return first;
         if (first.code !== 'already_exists') return first;
         const { loadAnalysisRecords } = require('../../renew/recovery/analysis-store') as typeof import('../../renew/recovery/analysis-store');
-        const fresh = loadAnalysisRecords(paths.analyses);
+        const fresh = loadAnalysisRecords(dir, paths.analyses);
         record.analysis_id = nextAnalysisId(fresh.records.map((r) => r.analysis_id));
         return persistAnalysisRecord(dir, paths.analyses, record);
       },

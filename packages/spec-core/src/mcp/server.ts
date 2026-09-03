@@ -51,7 +51,6 @@ import {
   resolveLegacyEnvRoute,
   routeFromConfig,
   resolvedRouteDigest,
-  wireCap,
 } from '../renew/trust/paid';
 import { renewConsentDigest } from './consent';
 import { RECOVERY_PROMPT_PROTOCOL } from '../renew/recovery/prompts';

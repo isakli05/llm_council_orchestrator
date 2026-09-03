@@ -370,6 +370,21 @@ export function requireStructuralIdentity(args: {
   return r.identity;
 }
 
+/** The fully-verified structural read: coherent bound identity AND the
+ *  parsed graph — the single return value every load-bearing graph consumer
+ *  uses (S4-H-04: no consumer parses graph text itself). */
+export function requireStructuralGraph(args: {
+  manifestText: string | undefined;
+  graphText: string;
+  bindingText: string | undefined;
+  source?: string;
+}): { identity: StructuralIdentity; graph: ReturnType<typeof parseGraphText> extends never ? never : import('../intel/graph-reader').ParsedGraph } {
+  const identity = requireStructuralIdentity(args);
+  const parsed = parseGraphText(args.graphText);
+  if (!parsed.ok) throw new TrustStructuralError('graph_invalid', parsed.message);
+  return { identity, graph: parsed.graph };
+}
+
 // --- Total graph health discriminant (S3-M-01) -----------------------------------------
 
 /**

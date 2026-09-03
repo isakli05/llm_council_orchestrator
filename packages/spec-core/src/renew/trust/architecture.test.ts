@@ -141,17 +141,156 @@ describe('architecture: paid transport only through ResolvedPaidOperation discip
     expect(violations, violations.join('\n')).toEqual([]);
   });
 
-  it('every renewal transport construction carries the kernel wire hook', () => {
-    // The named-profile path constructs through the provider factory; the
-    // factory call must be accompanied by the kernel's wireCap import in the
-    // same file (CLI boundary and MCP server).
+  it('S4-H-03: the MCP renewal surface has NO provider-factory transport (every renewal route constructs createPaidOperation)', () => {
+    // mcp/server.ts may use buildRoleAdapter ONLY outside renewal — but its
+    // renewal tool migrated to the paid kernel; the identifier is absent
+    // from the whole file by design. Non-renewal generate/clarify use the
+    // llm-config layer, not the raw factory.
+    const server = readFileSync(join(PKG, 'src', 'mcp', 'server.ts'), 'utf8');
+    expect(server.includes('buildRoleAdapter('), 'mcp/server.ts must not construct adapter factories; renewal goes through createPaidOperation').toBe(false);
+    // Both renewal boundaries construct through the operation.
     for (const rel of ['src/cli/index.ts', 'src/mcp/server.ts']) {
       const text = readFileSync(join(PKG, rel), 'utf8');
-      if (text.includes('buildRoleAdapter(')) {
-        expect(text, `${rel} must import the kernel wire hook`).toMatch(/wireCap/);
-        expect(text, `${rel} must enforce the recovery wire cap`).toMatch(/MAX_RECOVERY_WIRE_BYTES/);
+      expect(text, `${rel} must construct renewal transports through createPaidOperation`).toMatch(/createPaidOperation/);
+    }
+  });
+});
+
+describe('architecture: dependency direction + canonical ownership (S4-M-02)', () => {
+  /** Extract static import specifiers from a source file. */
+  function importSpecifiers(text: string): string[] {
+    const out: string[] = [];
+    for (const m of text.matchAll(/from '([^']+)'/g)) out.push(m[1]!);
+    for (const m of text.matchAll(/from "([^"]+)"/g)) out.push(m[1]!);
+    return out;
+  }
+
+  it('trust kernel modules never import upward (CLI/MCP/browser/command modules)', () => {
+    const banned = ['../../cli/', '../cli/', "'../../mcp/", '../mcp/', 'browser'];
+    const violations: string[] = [];
+    for (const file of productionFiles(join(PKG, 'src', 'renew', 'trust'))) {
+      const text = readFileSync(file, 'utf8');
+      for (const spec of importSpecifiers(text)) {
+        for (const b of banned) {
+          if (spec.includes(b) && !spec.includes('browser-assets')) {
+            violations.push(`${REL(file)}: ${spec}`);
+          }
+        }
       }
     }
+    expect(violations, violations.join('\n')).toEqual([]);
+  });
+
+  it('trust/state.ts participates in NO import cycle (walk the static import graph)', () => {
+    const resolved = (fromFile: string, spec: string): string | undefined => {
+      if (!spec.startsWith('.')) return undefined;
+      const base = join(fromFile, '..', spec);
+      for (const c of [`${base}.ts`, join(base, 'index.ts')]) {
+        if (existsSync(c)) return c;
+      }
+      return undefined;
+    };
+    const seen = new Set<string>();
+    const walk = (file: string, stack: string[]): string[] => {
+      const key = file;
+      if (stack.includes(key)) return [...stack.map((s) => REL(s)), REL(file)];
+      if (seen.has(key)) return [];
+      seen.add(key);
+      const text = readFileSync(file, 'utf8');
+      for (const spec of importSpecifiers(text)) {
+        const target = resolved(file, spec);
+        if (target === undefined) continue;
+        const cycle = walk(target, [...stack, file]);
+        if (cycle.length > 0) return cycle;
+      }
+      return [];
+    };
+    const cycle = walk(join(PKG, 'src', 'renew', 'trust', 'state.ts'), []);
+    expect(cycle, `import cycle through trust/state: ${cycle.join(' -> ')}`).toEqual([]);
+  });
+
+  it('no ad-hoc trust-bearing digest idioms outside the canonical layer', () => {
+    // S4-M-02: trust-bearing digests (snapshot/consent/authority/route/
+    // bundle/binding) are domain digests. The raw JSON-stringify framing is
+    // banned in production outside the canonical layer and its compiler
+    // re-export.
+    const allow = new Set(['src/renew/trust/canonical.ts', 'src/compiler/hash.ts']);
+    const violations: string[] = [];
+    for (const file of productionFiles(join(PKG, 'src'))) {
+      if (allow.has(REL(file))) continue;
+      const text = readFileSync(file, 'utf8');
+      text.split('\n').forEach((line, i) => {
+        const t = line.trim();
+        if (t.startsWith('*') || t.startsWith('//')) return; // doc mentions are prose
+        if (line.includes('sha256Content(') && line.includes('JSON.stringify(')) {
+          violations.push(`${REL(file)}:${i + 1}: ad-hoc digest framing`);
+        }
+      });
+    }
+    expect(violations, violations.join('\n')).toEqual([]);
+  });
+});
+
+describe('architecture: one policy, one vocabulary, one reader per trust concern (S4-M-01)', () => {
+  it('raw current-state file reads are absent from the project/snapshot domain modules (bypasses 1+2)', () => {
+    for (const rel of ['src/renew/project/project.ts', 'src/renew/recovery/analysis-store.ts']) {
+      const text = readFileSync(join(PKG, rel), 'utf8');
+      expect(text.includes('readFileSync('), `${rel} must read through the authorized reader`).toBe(false);
+    }
+    // the trusted reads exist and are authorized
+    const project = readFileSync(join(PKG, 'src', 'renew', 'project', 'project.ts'), 'utf8');
+    expect(project).toMatch(/authorizedRead/);
+  });
+
+  it('ONE support policy: the human_confirmed planning rule lives only in trust/evidence.ts (bypass 4)', () => {
+    const violations: string[] = [];
+    for (const file of productionFiles(join(PKG, 'src'))) {
+      if (REL(file) === 'src/renew/trust/evidence.ts') continue;
+      const text = readFileSync(file, 'utf8');
+      text.split('\n').forEach((line, i) => {
+        const t = line.trim();
+        if (t.startsWith('*') || t.startsWith('//')) return;
+        if (line.includes("support_status !== 'human_confirmed'")) {
+          violations.push(`${REL(file)}:${i + 1}: inline support-policy reimplementation`);
+        }
+      });
+    }
+    expect(violations, violations.join('\n')).toEqual([]);
+    // and the parity gate consumes the kernel policy
+    const ledger = readFileSync(join(PKG, 'src', 'renew', 'parity', 'ledger.ts'), 'utf8');
+    expect(ledger).toMatch(/assertSupportPolicy/);
+  });
+
+  it('ONE canonical ruling vocabulary: CANONICAL_PARITY_RULINGS is defined only in trust/authority.ts (bypass 5)', () => {
+    const violations: string[] = [];
+    for (const file of productionFiles(join(PKG, 'src'))) {
+      if (REL(file) === 'src/renew/trust/authority.ts') continue;
+      const text = readFileSync(file, 'utf8');
+      if (text.includes('const CANONICAL_PARITY_RULINGS')) violations.push(REL(file));
+    }
+    expect(violations, violations.join('\n')).toEqual([]);
+  });
+
+  it('raw graph parsing outside the kernel is absent (bypass 8: parseGraphText only in graph-reader + trust/structural)', () => {
+    const allow = new Set(['src/renew/intel/graph-reader.ts', 'src/renew/trust/structural.ts']);
+    const violations: string[] = [];
+    for (const file of productionFiles(join(PKG, 'src'))) {
+      if (allow.has(REL(file))) continue;
+      const text = readFileSync(file, 'utf8');
+      text.split('\n').forEach((line, i) => {
+        const t = line.trim();
+        if (t.startsWith('*') || t.startsWith('//')) return;
+        if (line.includes('parseGraphText(')) violations.push(`${REL(file)}:${i + 1}`);
+      });
+    }
+    expect(violations, violations.join('\n')).toEqual([]);
+  });
+
+  it('the transaction journal write-set API is the only multi-write commit path (S4-H-01: no write-performing commit callbacks)', () => {
+    const state = readFileSync(join(PKG, 'src', 'renew', 'trust', 'state.ts'), 'utf8');
+    expect(state).toContain('StateMutationPlan');
+    expect(state).toContain('applyStateMutation');
+    expect(state.includes('commit:'), 'the write-performing commit callback must not return').toBe(false);
   });
 });
 

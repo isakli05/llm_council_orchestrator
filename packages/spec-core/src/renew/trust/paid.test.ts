@@ -164,7 +164,7 @@ describe('paid: single-charge accounting (S3-H-06)', () => {
   });
 });
 
-describe('paid: routeFromConfig + wireCap direct', () => {
+describe('paid: routeFromConfig + operation-bound wire cap', () => {
   it('routeFromConfig projects the config effectual route facts', async () => {
     const { routeFromConfig } = await import('./paid');
     const route = routeFromConfig({
@@ -191,13 +191,23 @@ describe('paid: routeFromConfig + wireCap direct', () => {
     expect(JSON.stringify(route)).not.toContain('secret-value');
   });
 
-  it('wireCap measures and refuses directly-installed hooks', async () => {
-    const { wireCap } = await import('./paid');
-    const cap = wireCap(1_000);
-    expect(() => cap.onSerializedWire('x'.repeat(999))).not.toThrow();
-    expect(cap.lastWireBytes()).toBe(999);
-    expect(() => cap.onSerializedWire('x'.repeat(1_001))).toThrowError(/request_over_budget|wire cap/);
-    expect(cap.lastWireBytes()).toBe(1_001);
+  it('the OPERATION carries the wire cap (the standalone wireCap API was deleted with S4-H-03 — every renewal route constructs through createPaidOperation)', async () => {
+    const { createPaidOperation, resolveLegacyEnvRoute } = await import('./paid');
+    // A 1-byte cap: the operation's own serialized-wire gate refuses BEFORE
+    // transport (the fetch impl counts calls — it must stay at zero).
+    let fetches = 0;
+    const fetchImpl = (async () => {
+      fetches++;
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const op = createPaidOperation({
+      route: resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://x', LCO_LLM_MODEL: 'm' }, { maxAttempts: 1 }),
+      apiKey: 'k',
+      wireByteCap: 1,
+      fetchImpl,
+    });
+    await expect(op.adapter.complete('x'.repeat(100))).rejects.toThrowError(/request_over_budget|wire cap/);
+    expect(fetches).toBe(0);
   });
 
   it('resolveLegacyEnvRoute fails closed on malformed env', async () => {

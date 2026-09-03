@@ -26,7 +26,7 @@ import type {
 import type { HealthFailure, IntelFailure } from './provider';
 import { parseGraphText, type ParsedGraph } from './graph-reader';
 import type { StructuralBinding } from '../trust/structural';
-import { computeStructuralBinding, coerceStructuralBinding, requireStructuralIdentity, structuralBindingPath, parseGraphManifestStrict } from '../trust/structural';
+import { computeStructuralBinding, coerceStructuralBinding, requireStructuralGraph, structuralBindingPath, parseGraphManifestStrict } from '../trust/structural';
 import { affectedReverse, godNodes, graphHealthOf, neighborhood, querySeeds, shortestPath } from './graph-ops';
 import { runSubprocess, type SubprocessRunner } from './subprocess';
 import { authorizedWrite } from '../trust/fs';
@@ -395,8 +395,9 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     } catch {
       bindingText = undefined;
     }
+    let verified: { identity: import('../trust/structural').StructuralIdentity; graph: ParsedGraph };
     try {
-      requireStructuralIdentity({ manifestText, graphText, bindingText, source: 'graph workspace' });
+      verified = requireStructuralGraph({ manifestText, graphText, bindingText, source: 'graph workspace' });
     } catch (e) {
       const err = e as { code?: string; message?: string };
       // Preserve the adapter's public vocabulary: manifest-gate failures are
@@ -406,11 +407,9 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
         err.code === 'manifest_missing' ? 'graph_missing' : err.code === 'manifest_invalid' ? 'graph_invalid' : (err.code ?? 'graph_invalid');
       return { ok: false, code: mapped as never, message: err.message ?? String(e) } as IntelFailure;
     }
-    const parsed = parseGraphText(graphText);
-    if (!parsed.ok) return parsed;
     const binding = coerceStructuralBinding(bindingText);
     return binding.ok
-      ? { ok: true, graph: parsed.graph, binding: binding.binding }
+      ? { ok: true, graph: verified.graph, binding: binding.binding }
       : ({ ok: false, code: binding.code as never, message: binding.message } as IntelFailure);
   }
 }
