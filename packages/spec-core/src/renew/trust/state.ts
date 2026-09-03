@@ -354,6 +354,11 @@ interface TxJournalFile {
   schema_version: 1;
   holder: { pid: number; acquiredAt: string };
   base_revision: number;
+  /** V1-re-verifier H1: set when this committer aborted AFTER another writer
+   *  committed (fence observed the revision move). The journal is then an
+   *  EVIDENCE MARKER, not a rollback authority — auto-recovery would clobber
+   *  the newer commit. Recovery refuses (manual) instead. */
+  superseded?: boolean;
   /** domainDigest('LCO:STATE_TX', 1, { base_revision, entries }) — a tampered
    *  journal is REFUSED (never interpreted), because its old-bytes are the
    *  recovery authority. */
@@ -366,9 +371,14 @@ interface TxJournalFile {
 let activeJournalDir: string | null = null;
 
 function txJournalIntegrity(j: Omit<TxJournalFile, 'integrity'>): `sha256:${string}` {
-  // V1-verifier note: holder identity is covered too — a journal is bound to
-  // its committer, not just its entries.
-  return domainDigest('LCO:STATE_TX', 1, { base_revision: j.base_revision, holder: j.holder, entries: j.entries });
+  // V1-verifier note: holder identity (and the superseded marker) are covered
+  // too — a journal is bound to its committer and its abort status.
+  return domainDigest('LCO:STATE_TX', 1, {
+    base_revision: j.base_revision,
+    holder: j.holder,
+    entries: j.entries,
+    ...(j.superseded === true ? { superseded: true } : {}),
+  });
 }
 
 /** Build the journal for a plan by SIMULATING the canonical write order —
@@ -456,8 +466,10 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
   let performed = 0; // count of completed forward steps (V1-verifier V2/V3)
   try {
     // Canonical order (matches planJournalEntries' construction exactly).
-    for (const dir of mutation.ensureDirs ?? []) authorizedEnsureDir({ projectDir, path: dir });
-    performed += (mutation.ensureDirs ?? []).length;
+    for (const dir of mutation.ensureDirs ?? []) {
+      authorizedEnsureDir({ projectDir, path: dir });
+      performed += 1;
+    }
     for (const r of mutation.archive ?? []) {
       if (entries.some((e) => e.kind === 'rename' && e.from === r.from && e.to === r.to)) {
         authorizedRenameNoClobber({ projectDir, from: r.from, to: r.to });
@@ -488,12 +500,51 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
     removeJournal(projectDir, paths);
   } catch (err) {
     const cause = err as Error;
-    // A fence abort (recovery_required) is a clean abort: roll the performed
-    // prefix back and propagate the ORIGINAL typed refusal — the state is
-    // complete R and no journal is needed.
+    // V1-re-verifier H1: if ANOTHER WRITER COMMITTED (the revision moved off
+    // our base), this state is no longer exclusively ours — rolling the
+    // journal back would clobber their commit. Preserve the journal as a
+    // SUPERSEDED evidence marker and fail loud (manual recovery); write
+    // nothing else.
+    let revisionMoved = false;
+    try {
+      revisionMoved = readRevisionUnlocked(projectDir) !== journal.base_revision;
+    } catch {
+      revisionMoved = true; // unreadable revision after a mid-commit failure — fail loud too
+    }
+    if (revisionMoved) {
+      if (activeJournalDir === projectDir) activeJournalDir = null;
+      try {
+        const supersededJournal: TxJournalFile = { ...journal, superseded: true };
+        supersededJournal.integrity = txJournalIntegrity(supersededJournal);
+        persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
+      } catch {
+        // the marker itself could not be written — the typed refusal below is
+        // the remaining evidence
+      }
+      throw new TrustStateError(
+        'recovery_required',
+        `trusted-state commit failed (${cause.message}) AND the revision advanced past this commit's base — ` +
+          `a concurrent writer committed. On-disk state may combine both writers; the journal is retained as a ` +
+          `superseded marker. Inspect the state after review before re-running.`,
+      );
+    }
+    // A fence abort (lock changed hands but nobody committed) is a clean
+    // abort: roll the performed prefix back and propagate the ORIGINAL typed
+    // refusal — the state is complete R and no journal is needed. (H2: the
+    // rollback is guarded — a failure here is typed and never sticks the
+    // in-flight marker.)
     if (err instanceof TrustStateError && err.code === 'recovery_required') {
-      rollbackPerformedPrefix(projectDir, journal, performed);
-      removeJournal(projectDir, paths);
+      try {
+        rollbackPerformedPrefix(projectDir, journal, performed);
+        removeJournal(projectDir, paths);
+      } catch (rb) {
+        if (activeJournalDir === projectDir) activeJournalDir = null;
+        throw new TrustStateError(
+          'recovery_required',
+          `commit aborted (${cause.message}) and its rollback failed (${(rb as Error).message}) — ` +
+            `the transaction journal is retained; the next trusted read recovers deterministically`,
+        );
+      }
       throw err;
     }
     try {
@@ -712,6 +763,17 @@ function recoverTxJournal(projectDir: string, paths: ReturnType<typeof renewalPa
         'recovery_required',
         `the trusted-state transaction journal failed integrity verification (${paths.journal}) — it is tampered ` +
           `or of an unknown format; recovery refuses to interpret it. Inspect it after review.`,
+      );
+    }
+    // H1 companion: a SUPERSEDED journal (its committer aborted after another
+    // writer committed) is an evidence marker, not a rollback authority —
+    // auto-recovery would clobber the newer commit. Manual recovery only.
+    if (journal.superseded === true) {
+      throw new TrustStateError(
+        'recovery_required',
+        `the transaction journal at ${paths.journal} is SUPERSEDED — its committer aborted after a concurrent ` +
+          `commit landed, so on-disk state may combine both writers. Recovery refuses to auto-rollback over the ` +
+          `newer revision; inspect the state and the journal after review, then remove the journal.`,
       );
     }
     try {

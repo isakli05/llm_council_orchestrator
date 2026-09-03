@@ -33,11 +33,22 @@ import { domainDigest } from './canonical';
 vi.mock('./fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./fs')>();
   type Fault = { failOnWrite?: number; seen?: number; failed?: boolean; failOnRestore?: number; restoreSeen?: number };
+  type Interleave = { onWrite: number; commit: () => void };
   return {
     ...actual,
     authorizedWrite: (args: Parameters<typeof actual.authorizedWrite>[0]) => {
-      const fault = (globalThis as { __txFault?: Fault }).__txFault;
+      const fault = (globalThis as { __txFault?: Fault & { interleaveAndFail?: Interleave } }).__txFault;
       if (fault !== undefined) {
+        if (fault.interleaveAndFail !== undefined) {
+          fault.seen = (fault.seen ?? 0) + 1;
+          if (fault.seen === fault.interleaveAndFail.onWrite) {
+            fault.failed = true;
+            // A CONCURRENT WRITER commits inside our write window, then our
+            // write fails (the V1-re-verifier overlap interleave).
+            fault.interleaveAndFail.commit();
+            throw new Error(`injected trusted-write failure #${fault.seen} (${args.path}) — after a concurrent commit`);
+          }
+        }
         if (fault.failOnWrite !== undefined) {
           fault.seen = (fault.seen ?? 0) + 1;
           if (fault.seen === fault.failOnWrite) {
@@ -696,5 +707,95 @@ describe('S4-H-01: command-arm coverage (refresh generic refusal + plan LockHeld
     await planPromise;
     expect(r.code).not.toBe(0);
     expect(r.output).toMatch(/locked|retry|refused/i);
+  });
+});
+
+
+describe('S4-H-01: V1-re-verifier H1 — post-fence abort preserves a concurrent commit', () => {
+  it('a concurrent commit landing INSIDE our write window is never rolled back over; the journal becomes a superseded marker', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const baseRev = readRevision(project);
+    const snapshotId = loadActiveState(project).identity.snapshotId;
+    // B's committed overlay bytes (what must SURVIVE A's abort)
+    const bOverlay = `${JSON.stringify({ schema_version: 1, snapshot_id: snapshotId, records: [] }, null, 2)}\n`;
+    const begin = loadActiveState(project);
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void } } }).__txFault = {
+      // write #1 = A's journal, write #2 = A's overlay → B commits, then A fails
+      interleaveAndFail: {
+        onWrite: 2,
+        commit: () => {
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: baseRev + 1 }, null, 2));
+          writeFileSync(paths.overlay, bOverlay);
+        },
+      },
+    };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    // A did NOT roll back over B: B's revision and bytes stand (raw reads —
+    // the retained marker correctly blocks trusted reads until manual recovery)
+    const rawRevision = (): number => (JSON.parse(readFileSync(paths.state, 'utf8')) as { revision: number }).revision;
+    expect(rawRevision()).toBe(baseRev + 1);
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(bOverlay);
+    // the journal is retained as a SUPERSEDED marker; recovery REFUSES to
+    // auto-rollback over the newer commit (manual recovery only)
+    expect(existsSync(paths.journal)).toBe(true);
+    try {
+      loadActiveState(project);
+      throw new Error('should have refused');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TrustStateError);
+      expect((e as TrustStateError).code).toBe('recovery_required');
+      expect((e as TrustStateError).message).toMatch(/SUPERSEDED|concurrent/i);
+    }
+    expect(rawRevision()).toBe(baseRev + 1);
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(bOverlay);
+    // manual recovery completes: removing the evidence marker restores reads
+    rmSync(paths.journal);
+    const after = loadActiveState(project);
+    expect(after.identity.revision).toBe(baseRev + 1);
+  });
+
+  it('an UNREADABLE revision at abort time also takes the fail-loud path (never a blind rollback)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void } } }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        commit: () => {
+          // the concurrent actor leaves a CORRUPT revision file
+          writeFileSync(paths.state, '{torn');
+        },
+      },
+    };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    expect(readFileSync(paths.state, 'utf8')).toBe('{torn'); // not blindly rewritten
+    expect(() => loadActiveState(project)).toThrowError(TrustStateError); // fail-closed read
   });
 });
