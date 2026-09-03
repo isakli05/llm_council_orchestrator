@@ -2178,9 +2178,17 @@ describe('lco_generate llmProfile (§17 named profiles only)', () => {
     expect(generateConsentDigest(INTENT2, 'p-mini', 'single', undefined)).toBe(without);
   });
 
-  it('consent-missing refusal advertises the llmProfile-bound digest', async () => {
-    const res = await callTool('lco_generate', { dir: '.', intent: INTENT2, llmProfile: 'single-x' }, {});
-    expect(text(res)).toContain(generateConsentDigest(INTENT2, 'p-standard', 'single', 'single-x'));
+  it('consent-missing refusal advertises the RESOLVED-profile-bound digest (S3-H-10: resolve before digest)', async () => {
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, llmProfile: 'single-x' },
+      { llmConfigText: PROFILE_CFG },
+    );
+    const advertised = /sha256:[0-9a-f]{64}/.exec(text(res))?.[0];
+    expect(advertised).toMatch(/^sha256:/);
+    // The digest binds the RESOLVED routing content, not just the name: it
+    // must differ from the name-only digest of the same request.
+    expect(advertised).not.toBe(generateConsentDigest(INTENT2, 'p-standard', 'single', 'single-x'));
   });
 
   it('unknown profile name → structured refusal, ZERO LLM calls', async () => {
@@ -2228,7 +2236,15 @@ describe('lco_generate llmProfile (§17 named profiles only)', () => {
   it('happy path: named profile reaches cmdGenerate (injected mock adapter wins, profile recorded)', async () => {
     const root = freshRoot('spec-core-mcp-profile-ok-');
     const { llm } = makeLlm([JSON.stringify(inlineConforming())]);
-    const digest = generateConsentDigest(INTENT2, 'p-mini', 'single', 'single-x');
+    // S3-H-10: the digest is computed over the RESOLVED profile — obtain it
+    // from the consent-missing preview (the operator flow), then consent.
+    const preview = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT2, profile: 'p-mini', llmProfile: 'single-x' },
+      { llmConfigText: PROFILE_CFG },
+    );
+    const digest = /sha256:[0-9a-f]{64}/.exec(text(preview))?.[0];
+    expect(digest).toMatch(/^sha256:/);
     const res = await callTool(
       'lco_generate',
       { dir: root, intent: INTENT2, profile: 'p-mini', llmProfile: 'single-x', consent: { digest } },
@@ -2273,7 +2289,14 @@ describe('lco_generate llmProfile — the REAL per-role plan path (no injected a
       }),
     );
 
-    const digest = generateConsentDigest('realplan intent', 'p-mini', 'single', 'single-x');
+    // S3-H-10: resolve-before-digest — take the digest from the preview.
+    const preview = await callTool(
+      'lco_generate',
+      { dir: root, intent: 'realplan intent', profile: 'p-mini', llmProfile: 'single-x' },
+      { llmConfigText: multiCfg },
+    );
+    const digest = /sha256:[0-9a-f]{64}/.exec(text(preview))?.[0];
+    expect(digest).toMatch(/^sha256:/);
     const res = await callTool(
       'lco_generate',
       { dir: root, intent: 'realplan intent', profile: 'p-mini', llmProfile: 'single-x', consent: { digest } },

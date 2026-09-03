@@ -4,13 +4,14 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildArchitectureView } from './archview/architecture-view';
 import { parseGraphText } from './intel/graph-reader';
 import { renderRenewalReport } from './project/export';
 import { loadRenewalState, supersedeRenewalStores, renewalPaths } from './project/project';
+import { loadActiveState } from './trust/state';
 import { buildGuardedCopy } from './ingest/workspace-copy';
 import { loadStrategy, persistStrategy, buildStrategyDecision } from './planner/strategy';
 import { loadAnalysisRecords, persistAnalysisRecord } from './recovery/analysis-store';
@@ -83,17 +84,30 @@ describe('architecture view variants', () => {
 describe('export renderer states', () => {
   it('renders analyses/overlay/parity/strategy sections from a rich state', () => {
     const dir = freshDir('lco-rep-');
+    // Trust kernel: the renderer consumes the TYPED active view
+    // (trust/state.loadActiveState) — the fixture's project/snapshot identity
+    // must actually join (real target dir + deterministic snapshot), and the
+    // analysis record must bind to the ACTIVE snapshot to render as current.
+    const target = realpathSync(freshDir('lco-rep-target-'));
+    writeFileSync(join(target, 'a.ts'), 'a\n');
+    const snap = createSnapshot({
+      rootRealpath: target, repoKind: 'plain',
+      files: [{ path: 'a.ts', sha256: sha('a\n') }], filesTruncated: false,
+      graph: { graphifyVersion: '0.9.50', nodeCount: 2, edgeCount: 1, graphDigest: sha('g') },
+      graphManifest: { digest: sha('m'), entries: 1 }, nowIso: 't',
+    });
     const paths = renewalPaths(dir);
     mkdirSync(join(dir, '.lco', 'renewal', 'analyses'), { recursive: true });
-    mkdirSync(join(dir, 'approvals'), { recursive: true });
+    mkdirSync(paths.approvals, { recursive: true });
+    writeFileSync(paths.snapshot, JSON.stringify(snap, null, 2));
     writeFileSync(
       paths.projectJson,
-      JSON.stringify({ schema_version: 1, name: 'rep', target_path: '/t', created_at: 't', snapshot_id: 'RSN-aaaaaaaaaaaaaaaa' }),
+      JSON.stringify({ schema_version: 1, name: 'rep', target_path: target, created_at: 't', snapshot_id: snap.snapshot_id }),
     );
     const analysis: AnalysisRecord = {
       schema_version: 1,
       analysis_id: 'AN-0001',
-      snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
+      snapshot_id: snap.snapshot_id,
       created_at: 't',
       role: 'renew_recover',
       model: { gateway: 'g', provider_kind: 'p', requested_model: 'm' },
@@ -110,12 +124,12 @@ describe('export renderer states', () => {
       coverage_notes: ['note'],
       usage: { calls: 1, attempts: 1, in_tokens: 10, out_tokens: 5, usage_known: true },
     };
-    persistAnalysisRecord(paths.analyses, analysis);
+    persistAnalysisRecord(dir, paths.analyses, analysis);
     const g = graphOf();
     if (!g.ok) throw new Error(g.message);
     const manifest = [{ path: 'src/a.ts', sha256: sha('a') }];
-    const view = buildArchitectureView(g.graph, manifest, 'RSN-aaaaaaaaaaaaaaaa');
-    const state = loadRenewalState(dir);
+    const view = buildArchitectureView(g.graph, manifest, snap.snapshot_id);
+    const state = loadActiveState(dir);
     const report = renderRenewalReport(state, view);
     expect(report).toMatch(/AN-0001/);
     expect(report).toMatch(/1 hypothesis|BHV/);
@@ -124,7 +138,7 @@ describe('export renderer states', () => {
     expect(report).toMatch(/provenance-verified — semantic support NOT machine-validated/);
     expect(report).toContain('rep');
     // And WITHOUT the view (graph unavailable): still renders.
-    const bare = renderRenewalReport(loadRenewalState(dir), undefined);
+    const bare = renderRenewalReport(loadActiveState(dir), undefined);
     expect(bare.length).toBeGreaterThan(50);
   });
 });
@@ -171,18 +185,37 @@ describe('ingest caps and exclusions', () => {
 });
 
 describe('project state binding errors', () => {
-  it('supersession archives only EXISTING stores and is idempotent-safe', () => {
+  it('supersession archives only EXISTING stores and refuses a same-snapshot re-archive (S3-M-05)', () => {
     const dir = freshDir('lco-sup-');
     const paths = renewalPaths(dir);
     mkdirSync(join(dir, '.lco', 'renewal'), { recursive: true });
     writeFileSync(paths.overlay, JSON.stringify({ schema_version: 1, snapshot_id: 'RSN-old', records: [] }));
-    // parity + strategy deliberately absent
-    const result = supersedeRenewalStores(paths, 'RSN-old');
+    // parity + strategy + spec deliberately absent
+    const result = supersedeRenewalStores(dir, paths, 'RSN-old');
     expect(result.archived).toHaveLength(1);
     expect(result.archived[0]).toMatch(/overlay\.json\.RSN-old\.superseded/);
     expect(existsSync(`${paths.overlay}.RSN-old.superseded`)).toBe(true);
     expect(existsSync(paths.overlay)).toBe(false);
     expect(result.retained.length).toBe(2);
+    // Trust kernel (S3-M-05): archives are NO-CLOBBER — re-creating the store
+    // and re-archiving under the SAME snapshot id refuses instead of
+    // overwriting earlier history.
+    writeFileSync(paths.overlay, JSON.stringify({ schema_version: 1, snapshot_id: 'RSN-old', records: [] }));
+    expect(() => supersedeRenewalStores(dir, paths, 'RSN-old')).toThrow(/already exists|archive_collision/);
+    expect(existsSync(`${paths.overlay}.RSN-old.superseded`)).toBe(true); // prior archive intact
+  });
+
+  it('S3-H-04: a surviving spec/ directory is archived WITH the stores on refresh', () => {
+    const dir = freshDir('lco-sup-spec-');
+    const paths = renewalPaths(dir);
+    mkdirSync(join(dir, '.lco', 'renewal'), { recursive: true });
+    mkdirSync(paths.specDir, { recursive: true });
+    writeFileSync(paths.overlay, JSON.stringify({ schema_version: 1, snapshot_id: 'RSN-old', records: [] }));
+    const result = supersedeRenewalStores(dir, paths, 'RSN-old');
+    expect(result.archived).toHaveLength(2); // overlay AND spec
+    expect(result.archived.some((a) => /spec\.RSN-old\.superseded/.test(a))).toBe(true);
+    expect(existsSync(`${paths.specDir}.RSN-old.superseded`)).toBe(true);
+    expect(existsSync(paths.specDir)).toBe(false); // no stale pre-refresh spec survives
   });
 
   it('loadRenewalState surfaces corrupt stores as errors without throwing', () => {
@@ -223,7 +256,8 @@ describe('strategy + analysis store edges', () => {
     expect(corrupt.ok).toBe(false);
     if (!corrupt.ok) expect(corrupt.code).toBe('strategy_corrupt');
     const decision = buildStrategyDecision({ strategy: 'full_rewrite', rationale: 'r', selectedVia: 'flag', snapshotId: 'RSN-aaaaaaaaaaaaaaaa', nowIso: 't' });
-    persistStrategy(path, decision);
+    // Trust kernel: authorized write — (projectDir, path, decision).
+    persistStrategy(dir, path, decision);
     const loaded = loadStrategy(path);
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.decision.selected_by).toBe('human');
@@ -248,8 +282,9 @@ describe('strategy + analysis store edges', () => {
       coverage_notes: [],
       usage: { calls: 0, attempts: 0, in_tokens: 0, out_tokens: 0, usage_known: true },
     };
-    expect(persistAnalysisRecord(dir, record).ok).toBe(true);
-    const second = persistAnalysisRecord(dir, record);
+    // Trust kernel: authorized exclusive create — (projectDir, analysesDir, record).
+    expect(persistAnalysisRecord(dir, dir, record).ok).toBe(true);
+    const second = persistAnalysisRecord(dir, dir, record);
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.code).toBe('already_exists');
     expect(loadAnalysisRecords(dir).records).toHaveLength(1);

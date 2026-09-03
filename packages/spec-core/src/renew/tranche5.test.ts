@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runRecovery } from './recovery/pipeline';
+import { assignContextRecords, type ContextRecord } from './trust/evidence';
 import { singleRoutePlan } from '../llm/plan';
 import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 import type { AnalysisRecord } from './recovery/schemas';
@@ -44,7 +45,7 @@ describe('pipeline usage and persist arms', () => {
   const bundleOf = (hash: string): ContextBundle => ({
     scope: { type: 'whole' },
     items: [
-      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 3, text: 'code\n', content_hash: hash, redactions: 0, provenance: 'file-read' },
+      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 3, text: 'code\n', content_hash: hash, redactions: 0, provenance: 'file-read', slice_text_hash: sha('code\n'), file_line_count: 3 },
     ],
     truncated: false,
     total_chars: 10,
@@ -57,18 +58,36 @@ describe('pipeline usage and persist arms', () => {
     writeFileSync(join(target, 'src', 'a.ts'), 'export const a = 1;\n');
     return { target, hash: sha('export const a = 1;\n') };
   };
-  const depsFor = (adapter: LlmAdapter, target: string, persist: (r: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string }) => ({
+  // S3-H-01: server-assigned context records for the bundle's slices.
+  const recordsFor = (bundle: ContextBundle) =>
+    assignContextRecords(
+      bundle.items
+        .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
+        .map((i) => ({
+          path: i.path,
+          whole_file_hash: i.content_hash,
+          start_line: i.start_line,
+          end_line: i.end_line,
+          slice_text_hash: i.slice_text_hash ?? sha(i.text),
+          file_line_count: i.file_line_count ?? i.end_line,
+          ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
+        })),
+    );
+  const depsFor = (adapter: LlmAdapter, target: string, persist: (r: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string }, contextRecords: readonly ContextRecord[] = []) => ({
     llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
     nowIso: 't',
     targetRoot: target,
+    contextRecords,
     persist,
   });
 
   it('provider usage detail (reasoning/cache/cost/currency/resolved model) lands in the record', async () => {
     const { target, hash } = setupTarget();
+    const bundle = bundleOf(hash);
     const adapter: LlmAdapter = {
       complete: async () => ({
-        text: JSON.stringify({ hypotheses: [], uncertainties: [{ id: 'UNC-0001', question: 'q?', impact: 'low', options: [{ option: 'x' }, { option: 'y' }], anchors: [{ path: 'src/a.ts', content_hash: hash }] }], coverage_notes: [] }),
+        // S3-H-01: the model cites the server-assigned context id (CTX-0001).
+        text: JSON.stringify({ hypotheses: [], uncertainties: [{ id: 'UNC-0001', question: 'q?', impact: 'low', options: [{ option: 'x' }, { option: 'y' }], anchors: [{ context_id: 'CTX-0001' }] }], coverage_notes: [] }),
         usage: { in_tokens: 10, out_tokens: 5 },
         // INV-F1: accounting reads the REAL response shape — provenance and
         // usageDetails objects, latencyMs — never flat usage.* fields.
@@ -83,8 +102,8 @@ describe('pipeline usage and persist arms', () => {
     };
     let saved: AnalysisRecord | undefined;
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
-      { ...depsFor(adapter, target, (r) => { saved = r; return { ok: true as const }; }) },
+      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
+      { ...depsFor(adapter, target, (r) => { saved = r; return { ok: true as const }; }, recordsFor(bundle)) },
     );
     expect(outcome.ok).toBe(true);
     expect(saved!.usage).toMatchObject({
@@ -367,7 +386,7 @@ describe('CLI parse residuals', () => {
       expect(r.error).toMatch(/unexpected|<dir>/i);
     } else {
       // If accepted, the extra token must not silently become the dir.
-      expect(r.compile).toBe('/tmp/a');
+      expect((r as { compile?: string }).compile).toBe('/tmp/a');
     }
   });
 
@@ -398,7 +417,6 @@ describe('CLI parse residuals', () => {
 
 describe('browser-client display helpers', () => {
   it('answeredCount counts only VALID drafts for open questions', async () => {
-    const { initClientState } = await import('../browser-client/state');
     const { mkdtempSync, writeFileSync } = await import('node:fs');
     // Minimal snapshot with one open question.
     const { initialState } = await import('../browser-client/state');

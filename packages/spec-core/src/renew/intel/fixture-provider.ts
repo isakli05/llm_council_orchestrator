@@ -141,6 +141,8 @@ export class StaticGraphProvider implements CodeIntelligenceProvider {
   }
 
   async graphHealth(): Promise<GraphHealth> {
+    // S3-M-01: total status ('healthy'); the fixture substrate records no
+    // manifest digest (honest omission — the fixture has no manifest.json).
     return graphHealthOf(this.fixtureGraph, this.version, 0);
   }
 }

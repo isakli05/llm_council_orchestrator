@@ -45,16 +45,18 @@ describe('analysis store (immutable, write-once)', () => {
 
   it('persists write-once: a second write of the same id is refused', () => {
     const dir = freshDir();
-    expect(persistAnalysisRecord(dir, record('AN-0001'))).toMatchObject({ ok: true });
-    const second = persistAnalysisRecord(dir, record('AN-0001'));
+    // Trust kernel: authorized exclusive create — (projectDir, analysesDir, record);
+    // the temp dir serves as both (the records land directly inside it).
+    expect(persistAnalysisRecord(dir, dir, record('AN-0001'))).toMatchObject({ ok: true });
+    const second = persistAnalysisRecord(dir, dir, record('AN-0001'));
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.code).toBe('already_exists');
   });
 
   it('loads records sorted by id and reports corrupt files honestly', () => {
     const dir = freshDir();
-    persistAnalysisRecord(dir, record('AN-0002'));
-    persistAnalysisRecord(dir, record('AN-0001'));
+    persistAnalysisRecord(dir, dir, record('AN-0002'));
+    persistAnalysisRecord(dir, dir, record('AN-0001'));
     writeFileSync(join(dir, 'AN-0003.json'), '{corrupt');
     const loaded = loadAnalysisRecords(dir);
     expect(loaded.records.map((r) => r.analysis_id)).toEqual(['AN-0001', 'AN-0002']);

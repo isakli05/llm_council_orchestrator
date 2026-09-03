@@ -13,7 +13,7 @@ import { shortestPath } from './intel/graph-ops';
 import { parseGraphText } from './intel/graph-reader';
 import { loadRenewalApproval, buildRenewalApprovalRecord } from './clarify/approvals';
 import { distillRenewalQuestions, makeRenewalDriver } from './clarify/distiller';
-import { emptyOverlay } from './overlay/overlay';
+import { emptyOverlay, type OverlayRecord, type OverlayRelation } from './overlay/overlay';
 
 const tmpDirs: string[] = [];
 function freshDir(p: string): string {
@@ -71,14 +71,42 @@ describe('approval corrupt-load variants', () => {
     expect(r2.ok).toBe(false);
     if (!r2.ok) {
       expect(r2.code).toBe('approval_corrupt');
-      expect(r2.message).toMatch(/failed schema validation/);
+      // Trust kernel (v3): the loader validates the v3 SCHEMA — the typed
+      // refusal names the version and the re-approve remedy.
+      expect(r2.message).toMatch(/not a valid v3 renewal approval/);
+    }
+  });
+
+  it('trust kernel (S3-C-04): a v2-shaped record (scope optional/absent) fails closed as approval_corrupt', () => {
+    const dir = freshDir('lco-t7-appr2-');
+    // v3 record first, then strip the scope fields the v2 schema allowed to
+    // omit — the shape that USED to load must now refuse (pre-release
+    // dev-state policy, identical to the v1→v2 transition).
+    const v3 = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: 't',
+      project_name: 'test-project',
+      snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
+      decisions: [{ claim_id: 'PAR-0001', kind: 'parity', selected_option: 'preserve', evidence: { source: 't', answer_text: 'preserve', hash: sha('preserve') } }],
+    });
+    const v2 = v3 as unknown as Record<string, unknown>;
+    delete v2.project_name;
+    delete v2.snapshot_id;
+    writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(v2));
+    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('approval_corrupt');
+      expect(r.message).toMatch(/pre-v3|re-approve/);
     }
   });
 });
 
 describe('distiller sort and fallback arms', () => {
   const SNAP = 'RSN-aaaaaaaaaaaaaaaa';
-  const overlayRecord = (id: string, relation: string, status = 'active') => ({
+  const overlayRecord = (id: string, relation: OverlayRelation, status: OverlayRecord['status'] = 'active') => ({
     id, relation, subject: { path: 'a.ts' },
     anchors: [{ path: 'a.ts', content_hash: sha(id) }], snapshot_id: SNAP,
     confidence: 'low' as const, status, lineage: {},
@@ -123,12 +151,20 @@ describe('distiller sort and fallback arms', () => {
   });
 
   it('buildRenewalApprovalRecord round-trips a single-decision payload', () => {
-    const record = buildRenewalApprovalRecord(
-      { decisions: [{ claim_id: 'STG-0001', kind: 'strategy', selected_option: 'in_place', evidence: { source: 't', answer_text: 'in_place', hash: sha('in_place') } }] },
-      { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: 't' },
-    );
+    // Trust kernel: v3 builder takes ONE object; project/snapshot scope is
+    // REQUIRED (S3-C-04) — an unscoped grant is unrepresentable.
+    const record = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: 't',
+      project_name: 'test-project',
+      snapshot_id: SNAP,
+      decisions: [{ claim_id: 'STG-0001', kind: 'strategy' as const, selected_option: 'in_place', evidence: { source: 't', answer_text: 'in_place', hash: sha('in_place') } }],
+    });
     expect(record.decisions).toHaveLength(1);
-    expect(record.snapshot_id).toBeUndefined(); // snapshot binding stays optional
+    expect(record.snapshot_id).toBe(SNAP); // snapshot binding is REQUIRED (v3)
+    expect(record.project_name).toBe('test-project'); // project scope too
   });
 });
 
@@ -166,7 +202,9 @@ describe('buffer arms (variance margin)', () => {
       expect(good.identity.entries).toBe(2);
       expect(good.identity.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     }
-    expect(parseGraphManifestStrict(undefined).code ?? '').toBe('manifest_missing');
+    const absent = parseGraphManifestStrict(undefined);
+    expect(absent.ok).toBe(false);
+    if (!absent.ok) expect(absent.code).toBe('manifest_missing');
   });
 
   it('digestGraphManifest maps malformed input to the explicit empty-list constant', async () => {
@@ -206,22 +244,31 @@ describe('buffer arms (variance margin)', () => {
 describe('prompt envelope item coverage (all four kinds render)', () => {
   it('file slices, bare nodes, bare edges, and facts all appear in the JSON document', async () => {
     const { buildRecoveryPrompt } = await import('./recovery/prompts');
-    const prompt = buildRecoveryPrompt({
-      scope: { type: 'whole' },
-      nowIso: 't',
-      bundle: {
-        scope: {},
-        items: [
-          { kind: 'file_slice', path: 'a.ts', start_line: 1, end_line: 2, text: 'code', content_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111', redactions: 0, provenance: 'file-read' },
-          { kind: 'node', node_id: 'bare', provenance: 'graph' },
-          { kind: 'edge', source: 'bare', target: 'other', provenance: 'graph' },
-          { kind: 'structural_fact', text: 'a fact', provenance: 'derived' },
-        ],
-        truncated: false,
-        total_chars: 10,
-        warnings: [],
+    const { assignContextRecords } = await import('./trust/evidence');
+    const bundle: import('./context/bundle').ContextBundle = {
+      scope: {},
+      items: [
+        { kind: 'file_slice', path: 'a.ts', start_line: 1, end_line: 2, text: 'code', content_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111', redactions: 0, provenance: 'file-read' },
+        { kind: 'node', node_id: 'bare', provenance: 'graph' },
+        { kind: 'edge', source: 'bare', target: 'other', provenance: 'graph' },
+        { kind: 'structural_fact', text: 'a fact', provenance: 'derived' },
+      ],
+      truncated: false,
+      total_chars: 10,
+      warnings: [],
+    };
+    // S3-H-01: the citable surface is the server-assigned context records.
+    const records = assignContextRecords([
+      {
+        path: 'a.ts',
+        whole_file_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+        start_line: 1,
+        end_line: 2,
+        slice_text_hash: sha('code'),
+        file_line_count: 2,
       },
-    });
+    ]);
+    const prompt = buildRecoveryPrompt({ scope: { type: 'whole' }, nowIso: 't', bundle, contextRecords: records });
     const doc = prompt.slice(prompt.indexOf('UNTRUSTED SOURCE DATA START'), prompt.lastIndexOf('UNTRUSTED SOURCE DATA END'));
     const parsed = JSON.parse(doc.slice(doc.indexOf('{'), doc.lastIndexOf('}') + 1)) as {
       files: unknown[]; nodes: { node_id: string }[]; edges: unknown[]; facts: unknown[];
@@ -230,8 +277,8 @@ describe('prompt envelope item coverage (all four kinds render)', () => {
     expect(parsed.nodes[0]!.node_id).toBe('bare'); // bare node: no optional fields
     expect(parsed.edges).toHaveLength(1); // edge without relation
     expect(parsed.facts).toHaveLength(1);
-    expect(prompt).toMatch(/ANCHORABLE FILES/);
-    expect(prompt).toMatch(/a\.ts → sha256:1+/);
+    expect(prompt).toMatch(/CITABLE CONTEXTS \(context_id → path, supplied line window, whole-file hash\)/);
+    expect(prompt).toMatch(/CTX-0001 → a\.ts lines 1-2 · whole-file sha256:1+/);
   });
 });
 

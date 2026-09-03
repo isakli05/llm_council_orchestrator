@@ -73,22 +73,27 @@ function approval(
   decisions: { claim_id: string; selected_option?: string; free_text?: string }[],
   approvalId = 'APPR-0001',
 ): RenewalApprovalRecord {
-  return buildRenewalApprovalRecord(
-    {
-      decisions: decisions.map((d) => ({
-        claim_id: d.claim_id,
-        kind: 'parity',
-        ...(d.selected_option !== undefined ? { selected_option: d.selected_option } : {}),
-        ...(d.free_text !== undefined ? { free_text: d.free_text } : {}),
-        evidence: {
-          source: 'renewal-clarify:s1/round1',
-          answer_text: d.selected_option ?? d.free_text ?? '',
-          hash: sha(d.selected_option ?? d.free_text ?? ''),
-        },
-      })),
-    },
-    { approvalId, sessionId: 's1', roundCount: 1, approvedAt: '2026-09-02T00:00:00Z' },
-  );
+  // Trust kernel: v3 records REQUIRE project/snapshot scope (S3-C-04) — an
+  // unscoped grant is unrepresentable, so every fixture carries both.
+  return buildRenewalApprovalRecord({
+    approval_id: approvalId,
+    session_id: 's1',
+    round_count: 1,
+    approved_at: '2026-09-02T00:00:00Z',
+    project_name: 'parity-test-project',
+    snapshot_id: SNAP,
+    decisions: decisions.map((d) => ({
+      claim_id: d.claim_id,
+      kind: 'parity' as const,
+      ...(d.selected_option !== undefined ? { selected_option: d.selected_option } : {}),
+      ...(d.free_text !== undefined ? { free_text: d.free_text } : {}),
+      evidence: {
+        source: 'renewal-clarify:s1/round1',
+        answer_text: d.selected_option ?? d.free_text ?? '',
+        hash: sha(d.selected_option ?? d.free_text ?? ''),
+      },
+    })),
+  });
 }
 
 function stageTarget(): string {
@@ -240,7 +245,8 @@ describe('projection to the spec legacy package + persistence', () => {
     const dir = freshDir();
     const path = join(dir, 'parity.json');
     const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
-    expect(persistParity(path, store)).toMatchObject({ ok: true });
+    // Trust kernel: authorized write — the temp dir is the project root.
+    expect(persistParity(dir, path, store)).toMatchObject({ ok: true });
     const loaded = loadParity(path);
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.store.records).toHaveLength(1);

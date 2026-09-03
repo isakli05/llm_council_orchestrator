@@ -478,11 +478,18 @@ export async function analyzeWithFresh(
   const sliceReader = (path: string, startLine: number, endLine: number) => {
     const abs = join(paths.workspace, path);
     if (!existsSync(abs)) return undefined;
-    const lines = authorizedRead({ projectDir: dir, path: abs }).split('\n');
+    const raw = authorizedRead({ projectDir: dir, path: abs });
+    const split = raw.split('\n');
+    // Line counting MUST match the anchor verifier's countLines: a trailing
+    // newline does not open a phantom line (verifier finding — an
+    // EOF-clamped window advertised end == realLines + 1, so a citation
+    // covering the true last line — including an un-narrowed whole-window
+    // citation — failed disk-range coherence and could never promote).
+    const fileLineCount = split.length - (raw.endsWith('\n') ? 1 : 0);
     const start = Math.max(1, startLine);
-    const end = Math.min(endLine, lines.length);
+    const end = Math.min(endLine, fileLineCount);
     if (start > end) return undefined;
-    return { text: lines.slice(start - 1, end).join('\n'), startLine: start, endLine: end, fileLineCount: lines.length };
+    return { text: split.slice(start - 1, end).join('\n'), startLine: start, endLine: end, fileLineCount };
   };
   const context = new GraphContextProvider({ graph: graph.graph, manifest, readSlice: sliceReader });
   const bundle = context.contextFor({ type: 'whole' });

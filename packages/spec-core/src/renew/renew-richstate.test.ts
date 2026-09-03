@@ -47,6 +47,24 @@ const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).dig
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
 const NOW = '2026-09-02T12:00:00.000Z';
 
+/**
+ * S3-H-01 (trust kernel): resolve the citable context id + supplied window
+ * for a path from the prompt's CITABLE CONTEXTS table; the model cites the
+ * server-assigned id and may only NARROW inside the window.
+ */
+function ctxWindow(prompt: string, path: string): { id: string; start: number; end: number } {
+  const m = new RegExp(`(CTX-\\d{4}) → ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} lines (\\d+)-(\\d+)`).exec(prompt);
+  if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
+  return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
+}
+
+/** A citation narrowed to the advertised window's interior (never its boundary). */
+const interiorCitation = (w: { id: string; start: number; end: number }) => ({
+  context_id: w.id,
+  start_line: w.start,
+  end_line: w.end - 1,
+});
+
 function caps(overrides: Partial<RenewCapabilities> = {}): RenewCapabilities {
   const g = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
   if (!g.ok) throw new Error(g.message);
@@ -207,7 +225,10 @@ describe('analyze defensive arms', () => {
     writeFileSync(parityPath, JSON.stringify(parity, null, 2));
     const r = await cmdRenewAnalyze({ dir: project }, { ...c, llm: () => singleRoutePlan({ complete: async () => ({ text: emptyOutput() }) } as LlmAdapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }) });
     expect(r.code).toBe(1);
-    expect(r.output).toMatch(/parity store is bound to snapshot RSN-8888/);
+    // Trust kernel: the typed active view reports the cross-snapshot store by
+    // its typed state, and analyze refuses with the refresh remedy.
+    expect(r.output).toMatch(/parity store is bound to another snapshot/);
+    expect(r.output).toMatch(/RSN-8888/);
     expect(r.output).toMatch(/lco renew refresh/);
   });
 
@@ -279,11 +300,10 @@ describe('analyze defensive arms', () => {
     const project = freshDir('lco-rich-lock-');
     const c = caps();
     expect((await cmdRenewInit({ dir: project, target, name: 'lock' }, c)).code).toBe(0);
-    const ordersPath = join(target, 'src', 'orders.ts');
     const scripted: LlmAdapter = {
-      complete: async () => ({
+      complete: async (prompt) => ({
         text: JSON.stringify({
-          hypotheses: [{ id: 'BHV-0001', statement: 's', category: 'business_rule', confidence: 'high', anchors: [{ path: 'src/orders.ts', content_hash: sha(readFileSync(ordersPath)) }], rationale: 'r' }],
+          hypotheses: [{ id: 'BHV-0001', statement: 's', category: 'business_rule', confidence: 'high', anchors: [interiorCitation(ctxWindow(prompt, 'src/orders.ts'))], rationale: 'r' }],
           uncertainties: [],
           coverage_notes: [],
         }),
@@ -303,45 +323,47 @@ describe('analyze defensive arms', () => {
     }
   });
 
-  it('hypotheses carrying node_id anchors fold into the overlay with node provenance', async () => {
+  it('resolved citations carry the supply-time node binding into the overlay (node provenance)', async () => {
     const target = makeTarget();
     const project = freshDir('lco-rich-node-');
     const c = caps();
     expect((await cmdRenewInit({ dir: project, target, name: 'node' }, c)).code).toBe(0);
-    const ordersPath = join(target, 'src', 'orders.ts');
-    const g = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
-    if (!g.ok) throw new Error(g.message);
-    const nodeId =
-      g.graph.nodes.find((n) => n.source_file === 'src/orders.ts' && n.source_location !== undefined)?.node_id ??
-      'src_orders_createorder';
-    // countLines() discounts one trailing newline — derive the exact count.
-    const raw = readFileSync(ordersPath, 'utf8').split('\n');
-    const ordersLines = raw[raw.length - 1] === '' ? raw.length - 1 : raw.length;
+    // S3-H-01: the model cites the context id (optionally narrowed); the
+    // NODE binding is assigned at SUPPLY time — the first graph node that
+    // selected the file — and the resolved anchor carries it.
+    let advertised: { id: string; start: number; end: number } | undefined;
     const scripted: LlmAdapter = {
-      complete: async () => ({
-        text: JSON.stringify({
-          hypotheses: [{
-            id: 'BHV-0001',
-            statement: 'Node-anchored fee rule.',
-            category: 'business_rule',
-            confidence: 'high',
-            anchors: [{ path: 'src/orders.ts', content_hash: sha(readFileSync(ordersPath)), node_id: nodeId, start_line: 1, end_line: ordersLines }],
-            rationale: 'r',
-          }],
-          uncertainties: [],
-          coverage_notes: [],
-        }),
-      }),
+      complete: async (prompt) => {
+        advertised = ctxWindow(prompt, 'src/orders.ts');
+        return {
+          text: JSON.stringify({
+            hypotheses: [{
+              id: 'BHV-0001',
+              statement: 'Node-anchored fee rule.',
+              category: 'business_rule',
+              confidence: 'high',
+              anchors: [interiorCitation(advertised)],
+              rationale: 'r',
+            }],
+            uncertainties: [],
+            coverage_notes: [],
+          }),
+        };
+      },
     };
     const r = await cmdRenewAnalyze({ dir: project }, { ...c, llm: () => singleRoutePlan(scripted, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }) });
     expect(r.code).toBe(0);
+    expect(advertised).toBeDefined();
     const overlay = JSON.parse(readFileSync(join(project, '.lco', 'renewal', 'overlay.json'), 'utf8')) as {
-      records: { subject: { node_id?: string; path: string }; anchors: { node_id?: string; start_line?: number }[] }[];
+      records: { subject: { node_id?: string; path: string }; anchors: { node_id?: string; start_line?: number; end_line?: number }[] }[];
     };
     expect(overlay.records).toHaveLength(1);
-    expect(overlay.records[0]!.subject.node_id).toBe(nodeId);
-    expect(overlay.records[0]!.anchors[0]!.node_id).toBe(nodeId);
-    expect(overlay.records[0]!.anchors[0]!.start_line).toBe(1);
+    // The resolved anchor covers exactly the ADVERTISED window (interior).
+    expect(overlay.records[0]!.anchors[0]!.start_line).toBe(advertised!.start);
+    expect(overlay.records[0]!.anchors[0]!.end_line).toBe(advertised!.end - 1);
+    // The supply-time node binding survived resolution into the fold.
+    expect(overlay.records[0]!.subject.node_id).toMatch(/^src_orders_/);
+    expect(overlay.records[0]!.anchors[0]!.node_id).toBe(overlay.records[0]!.subject.node_id);
   });
 
   it('a budget ledger is honored when provided (attempt ceiling → BudgetExceededError contract)', async () => {

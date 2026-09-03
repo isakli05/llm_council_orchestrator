@@ -102,15 +102,19 @@ function ruledParity() {
   const store = parityFromAnalyses([twoHypothesisAnalysis()], SNAP_ID);
   // S2-C-05: rulings are authorized by CANONICAL option ids on the PAR claims
   // (a digest-verified record via the real builder, not a hand-crafted one).
-  const approval = buildRenewalApprovalRecord(
-    {
-      decisions: [
-        { claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('preserve-1') } },
-        { claim_id: 'PAR-0002', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('preserve-2') } },
-      ],
-    },
-    { approvalId: 'APPR-0001', sessionId: 's1', roundCount: 1, approvedAt: '2026-09-02T00:00:00Z' },
-  );
+  // Trust kernel: v3 records REQUIRE project/snapshot scope (S3-C-04).
+  const approval = buildRenewalApprovalRecord({
+    approval_id: 'APPR-0001',
+    session_id: 's1',
+    round_count: 1,
+    approved_at: '2026-09-02T00:00:00Z',
+    project_name: 'orders-crm',
+    snapshot_id: SNAP_ID,
+    decisions: [
+      { claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('preserve-1') } },
+      { claim_id: 'PAR-0002', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('preserve-2') } },
+    ],
+  });
   applyApprovalToParity(store, approval);
   return store;
 }
@@ -225,15 +229,18 @@ describe('buildModernizationPlan (deterministic, zero LLM calls)', () => {
     // Force both hypotheses onto the same file.
     analysis.promoted.hypotheses[1].anchors = [{ path: 'src/orders.ts', content_hash: sha(ORDERS) }];
     const store = parityFromAnalyses([analysis], SNAP_ID);
-    const approval = buildRenewalApprovalRecord(
-      {
-        decisions: [
-          { claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('p') } },
-          { claim_id: 'PAR-0002', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('d') } },
-        ],
-      },
-      { approvalId: 'APPR-0001', sessionId: 's1', roundCount: 1, approvedAt: '2026-09-02T00:00:00Z' },
-    );
+    const approval = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's1',
+      round_count: 1,
+      approved_at: '2026-09-02T00:00:00Z',
+      project_name: 'orders-crm',
+      snapshot_id: SNAP_ID,
+      decisions: [
+        { claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('p') } },
+        { claim_id: 'PAR-0002', kind: 'parity' as const, selected_option: 'preserve', evidence: { source: 's', answer_text: 'preserve', hash: sha('d') } },
+      ],
+    });
     applyApprovalToParity(store, approval);
 
     const inputs = baseInputs();

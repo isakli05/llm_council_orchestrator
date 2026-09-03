@@ -73,12 +73,16 @@ describe('renewal ambiguity round-trip through the real workspace', () => {
       sessionId: 'rt-1',
       dir: projectDir,
       projectName: 'orders-crm',
+      // Trust kernel: snapshot scope is REQUIRED (S3-C-04) — the immutable
+      // record binds to the fixture snapshot.
+      snapshotId: 'RSN-deadbeefdeadbeef',
       nowIso: () => '2026-09-02T00:00:00Z',
       driver: makeRenewalDriver({ analyses: [analysis()], overlay, includeStrategy: true }),
       nextApprovalId: () => nextRenewalApprovalId(approvalsDir),
       writeApproval: (record) => {
         const id = nextRenewalApprovalId(approvalsDir);
-        const result = writeRenewalApproval(approvalsDir, { ...record, approval_id: id });
+        // Trust kernel: authorized exclusive create — (projectDir, approvalsDir, record).
+        const result = writeRenewalApproval(projectDir, approvalsDir, { ...record, approval_id: id });
         return result.ok ? { ok: true as const } : { ok: false as const, error: result.message };
       },
     });
@@ -162,6 +166,8 @@ describe('renewal ambiguity round-trip through the real workspace', () => {
     const session = createRenewalClarifySession({
       sessionId: 'rt-2',
       dir: projectDir,
+      projectName: 'orders-crm',
+      snapshotId: 'RSN-deadbeefdeadbeef',
       nowIso: () => '2026-09-02T00:00:00Z',
       driver: makeRenewalDriver({ analyses: [analysis()], overlay, includeStrategy: true }),
       nextApprovalId: () => 'APPR-0001',

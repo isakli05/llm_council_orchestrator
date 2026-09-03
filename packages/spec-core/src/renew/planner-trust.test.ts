@@ -42,6 +42,24 @@ afterEach(() => {
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
 
+/**
+ * S3-H-01 (trust kernel): resolve the citable context id + supplied window
+ * for a path from the prompt's CITABLE CONTEXTS table; the model cites the
+ * server-assigned id and may only NARROW inside the window.
+ */
+function ctxWindow(prompt: string, path: string): { id: string; start: number; end: number } {
+  const m = new RegExp(`(CTX-\\d{4}) → ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} lines (\\d+)-(\\d+)`).exec(prompt);
+  if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
+  return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
+}
+
+/** A citation narrowed to the advertised window's interior (never its boundary). */
+const interiorCitation = (w: { id: string; start: number; end: number }) => ({
+  context_id: w.id,
+  start_line: w.start,
+  end_line: w.end - 1,
+});
+
 function caps(): RenewCapabilities {
   const g = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
   if (!g.ok) throw new Error(g.message);
@@ -58,9 +76,8 @@ function analyzedProject(): Promise<{ project: string; target: string; caps: Ren
   cpSync(join(FIXTURE_SRC, 'package.json'), join(target, 'package.json'));
   const project = freshDir('lco-pln-project-');
   const base = caps();
-  const ordersPath = join(target, 'src', 'orders.ts');
   const scripted: LlmAdapter = {
-    complete: async (): Promise<LlmResponse> => ({
+    complete: async (prompt): Promise<LlmResponse> => ({
       text: JSON.stringify({
         hypotheses: [
           {
@@ -68,7 +85,7 @@ function analyzedProject(): Promise<{ project: string; target: string; caps: Ren
             statement: 'Orders under $25 incur a small-order fee.',
             category: 'business_rule',
             confidence: 'high',
-            anchors: [{ path: 'src/orders.ts', content_hash: sha(readFileSync(ordersPath)) }],
+            anchors: [interiorCitation(ctxWindow(prompt, 'src/orders.ts'))],
             rationale: 'source',
           },
         ],

@@ -311,7 +311,7 @@ describe('S3-L-04: committed immutable pre-Renewal frozen fixture', () => {
       mkdirSync(join(mutated, 'spec'), { recursive: true });
       for (const f of ['manifest', 'intent', 'glossary', 'assumptions', 'evidence', 'requirements', 'decisions', 'contracts', 'tasks']) {
         const src = readFileSync(join(PRE_RENEWAL_FIXTURE, 'spec', `${f}.json`), 'utf8');
-        writeFileSync(join(mutated, 'spec', `${f}.json`), f === 'intent' ? src.replace(/"purpose"/, '"purposes"') : src);
+        writeFileSync(join(mutated, 'spec', `${f}.json`), f === 'intent' ? src.replace('EXAMPLE intent', 'MUTATED intent') : src);
       }
       const compiled = await compileSpecDir(mutated);
       const result = verifyFrozen(compiled.bundle!, compiled.rawSections);

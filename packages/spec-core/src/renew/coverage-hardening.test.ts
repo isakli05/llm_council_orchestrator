@@ -39,8 +39,6 @@ import { loadAnalysisRecords, nextAnalysisId } from './recovery/analysis-store';
 import { makeRenewalDriver, distillRenewalQuestions, strategyQuestion } from './clarify/distiller';
 import { buildArchitectureView } from './archview/architecture-view';
 import { createSnapshot } from './snapshot/snapshot';
-import { addOverlayRecord, markSuperseded, evaluateOverlayStaleness } from './overlay/overlay';
-import { setRuling } from './parity/ledger';
 
 const tmpDirs: string[] = [];
 function freshDir(p: string): string {
@@ -191,8 +189,9 @@ describe('store loaders: missing vs corrupt (D2) and duplicates (M-02/M-03)', ()
       lineage: {},
     };
     // Hand-build duplicates (the API assigns ids; corruption comes from
-    // hand-edited state — exactly the audit scenario).
-    persistOverlay(join(dir, 'overlay.json'), oStore);
+    // hand-edited state — exactly the audit scenario). Trust kernel: the
+    // authorized persist takes (projectDir, path, store).
+    persistOverlay(dir, join(dir, 'overlay.json'), oStore);
     const raw = JSON.parse(readFileSync(join(dir, 'overlay.json'), 'utf8')) as typeof oStore;
     raw.records.push({ ...raw.records, id: 'OVL-0001', ...rec } as never, { id: 'OVL-0001', ...rec } as never);
     // give both the same id
@@ -207,7 +206,7 @@ describe('store loaders: missing vs corrupt (D2) and duplicates (M-02/M-03)', ()
 
     const pStore = emptyParity('RSN-aaaaaaaaaaaaaaaa');
     addParityEntry(pStore, { behavior: 'b1', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }] });
-    persistParity(join(dir, 'parity.json'), pStore);
+    persistParity(dir, join(dir, 'parity.json'), pStore);
     const praw = JSON.parse(readFileSync(join(dir, 'parity.json'), 'utf8')) as typeof pStore;
     praw.records.push({ ...praw.records[0]!, id: praw.records[0]!.id });
     writeFileSync(join(dir, 'parity.json'), JSON.stringify(praw));
@@ -505,8 +504,8 @@ describe('distiller payload combinations', () => {
     const driver = makeRenewalDriver({ analyses: [], overlay: emptyOverlay('RSN-aaaaaaaaaaaaaaaa'), includeStrategy: true });
     const payload = driver.approvalPayload(
       new Map([
-        ['STG-0001', { answer: { kind: 'option', selectedOption: 'strangler', freeText: 'because' }, appliedRound: 1 }],
-        ['UNC-0001', { answer: { kind: 'other', freeText: 'custom answer' }, appliedRound: 1 }],
+        ['STG-0001', { answer: { decisionId: 'STG-0001', kind: 'option', selectedOption: 'strangler', freeText: 'because' }, appliedRound: 1 }],
+        ['UNC-0001', { answer: { decisionId: 'UNC-0001', kind: 'other', freeText: 'custom answer' }, appliedRound: 1 }],
       ]),
       { sessionId: 's' },
     );
@@ -600,7 +599,12 @@ describe('renew command edge branches', () => {
     const plan = await cmdRenewPlan({ dir: project }, c);
     expect(plan.code).not.toBe(0);
     const status = await cmdRenewStatus({ dir: project }, c);
-    expect(status.code).toBe(1); // fail-closed status on uncomputable state
+    // Trust kernel (S3-H-09): a tampered snapshot is an identity failure —
+    // status fails CLOSED with the typed refusal (exit 2), never zeros. The
+    // snapshot's self-identity check names the tamper explicitly.
+    expect(status.code).toBe(2);
+    expect(status.output).toMatch(/identity mismatch|snapshot_join_mismatch/);
+    expect(status.output).toMatch(/tampered|hand-edited/);
   });
 
   it('plan with --strategy requires --strategy-rationale and rejects unknown strategies', async () => {

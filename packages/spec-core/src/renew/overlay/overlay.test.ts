@@ -91,7 +91,9 @@ describe('overlay store (ids, ordering, atomic persistence, reload)', () => {
     const path = join(dir, 'overlay.json');
     const store = emptyOverlay(SNAP);
     addOverlayRecord(store, baseRecord({ id: '' }));
-    expect(persistOverlay(path, store)).toMatchObject({ ok: true });
+    // Trust kernel: authorized write — the temp dir is the project root
+    // (a file directly in projectDir authorizes; staging is unpredictable).
+    expect(persistOverlay(dir, path, store)).toMatchObject({ ok: true });
     const loaded = loadOverlay(path);
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
@@ -104,13 +106,13 @@ describe('overlay store (ids, ordering, atomic persistence, reload)', () => {
     const path = join(dir, 'overlay.json');
     const store = emptyOverlay(SNAP);
     addOverlayRecord(store, baseRecord({ id: '' }));
-    persistOverlay(path, store);
+    persistOverlay(dir, path, store);
     const before = readFileSync(path, 'utf8');
     chmodSync(dir, 0o500); // make the dir unwritable
     try {
       const bigger = emptyOverlay(SNAP);
       addOverlayRecord(bigger, baseRecord({ id: '', relation: 'renewal_risk' }));
-      expect(() => persistOverlay(path, bigger)).toThrow();
+      expect(() => persistOverlay(dir, path, bigger)).toThrow();
       expect(readFileSync(path, 'utf8')).toBe(before);
     } finally {
       chmodSync(dir, 0o700);

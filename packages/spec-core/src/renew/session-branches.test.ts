@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { createRenewalClarifySession } from './clarify/session';
 import { makeRenewalDriver } from './clarify/distiller';
 import { buildRenewalApprovalRecord, renewalApprovalDigest } from './clarify/approvals';
+import { assignContextRecords } from './trust/evidence';
 import { runRecovery } from './recovery/pipeline';
 import { singleRoutePlan } from '../llm/plan';
 import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
@@ -38,6 +39,9 @@ describe('renewal clarify session state machine', () => {
     return createRenewalClarifySession({
       sessionId: 's-1',
       dir: freshDir('lco-sess-'),
+      // Trust kernel: project/snapshot scope is REQUIRED (S3-C-04).
+      projectName: 'test-project',
+      snapshotId: 'RSN-aaaaaaaaaaaaaaaa',
       nowIso: () => '2026-09-02T12:00:00.000Z',
       driver: driver(),
       nextApprovalId: () => `APPR-${String(++approvals).padStart(4, '0')}`,
@@ -111,21 +115,22 @@ describe('renewal clarify session state machine', () => {
   });
 
   it('approval payload + digest round-trip through buildRenewalApprovalRecord', () => {
-    const payload = { decisions: [{ claim_id: 'STG-0001', kind: 'strategy' as const, selected_option: 'strangler', evidence: { source: 't', answer_text: 'strangler', hash: sha('strangler') } }] };
-    const record = buildRenewalApprovalRecord(payload, { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: 't', snapshotId: 'RSN-aaaaaaaaaaaaaaaa' });
+    // Trust kernel: v3 builder takes ONE object with REQUIRED project/snapshot
+    // scope (S3-C-04) — an unscoped grant is unrepresentable.
+    const record = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: 't',
+      project_name: 'test-project',
+      snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
+      decisions: [{ claim_id: 'STG-0001', kind: 'strategy' as const, selected_option: 'strangler', evidence: { source: 't', answer_text: 'strangler', hash: sha('strangler') } }],
+    });
     expect(record.snapshot_id).toBe('RSN-aaaaaaaaaaaaaaaa');
-    // Digest v2 (S2-C-04): recomputation must pass the FULL authority body —
-    // identity, snapshot binding, and decisions — not decisions alone.
-    expect(
-      renewalApprovalDigest({
-        schema_version: record.schema_version,
-        approval_id: record.approval_id,
-        session_id: record.session_id,
-        round_count: record.round_count,
-        snapshot_id: record.snapshot_id,
-        decisions: record.decisions,
-      }),
-    ).toBe(record.content_digest);
+    expect(record.project_name).toBe('test-project');
+    // Digest v3 (S2-C-04): recomputation must pass the FULL authority body —
+    // identity, scope, and decisions — not decisions alone.
+    expect(renewalApprovalDigest(record)).toBe(record.content_digest);
   });
 });
 
@@ -133,12 +138,27 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
   const bundleOf = (hash: string): ContextBundle => ({
     scope: { type: 'whole' },
     items: [
-      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 3, text: 'code\n', content_hash: hash, redactions: 0, provenance: 'file-read' },
+      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 3, text: 'code\n', content_hash: hash, redactions: 0, provenance: 'file-read', slice_text_hash: sha('code\n'), file_line_count: 3 },
     ],
     truncated: false,
     total_chars: 10,
     warnings: [],
   });
+  // S3-H-01: server-assigned context records for the bundle's single slice.
+  const recordsFor = (bundle: ContextBundle) =>
+    assignContextRecords(
+      bundle.items
+        .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
+        .map((i) => ({
+          path: i.path,
+          whole_file_hash: i.content_hash,
+          start_line: i.start_line,
+          end_line: i.end_line,
+          slice_text_hash: i.slice_text_hash ?? sha(i.text),
+          file_line_count: i.file_line_count ?? i.end_line,
+          ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
+        })),
+    );
 
   it('first response invalid + source mutates before the retry → blocked_stale with retry_used', async () => {
     const target = freshDir('lco-pipe-');
@@ -154,7 +174,7 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
         if (calls === 1) return { text: '{invalid first' };
         // Mutation lands between call 1 and the retry:
         writeFileSync(join(target, 'src', 'a.ts'), content + '// mutated\n');
-        return { text: JSON.stringify({ hypotheses: [], uncertainties: [{ id: 'UNC-0001', question: 'q?', impact: 'low', options: [{ option: 'x' }, { option: 'y' }], anchors: [{ path: 'src/a.ts', content_hash: hash }] }], coverage_notes: [] }) };
+        return { text: JSON.stringify({ hypotheses: [], uncertainties: [{ id: 'UNC-0001', question: 'q?', impact: 'low', options: [{ option: 'x' }, { option: 'y' }], anchors: [{ context_id: 'CTX-0001' }] }], coverage_notes: [] }) };
       },
     };
     const persisted: AnalysisRecord[] = [];
@@ -165,12 +185,14 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
       checks++;
       return checks <= 1 ? ({ ok: true as const }) : { ok: false as const, reasons: ['file_changed'] };
     };
+    const bundle = bundleOf(hash);
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle: bundleOf(hash) },
+      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle },
       {
         llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
         nowIso: 't',
         targetRoot: target,
+        contextRecords: recordsFor(bundle),
         recheckFreshness: recheck,
         persist: (record) => { persisted.push(record); return { ok: true as const }; },
       },
@@ -190,15 +212,17 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
     const hash = sha(content);
     const adapter: LlmAdapter = {
       complete: async () => ({
-        text: JSON.stringify({ hypotheses: [], uncertainties: [{ id: 'UNC-0001', question: 'q?', impact: 'low', options: [{ option: 'x' }, { option: 'y' }], anchors: [{ path: 'src/a.ts', content_hash: hash }] }], coverage_notes: [] }),
+        text: JSON.stringify({ hypotheses: [], uncertainties: [{ id: 'UNC-0001', question: 'q?', impact: 'low', options: [{ option: 'x' }, { option: 'y' }], anchors: [{ context_id: 'CTX-0001' }] }], coverage_notes: [] }),
       }),
     };
+    const bundle = bundleOf(hash);
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle: bundleOf(hash) },
+      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle },
       {
         llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
         nowIso: 't',
         targetRoot: target,
+        contextRecords: recordsFor(bundle),
         recheckFreshness: () => ({ ok: true as const }),
         persist: () => ({ ok: true as const }),
       },

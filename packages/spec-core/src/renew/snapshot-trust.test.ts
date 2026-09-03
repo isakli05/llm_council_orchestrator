@@ -45,6 +45,24 @@ afterEach(() => {
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
 
+/**
+ * S3-H-01 (trust kernel): resolve the citable context id + supplied window
+ * for a path from the prompt's CITABLE CONTEXTS table; the model cites the
+ * server-assigned id and may only NARROW inside the window.
+ */
+function ctxWindow(prompt: string, path: string): { id: string; start: number; end: number } {
+  const m = new RegExp(`(CTX-\\d{4}) → ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} lines (\\d+)-(\\d+)`).exec(prompt);
+  if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
+  return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
+}
+
+/** A citation narrowed to the advertised window's interior (never its boundary). */
+const interiorCitation = (w: { id: string; start: number; end: number }) => ({
+  context_id: w.id,
+  start_line: w.start,
+  end_line: w.end - 1,
+});
+
 function fixtureGraph(): ReturnType<typeof parseGraphText> {
   return parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
 }
@@ -66,12 +84,11 @@ function baseCaps(): RenewCapabilities {
   };
 }
 
-/** Scripted LLM producing valid output anchored to the live orders.ts bytes. */
+/** Scripted LLM producing valid output citing the orders.ts context record. */
 function validOutputAdapter(target: string, onPrompt?: () => void): LlmAdapter {
   return {
-    complete: async (): Promise<LlmResponse> => {
+    complete: async (prompt): Promise<LlmResponse> => {
       onPrompt?.();
-      const orders = readFileSync(join(target, 'src', 'orders.ts'));
       return {
         text: JSON.stringify({
           hypotheses: [
@@ -80,7 +97,7 @@ function validOutputAdapter(target: string, onPrompt?: () => void): LlmAdapter {
               statement: 'Small-order fee under $25.',
               category: 'business_rule',
               confidence: 'high',
-              anchors: [{ path: 'src/orders.ts', content_hash: sha(orders) }],
+              anchors: [interiorCitation(ctxWindow(prompt, 'src/orders.ts'))],
               rationale: 'source',
             },
           ],

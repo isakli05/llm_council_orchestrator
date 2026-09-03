@@ -5,7 +5,6 @@
  * Synthetic sentinel values ONLY — nothing here touches real credentials.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +30,24 @@ afterEach(() => {
 });
 
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
+
+/**
+ * S3-H-01 (trust kernel): resolve the citable context id + supplied window
+ * for a path from the prompt's CITABLE CONTEXTS table; the model cites the
+ * server-assigned id and may only NARROW inside the window.
+ */
+function ctxWindow(prompt: string, path: string): { id: string; start: number; end: number } {
+  const m = new RegExp(`(CTX-\\d{4}) → ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} lines (\\d+)-(\\d+)`).exec(prompt);
+  if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
+  return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
+}
+
+/** A citation narrowed to the advertised window's interior (never its boundary). */
+const interiorCitation = (w: { id: string; start: number; end: number }) => ({
+  context_id: w.id,
+  start_line: w.start,
+  end_line: w.end - 1,
+});
 
 // --- C-07: layered redaction, synthetic sentinels only -------------------------------
 
@@ -186,12 +203,10 @@ describe('sentinel egress end-to-end (C-07 + L4)', () => {
     if (!graphParsed.ok) throw new Error(graphParsed.message);
 
     const prompts: string[] = [];
-    const sha = (b: Buffer | string) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
     // The model ECHOES a sentinel in its statement (the L4 case).
     const scripted: LlmAdapter = {
       complete: async (prompt): Promise<LlmResponse> => {
         prompts.push(prompt);
-        const config = readFileSync(ordersPath);
         return {
           text: JSON.stringify({
             hypotheses: [
@@ -200,7 +215,7 @@ describe('sentinel egress end-to-end (C-07 + L4)', () => {
                 statement: `Config uses token ${GITHUB} internally.`,
                 category: 'security_sensitive',
                 confidence: 'high',
-                anchors: [{ path: 'src/orders.ts', content_hash: sha(config) }],
+                anchors: [interiorCitation(ctxWindow(prompt, 'src/orders.ts'))],
                 rationale: `echoes ${JWT} and ${DB}`,
               },
             ],

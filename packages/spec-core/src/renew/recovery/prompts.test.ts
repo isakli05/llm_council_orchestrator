@@ -5,6 +5,7 @@ import {
   countEgressRedactions,
   serializeSourceDocumentSafe,
 } from './prompts';
+import { assignContextRecords } from '../trust/evidence';
 import type { ContextBundle } from '../context/bundle';
 
 const sha = (s: string) => `sha256:${s.length === 64 ? s : 'a'.repeat(64)}`;
@@ -77,11 +78,25 @@ describe('buildRecoveryPrompt (untrusted-data delimiting)', () => {
     expect(before).not.toContain(CANARY);
   });
 
-  it('exposes the anchorable-files table with canonical hashes', () => {
-    expect(prompt).toMatch(/ANCHORABLE FILES/);
-    expect(prompt).toContain('src/pricing.ts');
-    expect(prompt).toContain(sha('x'));
-    expect(prompt).toMatch(/content_hash/i);
+  it('exposes the citable-contexts table (context ids, supplied windows, whole-file hashes)', () => {
+    // S3-H-01: the citable surface is the server-assigned CONTEXT RECORDS —
+    // the model cites context ids and may only narrow inside the window.
+    const records = assignContextRecords([
+      {
+        path: 'src/pricing.ts',
+        whole_file_hash: sha('x'),
+        start_line: 17,
+        end_line: 50,
+        slice_text_hash: sha('slice'),
+        file_line_count: 60,
+      },
+    ]);
+    const withRecords = buildRecoveryPrompt({ scope: bundle.scope, bundle, nowIso: '2026-09-02T00:00:00Z', contextRecords: records });
+    expect(withRecords).toMatch(/CITABLE CONTEXTS \(context_id → path, supplied line window, whole-file hash\)/);
+    expect(withRecords).toContain('CTX-0001 → src/pricing.ts lines 17-50');
+    expect(withRecords).toContain(sha('x'));
+    // And WITHOUT records: the table degrades honestly (nothing citable).
+    expect(prompt).toMatch(/\(no citable context in this scope/);
   });
 
   it('demands JSON-only output and describes the schema', () => {

@@ -54,10 +54,12 @@ import { runRecovery, MAX_RECOVERY_PROMPT_BYTES } from './recovery/pipeline';
 import { createBudgetLedger, BudgetExceededError } from '../eval/budget';
 import { buildRenewalApprovalRecord, loadRenewalApproval } from './clarify/approvals';
 import { authorizeRenewalState, loadRenewalState, readStateRevision, renewalPaths } from './project/project';
-import { loadParity, emptyParity, addParityEntry, applyApprovalToParity, parityGate, setRuling, type ParityStore } from './parity/ledger';
+import { loadParity, emptyParity, addParityEntry, applyApprovalToParity, parityGate, persistParity, setRuling, type ParityStore } from './parity/ledger';
 import { verifyAnchor } from './anchors/verifier';
 import { distillRenewalQuestions } from './clarify/distiller';
 import { buildRecoveryPrompt } from './recovery/prompts';
+import { assignContextRecords } from './trust/evidence';
+import type { ContextBundle } from './context/bundle';
 
 const tmpDirs: string[] = [];
 function freshDir(prefix: string): string {
@@ -114,11 +116,34 @@ function graphCaps(llm?: LlmAdapter): RenewCapabilities {
   };
 }
 
-/** The fixture's canonical grounded response (2 hypotheses + 1 uncertainty). */
-function groundedResponse(target: string): { text: string } {
-  const orders = readFileSync(join(target, 'src', 'orders.ts'), 'utf8');
-  const pricing = readFileSync(join(target, 'src', 'pricing.ts'), 'utf8');
-  const labels = readFileSync(join(target, 'src', 'inventory.ts'), 'utf8');
+/**
+ * S3-H-01 (trust kernel): resolve the citable context id + supplied window
+ * for a path from the prompt's CITABLE CONTEXTS table; the model cites the
+ * server-assigned id and may only NARROW inside the window.
+ */
+function ctxWindow(prompt: string, path: string): { id: string; start: number; end: number } {
+  const m = new RegExp(`(CTX-\\d{4}) → ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} lines (\\d+)-(\\d+)`).exec(prompt);
+  if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
+  return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
+}
+
+/** A citation narrowed to the advertised window's interior (never its boundary). */
+const interiorCitation = (w: { id: string; start: number; end: number }) => ({
+  context_id: w.id,
+  start_line: w.start,
+  end_line: w.end - 1,
+});
+
+/** The fixture's canonical grounded response (2 hypotheses + 1 uncertainty),
+ * citing the server-assigned context ids from the recovery prompt. */
+function groundedResponse(prompt: string): { text: string } {
+  const orders = interiorCitation(ctxWindow(prompt, 'src/orders.ts'));
+  const pricing = interiorCitation(ctxWindow(prompt, 'src/pricing.ts'));
+  // S2-C-02 shape: the BANKING claim cites the (supplied but irrelevant) UI
+  // label file's context — provenance verifies (the bytes were supplied and
+  // are current), semantic support is absent. It must promote as an
+  // UNVALIDATED hypothesis and never as verified support.
+  const labels = interiorCitation(ctxWindow(prompt, 'src/inventory.ts'));
   return {
     text: JSON.stringify({
       hypotheses: [
@@ -127,7 +152,7 @@ function groundedResponse(target: string): { text: string } {
           statement: 'Orders with a pre-discount subtotal under $25 incur a $4.95 small-order fee.',
           category: 'business_rule',
           confidence: 'high',
-          anchors: [{ path: 'src/orders.ts', content_hash: sha(orders) }],
+          anchors: [orders],
           rationale: 'SMALL_ORDER_FEE applied when subtotal < 25 in createOrder.',
         },
         {
@@ -135,19 +160,15 @@ function groundedResponse(target: string): { text: string } {
           statement: 'Volume discounts: 15% at $500, 10% at $100, 5% at $50 (first tier wins).',
           category: 'business_rule',
           confidence: 'high',
-          anchors: [{ path: 'src/pricing.ts', content_hash: sha(pricing) }],
+          anchors: [pricing],
           rationale: 'DISCOUNT_TIERS scanned in applyDiscount.',
         },
-        // S2-C-02 shape: a BANKING claim anchored to an unrelated supplied UI
-        // label file — provenance verifies (real bytes, in context), semantic
-        // support is absent. It must promote as an UNVALIDATED hypothesis and
-        // never as verified support.
         {
           id: 'BHV-0003',
           statement: 'Dual approval is required for wire transfers above $10,000.',
           category: 'business_rule',
           confidence: 'high',
-          anchors: [{ path: 'src/inventory.ts', content_hash: sha(labels) }],
+          anchors: [labels],
           rationale: 'asserted from a file that was merely supplied',
         },
       ],
@@ -157,7 +178,7 @@ function groundedResponse(target: string): { text: string } {
           question: 'Should the small-order fee survive modernization unchanged?',
           impact: 'medium',
           options: [{ option: 'Preserve the fee exactly' }, { option: 'Revisit the threshold' }],
-          anchors: [{ path: 'src/orders.ts', content_hash: sha(orders) }],
+          anchors: [orders],
         },
       ],
       coverage_notes: [],
@@ -244,10 +265,9 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
         symlinkSync(join(target, 'package.json'), paths.overlay); // store FILE as symlink
       },
       () => {
-        rmSync(paths.overlay, { force: true });
-        writeFileSync(paths.overlay, readFileSync(join(project, '.lco', 'renewal', 'snapshot.json'), 'utf8').length > 0 ? '{}' : '{}');
-        rmSync(paths.overlay, { force: true });
-        symlinkSync(join(target, 'package.json'), `${paths.parity}.tmp`); // atomic tmp sibling
+        rmSync(paths.overlay, { force: true }); // restore: absent store is legal
+        rmSync(paths.parity, { force: true });
+        symlinkSync(join(target, 'package.json'), paths.parity); // parity store FILE as symlink
       },
     ];
     for (const setup of variants) {
@@ -256,6 +276,31 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
       if (verdict.ok) throw new Error('variant authorized — the no-follow chain check is gone');
       expect(verdict.message).toMatch(/symlink|outside/);
     }
+  });
+
+  it('S3-C-02 (trust kernel): a LEGACY fixed-name parity.json.tmp symlink is INERT — staging is unpredictable and the link is never opened', async () => {
+    const target = makeTarget();
+    const { project } = await initProject(target);
+    const paths = renewalPaths(project);
+    // The verifier's old attack surface: the fixed atomic-write tmp sibling.
+    // The trust kernel stages under `.<name>.lco-<24 hex>.tmp` (exclusive,
+    // unpredictable) and re-authorizes at write time — a pre-planted link at
+    // the OLD fixed name is never the staging path, never opened, never
+    // truncated.
+    const lure = join(target, 'lure');
+    mkdirSync(lure);
+    symlinkSync(join(lure, 'parity.json.tmp'), `${paths.parity}.tmp`);
+    const store = loadParity(paths.parity);
+    expect(store.ok).toBe(true);
+    if (!store.ok) return;
+    addParityEntry(store.store, { behavior: 'b', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }] });
+    expect(persistParity(project, paths.parity, store.store)).toMatchObject({ ok: true });
+    // The trusted write landed; the lure never received bytes through the link.
+    expect(readdirSync(lure)).toEqual([]);
+    expect(lstatSync(`${paths.parity}.tmp`).isSymbolicLink()).toBe(true); // link untouched
+    const reloaded = loadParity(paths.parity);
+    expect(reloaded.ok).toBe(true);
+    if (reloaded.ok) expect(reloaded.store.records).toHaveLength(1);
   });
 
   it('clean project authorizes; a destination outside the project root refuses', () => {
@@ -287,7 +332,7 @@ describe('INV-B project/snapshot identity + active state', () => {
 
   it('S2-H-10: export renders ACTIVE snapshot only; cross-snapshot analyses are explicitly labeled history', async () => {
     const target = makeTarget();
-    const llm: LlmAdapter = { complete: async () => groundedResponse(target) as LlmResponse };
+    const llm: LlmAdapter = { complete: async (prompt) => groundedResponse(prompt) as LlmResponse };
     const { project, caps } = await initProject(target, llm);
     expect((await cmdRenewAnalyze({ dir: project }, caps)).code).toBe(0);
     // Force a NEW snapshot: mutate the target, refresh (supersedes state).
@@ -310,7 +355,7 @@ describe('INV-B project/snapshot identity + active state', () => {
 
   it('S2-M-05: status open_questions counts only ACTIVE unresolved work (approved rulings subtract)', async () => {
     const target = makeTarget();
-    const llm: LlmAdapter = { complete: async () => groundedResponse(target) as LlmResponse };
+    const llm: LlmAdapter = { complete: async (prompt) => groundedResponse(prompt) as LlmResponse };
     const { project, caps } = await initProject(target, llm);
     expect((await cmdRenewAnalyze({ dir: project }, caps)).code).toBe(0);
     const s1 = await cmdRenewStatus({ dir: project, json: true }, caps);
@@ -345,7 +390,7 @@ describe('INV-B project/snapshot identity + active state', () => {
     let projectRef: string | undefined;
     let mutateMidCall = false;
     const llm: LlmAdapter = {
-      complete: async () => {
+      complete: async (prompt) => {
         if (mutateMidCall && projectRef !== undefined) {
           // Deterministic barrier: the SECOND paid call "takes time"; during
           // it, a concurrent legitimate review rules PAR-0001 preserve — the
@@ -354,11 +399,11 @@ describe('INV-B project/snapshot identity + active state', () => {
           const par = loadParity(paths.parity);
           if (par.ok) {
             setRuling(par.store, 'PAR-0001', { ruling: 'preserve', rationale: 'concurrent human review' });
-            const { persistParity } = await import('./parity/ledger');
-            persistParity(paths.parity, par.store);
+            // Trust kernel: authorized write — (projectDir, path, store).
+            persistParity(projectRef, paths.parity, par.store);
           }
         }
-        return groundedResponse(target) as LlmResponse;
+        return groundedResponse(prompt) as LlmResponse;
       },
     };
     const { project, caps } = await initProject(target, llm);
@@ -389,7 +434,7 @@ describe('INV-B project/snapshot identity + active state', () => {
 
   it('concurrency policy: a second concurrent trusted-store writer is explicitly lock-refused, never merged', async () => {
     const target = makeTarget();
-    const llm: LlmAdapter = { complete: async () => groundedResponse(target) as LlmResponse };
+    const llm: LlmAdapter = { complete: async (prompt) => groundedResponse(prompt) as LlmResponse };
     const { project, caps } = await initProject(target, llm);
     expect((await cmdRenewAnalyze({ dir: project }, caps)).code).toBe(0);
     // Hold the renewal lock (as another in-flight writer would)…
@@ -422,7 +467,7 @@ describe('INV-B project/snapshot identity + active state', () => {
     let projectRef: string | undefined;
     let supersede = false;
     const llm: LlmAdapter = {
-      complete: async () => {
+      complete: async (prompt) => {
         if (supersede && projectRef !== undefined) {
           // Mid-call: the parity store got superseded to a DIFFERENT snapshot
           // (simulating a refresh during the paid call) — the fold must refuse
@@ -431,11 +476,11 @@ describe('INV-B project/snapshot identity + active state', () => {
           const par = loadParity(paths.parity);
           if (par.ok) {
             par.store.snapshot_id = 'RSN-deadbeefdeadbeef';
-            const { persistParity } = await import('./parity/ledger');
-            persistParity(paths.parity, par.store);
+            // Trust kernel: authorized write — (projectDir, path, store).
+            persistParity(projectRef, paths.parity, par.store);
           }
         }
-        return groundedResponse(target) as LlmResponse;
+        return groundedResponse(prompt) as LlmResponse;
       },
     };
     const { project, caps } = await initProject(target, llm);
@@ -444,7 +489,9 @@ describe('INV-B project/snapshot identity + active state', () => {
     supersede = true;
     const r = await cmdRenewAnalyze({ dir: project }, caps);
     expect(r.code).toBe(1);
-    expect(r.output).toMatch(/superseded to snapshot/);
+    // Trust kernel: the fold re-reads the typed active state under the writer
+    // lock — a cross-snapshot store is a typed refusal, promotion refused.
+    expect(r.output).toMatch(/stores changed during the analysis|promotion refused/);
   });
 });
 
@@ -455,7 +502,7 @@ describe('INV-B project/snapshot identity + active state', () => {
 describe('INV-C evidence provenance vs semantic support (S2-C-02)', () => {
   it('THE REPRO: banking claim anchored to a supplied-but-irrelevant UI file — provenance verifies, support stays UNVALIDATED, wording never claims support', async () => {
     const target = makeTarget();
-    const llm: LlmAdapter = { complete: async () => groundedResponse(target) as LlmResponse };
+    const llm: LlmAdapter = { complete: async (prompt) => groundedResponse(prompt) as LlmResponse };
     const { project, caps } = await initProject(target, llm);
     const r = await cmdRenewAnalyze({ dir: project }, caps);
     expect(r.code).toBe(0);
@@ -470,10 +517,12 @@ describe('INV-C evidence provenance vs semantic support (S2-C-02)', () => {
     expect(banking).toBeDefined();
     // Provenance DID verify (the file is real and was supplied)…
     expect(banking?.anchor_results[0]?.ok).toBe(true);
-    // …but the anchor is honest about being whole-file membership, and the
-    // claim's semantic support is explicitly UNVALIDATED — the false-trust
-    // claim ("anchor ok ⇒ supported") is structurally impossible now.
-    expect(banking?.anchor_results[0]?.scope).toBe('whole_file');
+    // …but the anchor is honest about covering only the SUPPLIED WINDOW (the
+    // narrowed citation resolves to 'node_range' — the model can never claim
+    // more than the exact material it was shown), and the claim's semantic
+    // support is explicitly UNVALIDATED — "anchor ok ⇒ supported" is
+    // structurally impossible now.
+    expect(banking?.anchor_results[0]?.scope).toBe('node_range');
     expect(banking?.support_status).toBe('unvalidated');
     // Every promoted hypothesis in V1 is unvalidated until a human rules it.
     for (const h of an?.promoted.hypotheses ?? []) expect(h.support_status).toBe('unvalidated');
@@ -503,19 +552,19 @@ describe('INV-D authority/approval/destructive integrity', () => {
     evidence: { source: 'test', answer_text: 'drop', hash: sha('drop') },
   };
 
-  function build(overrides: Partial<Parameters<typeof buildRenewalApprovalRecord>[1]> = {}) {
-    return buildRenewalApprovalRecord(
-      { decisions: [{ ...baseDecision }] },
-      {
-        approvalId: 'APPR-0001',
-        sessionId: 'sess-1',
-        roundCount: 1,
-        approvedAt: '2026-09-02T00:00:00Z',
-        projectName: 'ri',
-        snapshotId: 'RSN-0123456789abcdef',
-        ...overrides,
-      },
-    );
+  function build(overrides: Partial<Parameters<typeof buildRenewalApprovalRecord>[0]> = {}) {
+    // Trust kernel: v3 builder takes ONE object with REQUIRED project/snapshot
+    // scope (S3-C-04) — an unscoped grant is unrepresentable.
+    return buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 'sess-1',
+      round_count: 1,
+      approved_at: '2026-09-02T00:00:00Z',
+      project_name: 'ri',
+      snapshot_id: 'RSN-0123456789abcdef',
+      decisions: [{ ...baseDecision }],
+      ...overrides,
+    });
   }
 
   it('S2-C-04 (THE REPRO): changing snapshot_id fails the digest — a retargeted approval cannot authorize DROP', () => {
@@ -564,6 +613,10 @@ describe('INV-D authority/approval/destructive integrity', () => {
         session_id: 's',
         round_count: 1,
         approved_at: 't',
+        // v3 scope shape (the fold itself does not verify digests — only the
+        // canonical-option identity check is under test here).
+        project_name: 'ri',
+        snapshot_id: 'RSN-0123456789abcdef',
         decisions: [{ claim_id: 'PAR-0001', kind: 'parity', free_text: text, evidence: { source: 't', answer_text: text, hash: sha(text) } }],
         content_digest: 'sha256:' + '0'.repeat(64),
       });
@@ -578,6 +631,8 @@ describe('INV-D authority/approval/destructive integrity', () => {
       session_id: 's',
       round_count: 1,
       approved_at: 't',
+      project_name: 'ri',
+      snapshot_id: 'RSN-0123456789abcdef',
       decisions: [{ ...baseDecision }],
       content_digest: 'sha256:' + '0'.repeat(64),
     });
@@ -620,6 +675,43 @@ describe('INV-D authority/approval/destructive integrity', () => {
 // -------------------------------------------------------------------------------------
 
 describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
+  /**
+   * The paid-boundary arms supply a bundle with ONLY the orders slice — the
+   * response cites exactly that context (S3-H-01; pricing/inventory have no
+   * citable ids in this scope).
+   */
+  const ordersCitationResponse = (prompt: string): { text: string } => ({
+    text: JSON.stringify({
+      hypotheses: [
+        {
+          id: 'BHV-0001',
+          statement: 'Orders with a pre-discount subtotal under $25 incur a $4.95 small-order fee.',
+          category: 'business_rule',
+          confidence: 'high',
+          anchors: [interiorCitation(ctxWindow(prompt, 'src/orders.ts'))],
+          rationale: 'SMALL_ORDER_FEE applied when subtotal < 25 in createOrder.',
+        },
+      ],
+      uncertainties: [],
+      coverage_notes: [],
+    }),
+  });
+
+  /** S3-H-01: server-assigned context records for a hand-built bundle. */
+  const recordsFor = (bundle: ContextBundle) =>
+    assignContextRecords(
+      bundle.items
+        .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
+        .map((i) => ({
+          path: i.path,
+          whole_file_hash: i.content_hash,
+          start_line: i.start_line,
+          end_line: i.end_line,
+          slice_text_hash: i.slice_text_hash ?? sha(i.text),
+          file_line_count: i.file_line_count ?? i.end_line,
+          ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
+        })),
+    );
   it('S2-H-04: a serialized prompt over the byte cap blocks BEFORE any call (zero spend)', async () => {
     const target = makeTarget();
     let calls = 0;
@@ -673,6 +765,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
         llm: singleRoutePlan(llm),
         nowIso: '2026-09-02T00:00:00Z',
         targetRoot: target,
+        contextRecords: [], // blocked BEFORE any citation resolution
         persist: (record) => {
           persisted.push(record.analysis_id);
           return { ok: true };
@@ -685,50 +778,100 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     expect(outcome.record.usage.prompt_bytes ?? 0).toBeGreaterThan(MAX_RECOVERY_PROMPT_BYTES);
   });
 
-  it('S2-H-01: a response reporting attempts=2 against maxAttempts=1 is a budget refusal — never a trusted result', async () => {
+  it('S2-H-01/S3-H-06 (single-charge): self-reported attempts are not re-charged; a spent envelope refuses with NOTHING written', async () => {
     const target = makeTarget();
-    const llm: LlmAdapter = {
-      complete: async () => ({ text: groundedResponse(target).text, attempts: 2, usage: { in_tokens: 10, out_tokens: 5 } }),
+    const bundle: ContextBundle = {
+      scope: {},
+      items: [{ kind: 'file_slice', path: 'src/orders.ts', start_line: 1, end_line: 5, text: 'const x = 1;', content_hash: sha(readFileSync(join(target, 'src', 'orders.ts'))), redactions: 0, provenance: 'file-read' }],
+      truncated: false,
+      total_chars: 100,
+      warnings: [],
     };
-    let persisted = 0;
-    // A bundle with a real slice lets the paid call happen; the reported
-    // attempts=2 against maxAttempts=1 must refuse at the charge — the result
-    // is never trusted, nothing is promoted.
+
+    // Arm 1 — the trust-kernel SINGLE-CHARGE contract (S3-H-06): a response
+    // that self-reports attempts already charged them at the transport;
+    // completion accounting must NOT re-charge. (The old contract re-charged
+    // reported attempts, double-billing every real one-attempt call and
+    // aborting maxAttempts=1 runs at half the envelope.) The run succeeds and
+    // the record honestly reports the attempt count.
+    const reporting: LlmAdapter = {
+      complete: async (prompt) => ({ text: ordersCitationResponse(prompt).text, attempts: 2, usage: { in_tokens: 10, out_tokens: 5 } }),
+    };
+    let persistedReports = 0;
+    const outcome = await runRecovery(
+      {
+        analysisId: 'AN-9998',
+        snapshotId: 'RSN-0123456789abcdef',
+        scope: { type: 'whole' },
+        bundle,
+      },
+      {
+        llm: singleRoutePlan(reporting),
+        budget: createBudgetLedger({ maxAttempts: 1 }, { nowMs: () => 0 }),
+        nowIso: '2026-09-02T00:00:00Z',
+        targetRoot: target,
+        contextRecords: recordsFor(bundle),
+        persist: () => {
+          persistedReports++;
+          return { ok: true };
+        },
+      },
+    );
+    expect(outcome.ok).toBe(true);
+    expect(persistedReports).toBe(1);
+    if (outcome.ok) expect(outcome.record.usage.attempts).toBe(2);
+
+    // Arm 2 — the envelope still refuses: once the transport has SPENT the
+    // attempt cap, the next completion is inadmissible BEFORE any call — a
+    // budget refusal is never laundered into a trusted result.
+    let calls = 0;
+    const nonReporting: LlmAdapter = {
+      complete: async (prompt) => {
+        calls++;
+        return { text: ordersCitationResponse(prompt).text };
+      },
+    };
+    const spent = createBudgetLedger({ maxAttempts: 1 }, { nowMs: () => 0 });
+    spent.chargeAttempts(1); // the transport already spent the envelope
+    let persistedSpent = 0;
     await expect(
       runRecovery(
         {
-          analysisId: 'AN-9998',
+          analysisId: 'AN-9996',
           snapshotId: 'RSN-0123456789abcdef',
           scope: { type: 'whole' },
-          bundle: {
-            scope: {},
-            items: [{ kind: 'file_slice', path: 'src/orders.ts', start_line: 1, end_line: 5, text: 'const x = 1;', content_hash: sha(readFileSync(join(target, 'src', 'orders.ts'))), redactions: 0, provenance: 'file-read' }],
-            truncated: false,
-            total_chars: 100,
-            warnings: [],
-          },
+          bundle,
         },
         {
-          llm: singleRoutePlan(llm),
-          budget: createBudgetLedger({ maxAttempts: 1 }, { nowMs: () => 0 }),
+          llm: singleRoutePlan(nonReporting),
+          budget: spent,
           nowIso: '2026-09-02T00:00:00Z',
           targetRoot: target,
+          contextRecords: recordsFor(bundle),
           persist: () => {
-            persisted++;
+            persistedSpent++;
             return { ok: true };
           },
         },
       ),
     ).rejects.toBeInstanceOf(BudgetExceededError);
-    expect(persisted).toBe(0); // nothing promoted
+    expect(calls).toBe(0); // zero paid calls
+    expect(persistedSpent).toBe(0); // nothing promoted
   });
 
   it('S2-H-01 (accounting): usage is read from the REAL response shape (provenance/usageDetails/latencyMs)', async () => {
     const target = makeTarget();
     const ordersHash = sha(readFileSync(join(target, 'src', 'orders.ts')));
+    const bundle: ContextBundle = {
+      scope: {},
+      items: [{ kind: 'file_slice', path: 'src/orders.ts', start_line: 1, end_line: 5, text: 'const x = 1;', content_hash: ordersHash, redactions: 0, provenance: 'file-read' }],
+      truncated: false,
+      total_chars: 100,
+      warnings: [],
+    };
     const llm: LlmAdapter = {
-      complete: async () => ({
-        ...groundedResponse(target),
+      complete: async (prompt) => ({
+        ...ordersCitationResponse(prompt),
         attempts: 2,
         latencyMs: 4321,
         usage: { in_tokens: 100, out_tokens: 50 },
@@ -750,18 +893,13 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
         analysisId: 'AN-9997',
         snapshotId: 'RSN-0123456789abcdef',
         scope: { type: 'whole' },
-        bundle: {
-          scope: {},
-          items: [{ kind: 'file_slice', path: 'src/orders.ts', start_line: 1, end_line: 5, text: 'const x = 1;', content_hash: ordersHash, redactions: 0, provenance: 'file-read' }],
-          truncated: false,
-          total_chars: 100,
-          warnings: [],
-        },
+        bundle,
       },
       {
         llm: singleRoutePlan(llm),
         nowIso: '2026-09-02T00:00:00Z',
         targetRoot: target,
+        contextRecords: recordsFor(bundle),
         persist: (record) => {
           seen = record;
           return { ok: true };
@@ -809,21 +947,26 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
 // -------------------------------------------------------------------------------------
 
 describe('verifier findings regression (INV-A/C/D/E)', () => {
-  it('V1-F1: a parity.json.tmp symlink planted DURING the paid call refuses the fold — target untouched', async () => {
+  it('V1-F1: a symlink planted at the store destination DURING the paid call refuses the fold — target untouched', async () => {
     const target = makeTarget();
     mkdirSync(join(target, 'lure'));
     const before = treeHash(target);
     let projectRef: string | undefined;
     let planted = false;
     const llm: LlmAdapter = {
-      complete: async () => {
+      complete: async (prompt) => {
         if (planted && projectRef !== undefined) {
           planted = false;
-          // The verifier's exact attack: swap the atomic-write tmp sibling for
-          // a symlink into the target while the paid call runs.
-          symlinkSync(join(target, 'lure', 'parity.json.tmp'), `${renewalPaths(projectRef).parity}.tmp`);
+          // The verifier's attack, retargeted at the trust kernel: while the
+          // paid call runs, swap the parity store DESTINATION for a symlink
+          // into the read-only target. (The old fixed-name `.tmp` sibling is
+          // inert now — staging names are unpredictable — so the live attack
+          // surface is the destination chain itself, which the write-time
+          // re-authorization must refuse.)
+          rmSync(renewalPaths(projectRef).parity, { force: true });
+          symlinkSync(join(target, 'lure', 'parity.json'), renewalPaths(projectRef).parity);
         }
-        return groundedResponse(target) as LlmResponse;
+        return groundedResponse(prompt) as LlmResponse;
       },
     };
     const { project, caps } = await initProject(target, llm);
@@ -831,12 +974,13 @@ describe('verifier findings regression (INV-A/C/D/E)', () => {
     projectRef = project;
     planted = true;
     const r = await cmdRenewAnalyze({ dir: project }, caps);
-    // The write-time re-authorization refuses (persist guard and/or fold
-    // guard); the target inventory is identical; the store is not a symlink.
+    // The trusted read/write boundary refuses the swapped chain; the target
+    // inventory is identical and nothing was written through the link.
     expect(r.code).not.toBe(0);
-    expect(r.output).toMatch(/state domain changed|symlink|outside the resolved project root/);
+    expect(r.output).toMatch(/refused/);
     expect(treeHash(target)).toBe(before);
-    expect(lstatSync(renewalPaths(project).parity).isSymbolicLink()).toBe(false);
+    expect(readdirSync(join(target, 'lure'))).toEqual([]); // the lure received nothing
+    expect(lstatSync(renewalPaths(project).parity).isSymbolicLink()).toBe(true); // never replaced/followed
   });
 
   it('V1-F3: a legitimately SYMLINKED project root still works (containment resolves, not lexical)', async () => {
@@ -863,6 +1007,8 @@ describe('verifier findings regression (INV-A/C/D/E)', () => {
       session_id: 's',
       round_count: 1,
       approved_at: 't',
+      project_name: 'ri',
+      snapshot_id: 'RSN-0123456789abcdef',
       decisions: [{ claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'drop', evidence: { source: 't', answer_text: 'drop', hash: sha('drop') } }],
       content_digest: 'sha256:' + '0'.repeat(64),
     };
@@ -890,6 +1036,8 @@ describe('verifier findings regression (INV-A/C/D/E)', () => {
       session_id: 's',
       round_count: 1,
       approved_at: 't',
+      project_name: 'ri',
+      snapshot_id: 'RSN-0123456789abcdef',
       decisions: [{ claim_id: 'PAR-0001', kind: 'parity', selected_option: 'change', evidence: { source: 't', answer_text: 'change', hash: sha('change') } }],
       content_digest: 'sha256:' + '0'.repeat(64),
     });

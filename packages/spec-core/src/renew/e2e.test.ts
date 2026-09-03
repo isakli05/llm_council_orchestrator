@@ -28,6 +28,25 @@ afterEach(() => {
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
 
+/**
+ * S3-H-01 (trust kernel): resolve the citable context id + supplied line
+ * window for a path from the prompt's CITABLE CONTEXTS table — the model
+ * cites server-assigned ids (CTX-NNNN, deterministic from bundle slice
+ * order), never paths/hashes, and may only NARROW inside the window.
+ */
+function ctxWindow(prompt: string, path: string): { id: string; start: number; end: number } {
+  const m = new RegExp(`(CTX-\\d{4}) → ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} lines (\\d+)-(\\d+)`).exec(prompt);
+  if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
+  return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
+}
+
+/** A citation narrowed to the advertised window's interior (never its boundary). */
+const interiorCitation = (w: { id: string; start: number; end: number }) => ({
+  context_id: w.id,
+  start_line: w.start,
+  end_line: w.end - 1,
+});
+
 function dirHash(root: string): string {
   const parts: string[] = [];
   const walk = (dir: string, rel: string) => {
@@ -58,12 +77,13 @@ describe('renewal V1 end-to-end (fixture app, scripted LLM, injected provider)',
 
     let llmCalls = 0;
     const scripted: LlmAdapter = {
-      complete: async (): Promise<LlmResponse> => {
+      complete: async (prompt): Promise<LlmResponse> => {
         llmCalls++;
-        // Ground-truth hypotheses R1/R2 + one uncertainty, anchored to the
-        // REAL fixture bytes (hashes computed from the copied target).
-        const orders = readFileSync(join(target, 'src', 'orders.ts'), 'utf8');
-        const pricing = readFileSync(join(target, 'src', 'pricing.ts'), 'utf8');
+        // Ground-truth hypotheses R1/R2 + one uncertainty, citing the
+        // server-assigned context ids for the fixture files (S3-H-01) with
+        // narrows strictly inside each supplied window.
+        const ordersCtx = ctxWindow(prompt, 'src/orders.ts');
+        const pricingCtx = ctxWindow(prompt, 'src/pricing.ts');
         return {
           text: JSON.stringify({
             hypotheses: [
@@ -72,7 +92,7 @@ describe('renewal V1 end-to-end (fixture app, scripted LLM, injected provider)',
                 statement: 'Orders with a pre-discount subtotal under $25 incur a $4.95 small-order fee.',
                 category: 'business_rule',
                 confidence: 'high',
-                anchors: [{ path: 'src/orders.ts', content_hash: sha(orders) }],
+                anchors: [interiorCitation(ordersCtx)],
                 rationale: 'SMALL_ORDER_FEE applied when subtotal < 25 in createOrder.',
               },
               {
@@ -80,7 +100,7 @@ describe('renewal V1 end-to-end (fixture app, scripted LLM, injected provider)',
                 statement: 'Volume discounts: 15% at $500, 10% at $100, 5% at $50 (first tier wins).',
                 category: 'business_rule',
                 confidence: 'high',
-                anchors: [{ path: 'src/pricing.ts', content_hash: sha(pricing) }],
+                anchors: [interiorCitation(pricingCtx)],
                 rationale: 'DISCOUNT_TIERS scanned in applyDiscount.',
               },
             ],
@@ -90,7 +110,7 @@ describe('renewal V1 end-to-end (fixture app, scripted LLM, injected provider)',
                 question: 'Should the small-order fee survive modernization unchanged?',
                 impact: 'medium',
                 options: [{ option: 'Preserve the fee exactly' }, { option: 'Revisit the threshold' }],
-                anchors: [{ path: 'src/orders.ts', content_hash: sha(orders) }],
+                anchors: [interiorCitation(ordersCtx)],
               },
             ],
             coverage_notes: ['tax rounding covered only partially'],

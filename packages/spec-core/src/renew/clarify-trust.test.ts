@@ -49,6 +49,24 @@ afterEach(() => {
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
 
+/**
+ * S3-H-01 (trust kernel): resolve the citable context id + supplied window
+ * for a path from the prompt's CITABLE CONTEXTS table; the model cites the
+ * server-assigned id and may only NARROW inside the window.
+ */
+function ctxWindow(prompt: string, path: string): { id: string; start: number; end: number } {
+  const m = new RegExp(`(CTX-\\d{4}) → ${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} lines (\\d+)-(\\d+)`).exec(prompt);
+  if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
+  return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
+}
+
+/** A citation narrowed to the advertised window's interior (never its boundary). */
+const interiorCitation = (w: { id: string; start: number; end: number }) => ({
+  context_id: w.id,
+  start_line: w.start,
+  end_line: w.end - 1,
+});
+
 function graphCaps(): RenewCapabilities {
   const g = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
   if (!g.ok) throw new Error(g.message);
@@ -92,20 +110,24 @@ describe('canonical ruling language (H-08 / S2-C-05)', () => {
       snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
       decision_claim_id: 'PAR-0001',
     } as never);
-    const record = buildRenewalApprovalRecord(
-      {
-        decisions: [
-          {
-            claim_id: 'PAR-0001',
-            kind: 'parity',
-            selected_option: 'change',
-            free_text: 'Change the behavior deliberately; capture the new intent',
-            evidence: { source: 'test', answer_text: 'change', hash: sha('change') },
-          },
-        ],
-      },
-      { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: '2026-09-02T12:00:00.000Z', snapshotId: 'RSN-aaaaaaaaaaaaaaaa' },
-    );
+    // Trust kernel: v3 builder takes ONE object with REQUIRED scope (S3-C-04).
+    const record = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: '2026-09-02T12:00:00.000Z',
+      project_name: 'clr-test',
+      snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
+      decisions: [
+        {
+          claim_id: 'PAR-0001',
+          kind: 'parity',
+          selected_option: 'change',
+          free_text: 'Change the behavior deliberately; capture the new intent',
+          evidence: { source: 'test', answer_text: 'change', hash: sha('change') },
+        },
+      ],
+    });
     const result = applyApprovalToParity(store, record);
     expect(result.stillUnresolved).toHaveLength(0);
     expect(store.records[0]!.ruling).toBe('change');
@@ -115,26 +137,44 @@ describe('canonical ruling language (H-08 / S2-C-05)', () => {
 });
 
 describe('approval record self-verification (F3)', () => {
+  // Trust kernel: v3 records REQUIRE project/snapshot scope (S3-C-04) —
+  // every fixture carries both, digest-bound.
   const buildRecord = () =>
-    buildRenewalApprovalRecord(
-      {
-        decisions: [
-          {
-            claim_id: 'PAR-0001',
-            kind: 'parity',
-            selected_option: 'Preserve current behavior',
-            evidence: { source: 'test', answer_text: 'Preserve current behavior', hash: sha('Preserve current behavior') },
-          },
-        ],
-      },
-      { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: '2026-09-02T12:00:00.000Z', snapshotId: 'RSN-aaaaaaaaaaaaaaaa' },
-    );
+    buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: '2026-09-02T12:00:00.000Z',
+      project_name: 'clr-test',
+      snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
+      decisions: [
+        {
+          claim_id: 'PAR-0001',
+          kind: 'parity',
+          selected_option: 'Preserve current behavior',
+          evidence: { source: 'test', answer_text: 'Preserve current behavior', hash: sha('Preserve current behavior') },
+        },
+      ],
+    });
 
   it('a well-formed record loads verified', () => {
     const dir = freshDir('lco-appr-');
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(buildRecord()));
     const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(true);
+  });
+
+  it('trust kernel (S3-C-04): a v2-shaped record (scope absent) fails closed as approval_corrupt', () => {
+    const dir = freshDir('lco-appr-');
+    const v2 = buildRecord() as unknown as Record<string, unknown>;
+    delete v2.project_name;
+    delete v2.snapshot_id;
+    writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(v2));
+    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('approval_corrupt');
+    expect(r.message).toMatch(/pre-v3|re-approve/);
   });
 
   it('a tampered content_digest is refused', () => {
@@ -152,18 +192,10 @@ describe('approval record self-verification (F3)', () => {
     const dir = freshDir('lco-appr-');
     const rec = buildRecord() as unknown as RenewalApprovalRecord;
     rec.decisions[0]!.evidence.answer_text = 'Drop everything instead';
-    // Keep the digest CONSISTENT with the tampered decisions (v2 binds ALL
-    // authority fields) so the per-decision evidence-hash layer is the one
-    // that fires (both layers must detect).
-    rec.content_digest = renewalApprovalDigest({
-      schema_version: rec.schema_version,
-      approval_id: rec.approval_id,
-      session_id: rec.session_id,
-      round_count: rec.round_count,
-      ...(rec.project_name !== undefined ? { project_name: rec.project_name } : {}),
-      ...(rec.snapshot_id !== undefined ? { snapshot_id: rec.snapshot_id } : {}),
-      decisions: rec.decisions,
-    });
+    // Keep the digest CONSISTENT with the tampered decisions (v3 binds ALL
+    // authority fields, scope included) so the per-decision evidence-hash
+    // layer is the one that fires (both layers must detect).
+    rec.content_digest = renewalApprovalDigest(rec);
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(rec));
     const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
@@ -171,7 +203,7 @@ describe('approval record self-verification (F3)', () => {
     expect(r.code).toBe('evidence_mismatch');
   });
 
-  it('a tampered authority field (snapshot_id) is refused by the v2 digest (S2-C-04)', () => {
+  it('a tampered authority field (snapshot_id) is refused by the v3 digest (S2-C-04)', () => {
     const dir = freshDir('lco-appr-');
     const rec = buildRecord() as unknown as RenewalApprovalRecord;
     rec.snapshot_id = 'RSN-ffffffffffffffff'; // moved authority to another state
@@ -207,19 +239,22 @@ describe('approval referential integrity at the gate (F4 / C-08)', () => {
   });
 
   it('an approval from ANOTHER snapshot does not authorize the ruling', () => {
-    const record = buildRenewalApprovalRecord(
-      {
-        decisions: [
-          {
-            claim_id: 'PAR-0001',
-            kind: 'parity',
-            selected_option: 'drop', // canonical — the snapshot binding is the ONLY blocker
-            evidence: { source: 't', answer_text: 'drop', hash: sha('drop') },
-          },
-        ],
-      },
-      { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: 't', snapshotId: 'RSN-bbbbbbbbbbbbbbbb' },
-    );
+    const record = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: 't',
+      project_name: 'clr-test',
+      snapshot_id: 'RSN-bbbbbbbbbbbbbbbb',
+      decisions: [
+        {
+          claim_id: 'PAR-0001',
+          kind: 'parity',
+          selected_option: 'drop', // canonical — the snapshot binding is the ONLY blocker
+          evidence: { source: 't', answer_text: 'drop', hash: sha('drop') },
+        },
+      ],
+    });
     const store = emptyParity('RSN-aaaaaaaaaaaaaaaa');
     store.records.push({
       id: 'PAR-0001',
@@ -240,19 +275,22 @@ describe('approval referential integrity at the gate (F4 / C-08)', () => {
   });
 
   it('an approval that authorizes a DIFFERENT ruling than the entry blocks', () => {
-    const record = buildRenewalApprovalRecord(
-      {
-        decisions: [
-          {
-            claim_id: 'PAR-0001',
-            kind: 'parity',
-            selected_option: 'preserve', // canonical preserve cannot authorize entry ruling 'drop'
-            evidence: { source: 't', answer_text: 'preserve', hash: sha('preserve') },
-          },
-        ],
-      },
-      { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: 't', snapshotId: 'RSN-aaaaaaaaaaaaaaaa' },
-    );
+    const record = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: 't',
+      project_name: 'clr-test',
+      snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
+      decisions: [
+        {
+          claim_id: 'PAR-0001',
+          kind: 'parity',
+          selected_option: 'preserve', // canonical preserve cannot authorize entry ruling 'drop'
+          evidence: { source: 't', answer_text: 'preserve', hash: sha('preserve') },
+        },
+      ],
+    });
     const store = emptyParity('RSN-aaaaaaaaaaaaaaaa');
     store.records.push({
       id: 'PAR-0001',
@@ -292,9 +330,8 @@ describe('review revalidates source state (H-09)', () => {
     const caps = graphCaps();
     expect((await cmdRenewInit({ dir: project, target, name: 'clr2' }, caps)).code).toBe(0);
 
-    const ordersPath = join(target, 'src', 'orders.ts');
     const scripted: LlmAdapter = {
-      complete: async (): Promise<LlmResponse> => ({
+      complete: async (prompt): Promise<LlmResponse> => ({
         text: JSON.stringify({
           hypotheses: [
             {
@@ -302,7 +339,7 @@ describe('review revalidates source state (H-09)', () => {
               statement: 'Order accepted flag is always true.',
               category: 'business_rule',
               confidence: 'high',
-              anchors: [{ path: 'src/orders.ts', content_hash: sha(readFileSync(ordersPath)) }],
+              anchors: [interiorCitation(ctxWindow(prompt, 'src/orders.ts'))],
               rationale: 'source',
             },
           ],

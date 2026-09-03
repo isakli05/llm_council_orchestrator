@@ -54,6 +54,9 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     sessionId: 'sess-1',
     dir: '/tmp/renewal-project',
     projectName: 'orders-crm',
+    // Trust kernel: project/snapshot scope is REQUIRED (S3-C-04) — the
+    // written approval binds to the fixture's snapshot.
+    snapshotId: 'RSN-deadbeefdeadbeef',
     nowIso: () => '2026-09-02T00:00:00Z',
     driver: makeRenewalDriver({ analyses: [uncertaintyAnalysis()], overlay: emptyOverlay, includeStrategy: true }),
     nextApprovalId: () => 'APPR-0001',
@@ -180,7 +183,7 @@ describe('loadAnalysisRecords interop (analyses feed the distiller)', () => {
   it('loads persisted records for distillation', () => {
     const dir = mkdtempSync(join(tmpdir(), 'lco-sess-store-'));
     try {
-      persistAnalysisRecord(dir, uncertaintyAnalysis());
+      persistAnalysisRecord(dir, dir, uncertaintyAnalysis());
       const loaded = loadAnalysisRecords(dir);
       expect(loaded.records).toHaveLength(1);
       expect(loaded.records[0].promoted.uncertainties).toHaveLength(1);

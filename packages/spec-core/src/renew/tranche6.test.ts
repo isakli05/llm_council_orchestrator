@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GraphContextProvider, RENEW_CONTEXT_LIMITS } from './context/context-provider';
@@ -17,7 +17,6 @@ import { parseGraphText } from './intel/graph-reader';
 import { shortestPath, neighborhood, querySeeds, godNodes } from './intel/graph-ops';
 import { buildRenewalApprovalRecord, loadRenewalApproval, nextRenewalApprovalId } from './clarify/approvals';
 import { renderRenewalReport } from './project/export';
-import { loadRenewalState } from './project/project';
 import { buildGuardedCopy } from './ingest/workspace-copy';
 import { emptyOverlay } from './overlay/overlay';
 import type { AnalysisRecord } from './recovery/schemas';
@@ -134,9 +133,9 @@ describe('distiller skip and kind arms', () => {
     const driver = makeRenewalDriver({ analyses: [], overlay: emptyOverlay('RSN-aaaaaaaaaaaaaaaa') });
     const payload = driver.approvalPayload(
       new Map([
-        ['OVL-0002', { answer: { kind: 'option', selectedOption: 'Mark for redesign now; capture the intent as a requirement' }, appliedRound: 2 }],
-        ['UNC-0001', { answer: { kind: 'other' }, appliedRound: 1 }],
-        ['PAR-0003', { answer: { kind: 'option', selectedOption: 'Drop the behavior as unused' }, appliedRound: 1 }],
+        ['OVL-0002', { answer: { decisionId: 'OVL-0002', kind: 'option', selectedOption: 'Mark for redesign now; capture the intent as a requirement' }, appliedRound: 2 }],
+        ['UNC-0001', { answer: { decisionId: 'UNC-0001', kind: 'other' }, appliedRound: 1 }],
+        ['PAR-0003', { answer: { decisionId: 'PAR-0003', kind: 'option', selectedOption: 'Drop the behavior as unused' }, appliedRound: 1 }],
       ]),
       { sessionId: 's' },
     );
@@ -156,6 +155,9 @@ describe('renewal session state-machine edges', () => {
     createRenewalClarifySession({
       sessionId: 's',
       dir: freshDir('lco-t6-sess-'),
+      // Trust kernel: project/snapshot scope is REQUIRED (S3-C-04).
+      projectName: 'test-project',
+      snapshotId: 'RSN-aaaaaaaaaaaaaaaa',
       nowIso: () => 't',
       driver: driver(),
       nextApprovalId: () => 'APPR-0001',
@@ -167,6 +169,8 @@ describe('renewal session state-machine edges', () => {
     const session = createRenewalClarifySession({
       sessionId: 's-empty',
       dir: freshDir('lco-t6-e-'),
+      projectName: 'test-project',
+      snapshotId: 'RSN-aaaaaaaaaaaaaaaa',
       nowIso: () => 't',
       driver: { questionsFor: () => ({ questions: [], done: true }), approvalPayload: () => ({ decisions: [{ claim_id: 'STG-0001', kind: 'strategy', selected_option: 'in_place', evidence: { source: 't', answer_text: 'x', hash: sha('x') } }] }) },
       nextApprovalId: () => 'APPR-0001',
@@ -182,6 +186,8 @@ describe('renewal session state-machine edges', () => {
     const session = createRenewalClarifySession({
       sessionId: 's-cap',
       dir: freshDir('lco-t6-c-'),
+      projectName: 'test-project',
+      snapshotId: 'RSN-aaaaaaaaaaaaaaaa',
       nowIso: () => 't',
       driver: { questionsFor: () => ({ questions: [question], done: false }), approvalPayload: () => ({ decisions: [] }) },
       nextApprovalId: () => 'APPR-0001',
@@ -278,13 +284,19 @@ describe('graph-ops edge semantics', () => {
 
 describe('renewal approvals edges', () => {
   it('unsorted multi-decision payloads are canonicalized; ids sequence from a MISSING dir', () => {
-    const payload = {
+    // Trust kernel: v3 builder takes ONE object with REQUIRED scope (S3-C-04).
+    const record = buildRenewalApprovalRecord({
+      approval_id: 'APPR-0001',
+      session_id: 's',
+      round_count: 1,
+      approved_at: 't',
+      project_name: 'test-project',
+      snapshot_id: 'RSN-aaaaaaaaaaaaaaaa',
       decisions: [
         { claim_id: 'PAR-0002', kind: 'parity' as const, selected_option: 'Drop the behavior as unused', evidence: { source: 't', answer_text: 'd', hash: sha('d') } },
         { claim_id: 'PAR-0001', kind: 'parity' as const, selected_option: 'Preserve current behavior', evidence: { source: 't', answer_text: 'p', hash: sha('p') } },
       ],
-    };
-    const record = buildRenewalApprovalRecord(payload, { approvalId: 'APPR-0001', sessionId: 's', roundCount: 1, approvedAt: 't', snapshotId: 'RSN-aaaaaaaaaaaaaaaa' });
+    });
     expect(record.decisions.map((d) => d.claim_id)).toEqual(['PAR-0001', 'PAR-0002']); // sorted canonically
     expect(nextRenewalApprovalId(join(freshDir('lco-t6-nodir-'), 'absent'))).toBe('APPR-0001');
   });
@@ -299,20 +311,34 @@ describe('renewal approvals edges', () => {
 describe('export renderer residuals', () => {
   it('god nodes render with the node-id fallback; parity sections reflect the ledger', async () => {
     const dir = freshDir('lco-t6-exp-');
+    // Trust kernel: the renderer consumes the TYPED active view
+    // (trust/state.loadActiveState) — build a fixture whose project/snapshot
+    // identity actually joins (real target dir + deterministic snapshot).
+    const target = realpathSync(freshDir('lco-t6-target-'));
+    writeFileSync(join(target, 'a.ts'), 'a\n');
     const { renewalPaths } = await import('./project/project');
+    const { loadActiveState } = await import('./trust/state');
+    const { createSnapshot } = await import('./snapshot/snapshot');
+    const snap = createSnapshot({
+      rootRealpath: target, repoKind: 'plain',
+      files: [{ path: 'a.ts', sha256: sha('a\n') }], filesTruncated: false,
+      graph: { graphifyVersion: '0.9.50', nodeCount: 2, edgeCount: 0, graphDigest: sha('g') },
+      graphManifest: { digest: sha('m'), entries: 1 }, nowIso: 't',
+    });
     const paths = renewalPaths(dir);
     mkdirSync(join(dir, '.lco', 'renewal', 'analyses'), { recursive: true });
-    mkdirSync(join(dir, 'approvals'), { recursive: true });
-    writeFileSync(paths.projectJson, JSON.stringify({ schema_version: 1, name: 'exp', target_path: '/t', created_at: 't', snapshot_id: 'RSN-aaaaaaaaaaaaaaaa' }));
-    const parity = { schema_version: 1 as const, snapshot_id: 'RSN-aaaaaaaaaaaaaaaa', records: [
-      { id: 'PAR-0001', behavior: 'kept behavior', ruling: 'preserve', rationale: 'r', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }], snapshot_id: 'RSN-aaaaaaaaaaaaaaaa' },
-      { id: 'PAR-0002', behavior: 'open behavior', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0002' }], snapshot_id: 'RSN-aaaaaaaaaaaaaaaa' },
+    mkdirSync(paths.approvals, { recursive: true });
+    writeFileSync(paths.snapshot, JSON.stringify(snap, null, 2));
+    writeFileSync(paths.projectJson, JSON.stringify({ schema_version: 1, name: 'exp', target_path: target, created_at: 't', snapshot_id: snap.snapshot_id }));
+    const parity = { schema_version: 1 as const, snapshot_id: snap.snapshot_id, records: [
+      { id: 'PAR-0001', behavior: 'kept behavior', ruling: 'preserve', rationale: 'r', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }], snapshot_id: snap.snapshot_id },
+      { id: 'PAR-0002', behavior: 'open behavior', ruling: 'unresolved', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0002' }], snapshot_id: snap.snapshot_id },
     ] };
     writeFileSync(paths.parity, JSON.stringify(parity, null, 2));
     const g = parseGraphText(JSON.stringify({ directed: true, nodes: [{ id: 'bare' }, { id: 'labeled', label: 'L', source_file: 'src/a.ts' }], links: [] }));
     if (!g.ok) throw new Error(g.message);
-    const view = buildArchitectureView(g.graph, [{ path: 'src/a.ts', sha256: sha('a') }], 'RSN-aaaaaaaaaaaaaaaa');
-    const report = renderRenewalReport(loadRenewalState(dir), view);
+    const view = buildArchitectureView(g.graph, [{ path: 'src/a.ts', sha256: sha('a') }], snap.snapshot_id);
+    const report = renderRenewalReport(loadActiveState(dir), view);
     expect(report).toMatch(/bare \(deg/); // label fallback to node id
     expect(report).toMatch(/kept behavior/);
     expect(report).toMatch(/open behavior/); // unresolved entries are visible

@@ -91,13 +91,16 @@ describe('status variants', () => {
     writeFileSync(overlayPath, JSON.stringify(overlay, null, 2));
     const r = await cmdRenewStatus({ dir: project }, caps());
     expect(r.code).toBe(0);
-    expect(r.output).toMatch(/superseded \(bound to RSN-1111/);
+    // Trust kernel (S3-H-09): the typed view renders the store's TYPED state
+    // (cross-snapshot history), never as trusted zeros.
+    expect(r.output).toMatch(/overlay: superseded \(overlay\.json belongs to snapshot RSN-1111/);
   });
 
   it('STALE overlay records and rulings are visible in the human output', async () => {
     const { project } = await initProject('stale-ovl');
     const overlayPath = join(project, '.lco', 'renewal', 'overlay.json');
     const overlay = JSON.parse(readFileSync(overlayPath, 'utf8')) as {
+      snapshot_id: string;
       records: { id: string; status: string }[];
     };
     overlay.records.push({
@@ -113,6 +116,7 @@ describe('status variants', () => {
     writeFileSync(overlayPath, JSON.stringify(overlay, null, 2));
     const parityPath = join(project, '.lco', 'renewal', 'parity.json');
     const parity = JSON.parse(readFileSync(parityPath, 'utf8')) as {
+      snapshot_id: string;
       records: { id: string; ruling: string; rationale?: string }[];
     };
     parity.records.push({
@@ -129,25 +133,27 @@ describe('status variants', () => {
     expect(r.output).toMatch(/1 preserve/);
   });
 
-  it('a project whose snapshot.json is MISSING reports snapshot null and unknown stores honestly', async () => {
+  it('a project whose snapshot.json is MISSING fails closed with the typed refusal (never zeros)', async () => {
     const { project } = await initProject('nosnap');
     rmSync(join(project, '.lco', 'renewal', 'snapshot.json'));
     const r = await cmdRenewStatus({ dir: project }, caps());
-    // Fail-closed: the snapshot problem is a status failure, not "fresh".
-    expect(r.code).toBe(1);
-    expect(r.output).toMatch(/Renewal snapshot problem|snapshot missing/);
+    // Trust kernel (S3-H-09): uncomputable trusted state is a typed refusal —
+    // status exits 2 naming the missing snapshot, never renders zeros.
+    expect(r.code).toBe(2);
+    expect(r.output).toMatch(/snapshot missing/);
+    expect(r.output).toMatch(/lco renew refresh/);
   });
 });
 
 describe('analyze refusal arms', () => {
-  it('a vanished target is the typed identity gate (S2-H-11): code 2, renewal target missing', async () => {
+  it('a vanished target is the typed identity gate (S2-H-11): renewal target missing', async () => {
     const { project, target } = await initProject('gone');
     rmSync(target, { recursive: true, force: true });
     const r = await cmdRenewAnalyze({ dir: project }, caps());
-    // The target-identity join fires BEFORE the walk — a project pointing at
-    // nothing never reaches analysis.
-    expect(r.code).toBe(2);
-    expect(r.output).toMatch(/renewal target missing/);
+    // Trust kernel: a project pointing at nothing never reaches analysis —
+    // the guarded target walk fails closed at entry with the typed refusal.
+    expect(r.code).toBe(1);
+    expect(r.output).toMatch(/renewal walk failed: target repository not found/);
   });
 
   it('a graph that becomes unreadable mid-flow fails closed at analyze', async () => {
@@ -160,7 +166,7 @@ describe('analyze refusal arms', () => {
         if (!g.ok) throw new Error(g.message);
         const p = new StaticGraphProvider(g.graph, '0.9.50');
         const orig = p.graph.bind(p);
-        p.graph = (async () => ({ ok: false as const, code: 'graph_invalid' as const, message: 'sabotaged graph' })) as typeof p.graph;
+        p.graph = (async () => ({ ok: false as const, code: 'graph_invalid' as const, message: 'sabotaged graph' })) as unknown as typeof p.graph;
         void orig;
         return p;
       },
@@ -230,7 +236,12 @@ describe('plan refusal arms', () => {
     writeFileSync(join(project, '.lco', 'renewal', 'overlay.json'), '{corrupt');
     const r = await cmdRenewPlan({ dir: project, strategy: 'strangler', strategyRationale: 'x' }, caps());
     expect(r.code).toBe(1);
-    expect(r.output).toMatch(/overlay store corrupt/);
+    // Trust kernel: plan reads the TYPED active view — the refusal carries
+    // the typed store code, never silent zeros.
+    expect(r.output).toMatch(/overlay store problem \(store_corrupt\)/);
+    // S3-H-03: a refused plan writes NO strategy.json (the flag selection is
+    // written only inside a successful commit).
+    expect(existsSync(join(project, '.lco', 'renewal', 'strategy.json'))).toBe(false);
   });
 
   it('a foreign-snapshot overlay refuses at plan entry', async () => {
@@ -241,7 +252,9 @@ describe('plan refusal arms', () => {
     writeFileSync(overlayPath, JSON.stringify(overlay, null, 2));
     const r = await cmdRenewPlan({ dir: project, strategy: 'strangler', strategyRationale: 'x' }, caps());
     expect(r.code).toBe(1);
-    expect(r.output).toMatch(/overlay store is bound to snapshot RSN-2222/);
+    expect(r.output).toMatch(/overlay store problem \(store_cross_snapshot\)/);
+    expect(r.output).toMatch(/RSN-2222/);
+    expect(existsSync(join(project, '.lco', 'renewal', 'strategy.json'))).toBe(false);
   });
 
   it('a corrupt parity ledger refuses at plan entry', async () => {
@@ -256,7 +269,9 @@ describe('plan refusal arms', () => {
     const { project } = await initProject('plannosnap');
     rmSync(join(project, '.lco', 'renewal', 'snapshot.json'));
     const r = await cmdRenewPlan({ dir: project }, caps());
-    expect(r.code).toBe(1);
+    // Trust kernel: the typed identity failure is a refusal (exit 2) from the
+    // loadActiveState read view.
+    expect(r.code).toBe(2);
     expect(r.output).toMatch(/snapshot missing/);
   });
 
@@ -267,7 +282,7 @@ describe('plan refusal arms', () => {
         const g = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
         if (!g.ok) throw new Error(g.message);
         const p = new StaticGraphProvider(g.graph, '0.9.50');
-        p.graph = (async () => ({ ok: false as const, code: 'graph_invalid' as const, message: 'gone' })) as typeof p.graph;
+        p.graph = (async () => ({ ok: false as const, code: 'graph_invalid' as const, message: 'gone' })) as unknown as typeof p.graph;
         return p;
       },
     });
@@ -327,7 +342,7 @@ describe('export arms', () => {
         const g = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
         if (!g.ok) throw new Error(g.message);
         const p = new StaticGraphProvider(g.graph, '0.9.50');
-        p.graph = (async () => ({ ok: false as const, code: 'graph_missing' as const, message: 'no graph' })) as typeof p.graph;
+        p.graph = (async () => ({ ok: false as const, code: 'graph_missing' as const, message: 'no graph' })) as unknown as typeof p.graph;
         return p;
       },
     });

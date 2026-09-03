@@ -60,7 +60,8 @@ describe('modernization strategy decision', () => {
       nowIso: '2026-09-02T00:00:00Z',
       approvalId: 'APPR-0002',
     });
-    expect(persistStrategy(path, d)).toMatchObject({ ok: true });
+    // Trust kernel: authorized write — the temp dir is the project root.
+    expect(persistStrategy(dir, path, d)).toMatchObject({ ok: true });
     const loaded = loadStrategy(path);
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.decision).toEqual(d);

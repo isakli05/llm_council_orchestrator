@@ -367,13 +367,13 @@ describe('authorizeExecution', () => {
     if (!auth.ok) {
       expect(auth.output).toContain('digest mismatch');
       expect(auth.output).toContain(carried);
-      expect(auth.output).toContain(checkPreviewDigest(bundle));
+      expect(auth.output).toContain(checkPreviewDigest(bundle, undefined, root));
     }
   });
 
   it('frozen+verified+matching digest -> ok, echoing the expected digest', async () => {
     const { root, bundle } = await frozenLoadedBundle(inlineConforming());
-    const digest = checkPreviewDigest(bundle);
+    const digest = checkPreviewDigest(bundle, undefined, root);
 
     const auth = authorizeExecution(bundle, root, undefined, digest);
     expect(auth).toEqual({ ok: true, digest });
@@ -390,7 +390,7 @@ describe('authorizeExecution', () => {
 
   it('execRoot pin: dirs outside the pinned workspace are refused; inside passes', async () => {
     const { root, bundle } = await frozenLoadedBundle(inlineConforming());
-    const digest = checkPreviewDigest(bundle);
+    const digest = checkPreviewDigest(bundle, undefined, root);
 
     // A REAL outside dir (not just a nonexistent path): a second tmp tree the
     // pin does not cover. Realpath containment must refuse it.
@@ -412,7 +412,7 @@ describe('authorizeExecution', () => {
 
   it('execRoot pin is REALPATH containment: a dir under the pin via an escaping symlink is refused (SEC-003)', async () => {
     const { root, bundle } = await frozenLoadedBundle(inlineConforming());
-    const digest = checkPreviewDigest(bundle);
+    const digest = checkPreviewDigest(bundle, undefined, root);
     const pin = mkdtempSync(join(tmpdir(), 'spec-core-consent-pin-'));
     tmpDirs.push(pin);
     const movedRoot = join(pin, 'work');
@@ -430,8 +430,10 @@ describe('authorizeExecution', () => {
       expect(escaped.output).toContain('symlink'); // the refusal names the mechanism
     }
 
-    // And the honest inside case still passes.
-    const inside = authorizeExecution(bundle, movedRoot, undefined, digest, pin);
+    // And the honest inside case still passes (S3-H-10: the digest binds the
+    // EFFECTUAL execution directory, so it is recomputed for movedRoot).
+    const movedDigest = checkPreviewDigest(bundle, undefined, movedRoot);
+    const inside = authorizeExecution(bundle, movedRoot, undefined, movedDigest, pin);
     expect(inside.ok).toBe(true);
   });
 });
