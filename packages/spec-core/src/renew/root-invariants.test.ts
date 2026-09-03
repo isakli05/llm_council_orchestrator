@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -53,14 +54,15 @@ import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 import { runRecovery, MAX_RECOVERY_PROMPT_BYTES } from './recovery/pipeline';
 import { createBudgetLedger, BudgetExceededError } from '../eval/budget';
 import { buildRenewalApprovalRecord, loadRenewalApproval } from './clarify/approvals';
-import { authorizeRenewalState, loadRenewalState, readStateRevision, renewalPaths } from './project/project';
-import { loadParity, emptyParity, addParityEntry, applyApprovalToParity, parityGate, persistParity, setRuling, type ParityStore } from './parity/ledger';
+import { authorizeRenewalState, renewalPaths } from './project/project';
+import { loadActiveState } from './trust/state';
+import { emptyParity,
+  parseParityStore, addParityEntry, applyApprovalToParity, parityGate, persistParity, setRuling, type ParityStore } from './parity/ledger';
 import { verifyAnchor } from './anchors/verifier';
 import { distillRenewalQuestions } from './clarify/distiller';
 import { buildRecoveryPrompt } from './recovery/prompts';
 import { assignContextRecords } from './trust/evidence';
 import type { ContextBundle } from './context/bundle';
-
 const tmpDirs: string[] = [];
 function freshDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -71,10 +73,14 @@ afterEach(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
   tmpDirs.length = 0;
 });
-
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
 
+/** Test-local raw fixture reader (production reads route through the kernel). */
+const loadParityFile = (path: string) =>
+  existsSync(path)
+    ? parseParityStore(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'parity_missing' as const, message: `no parity ledger at ${path}` });
 /** Byte/mode/symlink inventory of a tree — the target-immutability oracle. */
 function treeHash(root: string): string {
   const h = createHash('sha256');
@@ -93,7 +99,6 @@ function treeHash(root: string): string {
   walk(root, '');
   return h.digest('hex');
 }
-
 function makeTarget(): string {
   const target = freshDir('lco-ri-target-');
   cpSync(join(FIXTURE_SRC, 'src'), join(target, 'src'), { recursive: true });
@@ -101,7 +106,6 @@ function makeTarget(): string {
   chmodSync(join(target, 'src', 'inventory.ts'), 0o444);
   return target;
 }
-
 function graphCaps(llm?: LlmAdapter): RenewCapabilities {
   const graphParsed = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
   if (!graphParsed.ok) throw new Error(graphParsed.message);
@@ -115,7 +119,6 @@ function graphCaps(llm?: LlmAdapter): RenewCapabilities {
       : {}),
   };
 }
-
 /**
  * S3-H-01 (trust kernel): resolve the citable context id + supplied window
  * for a path from the prompt's CITABLE CONTEXTS table; the model cites the
@@ -126,14 +129,12 @@ function ctxWindow(prompt: string, path: string): { id: string; start: number; e
   if (m === null) throw new Error(`no citable context for ${path} in the recovery prompt`);
   return { id: m[1]!, start: Number(m[2]), end: Number(m[3]) };
 }
-
 /** A citation narrowed to the advertised window's interior (never its boundary). */
 const interiorCitation = (w: { id: string; start: number; end: number }) => ({
   context_id: w.id,
   start_line: w.start,
   end_line: w.end - 1,
 });
-
 /** The fixture's canonical grounded response (2 hypotheses + 1 uncertainty),
  * citing the server-assigned context ids from the recovery prompt. */
 function groundedResponse(prompt: string): { text: string } {
@@ -185,7 +186,6 @@ function groundedResponse(prompt: string): { text: string } {
     }),
   };
 }
-
 async function initProject(target: string, llm?: LlmAdapter): Promise<{ project: string; caps: RenewCapabilities }> {
   const project = freshDir('lco-ri-project-');
   const caps = graphCaps(llm);
@@ -193,11 +193,9 @@ async function initProject(target: string, llm?: LlmAdapter): Promise<{ project:
   expect(r.code).toBe(0);
   return { project, caps };
 }
-
 // -------------------------------------------------------------------------------------
 // INV-A — filesystem trust domain (S2-C-01)
 // -------------------------------------------------------------------------------------
-
 describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
   it('THE REPRO: pre-existing .lco/renewal symlink into the target — init refuses, target inventory identical', async () => {
     const target = makeTarget();
@@ -209,7 +207,6 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
     // → a subdirectory of the read-only target.
     mkdirSync(join(project, '.lco'));
     symlinkSync(join(target, 'stolen-state'), join(project, '.lco', 'renewal'));
-
     const r = await cmdRenewInit({ dir: project, target }, graphCaps());
     expect(r.code).toBe(2);
     expect(r.output).toMatch(/symlink|outside the resolved project root/);
@@ -217,7 +214,6 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
     // (bytes, modes, symlinks, directory entries).
     expect(treeHash(target)).toBe(before);
   });
-
   it('.lco itself symlinked — init refuses, target identical', async () => {
     const target = makeTarget();
     const before = treeHash(target);
@@ -228,7 +224,6 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
     expect(r.output).toMatch(/symlink|outside the resolved project root/);
     expect(treeHash(target)).toBe(before);
   });
-
   it('neighbor variants: analyses / approvals / workspace / spec / store-file symlinks all refuse (authorizeRenewalState matrix)', async () => {
     const target = makeTarget();
     const { project } = await initProject(target);
@@ -277,7 +272,6 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
       expect(verdict.message).toMatch(/symlink|outside/);
     }
   });
-
   it('S3-C-02 (trust kernel): a LEGACY fixed-name parity.json.tmp symlink is INERT — staging is unpredictable and the link is never opened', async () => {
     const target = makeTarget();
     const { project } = await initProject(target);
@@ -290,7 +284,7 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
     const lure = join(target, 'lure');
     mkdirSync(lure);
     symlinkSync(join(lure, 'parity.json.tmp'), `${paths.parity}.tmp`);
-    const store = loadParity(paths.parity);
+    const store = loadParityFile(paths.parity);
     expect(store.ok).toBe(true);
     if (!store.ok) return;
     addParityEntry(store.store, { behavior: 'b', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }] });
@@ -298,22 +292,19 @@ describe('INV-A filesystem trust domain (S2-C-01 + matrix)', () => {
     // The trusted write landed; the lure never received bytes through the link.
     expect(readdirSync(lure)).toEqual([]);
     expect(lstatSync(`${paths.parity}.tmp`).isSymbolicLink()).toBe(true); // link untouched
-    const reloaded = loadParity(paths.parity);
+    const reloaded = loadParityFile(paths.parity);
     expect(reloaded.ok).toBe(true);
     if (reloaded.ok) expect(reloaded.store.records).toHaveLength(1);
   });
-
   it('clean project authorizes; a destination outside the project root refuses', () => {
     const project = freshDir('lco-ri-clean-');
     expect(authorizeRenewalState(project).ok).toBe(true); // nothing exists — nothing pre-planted
     expect(authorizeRenewalState('/nonexistent-root-xyz').ok).toBe(true);
   });
 });
-
 // -------------------------------------------------------------------------------------
 // INV-B — identity join, export/status truth, concurrency
 // -------------------------------------------------------------------------------------
-
 describe('INV-B project/snapshot identity + active state', () => {
   it('S2-H-11: target pointer moved to an identical clone — status REFUSES (identity mismatch), never "fresh under the old snapshot"', async () => {
     const target = makeTarget();
@@ -329,7 +320,6 @@ describe('INV-B project/snapshot identity + active state', () => {
     expect(status.output).toMatch(/target identity mismatch/);
     expect(status.output).not.toMatch(/"snapshot_state":\s*"fresh"/);
   });
-
   it('S2-H-10: export renders ACTIVE snapshot only; cross-snapshot analyses are explicitly labeled history', async () => {
     const target = makeTarget();
     const llm: LlmAdapter = { complete: async (prompt) => groundedResponse(prompt) as LlmResponse };
@@ -338,11 +328,11 @@ describe('INV-B project/snapshot identity + active state', () => {
     // Force a NEW snapshot: mutate the target, refresh (supersedes state).
     writeFileSync(join(target, 'drift-marker.txt'), 'drift\n');
     expect((await cmdRenewRefresh({ dir: project }, caps)).code).toBe(0);
-    const state = loadRenewalState(project);
-    const activeId = state.snapshot?.snapshot_id;
-    expect(state.analyses.records.length).toBeGreaterThan(0);
-    expect(state.analyses.records.every((a) => a.snapshot_id !== activeId)).toBe(true); // all history now
-
+    const state = loadActiveState(project);
+    const activeId = state.snapshot.snapshot_id;
+    expect(state.analyses.active.length + state.analyses.historical.length).toBeGreaterThan(0);
+    expect(state.analyses.active).toHaveLength(0); // nothing current after the refresh
+    expect([...state.analyses.active, ...state.analyses.historical].every((a) => a.snapshot_id !== activeId)).toBe(true); // all history now
     const exported = await cmdRenewExport({ dir: project }, caps);
     expect(exported.code).toBe(0);
     expect(exported.output).toContain('Historical analyses (prior snapshots');
@@ -352,7 +342,6 @@ describe('INV-B project/snapshot identity + active state', () => {
     const currentSection = exported.output.split('## Historical analyses')[0];
     expect(currentSection).not.toContain('small-order fee');
   });
-
   it('S2-M-05: status open_questions counts only ACTIVE unresolved work (approved rulings subtract)', async () => {
     const target = makeTarget();
     const llm: LlmAdapter = { complete: async (prompt) => groundedResponse(prompt) as LlmResponse };
@@ -360,7 +349,6 @@ describe('INV-B project/snapshot identity + active state', () => {
     expect((await cmdRenewAnalyze({ dir: project }, caps)).code).toBe(0);
     const s1 = await cmdRenewStatus({ dir: project, json: true }, caps);
     expect(JSON.parse(s1.output).open_questions).toBe(1); // UNC-0001 open
-
     // Review: answer every asked question; the canonical 'preserve' on
     // PAR-0001 rules its parity entry (the uncertainty's linked entry).
     const answers = join(project, 'answers.json');
@@ -378,13 +366,11 @@ describe('INV-B project/snapshot identity + active state', () => {
     );
     const review = await cmdRenewReview({ dir: project, answersPath: answers }, caps);
     expect(review.code).toBe(0);
-
     const s2 = await cmdRenewStatus({ dir: project, json: true }, caps);
     const parsed = JSON.parse(s2.output);
     expect(parsed.parity.preserve).toBeGreaterThan(0);
     expect(parsed.open_questions).toBe(0); // the uncertainty is resolved current state
   });
-
   it('S2-M-01 (THE CONCURRENCY REPRO): a human preserve ruling made while analyze waits SURVIVES the analyze fold', async () => {
     const target = makeTarget();
     let projectRef: string | undefined;
@@ -396,7 +382,7 @@ describe('INV-B project/snapshot identity + active state', () => {
           // it, a concurrent legitimate review rules PAR-0001 preserve — the
           // exact audited interleaving (review completes while analyze waits).
           const paths = renewalPaths(projectRef);
-          const par = loadParity(paths.parity);
+          const par = loadParityFile(paths.parity);
           if (par.ok) {
             setRuling(par.store, 'PAR-0001', { ruling: 'preserve', rationale: 'concurrent human review' });
             // Trust kernel: authorized write — (projectDir, path, store).
@@ -415,7 +401,7 @@ describe('INV-B project/snapshot identity + active state', () => {
     mutateMidCall = true;
     const r = await cmdRenewAnalyze({ dir: project }, caps);
     expect(r.code).toBe(0);
-    const par = loadParity(renewalPaths(project).parity);
+    const par = loadParityFile(renewalPaths(project).parity);
     expect(par.ok).toBe(true);
     const entry = (par as { ok: true; store: ParityStore }).store.records.find((x) => x.id === 'PAR-0001');
     expect(entry?.ruling).toBe('preserve'); // NOT reverted to unresolved
@@ -425,13 +411,12 @@ describe('INV-B project/snapshot identity + active state', () => {
     const behaviors = (par as { ok: true; store: ParityStore }).store.records.map((x) => x.behavior);
     expect(new Set(behaviors).size).toBe(behaviors.length);
   });
-
   it('state revision exists and is positive after trusted writes', async () => {
     const target = makeTarget();
     const { project } = await initProject(target);
-    expect(readStateRevision(project)).toBeGreaterThan(0);
+    // Trust kernel: the revision is part of the typed identity view.
+    expect(loadActiveState(project).identity.revision).toBeGreaterThan(0);
   });
-
   it('concurrency policy: a second concurrent trusted-store writer is explicitly lock-refused, never merged', async () => {
     const target = makeTarget();
     const llm: LlmAdapter = { complete: async (prompt) => groundedResponse(prompt) as LlmResponse };
@@ -461,7 +446,6 @@ describe('INV-B project/snapshot identity + active state', () => {
       lock.release();
     }
   });
-
   it('concurrency policy: a store superseded (refreshed) mid-analysis refuses the fold — no cross-snapshot corruption', async () => {
     const target = makeTarget();
     let projectRef: string | undefined;
@@ -473,7 +457,7 @@ describe('INV-B project/snapshot identity + active state', () => {
           // (simulating a refresh during the paid call) — the fold must refuse
           // rather than write cross-snapshot state.
           const paths = renewalPaths(projectRef);
-          const par = loadParity(paths.parity);
+          const par = loadParityFile(paths.parity);
           if (par.ok) {
             par.store.snapshot_id = 'RSN-deadbeefdeadbeef';
             // Trust kernel: authorized write — (projectDir, path, store).
@@ -494,11 +478,9 @@ describe('INV-B project/snapshot identity + active state', () => {
     expect(r.output).toMatch(/stores changed during the analysis|promotion refused/);
   });
 });
-
 // -------------------------------------------------------------------------------------
 // INV-C — provenance is not semantic support (S2-C-02)
 // -------------------------------------------------------------------------------------
-
 describe('INV-C evidence provenance vs semantic support (S2-C-02)', () => {
   it('THE REPRO: banking claim anchored to a supplied-but-irrelevant UI file — provenance verifies, support stays UNVALIDATED, wording never claims support', async () => {
     const target = makeTarget();
@@ -509,9 +491,8 @@ describe('INV-C evidence provenance vs semantic support (S2-C-02)', () => {
     // The output must never say the claims are "verified" support.
     expect(r.output).toMatch(/provenance-verified/);
     expect(r.output).toMatch(/NOT machine-validated/);
-
-    const state = loadRenewalState(project);
-    const an = state.analyses.records.find((a) => a.analysis_id === 'AN-0001');
+    const state = loadActiveState(project);
+    const an = state.analyses.active.find((a) => a.analysis_id === 'AN-0001');
     expect(an?.outcome).toBe('validated');
     const banking = an?.promoted.hypotheses.find((h) => h.id === 'BHV-0003');
     expect(banking).toBeDefined();
@@ -527,7 +508,6 @@ describe('INV-C evidence provenance vs semantic support (S2-C-02)', () => {
     // Every promoted hypothesis in V1 is unvalidated until a human rules it.
     for (const h of an?.promoted.hypotheses ?? []) expect(h.support_status).toBe('unvalidated');
   });
-
   it('neighbor variants: wrong bytes / wrong path still reject at the anchor gate (range/node at the pipeline gate)', async () => {
     const target = makeTarget();
     const orders = readFileSync(join(target, 'src', 'orders.ts'), 'utf8');
@@ -539,11 +519,9 @@ describe('INV-C evidence provenance vs semantic support (S2-C-02)', () => {
     expect(verifyAnchor({ path: 'src/nope.ts', content_hash: sha(orders) }, target).ok).toBe(false);
   });
 });
-
 // -------------------------------------------------------------------------------------
 // INV-D — authority digest + canonical destructive rulings + semantic uniqueness
 // -------------------------------------------------------------------------------------
-
 describe('INV-D authority/approval/destructive integrity', () => {
   const baseDecision = {
     claim_id: 'PAR-0001',
@@ -551,7 +529,6 @@ describe('INV-D authority/approval/destructive integrity', () => {
     selected_option: 'drop',
     evidence: { source: 'test', answer_text: 'drop', hash: sha('drop') },
   };
-
   function build(overrides: Partial<Parameters<typeof buildRenewalApprovalRecord>[0]> = {}) {
     // Trust kernel: v3 builder takes ONE object with REQUIRED project/snapshot
     // scope (S3-C-04) — an unscoped grant is unrepresentable.
@@ -566,7 +543,6 @@ describe('INV-D authority/approval/destructive integrity', () => {
       ...overrides,
     });
   }
-
   it('S2-C-04 (THE REPRO): changing snapshot_id fails the digest — a retargeted approval cannot authorize DROP', () => {
     const dir = freshDir('lco-ri-appr-');
     const record = build();
@@ -580,7 +556,6 @@ describe('INV-D authority/approval/destructive integrity', () => {
     expect(loaded.ok).toBe(false);
     if (!loaded.ok) expect(loaded.code).toBe('digest_mismatch');
   });
-
   it('authority mutation matrix: approval_id / session / round / project / claim / option each break the digest', () => {
     const record = build();
     const tamper = (mutate: (r: Record<string, unknown>) => void): boolean => {
@@ -600,7 +575,6 @@ describe('INV-D authority/approval/destructive integrity', () => {
     expect(tamper((r) => { (r.decisions as Array<Record<string, unknown>>)[0]!.claim_id = 'PAR-0002'; })).toBe(true);
     expect(tamper((r) => { (r.decisions as Array<Record<string, unknown>>)[0]!.selected_option = 'preserve'; })).toBe(true);
   });
-
   it('S2-C-05 (THE REPRO): negated free text NEVER authorizes DROP; only the canonical option id does', () => {
     const store = emptyParity('RSN-0123456789abcdef');
     addParityEntry(store, { behavior: 'wire transfers require dual approval', evidence: [{ kind: 'code_anchor', anchor: { path: 'src/orders.ts', content_hash: sha('x') } }] });
@@ -638,7 +612,6 @@ describe('INV-D authority/approval/destructive integrity', () => {
     });
     expect(s3.records[0]!.ruling).toBe('drop');
   });
-
   it('parityGate: a DROP entry whose approval carries negated text is BLOCKED (no text-parsing authorization)', () => {
     const target = makeTarget();
     const labels = readFileSync(join(target, 'src', 'inventory.ts'), 'utf8');
@@ -656,7 +629,6 @@ describe('INV-D authority/approval/destructive integrity', () => {
     expect(gate.ok).toBe(false);
     if (!gate.ok) expect(gate.blockers[0]?.reason).toMatch(/does not authorize/);
   });
-
   it('S2-M-02: semantically duplicate parity records (same behavior, distinct ids) are corrupt at load', () => {
     const dir = freshDir('lco-ri-dup-');
     const one = emptyParity('RSN-0123456789abcdef');
@@ -664,16 +636,14 @@ describe('INV-D authority/approval/destructive integrity', () => {
     const two = JSON.parse(JSON.stringify(one));
     two.records.push({ ...two.records[0]!, id: 'PAR-0002' });
     writeFileSync(join(dir, 'parity.json'), JSON.stringify(two));
-    const loaded = loadParity(join(dir, 'parity.json'));
+    const loaded = loadParityFile(join(dir, 'parity.json'));
     expect(loaded.ok).toBe(false);
     if (!loaded.ok) expect(loaded.message).toMatch(/semantically duplicate/);
   });
 });
-
 // -------------------------------------------------------------------------------------
 // INV-E/F — paid-boundary budget + accounting + consent binding
 // -------------------------------------------------------------------------------------
-
 describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
   /**
    * The paid-boundary arms supply a bundle with ONLY the orders slice — the
@@ -696,7 +666,6 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
       coverage_notes: [],
     }),
   });
-
   /** S3-H-01: server-assigned context records for a hand-built bundle. */
   const recordsFor = (bundle: ContextBundle) =>
     assignContextRecords(
@@ -777,7 +746,6 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     if (!outcome.ok) expect(outcome.code).toBe('blocked_prompt_budget');
     expect(outcome.record.usage.prompt_bytes ?? 0).toBeGreaterThan(MAX_RECOVERY_PROMPT_BYTES);
   });
-
   it('S2-H-01/S3-H-06 (single-charge): self-reported attempts are not re-charged; a spent envelope refuses with NOTHING written', async () => {
     const target = makeTarget();
     const bundle: ContextBundle = {
@@ -787,7 +755,6 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
       total_chars: 100,
       warnings: [],
     };
-
     // Arm 1 — the trust-kernel SINGLE-CHARGE contract (S3-H-06): a response
     // that self-reports attempts already charged them at the transport;
     // completion accounting must NOT re-charge. (The old contract re-charged
@@ -820,7 +787,6 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     expect(outcome.ok).toBe(true);
     expect(persistedReports).toBe(1);
     if (outcome.ok) expect(outcome.record.usage.attempts).toBe(2);
-
     // Arm 2 — the envelope still refuses: once the transport has SPENT the
     // attempt cap, the next completion is inadmissible BEFORE any call — a
     // budget refusal is never laundered into a trusted result.
@@ -858,7 +824,6 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     expect(calls).toBe(0); // zero paid calls
     expect(persistedSpent).toBe(0); // nothing promoted
   });
-
   it('S2-H-01 (accounting): usage is read from the REAL response shape (provenance/usageDetails/latencyMs)', async () => {
     const target = makeTarget();
     const ordersHash = sha(readFileSync(join(target, 'src', 'orders.ts')));
@@ -918,7 +883,6 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     expect(seen?.usage.cache_write_tokens).toBe(13);
     expect(seen?.usage.latency_ms).toBe(4321);
   });
-
   it('S2-H-02 (consent): the effectual digest differs across resolved model / profile fingerprint / prompt protocol / budget', async () => {
     const { renewConsentDigest, RENEW_CONSENT_PROTOCOL } = await import('../mcp/consent');
     const { RECOVERY_PROMPT_PROTOCOL } = await import('./recovery/prompts');
@@ -940,12 +904,10 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     expect(RENEW_CONSENT_PROTOCOL).toBe('lco-renew/consent-v2');
   });
 });
-
 // -------------------------------------------------------------------------------------
 // INDEPENDENT-VERIFIER FINDINGS — regression tests (each kills a finding or an
 // unkilled mutation from the read-only verifier pass)
 // -------------------------------------------------------------------------------------
-
 describe('verifier findings regression (INV-A/C/D/E)', () => {
   it('V1-F1: a symlink planted at the store destination DURING the paid call refuses the fold — target untouched', async () => {
     const target = makeTarget();
@@ -982,7 +944,6 @@ describe('verifier findings regression (INV-A/C/D/E)', () => {
     expect(readdirSync(join(target, 'lure'))).toEqual([]); // the lure received nothing
     expect(lstatSync(renewalPaths(project).parity).isSymbolicLink()).toBe(true); // never replaced/followed
   });
-
   it('V1-F3: a legitimately SYMLINKED project root still works (containment resolves, not lexical)', async () => {
     const target = makeTarget();
     const { project, caps } = await initProject(target);
@@ -992,7 +953,6 @@ describe('verifier findings regression (INV-A/C/D/E)', () => {
     expect(status.code).toBe(0);
     expect(status.output).toMatch(/"snapshot_state": "fresh"/);
   });
-
   it('V2-F1: a PAR→PAR link never transfers authority and never suppresses the question', () => {
     const target = makeTarget();
     const labels = readFileSync(join(target, 'src', 'inventory.ts'), 'utf8');
@@ -1025,7 +985,6 @@ describe('verifier findings regression (INV-A/C/D/E)', () => {
     const gate = parityGate(store, target, { loadApproval: () => approval, activeSnapshot: 'RSN-0123456789abcdef' });
     expect(gate.ok).toBe(false);
   });
-
   it('V2-F2 (kills mutation M3): a headless human ruling survives an approval fold that carries a decision for it', () => {
     const store = emptyParity('RSN-0123456789abcdef');
     addParityEntry(store, { behavior: 'b', evidence: [{ kind: 'code_anchor', anchor: { path: 'src/orders.ts', content_hash: sha('x') } }] });
@@ -1046,7 +1005,6 @@ describe('verifier findings regression (INV-A/C/D/E)', () => {
     expect(rec.rationale).toBe('headless human act');
     expect(rec.approval_id).toBeUndefined();
   });
-
   it('V3-F1: a hostile FILENAME (newline / U+2028) cannot forge marker lines through the anchor table', () => {
     const prompt = buildRecoveryPrompt({
       scope: { type: 'whole' },

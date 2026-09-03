@@ -4,36 +4,39 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildArchitectureView } from './archview/architecture-view';
 import { parseGraphText } from './intel/graph-reader';
 import { renderRenewalReport } from './project/export';
-import { loadRenewalState, supersedeRenewalStores, renewalPaths } from './project/project';
+import { supersedeRenewalStores, renewalPaths } from './project/project';
 import { loadActiveState } from './trust/state';
 import { buildGuardedCopy } from './ingest/workspace-copy';
-import { loadStrategy, persistStrategy, buildStrategyDecision } from './planner/strategy';
+import { persistStrategy, buildStrategyDecision, parseStrategyDecision } from './planner/strategy';
 import { loadAnalysisRecords, persistAnalysisRecord } from './recovery/analysis-store';
 import type { AnalysisRecord } from './recovery/schemas';
 import { buildModernizationPlan } from './planner/plan';
 import { createSnapshot } from './snapshot/snapshot';
 import { emptyOverlay } from './overlay/overlay';
 import { emptyParity, parityFromAnalyses, setRuling } from './parity/ledger';
-
-
 const tmpDirs: string[] = [];
 function freshDir(p: string): string {
   const dir = mkdtempSync(join(tmpdir(), p));
   tmpDirs.push(dir);
   return dir;
 }
+
+/** Test-local raw fixture reader (production reads route through the kernel). */
+const loadStrategyFile = (path: string) =>
+  existsSync(path)
+    ? parseStrategyDecision(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'strategy_missing' as const, message: `no strategy at ${path}` });
 afterEach(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
   tmpDirs.length = 0;
 });
 const sha = (s: string | Buffer) => `sha256:${createHash('sha256').update(s).digest('hex')}`;
-
 const graphOf = (extra: Record<string, unknown> = {}) =>
   parseGraphText(
     JSON.stringify({
@@ -53,7 +56,6 @@ const graphOf = (extra: Record<string, unknown> = {}) =>
       ],
     }),
   );
-
 describe('architecture view variants', () => {
   it('communities, cross-community edges, language coverage, and generated/vendor warnings', () => {
     const g = graphOf();
@@ -70,7 +72,6 @@ describe('architecture view variants', () => {
     const view2 = buildArchitectureView(g.graph, [...manifest, { path: 'legacy/x.cbl', sha256: sha('cbl') }], 'RSN-aaaaaaaaaaaaaaaa');
     expect(view2.coverage.unsupported_files).toContain('legacy/x.cbl');
   });
-
   it('is deterministic for identical inputs', () => {
     const g = graphOf();
     if (!g.ok) throw new Error(g.message);
@@ -80,7 +81,6 @@ describe('architecture view variants', () => {
     expect(JSON.stringify(v1)).toBe(JSON.stringify(v2));
   });
 });
-
 describe('export renderer states', () => {
   it('renders analyses/overlay/parity/strategy sections from a rich state', () => {
     const dir = freshDir('lco-rep-');
@@ -142,7 +142,6 @@ describe('export renderer states', () => {
     expect(bare.length).toBeGreaterThan(50);
   });
 });
-
 describe('ingest caps and exclusions', () => {
   it('oversize files are excluded from the manifest but counted', () => {
     const target = freshDir('lco-ing-');
@@ -154,7 +153,6 @@ describe('ingest caps and exclusions', () => {
     expect(r.manifest.map((f) => f.path)).toEqual(['small.ts']);
     expect(r.excluded.oversize).toContain('big.ts');
   });
-
   it('the corpus file cap blocks with sizing guidance', () => {
     const target = freshDir('lco-ing2-');
     for (let i = 0; i < 5; i++) writeFileSync(join(target, `f${i}.ts`), 'x\n');
@@ -164,18 +162,18 @@ describe('ingest caps and exclusions', () => {
     expect(r.code).toBe('corpus_too_large');
     expect(r.message).toMatch(/Narrow the target/);
   });
-
   it('symlinks are excluded (never followed) and non-files skipped', () => {
     const target = freshDir('lco-ing3-');
     writeFileSync(join(target, 'real.ts'), 'x\n');
     symlinkSync('real.ts', join(target, 'alias.ts'));
-    const r = buildGuardedCopy(target, freshDir('lco-ing3-copy-'), { copy: true, limits: { maxFiles: 100, maxFileBytes: 1024 * 1024, maxTotalBytes: 1024 * 1024 } });
+    // Trust kernel: copy mode REQUIRES projectDir (trusted writes only).
+    const dest = freshDir('lco-ing3-copy-');
+    const r = buildGuardedCopy(target, dest, { copy: true, projectDir: dest, limits: { maxFiles: 100, maxFileBytes: 1024 * 1024, maxTotalBytes: 1024 * 1024 } });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.excluded.symlink).toContain('alias.ts');
     expect(r.manifest.map((f) => f.path)).toEqual(['real.ts']);
   });
-
   it('a missing target fails closed', () => {
     const r = buildGuardedCopy('/nonexistent/target', freshDir('lco-ing4-'), { copy: false });
     expect(r.ok).toBe(false);
@@ -183,7 +181,6 @@ describe('ingest caps and exclusions', () => {
     expect(r.code).toBe('target_missing');
   });
 });
-
 describe('project state binding errors', () => {
   it('supersession archives only EXISTING stores and refuses a same-snapshot re-archive (S3-M-05)', () => {
     const dir = freshDir('lco-sup-');
@@ -204,7 +201,6 @@ describe('project state binding errors', () => {
     expect(() => supersedeRenewalStores(dir, paths, 'RSN-old')).toThrow(/already exists|archive_collision/);
     expect(existsSync(`${paths.overlay}.RSN-old.superseded`)).toBe(true); // prior archive intact
   });
-
   it('S3-H-04: a surviving spec/ directory is archived WITH the stores on refresh', () => {
     const dir = freshDir('lco-sup-spec-');
     const paths = renewalPaths(dir);
@@ -217,52 +213,61 @@ describe('project state binding errors', () => {
     expect(existsSync(`${paths.specDir}.RSN-old.superseded`)).toBe(true);
     expect(existsSync(paths.specDir)).toBe(false); // no stale pre-refresh spec survives
   });
-
-  it('loadRenewalState surfaces corrupt stores as errors without throwing', () => {
+  it('loadActiveState types store failures as VALUES; identity failures throw', () => {
     const dir = freshDir('lco-state-');
+    // A joined identity (real target + snapshot) so the run reaches the store
+    // layer — the typed active view is the ONLY trusted reader now.
+    const target = realpathSync(freshDir('lco-state-target-'));
+    writeFileSync(join(target, 'a.ts'), 'a\n');
+    const snap = createSnapshot({
+      rootRealpath: target, repoKind: 'plain',
+      files: [{ path: 'a.ts', sha256: sha('a\n') }], filesTruncated: false,
+      graph: { graphifyVersion: '0.9.50', nodeCount: 1, edgeCount: 0, graphDigest: sha('g') },
+      graphManifest: { digest: sha('m'), entries: 1 }, nowIso: 't',
+    });
     const paths = renewalPaths(dir);
     mkdirSync(join(dir, '.lco', 'renewal', 'analyses'), { recursive: true });
-    mkdirSync(join(dir, 'approvals'), { recursive: true });
+    mkdirSync(paths.approvals, { recursive: true });
+    writeFileSync(paths.snapshot, JSON.stringify(snap, null, 2));
     writeFileSync(
       paths.projectJson,
-      JSON.stringify({ schema_version: 1, name: 's', target_path: '/t', created_at: 't', snapshot_id: 'RSN-aaaaaaaaaaaaaaaa' }),
+      JSON.stringify({ schema_version: 1, name: 's', target_path: target, created_at: 't', snapshot_id: snap.snapshot_id }),
     );
     writeFileSync(paths.overlay, '{corrupt');
-    const state = loadRenewalState(dir);
+    const state = loadActiveState(dir);
+    // Corrupt store: a TYPED value (S3-H-09) — never zeros, never a throw.
     expect(state.overlay.ok).toBe(false);
-    // missing parity gets the domain default (bound to the project snapshot)
-    expect(state.parity.ok).toBe(true);
-    if (state.parity.ok) expect(state.parity.store.snapshot_id).toBe('RSN-aaaaaaaaaaaaaaaa');
+    if (!state.overlay.ok) expect(state.overlay.code).toBe('store_corrupt');
+    // Missing store: typed missing (the domain-default store is gone).
+    expect(state.parity.ok).toBe(false);
+    if (!state.parity.ok) expect(state.parity.code).toBe('store_missing');
     expect(state.specExists).toBe(false);
   });
-
-  it('a corrupt project.json throws the actionable message', () => {
+  it('a corrupt project.json throws the typed identity failure', () => {
     const dir = freshDir('lco-badproj-');
     mkdirSync(join(dir, '.lco', 'renewal'), { recursive: true });
     writeFileSync(renewalPaths(dir).projectJson, '{corrupt');
-    expect(() => loadRenewalState(dir)).toThrow(/project.json invalid/);
+    expect(() => loadActiveState(dir)).toThrow(/project.json invalid/);
   });
 });
-
 describe('strategy + analysis store edges', () => {
   it('strategy load: missing is actionable; corrupt is typed; persist round-trips', () => {
     const dir = freshDir('lco-strat-');
     const path = join(dir, 'strategy.json');
-    const missing = loadStrategy(path);
+    const missing = loadStrategyFile(path);
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.code).toBe('strategy_missing');
     writeFileSync(path, '{corrupt');
-    const corrupt = loadStrategy(path);
+    const corrupt = loadStrategyFile(path);
     expect(corrupt.ok).toBe(false);
     if (!corrupt.ok) expect(corrupt.code).toBe('strategy_corrupt');
     const decision = buildStrategyDecision({ strategy: 'full_rewrite', rationale: 'r', selectedVia: 'flag', snapshotId: 'RSN-aaaaaaaaaaaaaaaa', nowIso: 't' });
     // Trust kernel: authorized write — (projectDir, path, decision).
     persistStrategy(dir, path, decision);
-    const loaded = loadStrategy(path);
+    const loaded = loadStrategyFile(path);
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.decision.selected_by).toBe('human');
   });
-
   it('persistAnalysisRecord refuses overwrite (immutable) and reports EEXIST', () => {
     const dir = freshDir('lco-an-');
     const record: AnalysisRecord = {
@@ -290,11 +295,8 @@ describe('strategy + analysis store edges', () => {
     expect(loadAnalysisRecords(dir).records).toHaveLength(1);
   });
 });
-
 // --- planner residual branches + provider edges ----------------------------------------
-
 describe('planner residual branches', () => {
-
   const g = graphOf();
   if (!g.ok) throw new Error(g.message);
   const MANIFEST = ['src/a.ts', 'src/gen/generated.ts', 'src/vendor/lib.ts', 'plain.ts'].map((p) => ({ path: p, sha256: sha(p) }));
@@ -338,7 +340,6 @@ describe('planner residual branches', () => {
     projectDir: '/tmp/proj',
     blastRadius: (p: string) => (p === 'src/a.ts' ? ['src/vendor/lib.ts'] : []),
   });
-
   it('blast radius imposes cross-task dependencies (a before its dependents)', () => {
     const r = buildModernizationPlan(inputs());
     expect(r.ok).toBe(true);
@@ -352,7 +353,6 @@ describe('planner residual branches', () => {
     // L12: same-file overlap chains deterministically (no shared files here).
     expect(r.bundle.tasks.every((t) => t.permitted_scope.length > 0)).toBe(true);
   });
-
   it('an empty parity ledger refuses (parity_unresolved)', () => {
     const r = buildModernizationPlan({ ...inputs(), parity: emptyParity(SNAP) });
     expect(r.ok).toBe(false);
@@ -360,7 +360,6 @@ describe('planner residual branches', () => {
     expect(r.code).toBe('parity_unresolved');
     expect(r.message).toMatch(/ledger is empty/);
   });
-
   it('missing strategy refuses with the human-act message', () => {
     const r = buildModernizationPlan({ ...inputs(), strategy: undefined as never });
     expect(r.ok).toBe(false);
@@ -368,7 +367,6 @@ describe('planner residual branches', () => {
     expect(r.code).toBe('missing_strategy');
     expect(r.message).toMatch(/human act/);
   });
-
   it('same-file hypotheses chain in task-id order (L12 overlap ordering)', () => {
     const sameFile = {
       ...analysis,
@@ -389,7 +387,6 @@ describe('planner residual branches', () => {
     expect(chained.length).toBe(1); // the later task depends on the earlier
     expect(chained[0]!.depends_on.length).toBe(1);
   });
-
   it('a cyclic blast radius is reported as a cycle blocker', () => {
     const r = buildModernizationPlan({
       ...inputs(),
@@ -400,7 +397,6 @@ describe('planner residual branches', () => {
     expect(r.code).toBe('cycle');
     expect(r.message).toMatch(/cycle/);
   });
-
   it('evidence dedup: two parity entries sharing one anchor emit ONE code_anchor evidence item', () => {
     const shared = {
       ...analysis,

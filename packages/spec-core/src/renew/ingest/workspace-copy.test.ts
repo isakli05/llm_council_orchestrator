@@ -40,7 +40,8 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
       'src/a.ts': 'export const a = 1;\n',
     });
     const copyRoot = freshDir('lco-copy-');
-    const r = buildGuardedCopy(target, copyRoot);
+    // Trust kernel: copy mode REQUIRES projectDir (trusted writes only).
+    const r = buildGuardedCopy(target, copyRoot, { projectDir: copyRoot });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.manifest.map((e) => e.path)).toEqual(['package.json', 'src/a.ts', 'src/b.ts']);
@@ -50,8 +51,10 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
 
   it('is deterministic across runs on the same tree', () => {
     const target = stageTarget({ 'x.ts': 'x', 'y/z.ts': 'z' });
-    const m1 = buildGuardedCopy(target, freshDir('lco-copy-'));
-    const m2 = buildGuardedCopy(target, freshDir('lco-copy-'));
+    const root1 = freshDir('lco-copy-');
+    const root2 = freshDir('lco-copy-');
+    const m1 = buildGuardedCopy(target, root1, { projectDir: root1 });
+    const m2 = buildGuardedCopy(target, root2, { projectDir: root2 });
     expect(m1.ok && m2.ok).toBe(true);
     if (!m1.ok || !m2.ok) return;
     expect(m1.manifest).toEqual(m2.manifest);
@@ -66,7 +69,7 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
       'certs/server.key': '-----BEGIN PRIVATE KEY-----',
     });
     const copyRoot = freshDir('lco-copy-');
-    const r = buildGuardedCopy(target, copyRoot);
+    const r = buildGuardedCopy(target, copyRoot, { projectDir: copyRoot });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.manifest.map((e) => e.path)).toEqual(['src/app.ts']);
@@ -81,7 +84,8 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
       '.git/config': '[core]',
       'graphify-out/graph.json': '{}',
     });
-    const r = buildGuardedCopy(target, freshDir('lco-copy-'));
+    const copyRoot = freshDir('lco-copy-');
+    const r = buildGuardedCopy(target, copyRoot, { projectDir: copyRoot });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.manifest.map((e) => e.path)).toEqual(['src/i.ts']);
@@ -94,7 +98,7 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
       'src/big.ts': 'x'.repeat(64),
     });
     const copyRoot = freshDir('lco-copy-');
-    const r = buildGuardedCopy(target, copyRoot, { limits: { maxFileBytes: 32, maxFiles: 100, maxTotalBytes: 1024 * 1024 } });
+    const r = buildGuardedCopy(target, copyRoot, { projectDir: copyRoot, limits: { maxFileBytes: 32, maxFiles: 100, maxTotalBytes: 1024 * 1024 } });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.excluded.binary).toEqual(['assets/logo.dat']);
@@ -113,7 +117,7 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
     symlinkSync(outside, join(target, 'escape-dir'));
 
     const copyRoot = freshDir('lco-copy-');
-    const r = buildGuardedCopy(target, copyRoot);
+    const r = buildGuardedCopy(target, copyRoot, { projectDir: copyRoot });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.manifest.map((e) => e.path)).toEqual(['src/real.ts']);
@@ -124,7 +128,9 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
 
   it('blocks with sizing guidance when the corpus cap is exceeded', () => {
     const target = stageTarget({ 'a.ts': 'a', 'b.ts': 'b', 'c.ts': 'c' });
-    const r = buildGuardedCopy(target, freshDir('lco-copy-'), {
+    const copyRoot = freshDir('lco-copy-');
+    const r = buildGuardedCopy(target, copyRoot, {
+      projectDir: copyRoot,
       limits: { maxFileBytes: 1024, maxFiles: 2, maxTotalBytes: 1024 * 1024 },
     });
     expect(r.ok).toBe(false);
@@ -135,7 +141,9 @@ describe('buildGuardedCopy (single walk: hash manifest + LCO-owned copy)', () =>
 
   it('blocks when total bytes exceed the corpus cap', () => {
     const target = stageTarget({ 'a.ts': 'a'.repeat(600), 'b.ts': 'b'.repeat(600) });
-    const r = buildGuardedCopy(target, freshDir('lco-copy-'), {
+    const copyRoot = freshDir('lco-copy-');
+    const r = buildGuardedCopy(target, copyRoot, {
+      projectDir: copyRoot,
       limits: { maxFileBytes: 1024, maxFiles: 100, maxTotalBytes: 1024 },
     });
     expect(r.ok).toBe(false);

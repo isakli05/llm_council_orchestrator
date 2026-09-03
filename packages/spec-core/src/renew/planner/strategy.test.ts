@@ -1,12 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MODERNIZATION_STRATEGIES,
   StrategyDecisionSchema,
   buildStrategyDecision,
-  loadStrategy,
   parseStrategyDecision,
   persistStrategy,
 } from './strategy';
@@ -16,6 +15,12 @@ afterEach(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
   tmpDirs.length = 0;
 });
+
+/** Test-local raw fixture reader (production reads route through the kernel). */
+const loadStrategyFile = (path: string) =>
+  existsSync(path)
+    ? parseStrategyDecision(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'strategy_missing' as const, message: `no strategy at ${path}` });
 
 describe('modernization strategy decision', () => {
   it('models the six audit strategies as data', () => {
@@ -62,10 +67,10 @@ describe('modernization strategy decision', () => {
     });
     // Trust kernel: authorized write — the temp dir is the project root.
     expect(persistStrategy(dir, path, d)).toMatchObject({ ok: true });
-    const loaded = loadStrategy(path);
+    const loaded = loadStrategyFile(path);
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.decision).toEqual(d);
-    expect(loadStrategy(join(dir, 'missing.json')).ok).toBe(false);
+    expect(loadStrategyFile(join(dir, 'missing.json')).ok).toBe(false);
   });
 
   it('trust kernel (S3-H-08): a workspace selection without an approval_id is unrepresentable', () => {

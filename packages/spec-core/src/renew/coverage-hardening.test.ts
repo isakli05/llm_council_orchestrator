@@ -20,8 +20,10 @@ import { join } from 'node:path';
 import { runSubprocess } from './intel/subprocess';
 import { GraphContextProvider } from './context/context-provider';
 import { parseGraphText } from './intel/graph-reader';
-import { loadOverlay, persistOverlay, emptyOverlay } from './overlay/overlay';
-import { loadParity, persistParity, emptyParity, addParityEntry } from './parity/ledger';
+import { persistOverlay, emptyOverlay,
+  parseOverlayStore } from './overlay/overlay';
+import { persistParity, emptyParity,
+  parseParityStore, addParityEntry } from './parity/ledger';
 import {
   cmdRenewInit,
   cmdRenewStatus,
@@ -39,6 +41,19 @@ import { loadAnalysisRecords, nextAnalysisId } from './recovery/analysis-store';
 import { makeRenewalDriver, distillRenewalQuestions, strategyQuestion } from './clarify/distiller';
 import { buildArchitectureView } from './archview/architecture-view';
 import { createSnapshot } from './snapshot/snapshot';
+/** Test-local raw fixture readers (production reads route through the kernel). */
+const loadOverlayFile = (path: string) =>
+  existsSync(path)
+    ? parseOverlayStore(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'overlay_missing' as const, message: `no overlay store at ${path}` });
+const loadParityFile = (path: string) =>
+  existsSync(path)
+    ? parseParityStore(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'parity_missing' as const, message: `no parity ledger at ${path}` });
+const loadStrategyFile = (path: string) =>
+  existsSync(path)
+    ? parseStrategyDecision(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'strategy_missing' as const, message: `no strategy at ${path}` });
 
 const tmpDirs: string[] = [];
 function freshDir(p: string): string {
@@ -50,9 +65,7 @@ afterEach(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
   tmpDirs.length = 0;
 });
-
 const FIXTURE_SRC = join(__dirname, '..', '..', 'fixtures', 'legacy-app');
-
 function caps(): RenewCapabilities {
   const g = parseGraphText(readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8'));
   if (!g.ok) throw new Error(g.message);
@@ -62,14 +75,12 @@ function caps(): RenewCapabilities {
     gitCommit: () => undefined,
   };
 }
-
 function makeTarget(): string {
   const target = freshDir('lco-cov-target-');
   cpSync(join(FIXTURE_SRC, 'src'), join(target, 'src'), { recursive: true });
   cpSync(join(FIXTURE_SRC, 'package.json'), join(target, 'package.json'));
   return target;
 }
-
 describe('subprocess failure modes (real processes)', () => {
   it('rejects executables containing shell syntax', async () => {
     const r = await runSubprocess('evil; rm -rf /', [], { timeoutMs: 1000, maxBufferBytes: 1024 });
@@ -77,7 +88,6 @@ describe('subprocess failure modes (real processes)', () => {
     if (r.status !== 'spawn_failed') return;
     expect(r.message).toMatch(/safe set/);
   });
-
   it('classifies a nonzero exit and surfaces stderr', async () => {
     const r = await runSubprocess('node', ['-e', 'process.stderr.write("boom\\n"); process.exit(3)'], {
       timeoutMs: 5000,
@@ -88,7 +98,6 @@ describe('subprocess failure modes (real processes)', () => {
     expect(r.exitCode).toBe(3);
     expect(r.stderr).toContain('boom');
   });
-
   it('enforces the per-stream output cap with a typed result', async () => {
     const r = await runSubprocess('node', ['-e', 'process.stdout.write("x".repeat(100000))'], {
       timeoutMs: 5000,
@@ -97,7 +106,6 @@ describe('subprocess failure modes (real processes)', () => {
     expect(r.status).toBe('output_cap');
   }, 10_000);
 });
-
 describe('context-provider scope variants', () => {
   const graphOf = () => {
     const g = parseGraphText(
@@ -122,7 +130,6 @@ describe('context-provider scope variants', () => {
     sha256: `sha256:${createHash('sha256').update(p).digest('hex')}`,
   }));
   const reader = (p: string, s: number, e: number) => ({ text: `${p}:${s}-${e}\n`, startLine: s, endLine: e });
-
   it('community scope selects only that community (with structural fact)', () => {
     const provider = new GraphContextProvider({ graph: graphOf(), manifest, readSlice: reader });
     const bundle = provider.contextFor({ type: 'community', id: 1 });
@@ -132,7 +139,6 @@ describe('context-provider scope variants', () => {
     expect(ids).not.toContain('c');
     expect(bundle.items.some((i) => i.kind === 'structural_fact')).toBe(true);
   });
-
   it('node scope includes graph neighbors; an unknown node yields an empty-but-honest bundle', () => {
     const provider = new GraphContextProvider({ graph: graphOf(), manifest, readSlice: reader });
     const bundle = provider.contextFor({ type: 'node', node_id: 'a' });
@@ -142,40 +148,36 @@ describe('context-provider scope variants', () => {
     expect(unknown.items).toHaveLength(0);
     expect(unknown.insufficient_context).toBe(true);
   });
-
   it('path pattern scope matches substrings of source files', () => {
     const provider = new GraphContextProvider({ graph: graphOf(), manifest, readSlice: reader });
     const bundle = provider.contextFor({ type: 'path', pattern: 'b.t' });
     const ids = bundle.items.filter((i) => i.kind === 'node').map((i) => (i as { node_id: string }).node_id);
     expect(ids).toEqual(['b']);
   });
-
   it('a graph node referencing a file NOT in the manifest warns (unrepresented file)', () => {
     const provider = new GraphContextProvider({ graph: graphOf(), manifest: manifest.slice(0, 1), readSlice: reader });
     const bundle = provider.contextFor({ type: 'community', id: 1 });
     expect(bundle.warnings.join(' ')).toMatch(/not present in the guarded manifest/);
   });
 });
-
 describe('store loaders: missing vs corrupt (D2) and duplicates (M-02/M-03)', () => {
   it('missing overlay/parity are typed missing; existing+corrupt refuse', () => {
     const dir = freshDir('lco-cov-stores-');
-    const ovMissing = loadOverlay(join(dir, 'overlay.json'));
+    const ovMissing = loadOverlayFile(join(dir, 'overlay.json'));
     expect(ovMissing.ok).toBe(false);
     if (!ovMissing.ok) expect(ovMissing.code).toBe('overlay_missing');
-    const parMissing = loadParity(join(dir, 'parity.json'));
+    const parMissing = loadParityFile(join(dir, 'parity.json'));
     expect(parMissing.ok).toBe(false);
     if (!parMissing.ok) expect(parMissing.code).toBe('parity_missing');
     writeFileSync(join(dir, 'overlay.json'), '{corrupt');
-    const ov = loadOverlay(join(dir, 'overlay.json'));
+    const ov = loadOverlayFile(join(dir, 'overlay.json'));
     expect(ov.ok).toBe(false);
     if (!ov.ok) expect(ov.code).toBe('overlay_corrupt');
     writeFileSync(join(dir, 'parity.json'), '[]');
-    const par = loadParity(join(dir, 'parity.json'));
+    const par = loadParityFile(join(dir, 'parity.json'));
     expect(par.ok).toBe(false);
     if (!par.ok) expect(par.code).toBe('parity_corrupt');
   });
-
   it('duplicate overlay ids and duplicate parity ids are corrupt state', () => {
     const dir = freshDir('lco-cov-dup-');
     const oStore = emptyOverlay('RSN-aaaaaaaaaaaaaaaa');
@@ -200,22 +202,20 @@ describe('store loaders: missing vs corrupt (D2) and duplicates (M-02/M-03)', ()
       { id: 'OVL-0001', ...rec } as never,
     ];
     writeFileSync(join(dir, 'overlay.json'), JSON.stringify(raw));
-    const ov = loadOverlay(join(dir, 'overlay.json'));
+    const ov = loadOverlayFile(join(dir, 'overlay.json'));
     expect(ov.ok).toBe(false);
     if (!ov.ok) expect(ov.message).toMatch(/duplicate record id OVL-0001/);
-
     const pStore = emptyParity('RSN-aaaaaaaaaaaaaaaa');
     addParityEntry(pStore, { behavior: 'b1', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }] });
     persistParity(dir, join(dir, 'parity.json'), pStore);
     const praw = JSON.parse(readFileSync(join(dir, 'parity.json'), 'utf8')) as typeof pStore;
     praw.records.push({ ...praw.records[0]!, id: praw.records[0]!.id });
     writeFileSync(join(dir, 'parity.json'), JSON.stringify(praw));
-    const par = loadParity(join(dir, 'parity.json'));
+    const par = loadParityFile(join(dir, 'parity.json'));
     expect(par.ok).toBe(false);
     if (!par.ok) expect(par.message).toMatch(/duplicate entry id/);
   });
 });
-
 describe('command-core refusal paths (renew.ts branches)', () => {
   it('refresh/status/export/review on a NON-project fail with actionable errors', async () => {
     const dir = freshDir('lco-cov-nonproj-');
@@ -229,7 +229,6 @@ describe('command-core refusal paths (renew.ts branches)', () => {
     const r4 = await cmdRenewReview({ dir, answersPath: '/x' }, caps());
     expect(r4.code).toBe(2);
   });
-
   it('init refuses when the project already exists (no --force) and when the target is missing', async () => {
     const target = makeTarget();
     const project = freshDir('lco-cov-init-');
@@ -242,7 +241,6 @@ describe('command-core refusal paths (renew.ts branches)', () => {
     expect(missing.code).toBe(2);
     expect(missing.output).toMatch(/target repository not found/);
   });
-
   it('review rejects a malformed answers file with a parse error', async () => {
     const target = makeTarget();
     const project = freshDir('lco-cov-ans-');
@@ -259,7 +257,6 @@ describe('command-core refusal paths (renew.ts branches)', () => {
     expect(r2.output).toMatch(/answers file must be/);
   });
 });
-
 describe('export renderer (report honesty)', () => {
   it('renders a status report with plan/analyses/strategy sections from real state', async () => {
     const target = makeTarget();
@@ -271,12 +268,9 @@ describe('export renderer (report honesty)', () => {
     expect(r.output.length).toBeGreaterThan(100);
   });
 });
-
 // --- planner variants: overlay consumption, manual review, input mismatch ----------
-
 describe('planner input variants', () => {
             const sha = (b: string | Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
-
   const MANIFEST = [
     { path: 'src/orders.ts', sha256: sha('orders') },
     { path: 'src/pricing.ts', sha256: sha('pricing') },
@@ -350,7 +344,6 @@ describe('planner input variants', () => {
     projectDir: '/tmp/proj',
     blastRadius: () => [] as string[],
   });
-
   it('a mismatched OVERLAY snapshot is an input_mismatch refusal', () => {
     const r = buildModernizationPlan({ ...baseInputs(), overlay: emptyOverlay('RSN-1111111111111111') });
     expect(r.ok).toBe(false);
@@ -358,7 +351,6 @@ describe('planner input variants', () => {
     expect(r.code).toBe('input_mismatch');
     expect(r.blockers?.some((b) => b.id === 'overlay')).toBe(true);
   });
-
   it('a parity entry citing a nonexistent analysis is an input_mismatch refusal', () => {
     const parity = ruledParity();
     parity.records[0]!.source_analysis = 'AN-9999';
@@ -368,7 +360,6 @@ describe('planner input variants', () => {
     expect(r.code).toBe('input_mismatch');
     expect(r.blockers?.[0]!.reason).toMatch(/AN-9999/);
   });
-
   it('overlay manual_review records and unsupported files become MANUAL-REVIEW tasks (H-06)', () => {
     const overlay = emptyOverlay(SNAP);
     overlay.records.push({
@@ -393,7 +384,6 @@ describe('planner input variants', () => {
     // topo order includes the manual tasks too
     for (const t of manual) expect(r.topoOrder).toContain(t.task_id);
   });
-
   it('overlay behavior_preserve extends protected scopes (G1 consumption)', () => {
     const overlay = emptyOverlay(SNAP);
     overlay.records.push({
@@ -413,12 +403,9 @@ describe('planner input variants', () => {
     expect(scoped?.protected).toContain('src/orders.ts');
   });
 });
-
 // --- overlay record lifecycle ---------------------------------------------------------
-
 describe('overlay record lifecycle', () => {
     const sha = (b: string) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
-
   it('markSuperseded is terminal and annotated; unknown ids throw', () => {
     const store = emptyOverlay('RSN-aaaaaaaaaaaaaaaa');
     const rec = addOverlayRecord(store, {
@@ -435,7 +422,6 @@ describe('overlay record lifecycle', () => {
     expect(store.records[0]!.note).toMatch(/superseded by OVL-0002/);
     expect(() => markSuperseded(store, 'OVL-9999')).toThrow(/unknown overlay record/);
   });
-
   it('staleness re-evaluation: a broken anchor flips active→stale; superseded is terminal', async () => {
     const target = freshDir('lco-ovl-target-');
     writeFileSync(join(target, 'a.ts'), 'contents\n');
@@ -462,11 +448,8 @@ describe('overlay record lifecycle', () => {
     expect(terminal.store.records[0]!.status).toBe('superseded');
   });
 });
-
 // --- parity ruling lifecycle -----------------------------------------------------------
-
 describe('parity ruling lifecycle', () => {
-
   it('setRuling enforces DROP approval lineage and unknown-id errors', () => {
     const store = emptyParity('RSN-aaaaaaaaaaaaaaaa');
     addParityEntry(store, { behavior: 'b', evidence: [{ kind: 'user_decision', claim_id: 'UNC-0001' }] });
@@ -478,11 +461,8 @@ describe('parity ruling lifecycle', () => {
     expect(rec.approval_id).toBe('APPR-0001');
   });
 });
-
 // --- analysis store edge cases ---------------------------------------------------------
-
 describe('analysis store edges', () => {
-
   it('a corrupt record is reported, never loaded; ids sequence past gaps', () => {
     const dir = freshDir('lco-an-store-');
     mkdirSync(dir, { recursive: true });
@@ -495,11 +475,8 @@ describe('analysis store edges', () => {
     expect(loadAnalysisRecords(join(dir, 'missing')).records).toHaveLength(0);
   });
 });
-
 // --- distiller approval payload combinations --------------------------------------------
-
 describe('distiller payload combinations', () => {
-
   it('option + freeText answers carry both, sorted by claim id', () => {
     const driver = makeRenewalDriver({ analyses: [], overlay: emptyOverlay('RSN-aaaaaaaaaaaaaaaa'), includeStrategy: true });
     const payload = driver.approvalPayload(
@@ -516,7 +493,6 @@ describe('distiller payload combinations', () => {
     expect(stg.free_text).toBe('because');
     expect(stg.evidence.source).toContain('renewal-clarify:s/round1');
   });
-
   it('distilled questions include parity and manual-review questions in stable order', () => {
     const overlay = emptyOverlay('RSN-aaaaaaaaaaaaaaaa');
     overlay.records.push({
@@ -538,9 +514,7 @@ describe('distiller payload combinations', () => {
     expect(strategyQuestion().claimId).toBe('STG-0001');
   });
 });
-
 // --- renew command error/edge branches (analyze/plan/status/export) -------------------
-
 describe('renew command edge branches', () => {
   it('analyze without LLM route refuses with ZERO calls (fail-closed)', async () => {
     const target = makeTarget();
@@ -551,14 +525,12 @@ describe('renew command edge branches', () => {
     expect(r.code).toBe(2);
     expect(r.output).toMatch(/no LLM route|ZERO calls/);
   });
-
   const llmCaps = () => {
     const scripted = {
       complete: async () => ({ text: JSON.stringify({ hypotheses: [], uncertainties: [], coverage_notes: [] }) }),
     };
     return { ...caps(), llm: () => singleRoutePlan(scripted as never, { gateway: 'g', providerKind: 'openai-compatible' as const, requestedModel: 'm' }) };
   };
-
   it('analyze refuses over a CORRUPT analysis record (never silently replaced)', async () => {
     const { cmdRenewAnalyze } = await import('../cli/commands/renew');
     const target = makeTarget();
@@ -570,7 +542,6 @@ describe('renew command edge branches', () => {
     expect(r.code).toBe(1);
     expect(r.output).toMatch(/analysis store corrupt.*AN-0007/);
   });
-
   it('analyze refuses over a CORRUPT overlay store with the file preserved byte-identical', async () => {
     const { cmdRenewAnalyze } = await import('../cli/commands/renew');
     const target = makeTarget();
@@ -585,7 +556,6 @@ describe('renew command edge branches', () => {
     expect(r.output).toMatch(/overlay store corrupt/);
     expect(readFileSync(overlayPath, 'utf8')).toBe(sentinel); // never overwritten
   });
-
   it('plan on a corrupt snapshot refuses (identity/tamper), and status exit code reflects it', async () => {
     const { cmdRenewPlan } = await import('../cli/commands/renew');
     const target = makeTarget();
@@ -606,7 +576,6 @@ describe('renew command edge branches', () => {
     expect(status.output).toMatch(/identity mismatch|snapshot_join_mismatch/);
     expect(status.output).toMatch(/tampered|hand-edited/);
   });
-
   it('plan with --strategy requires --strategy-rationale and rejects unknown strategies', async () => {
     const { cmdRenewPlan } = await import('../cli/commands/renew');
     const target = makeTarget();
@@ -620,7 +589,6 @@ describe('renew command edge branches', () => {
     expect(r2.code).toBe(2);
     expect(r2.output).toMatch(/unknown strategy/);
   });
-
   it('status --json emits parseable JSON with snapshot/parity fields', async () => {
     const target = makeTarget();
     const project = freshDir('lco-edge-6-');
@@ -633,7 +601,6 @@ describe('renew command edge branches', () => {
     expect(parsed.parity).toBeTruthy();
     expect(parsed.overlay).toMatch(/0 record/);
   });
-
   it('export renders the report and refuses an out-of-project --out', async () => {
     const { cmdRenewExport } = await import('../cli/commands/renew');
     const target = makeTarget();
@@ -647,6 +614,4 @@ describe('renew command edge branches', () => {
     const bad = await cmdRenewExport({ dir: project, out: join(target, 'x.md') }, c);
     expect(bad.code).toBe(2);
   });
-
-
 });

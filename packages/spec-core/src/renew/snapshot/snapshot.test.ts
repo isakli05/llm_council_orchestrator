@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   ProjectSnapshotSchema,
   createSnapshot,
-  digestGraphManifest,
   evaluateStaleness,
   reloadSnapshot,
   type FileManifest,
 } from './snapshot';
+import { parseGraphManifestStrict } from '../trust/structural';
 
 const FILES: FileManifest = [
   { path: 'package.json', sha256: 'sha256:' + 'a'.repeat(64) },
@@ -185,34 +185,51 @@ describe('evaluateStaleness', () => {
   });
 });
 
-describe('digestGraphManifest (stable graph identity)', () => {
+describe('parseGraphManifestStrict (stable graph identity — trust kernel)', () => {
   const manifestAt = (mtime: number, ast: string) => ({
     'src/a.ts': { mtime, seen: mtime + 1, ast_hash: ast, semantic_hash: ast },
   });
 
-  it('ignores mtime/seen noise — same ASTs → same digest', () => {
-    const a = digestGraphManifest(JSON.stringify(manifestAt(100, 'aa11')));
-    const b = digestGraphManifest(JSON.stringify(manifestAt(999, 'aa11')));
-    expect(a.digest).toBe(b.digest);
-    expect(a.entries).toBe(1);
+  it('ignores mtime/seen noise — same ASTs → same identity digest', () => {
+    const a = parseGraphManifestStrict(JSON.stringify(manifestAt(100, 'aa11')));
+    const b = parseGraphManifestStrict(JSON.stringify(manifestAt(999, 'aa11')));
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.identity.digest).toBe(b.identity.digest);
+    expect(a.identity.entries).toBe(1);
   });
 
   it('changes when an ast_hash changes', () => {
-    const a = digestGraphManifest(JSON.stringify(manifestAt(100, 'aa11')));
-    const b = digestGraphManifest(JSON.stringify(manifestAt(100, 'bb22')));
-    expect(a.digest).not.toBe(b.digest);
+    const a = parseGraphManifestStrict(JSON.stringify(manifestAt(100, 'aa11')));
+    const b = parseGraphManifestStrict(JSON.stringify(manifestAt(100, 'bb22')));
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.identity.digest).not.toBe(b.identity.digest);
   });
 
-  it('handles absent/empty manifests with an explicit constant digest', () => {
-    const a = digestGraphManifest('');
-    const b = digestGraphManifest('{}');
-    expect(a.digest).toBe(b.digest);
-    expect(a.entries).toBe(0);
-    expect(a.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+  it('absent/blank and empty manifests are TYPED refusals — never "empty healthy state"', () => {
+    // S3-L-03 (trust kernel): the old non-strict fallback (constant digest of
+    // an empty entry list) is deleted — malformed state never becomes a
+    // healthy zero-entry identity.
+    const absent = parseGraphManifestStrict(undefined);
+    expect(absent.ok).toBe(false);
+    if (!absent.ok) expect(absent.code).toBe('manifest_missing');
+    const blank = parseGraphManifestStrict('');
+    expect(blank.ok).toBe(false);
+    if (!blank.ok) expect(blank.code).toBe('manifest_missing');
+    const empty = parseGraphManifestStrict('{}');
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) {
+      expect(empty.code).toBe('manifest_invalid');
+      expect(empty.message).toMatch(/no entries/);
+    }
   });
 
-  it('tolerates non-object garbage without throwing (defensive)', () => {
-    const r = digestGraphManifest('not json');
-    expect(r.entries).toBe(0);
+  it('non-object garbage is a typed refusal without throwing (defensive)', () => {
+    const r = parseGraphManifestStrict('not json');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('manifest_invalid');
   });
 });
