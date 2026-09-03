@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RenewCapabilities } from '../../cli/commands/renew';
@@ -335,4 +335,101 @@ describe('S4-H-01: refresh (init/force) is the SAME journaled protocol', () => {
       expect(st.identity.revision).toBeGreaterThanOrEqual(beforeRev);
     }
   });
+});
+
+
+describe('S4-H-01: remaining recovery/rollback arms', () => {
+  it('a journal observed while ANOTHER WRITER HOLDS the lock is a typed recovery_required refusal (no interpretation)', async () => {
+    const { project } = await freshProject();
+    simulateCrashPublic(project);
+    const { withRenewalWriterLock } = await import('./state');
+    // Hold the writer lock, then attempt the first trusted read: recovery
+    // must refuse (a live committer may own that journal), never interpret.
+    await expect(
+      withRenewalWriterLock(project, '2026-09-03T00:00:00Z', async () => {
+        expect(() => loadActiveState(project)).toThrowError(TrustStateError);
+        try {
+          loadActiveState(project);
+        } catch (e) {
+          expect((e as TrustStateError).code).toBe('recovery_required');
+        }
+      }),
+    ).resolves.toBeUndefined();
+    delete (globalThis as { __txFault?: unknown }).__txFault;
+  });
+
+  it('a crashed journal with a CREATED SPEC DIRECTORY rolls the directory back too', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const beforeRev = readRevision(project);
+    // The committer created spec/ and wrote the new overlay, then died.
+    mkdirSync(paths.specDir, { recursive: true });
+    writeFileSync(join(paths.specDir, 'intent.json'), '{}');
+    const oldOverlay = readFileSync(paths.overlay, 'utf8');
+    writeFileSync(paths.overlay, `${JSON.stringify(emptyOverlay(loadActiveState(project).identity.snapshotId), null, 2)}\n`);
+    const entries = [
+      { kind: 'file', path: paths.overlay, oldContent: oldOverlay },
+      { kind: 'dir_create', path: paths.specDir },
+      { kind: 'dir_ensure', path: join(project, 'fresh-dir'), existed: false },
+      { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
+    ] as never;
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, entries });
+    mkdirSync(join(project, 'fresh-dir'), { recursive: true }); // the dir_ensure step had run
+    writeFileSync(
+      paths.journal,
+      `${JSON.stringify({ schema_version: 1, holder: { pid: -1, acquiredAt: '2026-09-03T00:00:00Z' }, base_revision: beforeRev, integrity, entries }, null, 2)}\n`,
+    );
+    const state = loadActiveState(project); // recovers
+    expect(state.identity.revision).toBe(beforeRev);
+    expect(existsSync(paths.specDir)).toBe(false); // dir_create rolled back
+    expect(existsSync(join(project, 'fresh-dir'))).toBe(false); // dir_ensure(!existed) rolled back
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('an archive entry whose source does not exist is skipped by the journal simulation (idempotent refresh archives)', async () => {
+    const { runJournaledRenewalMutation, refreshArchiveEntries } = await import('./state');
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const beforeRev = readRevision(project);
+    const archive = refreshArchiveEntries(paths, loadActiveState(project).identity.snapshotId);
+    await runJournaledRenewalMutation({
+      projectDir: project,
+      nowIso: '2026-09-03T00:00:05Z',
+      mutation: { archive: [...archive, { from: join(project, '.lco', 'renewal', 'nope.json'), to: join(project, '.lco', 'renewal', 'nope.json.superseded') }] },
+    });
+    // The existing stores archived; the phantom entry was skipped cleanly.
+    expect(existsSync(`${paths.overlay}.${loadActiveState(project).identity.snapshotId}.superseded`) || readRevision(project) > 0).toBe(true);
+    expect(readRevision(project)).toBeGreaterThan(beforeRev);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('an unreadable state.json is a typed corrupt refusal (never a silent 0)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    writeFileSync(paths.state, '\u0000not utf8 json', 'utf8');
+    try {
+      loadActiveState(project);
+      throw new Error('should have refused');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TrustStateError);
+      expect((e as TrustStateError).code).toBe('state_corrupt');
+    }
+  });
+
+  /** Public variant of the crash simulation (shared by the arms above). */
+  function simulateCrashPublic(project: string): void {
+    const paths = renewalPaths(project);
+    const beforeRev = readRevision(project);
+    const oldOverlay = readFileSync(paths.overlay, 'utf8');
+    writeFileSync(paths.overlay, `${JSON.stringify(emptyOverlay(loadActiveState(project).identity.snapshotId), null, 2)}\n`);
+    const entries = [
+      { kind: 'file', path: paths.overlay, oldContent: oldOverlay },
+      { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
+    ] as never;
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, entries });
+    writeFileSync(
+      paths.journal,
+      `${JSON.stringify({ schema_version: 1, holder: { pid: -1, acquiredAt: '2026-09-03T00:00:00Z' }, base_revision: beforeRev, integrity, entries }, null, 2)}\n`,
+    );
+  }
 });

@@ -239,3 +239,36 @@ function bindingFor(set: { manifestText: string; graphText: string }, version = 
   if (!r.ok) throw new Error(r.message);
   return `${JSON.stringify(r.binding, null, 2)}\n`;
 }
+
+
+describe('S4-H-04: remaining verification arms', () => {
+  it('a binding that is not valid JSON is binding_corrupt', () => {
+    const r = coerceStructuralBinding('{not json');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('binding_corrupt');
+  });
+
+  it('a binding with a missing required field is binding_corrupt', () => {
+    const r = coerceStructuralBinding(JSON.stringify({ schema_version: 1, graphify_version: '0.9.50' }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('binding_corrupt');
+  });
+
+  it('an absent/blank binding is binding_missing', () => {
+    for (const text of [undefined, '']) {
+      const r = coerceStructuralBinding(text);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('binding_missing');
+    }
+  });
+
+  it('expected-digest joins refuse a drifted manifest or graph', () => {
+    const a = artifactSet('a');
+    const r1 = structuralIdentity({ ...a, expected: { manifestDigest: 'sha256:' + '9'.repeat(64) } });
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.code).toBe('coherence_failed');
+    const r2 = structuralIdentity({ ...a, expected: { graphDigest: 'sha256:' + '9'.repeat(64) } });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.code).toBe('coherence_failed');
+  });
+});
