@@ -38,6 +38,10 @@ export { RECOVERY_PROMPT_PROTOCOL };
 
 export interface RecoveryRequest {
   analysisId: string;
+  /** S4-H-02 (V2 verifier finding): the project identity the analysis runs
+   *  under — joined against the sealed context bundle at entry, so a bundle
+   *  sealed for ANOTHER project cannot ride a coincident snapshot id. */
+  projectName: string;
   snapshotId: string;
   scope: Record<string, unknown>;
   bundle: ContextBundle;
@@ -109,9 +113,18 @@ function zodIssues(error: { issues: { path: (string | number)[]; message: string
 }
 
 export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Promise<RecoveryOutcome> {
-  // S4-H-02: the request's snapshot identity and the sealed context bundle's
-  // MUST be the same snapshot — a bundle from another epoch (stale after a
-  // refresh, or hand-assembled) is refused before anything paid happens.
+  // S4-H-02: the request's project AND snapshot identities must match the
+  // sealed context bundle — a bundle from another project (V2 verifier
+  // finding: the join must cover project, not only snapshot) or another
+  // epoch (stale after a refresh, or hand-assembled) is refused before
+  // anything paid happens.
+  if (deps.context.identity.project_name !== req.projectName) {
+    throw new TrustCitationError(
+      'context_project_mismatch',
+      `the supplied context bundle was sealed for project '${deps.context.identity.project_name}' but the ` +
+        `analysis request runs under '${req.projectName}' — re-supply the context for the active project`,
+    );
+  }
   if (deps.context.identity.snapshot_id !== req.snapshotId) {
     throw new TrustCitationError(
       'context_snapshot_mismatch',

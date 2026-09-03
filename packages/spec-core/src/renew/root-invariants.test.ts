@@ -694,6 +694,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     const outcome = await runRecovery(
       {
         analysisId: 'AN-9999',
+        projectName: 'legacy-renewal',
         snapshotId: 'RSN-0123456789abcdef',
         scope: { type: 'whole' },
         bundle: {
@@ -773,6 +774,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     const outcome = await runRecovery(
       {
         analysisId: 'AN-9998',
+        projectName: 'legacy-renewal',
         snapshotId: 'RSN-0123456789abcdef',
         scope: { type: 'whole' },
         bundle,
@@ -809,6 +811,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
       runRecovery(
         {
           analysisId: 'AN-9996',
+          projectName: 'legacy-renewal',
           snapshotId: 'RSN-0123456789abcdef',
           scope: { type: 'whole' },
           bundle,
@@ -861,6 +864,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     const outcome = await runRecovery(
       {
         analysisId: 'AN-9997',
+        projectName: 'legacy-renewal',
         snapshotId: 'RSN-0123456789abcdef',
         scope: { type: 'whole' },
         bundle,

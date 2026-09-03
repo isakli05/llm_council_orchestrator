@@ -190,7 +190,7 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
     };
     const bundle = bundleOf(hash);
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle },
       {
         llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
         nowIso: 't',
@@ -220,7 +220,7 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
     };
     const bundle = bundleOf(hash);
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: { type: 'whole' }, bundle },
       {
         llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
         nowIso: 't',

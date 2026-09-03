@@ -23,7 +23,7 @@ import type {
   IntelProbe,
 } from './provider';
 import type { HealthFailure, IntelFailure } from './provider';
-import { parseGraphText, type ParsedGraph } from './graph-reader';
+import type { ParsedGraph } from './graph-reader';
 import type { StructuralBinding } from '../trust/structural';
 import { computeStructuralBinding, coerceStructuralBinding, requireStructuralGraph, structuralBindingPath, parseGraphManifestStrict } from '../trust/structural';
 import { affectedReverse, godNodes, graphHealthOf, neighborhood, querySeeds, shortestPath } from './graph-ops';
@@ -400,7 +400,13 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     }
     let verified: { identity: import('../trust/structural').StructuralIdentity; graph: ParsedGraph };
     try {
-      verified = requireStructuralGraph({ manifestText, graphText, bindingText, source: 'graph workspace' });
+      verified = requireStructuralGraph({
+        manifestText,
+        graphText,
+        bindingText,
+        ...(this.probedVersion !== undefined ? { expected: { graphifyVersion: this.probedVersion } } : {}),
+        source: 'graph workspace',
+      });
     } catch (e) {
       const err = e as { code?: string; message?: string };
       // Preserve the adapter's public vocabulary: manifest-gate failures are
@@ -410,10 +416,12 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
         err.code === 'manifest_missing' ? 'graph_missing' : err.code === 'manifest_invalid' ? 'graph_invalid' : (err.code ?? 'graph_invalid');
       return { ok: false, code: mapped as never, message: err.message ?? String(e) } as IntelFailure;
     }
-    const binding = coerceStructuralBinding(bindingText);
-    return binding.ok
-      ? { ok: true, graph: verified.graph, binding: binding.binding }
-      : ({ ok: false, code: binding.code as never, message: binding.message } as IntelFailure);
+    // requireStructuralGraph already verified the binding; surface it for
+    // consumers without re-parsing (single verification, no redundant arm).
+    const bindingVerified = coerceStructuralBinding(bindingText);
+    return bindingVerified.ok
+      ? { ok: true, graph: verified.graph, binding: bindingVerified.binding }
+      : ({ ok: false, code: bindingVerified.code as never, message: bindingVerified.message } as IntelFailure);
   }
 }
 

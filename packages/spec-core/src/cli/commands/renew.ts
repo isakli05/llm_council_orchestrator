@@ -131,12 +131,22 @@ async function currentStaleness(
   const bindingText = existsSync(structuralBindingPath(paths.workspace))
     ? readWorkspaceFile(dir, structuralBindingPath(paths.workspace))
     : undefined;
+  if (graphPresent && bindingText === undefined) {
+    // S4-H-04: a present graph without its binding is an unbound workspace —
+    // a typed problem, never a freshness verdict (V4 hardening; the
+    // production provider's bound read would refuse it too).
+    return {
+      ok: false,
+      code: 1,
+      output: 'renewal graph workspace problem (binding_missing): the workspace has no LCO structural binding — rebuild it (lco renew refresh)',
+    };
+  }
   let bindingDigest: string | undefined;
   // When the graph is absent, presence (not digest comparison) drives the
   // staleness verdict; the sentinel can never equal a recorded digest.
   let graphDigest: string;
   if (graphPresent) {
-    const ident = structuralIdentity({ manifestText, graphText: readWorkspaceFile(dir, graphJson), bindingText });
+    const ident = structuralIdentity({ manifestText, graphText: readWorkspaceFile(dir, graphJson), ...(bindingText !== undefined ? { bindingText } : {}) });
     if (!ident.ok) return { ok: false, code: 1, output: `renewal graph workspace problem (${ident.code}): ${ident.message}` };
     graphDigest = ident.identity.graph_digest;
     const bound = bindingText !== undefined ? coerceStructuralBinding(bindingText) : undefined;
@@ -618,7 +628,8 @@ export async function analyzeWithFresh(
         end_line: i.end_line,
         text: i.text,
         whole_file_hash: i.content_hash,
-        file_line_count: i.file_line_count ?? i.end_line,
+        // fail-closed: an unknown line count can never make a partial slice read as whole-file
+        file_line_count: i.file_line_count ?? Number.POSITIVE_INFINITY,
         ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
       })),
     structural: {
@@ -659,17 +670,20 @@ export async function analyzeWithFresh(
     const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
     const manifestJson = join(paths.workspace, 'graphify-out', 'manifest.json');
     if (!existsSync(graphJson)) return { ok: false, reasons: ['graph_missing: graph.json vanished mid-analysis'] };
-    // S4-H-04: the post-call bracket verifies the FULL bound triple — a
-    // swapped or incoherent workspace mid-analysis is stale, not fresh.
+    // S4-H-04 (V4 verifier finding): the post-call bracket REQUIRES the full
+    // bound triple. A binding deleted (or never present) mid-analysis is a
+    // typed staleness reason — never fresh. The kernel's throwing gate makes
+    // absence a refusal instead of a skipped join.
     const bindingText = existsSync(structuralBindingPath(paths.workspace))
       ? readWorkspaceFile(dir, structuralBindingPath(paths.workspace))
       : undefined;
     const ident = structuralIdentity({
       manifestText: existsSync(manifestJson) ? readWorkspaceFile(dir, manifestJson) : undefined,
       graphText: readWorkspaceFile(dir, graphJson),
-      bindingText,
+      ...(bindingText !== undefined ? { bindingText } : {}),
     });
     if (!ident.ok) return { ok: false, reasons: [ident.code] };
+    if (bindingText === undefined) return { ok: false, reasons: ['binding_missing'] };
     const bound = bindingText !== undefined ? coerceStructuralBinding(bindingText) : undefined;
     const verdict = evaluateStaleness(beginState.snapshot, {
       gitCommit: caps.gitCommit(targetRoot),
@@ -685,7 +699,7 @@ export async function analyzeWithFresh(
   };
 
   const outcome = await runRecovery(
-    { analysisId, snapshotId: activeSnapshot, scope: { type: 'whole' }, bundle },
+    { analysisId, projectName: beginState.identity.projectName, snapshotId: activeSnapshot, scope: { type: 'whole' }, bundle },
     {
       llm,
       budget: caps.budget?.(),

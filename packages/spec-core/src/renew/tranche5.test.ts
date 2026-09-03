@@ -104,7 +104,7 @@ describe('pipeline usage and persist arms', () => {
     };
     let saved: AnalysisRecord | undefined;
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
       { ...depsFor(adapter, target, (r) => { saved = r; return { ok: true as const }; }, sealedFor(bundle)) },
     );
     expect(outcome.ok).toBe(true);
@@ -119,7 +119,7 @@ describe('pipeline usage and persist arms', () => {
     const { target, hash } = setupTarget();
     const alwaysBad: LlmAdapter = { complete: async () => ({ text: 'garbage' }) };
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
       depsFor(alwaysBad, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' })),
     );
     expect(outcome.ok).toBe(false);
@@ -133,14 +133,14 @@ describe('pipeline usage and persist arms', () => {
     // No slices in the bundle → insufficient context path.
     const bare: ContextBundle = { scope: {}, items: [], truncated: false, total_chars: 0, warnings: [], insufficient_context: true };
     const o1 = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bare },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bare },
       depsFor(empty, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' })),
     );
     expect(o1.ok).toBe(false);
     if (!o1.ok) expect(o1.code).toBe('persist_failed');
     // Empty output over a non-empty context → blocked_empty path.
     const o2 = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
       depsFor(empty, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' })),
     );
     expect(o2.ok).toBe(false);
@@ -151,7 +151,7 @@ describe('pipeline usage and persist arms', () => {
     const { target, hash } = setupTarget();
     const adapter: LlmAdapter = { complete: async () => ({ text: JSON.stringify({ hypotheses: [], uncertainties: [], coverage_notes: [] }) }) };
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
       {
         ...depsFor(adapter, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' })),
         recheckFreshness: () => ({ ok: false as const, reasons: ['file_changed'] }),
@@ -171,7 +171,7 @@ describe('pipeline usage and persist arms', () => {
     const adapter: LlmAdapter = { complete: async () => ({ text: responses[i++] ?? 'x' }) };
     await expect(
       runRecovery(
-        { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
+        { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
         { ...depsFor(adapter, target, () => ({ ok: true as const })), budget: ledger },
       ),
     ).rejects.toThrow(/BUDGET_EXCEEDED/);

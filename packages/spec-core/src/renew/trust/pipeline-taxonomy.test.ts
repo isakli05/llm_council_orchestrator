@@ -60,7 +60,7 @@ describe('D-3: wire-cap refusals are budget blocks, never transport failures', (
 
   it('first-call cap refusal → blocked_prompt_budget with retry_used false', async () => {
     const out = await runRecovery(
-      { analysisId: 'AN-0001', snapshotId: 'RSN-0123456789abcdef', scope: { type: 'whole' }, bundle: oneSliceBundle() },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', scope: { type: 'whole' }, bundle: oneSliceBundle() },
       deps() as never,
     );
     expect(out.ok).toBe(false);
@@ -82,7 +82,7 @@ describe('D-3: wire-cap refusals are budget blocks, never transport failures', (
       },
     };
     const out = await runRecovery(
-      { analysisId: 'AN-0002', snapshotId: 'RSN-0123456789abcdef', scope: { type: 'whole' }, bundle: oneSliceBundle() },
+      { analysisId: 'AN-0002', projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', scope: { type: 'whole' }, bundle: oneSliceBundle() },
       deps({ llm: singleRoutePlan(retryAdapter, { gateway: 's', providerKind: 'openai-compatible' as const, requestedModel: 'm' }) }) as never,
     );
     expect(out.ok).toBe(false);
@@ -112,7 +112,7 @@ describe('D-1: transport failure persists the LEDGER truth, not zeros', () => {
       },
     };
     const out = await runRecovery(
-      { analysisId: 'AN-0003', snapshotId: 'RSN-0123456789abcdef', scope: { type: 'whole' }, bundle: oneSliceBundle() },
+      { analysisId: 'AN-0003', projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', scope: { type: 'whole' }, bundle: oneSliceBundle() },
       {
         llm: singleRoutePlan(adapter, { gateway: 's', providerKind: 'openai-compatible' as const, requestedModel: 'm' }),
         nowIso: '2026-09-03T00:00:00Z',

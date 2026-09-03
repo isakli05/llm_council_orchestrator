@@ -377,8 +377,11 @@ export function requireStructuralGraph(args: {
   manifestText: string | undefined;
   graphText: string;
   bindingText: string | undefined;
+  /** Optional identity joins (S4-H-04 hardening: e.g. the adapter's probed
+   *  graphify version cross-checked against the binding's claim). */
+  expected?: { graphifyVersion?: string; manifestDigest?: string; graphDigest?: string };
   source?: string;
-}): { identity: StructuralIdentity; graph: ReturnType<typeof parseGraphText> extends never ? never : import('../intel/graph-reader').ParsedGraph } {
+}): { identity: StructuralIdentity; graph: import('../intel/graph-reader').ParsedGraph } {
   const identity = requireStructuralIdentity(args);
   const parsed = parseGraphText(args.graphText);
   if (!parsed.ok) throw new TrustStructuralError('graph_invalid', parsed.message);

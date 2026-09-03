@@ -7,6 +7,7 @@ import { StaticGraphProvider } from '../intel/fixture-provider';
 import { parseGraphText } from '../intel/graph-reader';
 import { renewalPaths } from '../core/project-record';
 import { loadActiveState, readRevision, runRenewalStateTx, type StateMutationPlan } from './state';
+import { structuralBindingPath } from './structural';
 import { sealContextBundle, resolveCitation } from './evidence';
 import type { ParityStore } from '../core/store-records';
 import { applyApprovalToParity, addParityEntry } from '../parity/ledger';
@@ -133,6 +134,74 @@ describe('Composition — StateTransaction × AuthorityGrant (S4 closure)', () =
   });
 });
 
+describe('Composition — V4 verifier finding regression: the recheck bracket requires the binding', () => {
+  it('a binding DELETED DURING the paid call blocks promotion (never fresh over an unbound workspace)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    // The adapter deletes the binding MID-CALL: the post-call bracket must
+    // classify the workspace stale, not promote over the unbound state.
+    const scripted = {
+      forRole: () => ({
+        adapter: {
+          complete: async () => {
+            rmSync(structuralBindingPath(paths.workspace), { force: true });
+            return { text: JSON.stringify({ hypotheses: [], uncertainties: [], coverage_notes: [] }) };
+          },
+        } as never,
+        identity: { gateway: 'g', providerKind: 'openai-compatible' as const, requestedModel: 'm' },
+      }),
+    };
+    const caps: RenewCapabilities = {
+      nowIso: () => '2026-09-03T00:00:03Z',
+      provider: () => provider,
+      gitCommit: () => undefined,
+      llm: () => scripted,
+    };
+    const r = await init.cmdRenewAnalyze({ dir: project, scope: 'whole' }, caps);
+    expect(r.code).not.toBe(0);
+    expect(r.output).toMatch(/binding_missing|stale|BLOCKED/i);
+    // nothing promoted: the stores are still the empty init stores
+    const state = loadActiveState(project);
+    if (!state.parity.ok) throw new Error('parity missing');
+    expect(state.parity.store.records).toHaveLength(0);
+  });
+});
+
+describe('Composition — V2 verifier finding regression: pipeline project join', () => {
+  it('a self-consistent bundle sealed for a DIFFERENT project is refused at the pipeline entry (zero paid calls)', async () => {
+    const { runRecovery } = await import('../recovery/pipeline');
+    const foreign = sealContextBundle({
+      projectName: 'other-project',
+      snapshotId: 'RSN-0123456789abcdef', // coincident snapshot id
+      slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+    });
+    let transports = 0;
+    await expect(
+      runRecovery(
+        { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', scope: {}, bundle: { scope: {}, items: [], truncated: false, total_chars: 0, warnings: [] } as never },
+        {
+          llm: {
+            forRole: () => ({
+              adapter: { complete: async () => { transports++; throw new Error('must not transport'); } } as never,
+              identity: { gateway: 'g', providerKind: 'openai-compatible' as const, requestedModel: 'm' },
+            }),
+          } as never,
+          nowIso: 't',
+          targetRoot: '/nonexistent',
+          context: foreign,
+          persist: () => ({ ok: true as const }),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'context_project_mismatch' });
+    expect(transports).toBe(0);
+  });
+});
+
 describe('Composition — StructuralIdentity × PaidOperation (S4 closure)', () => {
   it('mismatched Graphify artifacts block BEFORE any paid transport identity exists', async () => {
     const { project } = await freshProject();
@@ -223,7 +292,7 @@ describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', 
     const { runRecovery } = await import('../recovery/pipeline');
     await expect(
       runRecovery(
-        { analysisId: 'AN-0001', snapshotId: after.identity.snapshotId, scope: { type: 'whole' }, bundle: { scope: {}, items: [], truncated: false, total_chars: 0, warnings: [] } as never },
+        { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: after.identity.snapshotId, scope: { type: 'whole' }, bundle: { scope: {}, items: [], truncated: false, total_chars: 0, warnings: [] } as never },
         {
           llm: stale as never,
           nowIso: 't',

@@ -195,6 +195,7 @@ function depsFor(adapter: LlmAdapter, budget?: ReturnType<typeof createBudgetLed
 
 const requestFor = (bundle: ContextBundle) => ({
   analysisId: 'AN-0001',
+  projectName: 'legacy-renewal',
   snapshotId: 'RSN-deadbeefdeadbeef',
   scope: bundle.scope,
   bundle,

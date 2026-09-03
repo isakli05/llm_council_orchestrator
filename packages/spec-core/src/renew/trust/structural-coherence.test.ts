@@ -218,6 +218,21 @@ describe('S4-H-04: the adapter consumes ONLY verified structural state (bypass 8
     }
   });
 
+  it('V4 hardening: a binding claiming a DIFFERENT graphify version than the probed one refuses (version cross-check)', async () => {
+    const ws = workspaceWith('a');
+    // re-seal the workspace with a binding claiming 0.9.53 while the adapter probes 0.9.50
+    const a = artifactSet('a');
+    const { computeStructuralBinding } = await import('./structural');
+    const claimed = computeStructuralBinding({ manifestText: a.manifestText, graphText: a.graphText, graphifyVersion: '0.9.53', nowIso: '2026-09-03T00:00:00Z' });
+    if (!claimed.ok) throw new Error(claimed.message);
+    writeFileSync(structuralBindingPath(ws), `${JSON.stringify(claimed.binding, null, 2)}\n`);
+    const adapter = new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: fakeRunner() as never });
+    await adapter.probe(); // stamps 0.9.50
+    const g = await adapter.graph();
+    expect(g.ok).toBe(false);
+    if (!g.ok) expect(g.code).toBe('incompatible');
+  });
+
   it('graphHealth maps coherence failures to the coherence_failed state (never healthy)', async () => {
     const ws = workspaceWith('a', { bind: false });
     const adapter = new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: fakeRunner() as never });
