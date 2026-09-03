@@ -78,20 +78,28 @@ const WRITE_PRIMITIVES = [
   "from 'node:fs/promises'",
   `require("node:fs")`,
   "require('node:fs')",
+  "import('node:fs",
+  'import("node:fs',
+  "import { promises } from 'node:fs'",
+  'import { promises } from "node:fs"',
+  'import{promises',
   'eval(',
   'new Function(',
+  'Function(',
 ];
 
 describe('architecture: no trusted filesystem writes outside FilesystemCapability', () => {
   it('renewal-surface production files contain no direct write primitives', () => {
-    // NOTE on promises-form detection: bare `writeFile(...)`-style calls are
-    // unreachable without an import route that is ITSELF banned outright —
-    // the `fs.promises` token, `from 'node:fs/promises'`, and dynamic
-    // `require('node:fs')`/eval are all in WRITE_PRIMITIVES as substrings, so
-    // every import path to those functions trips the scan before any call
-    // shape matters (verifier F-1's aliasing concern is covered for the same
-    // reason: an aliased import still carries the original name in its
-    // import line).
+    // HONEST SCOPE (re-verifier M-2): this scan is an anti-accident TRIPWIRE,
+    // not containment. It catches the static-import/call-site routes a
+    // well-intentioned developer writes by accident. It does NOT catch:
+    // capability detachment (const w = fs.writeFile; w(...)), named
+    // destructuring from plain 'node:fs' (`import { promises } from
+    // 'node:fs'` — E3), computed-member indirection, or write helpers
+    // exported by non-scanned modules called from the surface (E4/E7/E8) —
+    // those are inherent limits of a lexical scan; the typed kernel API and
+    // code review are the containment for them. Dynamic-import routes
+    // (import('node:fs'…) are banned as tokens.
     const violations: string[] = [];
     for (const file of renewalSurface()) {
       const text = readFileSync(file, 'utf8');
@@ -124,7 +132,7 @@ describe('architecture: paid transport only through ResolvedPaidOperation discip
     for (const file of renewalSurface()) {
       readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
         const trimmed = line.trim();
-        if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) return;
+        if (trimmed.startsWith('*') || trimmed.startsWith('//')) return; // '/* parked */ code' is CODE (E9)
         for (const fn of forbidden) {
           if (line.includes(fn)) violations.push(`${REL(file)}:${i + 1}: ${fn}`);
         }

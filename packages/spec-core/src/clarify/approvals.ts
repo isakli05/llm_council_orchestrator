@@ -155,7 +155,13 @@ export function writeApprovalArtifacts(
   record: ApprovalRecord,
   opts: { replacing: boolean },
 ): void {
-  const lock = acquireSpecRootLock(dir, record.approvedAt);
+  // VB-1 (verifier, born-stale lock class): the lock timestamp is read at
+  // ACQUISITION time — `record.approvedAt` is a build-time clock that may be
+  // seconds old by the time the lock is taken, which would make every such
+  // lock born-stale. The record's own approvedAt stays untouched (caller
+  // semantics); only the acquisition stamp is fresh, exactly like
+  // trust/state.ts.
+  const lock = acquireSpecRootLock(dir, new Date().toISOString());
   const specDir = join(dir, 'spec');
   const approvalsDir = join(dir, 'approvals');
   const approvalPath = join(approvalsDir, approvalFileName(record.revision));

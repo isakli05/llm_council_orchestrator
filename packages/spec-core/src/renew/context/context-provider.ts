@@ -253,8 +253,8 @@ export class GraphContextProvider implements ContextProvider {
         // Verifier C-1 (HIGH): the citable window must never be broader than
         // the RENDERED text. Truncating characters while keeping the full
         // line window let citations cover an invisible tail. Narrow the
-        // window to the last RENDERED line; the truncation marker rides the
-        // final rendered line.
+        // window to the last RENDERED line; the truncation marker is appended
+        // as its own line AFTER the kept text and is not part of the window.
         const rendered = text.slice(0, this.limits.maxFileSliceChars);
         const lastNewline = rendered.lastIndexOf('\n');
         const kept = lastNewline > 0 ? rendered.slice(0, lastNewline) : rendered;

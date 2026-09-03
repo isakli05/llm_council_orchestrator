@@ -135,6 +135,12 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       if (typeof spentAttempts === 'number' && spentAttempts > usage.attempts) {
         usage.attempts = spentAttempts;
         usage.calls = Math.max(usage.calls, 1);
+      } else if (deps.budget === undefined) {
+        // Re-verifier L-1: with no ledger there is no truth source — but at
+        // least ONE complete() was attempted; never persist a zero-call
+        // record over an attempted paid call.
+        usage.attempts = Math.max(usage.attempts, 1);
+        usage.calls = Math.max(usage.calls, 1);
       }
       // H-05: a transport failure still consumed wall-clock and possibly
       // spend — record the honest failed-call trail, then surface the typed
@@ -306,7 +312,10 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
         coverage_notes: [],
         usage: { ...usage },
       };
-      return { ok: false, code: 'blocked_prompt_budget', record: wireRecord };
+      // Re-verifier M-1: the immutable spend trail is persisted for EVERY
+      // blocked arm — the retry arm may carry a completed paid call.
+      const w = deps.persist(wireRecord);
+      return w.ok ? { ok: false, code: 'blocked_prompt_budget', record: wireRecord } : { ok: false, code: 'persist_failed', message: w.message, record: wireRecord };
     }
     // Transport failure: the failed-call record was already persisted by
     // complete(); surface the typed outcome so callers exit non-zero.
@@ -355,7 +364,8 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
           coverage_notes: [],
           usage: { ...usage },
         };
-        return { ok: false, code: 'blocked_prompt_budget', record: wireRecord };
+        const w = deps.persist(wireRecord);
+        return w.ok ? { ok: false, code: 'blocked_prompt_budget', record: wireRecord } : { ok: false, code: 'persist_failed', message: w.message, record: wireRecord };
       }
       return { ok: false, code: 'transport_failed', record: { ...baseRecord, model: routeIdentity, outcome: 'transport_failed', validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20).map(scrubDiagnostic), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 }, promoted: { hypotheses: [], uncertainties: [] }, rejected: [], coverage_notes: [], usage: { ...usage } } };
     }
