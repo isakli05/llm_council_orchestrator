@@ -93,6 +93,14 @@ export interface ActiveRenewalState {
  *  trusted read) and deterministically recovered — see recoverTxJournal. */
 export function readRevision(projectDir: string): number {
   const paths = renewalPaths(projectDir);
+  if (existsSync(abortEvidencePath(projectDir))) {
+    throw new TrustStateError(
+      'recovery_required',
+      `a transaction aborted with in-flight writes while a concurrent writer owned the journal ` +
+        `(${abortEvidencePath(projectDir)}) — the on-disk state may combine both writers. Inspect the trusted ` +
+        `state after review, then remove the evidence file; recovery refuses to guess`,
+    );
+  }
   if (existsSync(paths.journal)) {
     recoverTxJournal(projectDir, paths);
   }
@@ -522,6 +530,13 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
 
     if (revisionMoved) {
       if (activeJournalDir === projectDir) activeJournalDir = null;
+      // When the journal path is FOREIGN, no marker of ours can be written
+      // and B's completion will remove the last authority — performed>0 then
+      // means our bytes may sit over B's commit with NO surviving evidence.
+      // The sidecar (a separate path) fail-closes reads past B's removal.
+      if (performed > 0 && !ours && journalOnDisk(projectDir, paths) !== undefined) {
+        writeAbortEvidence(projectDir, journal, performed);
+      }
       // The marker is evidence ONLY over our own journal (or an empty path);
       // a foreign journal belongs to the concurrent writer and stays theirs.
       if (ours || journalOnDisk(projectDir, paths) === undefined) {
@@ -545,10 +560,11 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
 
     if (!ours) {
       // Revision unchanged but the journal is NOT ours: a concurrent writer
-      // consumed ours and is mid-commit (or crashed). Do NOT roll back — our
-      // performed writes will be superseded by their completion or recovered
-      // by THEIR journal. Any write of ours here is a lost-update machine.
+      // consumed ours and is mid-commit (or crashed). Do NOT roll back — the
+      // zombie byte we may already have landed cannot be unsafely rewritten
+      // here; leave fail-closed evidence and let review/their-recovery decide.
       if (activeJournalDir === projectDir) activeJournalDir = null;
+      if (performed > 0) writeAbortEvidence(projectDir, journal, performed);
       throw new TrustStateError(
         'recovery_required',
         `trusted-state commit aborted (${cause.message}) while another writer owns the transaction journal — ` +
@@ -594,6 +610,36 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
           `deterministically. Re-run the operation after recovery.`,
       );
     }
+  }
+}
+
+/** The abort-evidence SIDECAR path (final-V1 zombie-byte closure): written
+ *  by a committer whose abort may have left in-flight bytes on disk while a
+ *  concurrent writer owned the journal path. It NEVER conflicts with any
+ *  journal (separate file) and fail-closes trusted reads until manual
+ *  recovery — the alternative was a silently-torn pair. */
+function abortEvidencePath(projectDir: string): string {
+  return join(renewalPaths(projectDir).journal, '..', 'tx-abort-evidence.json');
+}
+
+/** Best-effort sidecar write; the typed refusal is the fallback evidence. */
+function writeAbortEvidence(projectDir: string, journal: TxJournalFile, performed: number): void {
+  try {
+    persistTrustedJson({
+      projectDir,
+      path: abortEvidencePath(projectDir),
+      value: {
+        schema_version: 1,
+        holder: journal.holder,
+        base_revision: journal.base_revision,
+        performed_steps: performed,
+        evidence: 'a transaction aborted while another writer owned the journal path; in-flight bytes may have landed over the concurrent commit',
+        written_at: new Date().toISOString(),
+        remedy: 'inspect the trusted state against both writers, then remove tx-abort-evidence.json',
+      },
+    });
+  } catch {
+    // the typed refusal below is the remaining evidence
   }
 }
 
