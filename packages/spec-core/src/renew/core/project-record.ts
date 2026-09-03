@@ -35,6 +35,9 @@ export interface RenewalPaths {
   specDir: string;
   /** INV-B2: monotonic trusted-state revision counter (state.json). */
   state: string;
+  /** S4-H-01: the all-or-nothing transaction journal (tx-journal.json). Its
+   *  presence means a commit is in flight or a committer died mid-commit. */
+  journal: string;
 }
 
 export function renewalPaths(dir: string): RenewalPaths {
@@ -50,5 +53,6 @@ export function renewalPaths(dir: string): RenewalPaths {
     approvals: join(dir, 'approvals'),
     specDir: join(dir, 'spec'),
     state: join(root, 'state.json'),
+    journal: join(root, 'tx-journal.json'),
   };
 }

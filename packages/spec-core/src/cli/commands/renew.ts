@@ -26,31 +26,28 @@ import { GraphContextProvider } from '../../renew/context/context-provider';
 import { buildArchitectureView } from '../../renew/archview/architecture-view';
 import { runRecovery } from '../../renew/recovery/pipeline';
 import { nextAnalysisId, persistAnalysisRecord } from '../../renew/recovery/analysis-store';
-import { addOverlayRecord, emptyOverlay, persistOverlay } from '../../renew/overlay/overlay';
-import { addParityEntry, applyApprovalToParity, emptyParity, persistParity } from '../../renew/parity/ledger';
+import { addOverlayRecord, emptyOverlay } from '../../renew/overlay/overlay';
+import { addParityEntry, applyApprovalToParity, emptyParity } from '../../renew/parity/ledger';
 import { makeRenewalDriver, STRATEGY_CLAIM_ID } from '../../renew/clarify/distiller';
 import { createRenewalClarifySession } from '../../renew/clarify/session';
 import { nextRenewalApprovalId, writeRenewalApproval } from '../../renew/clarify/approvals';
-import { buildStrategyDecision, persistStrategy, MODERNIZATION_STRATEGIES } from '../../renew/planner/strategy';
+import { buildStrategyDecision, MODERNIZATION_STRATEGIES } from '../../renew/planner/strategy';
 import { buildModernizationPlan } from '../../renew/planner/plan';
 import {
   loadRenewalProject,
-  persistRenewalProject,
-  persistSnapshotFile,
   renewalPaths,
   loadSnapshotFile,
-  supersedeRenewalStores,
   authorizeRenewalState,
 } from '../../renew/project/project';
 import {
-  bumpStateRevisionTrusted,
   loadActiveState,
   runRenewalStateTx,
-  withRenewalWriterLock,
+  runJournaledRenewalMutation,
+  refreshArchiveEntries,
   type ActiveRenewalState,
+  type StateMutationPlan,
 } from '../../renew/trust/state';
 import {
-  authorizedCreateDirAtomically,
   authorizedEnsureDir,
   authorizedRead,
   authorizedRemoveTree,
@@ -276,53 +273,66 @@ export async function cmdRenewInit(
     const snap = loadSnapshotFile(args.dir);
     return snap.ok ? snap.snapshot.snapshot_id : 'unknown';
   };
-  return withRenewalWriterLock(args.dir, caps.nowIso(), () => {
-    if (beginState !== undefined) {
-      const fresh = loadActiveState(args.dir);
-      if (fresh.identity.snapshotId !== beginState.identity.snapshotId || fresh.identity.revision !== beginState.identity.revision) {
+  // S4-H-01: the whole epoch-rebind write set (dirs, supersession archives,
+  // snapshot, project, first-init stores, revision) commits as ONE journaled
+  // mutation — a crash or failure mid-refresh can no longer leave a torn
+  // snapshot/project/store combination at the old revision.
+  const oldEpoch = args.force ? (beginState?.identity.snapshotId ?? recoverEpochId()) : undefined;
+  const archive = oldEpoch !== undefined ? refreshArchiveEntries(paths, oldEpoch) : [];
+  return runJournaledRenewalMutation({
+    projectDir: args.dir,
+    nowIso: caps.nowIso(),
+    ...(beginState !== undefined
+      ? { expected: { snapshotId: beginState.identity.snapshotId, revision: beginState.identity.revision } }
+      : {}),
+    mutation: {
+      ensureDirs: [join(args.dir, '.lco', 'renewal'), paths.analyses, paths.approvals],
+      ...(archive.length > 0 ? { archive } : {}),
+      snapshot,
+      project: {
+        schema_version: 1,
+        name: args.name ?? 'legacy-renewal',
+        target_path: targetReal,
+        created_at: caps.nowIso(),
+        snapshot_id: snapshot.snapshot_id,
+      },
+      // Overlay/parity stores are created empty on FIRST init only (post-
+      // archive they are absent, so the same conditional holds).
+      ...(existsSync(paths.overlay) && !archive.some((a) => a.from === paths.overlay)
+        ? {}
+        : { overlay: emptyOverlay(snapshot.snapshot_id) }),
+      ...(existsSync(paths.parity) && !archive.some((a) => a.from === paths.parity)
+        ? {}
+        : { parity: emptyParity(snapshot.snapshot_id) }),
+    },
+  })
+    .then(() => {
+      const excluded = walk.excluded;
+      return {
+        code: 0,
+        output: [
+          `renewal project ready: ${args.dir}`,
+          `  snapshot ${snapshot.snapshot_id} (${walk.manifest.length} files hashed, graphify ${version}, ${graph.graph.nodes.length} nodes / ${graph.graph.edges.length} edges)`,
+          `  excluded: ${excluded.denied.length} denied, ${excluded.binary.length} binary, ${excluded.oversize.length} oversize, ${excluded.symlink.length} symlink`,
+          `  next: lco renew analyze ${args.dir}  (PAID — makes LLM calls)`,
+        ].join('\n'),
+      } as RenewResult;
+    })
+    .catch((e: Error & { domain?: string; code?: string }) => {
+      if (e.domain === 'trust:state' && (e.code === 'snapshot_superseded' || e.code === 'stale_revision')) {
         return {
           code: 1,
-          output:
-            `refresh refused: renewal state changed during the graph rebuild (snapshot ${beginState.identity.snapshotId} → ` +
-            `${fresh.identity.snapshotId}, revision ${beginState.identity.revision} → ${fresh.identity.revision}) — re-run the refresh`,
-        };
+          output: `refresh refused: renewal state changed during the graph rebuild — re-run the refresh`,
+        } as RenewResult;
       }
-    }
-    authorizedEnsureDir({ projectDir: args.dir, path: join(args.dir, '.lco', 'renewal') });
-    authorizedEnsureDir({ projectDir: args.dir, path: paths.analyses });
-    authorizedEnsureDir({ projectDir: args.dir, path: paths.approvals });
-    if (args.force) {
-      // C-05 + S3-H-04: refresh is an EXPLICIT state transition. Per-snapshot
-      // stores — overlay, parity, strategy, AND spec — are archived under
-      // their old snapshot id (no-clobber; VB-2 recovery uses the snapshot
-      // file's own epoch when the joined view is torn); analyses/approvals
-      // are retained as immutable history.
-      supersedeRenewalStores(args.dir, paths, beginState?.identity.snapshotId ?? recoverEpochId());
-    }
-    persistSnapshotFile(args.dir, snapshot);
-    persistRenewalProject(args.dir, {
-      schema_version: 1,
-      name: args.name ?? 'legacy-renewal',
-      target_path: targetReal,
-      created_at: caps.nowIso(),
-      snapshot_id: snapshot.snapshot_id,
-    });
-    // Overlay/parity stores are created empty on FIRST init only.
-    if (!existsSync(paths.overlay)) persistOverlay(args.dir, paths.overlay, emptyOverlay(snapshot.snapshot_id));
-    if (!existsSync(paths.parity)) persistParity(args.dir, paths.parity, emptyParity(snapshot.snapshot_id));
-    // INV-B2: init/refresh is itself a trusted-state transition.
-    bumpStateRevisionTrusted(args.dir);
-    const excluded = walk.excluded;
-    return {
-      code: 0,
-      output: [
-        `renewal project ready: ${args.dir}`,
-        `  snapshot ${snapshot.snapshot_id} (${walk.manifest.length} files hashed, graphify ${version}, ${graph.graph.nodes.length} nodes / ${graph.graph.edges.length} edges)`,
-        `  excluded: ${excluded.denied.length} denied, ${excluded.binary.length} binary, ${excluded.oversize.length} oversize, ${excluded.symlink.length} symlink`,
-        `  next: lco renew analyze ${args.dir}  (PAID — makes LLM calls)`,
-      ].join('\n'),
-    };
-  }).then((r) => {
+      if (e.domain === 'trust:state') {
+        // S4-H-01: a journaled commit failure is a typed refusal (rolled back
+        // or recovery-required) — never a partial epoch.
+        return { code: 1, output: `refresh failed (${e.code}): ${e.message}` } as RenewResult;
+      }
+      throw e;
+    })
+    .then((r) => {
     if (r.code !== 0 || !args.force) return r;
     return {
       ...r,
@@ -730,7 +740,9 @@ export async function analyzeWithFresh(
       expected: { snapshotId: activeSnapshot, revision: beginState.identity.revision },
       policy: 'additive',
       work: () => undefined,
-      commit: (fresh) => {
+      // S4-H-01: the fold COMPUTES the next store values as data; the kernel
+      // performs the journaled all-or-nothing commit (overlay+parity+revision).
+      plan: (fresh) => {
         const foldOverlay = fresh.overlay;
         const foldParity = fresh.parity;
         if (!foldOverlay.ok || !foldParity.ok) {
@@ -777,8 +789,7 @@ export async function analyzeWithFresh(
           );
           if (target !== undefined) target.decision_claim_id = a.id;
         }
-        persistOverlay(dir, paths.overlay, overlayStore);
-        persistParity(dir, paths.parity, parityStore);
+        return { mutation: { overlay: overlayStore, parity: parityStore }, result: undefined };
       },
     });
   } catch (e) {
@@ -987,7 +998,9 @@ async function finishReview(
       expected: { snapshotId: state.identity.snapshotId, revision: state.identity.revision },
       policy: 'additive',
       work: () => undefined,
-      commit: (fresh) => {
+      // S4-H-01: the fold computes next values; the kernel commits them
+      // atomically (parity + optional strategy + revision).
+      plan: (fresh) => {
         const foldParity = fresh.parity;
         if (!foldParity.ok) {
           throw Object.assign(
@@ -1013,9 +1026,13 @@ async function finishReview(
               })
             : undefined;
 
-        persistParity(dir, paths.parity, parityStore);
-        if (strategyDecision !== undefined) persistStrategy(dir, paths.strategy, strategyDecision);
-        return parityStore.records.filter((r) => r.ruling === 'unresolved').length;
+        return {
+          mutation: {
+            parity: parityStore,
+            ...(strategyDecision !== undefined ? { strategy: strategyDecision } : {}),
+          },
+          result: parityStore.records.filter((r) => r.ruling === 'unresolved').length,
+        };
       },
     });
     return {
@@ -1234,23 +1251,20 @@ export async function cmdRenewPlan(
         }
         return { ok: true as const, bundle: planBuilt.bundle, topoOrder: planBuilt.topoOrder };
       },
-      commit: (_fresh, workResult) => {
-        if (!workResult.ok) return workResult;
-        // S3-H-04 shadow: a pre-refresh spec cannot survive here (refresh
-        // archives it), and the tx re-validated the epoch — write the spec
-        // inside the critical section through the AUTHORIZED primitive
-        // (verifier VB-3: the raw staging core is not a kernel boundary).
-        authorizedCreateDirAtomically({
-          projectDir: args.dir,
-          targetDir: join(args.dir, 'spec'),
-          files: specDirFiles(workResult.bundle),
-        });
-        if (flagStrategyDecision !== undefined) {
-          persistStrategy(args.dir, paths.strategy, flagStrategyDecision);
-        }
+      // S4-H-01: the spec directory and the optional strategy decision are
+      // TYPED mutation entries; the kernel creates the dir atomically and
+      // commits journaled all-or-nothing with the revision bump.
+      plan: (_fresh, workResult): { mutation: StateMutationPlan; result: { ok: false; code: number; output: string } | { ok: true; output: string } } => {
+        if (!workResult.ok) return { mutation: {}, result: workResult };
         return {
-          ok: true as const,
-          output: `plan written: ${join(args.dir, 'spec')} (${workResult.bundle.tasks.length} task(s), topo order ${workResult.topoOrder.join(' → ')})`,
+          mutation: {
+            specDir: { files: specDirFiles(workResult.bundle) },
+            ...(flagStrategyDecision !== undefined ? { strategy: flagStrategyDecision } : {}),
+          },
+          result: {
+            ok: true as const,
+            output: `plan written: ${join(args.dir, 'spec')} (${workResult.bundle.tasks.length} task(s), topo order ${workResult.topoOrder.join(' → ')})`,
+          },
         };
       },
     });

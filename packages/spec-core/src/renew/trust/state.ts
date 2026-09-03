@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, renameSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireSpecRootLock, type SpecRootLock } from '../../storage/revision';
 import { tryRealpath } from '../../storage/paths';
@@ -8,8 +8,9 @@ import { parseOverlayStore, type OverlayStore } from '../core/store-records';
 import { parseParityStore, type ParityStore } from '../core/store-records';
 import { parseStrategyDecision, type StrategyDecision } from './authority';
 import { AnalysisRecordSchema, type AnalysisRecord } from '../recovery/schemas';
-import { authorizedRead, authorizedWrite, authorizeProjectDestination, authorizedRenameNoClobber } from './fs';
+import { authorizedRead, authorizedWrite, authorizeProjectDestination, authorizedRenameNoClobber, authorizedEnsureDir, authorizedRemoveTree, authorizedCreateDirAtomically } from './fs';
 import { TrustStateError } from './errors';
+import { domainDigest } from './canonical';
 
 /**
  * Trust Kernel — RenewalStateTransaction (third-audit S3-H-03, S3-H-04,
@@ -87,9 +88,15 @@ export interface ActiveRenewalState {
 }
 
 /** Read + parse state.json — the FIRST trusted read (corrupt fails closed).
- *  Exported for the domain wrapper (project.readStateRevision). */
+ *  Exported for the domain wrapper (project.readStateRevision).
+ *  S4-H-01: a leftover transaction journal is detected HERE (the first
+ *  trusted read) and deterministically recovered — see recoverTxJournal. */
 export function readRevision(projectDir: string): number {
-  const path = renewalPaths(projectDir).state;
+  const paths = renewalPaths(projectDir);
+  if (existsSync(paths.journal)) {
+    recoverTxJournal(projectDir, paths);
+  }
+  const path = paths.state;
   if (!existsSync(path)) return 0;
   let text: string;
   try {
@@ -313,6 +320,275 @@ export async function withRenewalWriterLock<T>(projectDir: string, nowIso: strin
   }
 }
 
+// --- the typed write set + journaled atomic commit (S4-H-01) ---------------------------
+
+/** One planned trusted-state change, expressed as DATA. The kernel — never a
+ *  consumer callback — performs every write, journals the previous state, and
+ *  advances the revision: an arbitrary write-performing `commit` callback is
+ *  unrepresentable (the Fourth Audit proved such callbacks can leave store A
+ *  changed at the old revision when store B's write fails). */
+export interface StateMutationPlan {
+  /** Full-store replacements (kernel writes via persistTrustedJson semantics). */
+  overlay?: OverlayStore;
+  parity?: ParityStore;
+  strategy?: StrategyDecision;
+  /** Refresh/init rebind. */
+  project?: RenewalProject;
+  snapshot?: ProjectSnapshot;
+  /** Plan-time spec directory (atomic create; must not already exist). */
+  specDir?: { files: { name: string; content: unknown }[] };
+  /** No-clobber renames (refresh supersession archives). */
+  archive?: { from: string; to: string }[];
+  /** Directories to ensure exist (init only). */
+  ensureDirs?: string[];
+}
+
+/** One journaled undo step. `oldContent: null` means the path was ABSENT. */
+type TxJournalEntry =
+  | { kind: 'file'; path: string; oldContent: string | null }
+  | { kind: 'rename'; from: string; to: string }
+  | { kind: 'dir_create'; path: string }
+  | { kind: 'dir_ensure'; path: string; existed: boolean };
+
+interface TxJournalFile {
+  schema_version: 1;
+  holder: { pid: number; acquiredAt: string };
+  base_revision: number;
+  /** domainDigest('LCO:STATE_TX', 1, { base_revision, entries }) — a tampered
+   *  journal is REFUSED (never interpreted), because its old-bytes are the
+   *  recovery authority. */
+  integrity: `sha256:${string}`;
+  entries: TxJournalEntry[];
+}
+
+/** The in-flight journal of THIS process (skip-recovery marker: the committer
+ *  itself calls readRevision via the revision bump while its journal lives). */
+let activeJournalDir: string | null = null;
+
+function txJournalIntegrity(j: Omit<TxJournalFile, 'integrity'>): `sha256:${string}` {
+  return domainDigest('LCO:STATE_TX', 1, { base_revision: j.base_revision, entries: j.entries });
+}
+
+/** Build the journal for a plan by SIMULATING the canonical write order —
+ *  each entry captures the old state of its target GIVEN the effects of the
+ *  steps before it (a refresh archives overlay.json before writing the new
+ *  empty store, so the file entry for overlay records `null`, not the old
+ *  store bytes — the rename entry already owns those). */
+function planJournalEntries(projectDir: string, paths: ReturnType<typeof renewalPaths>, mutation: StateMutationPlan): TxJournalEntry[] {
+  const entries: TxJournalEntry[] = [];
+  // Virtual view of which paths have been moved/created by earlier steps.
+  const renamedAway = new Set<string>();
+  const readOld = (p: string): string | null => {
+    if (renamedAway.has(p)) return null;
+    if (!existsSync(p)) return null;
+    return authorizedRead({ projectDir, path: p });
+  };
+  const pushFile = (p: string): void => {
+    entries.push({ kind: 'file', path: p, oldContent: readOld(p) });
+  };
+
+  for (const dir of mutation.ensureDirs ?? []) {
+    entries.push({ kind: 'dir_ensure', path: dir, existed: existsSync(dir) });
+  }
+  for (const r of mutation.archive ?? []) {
+    if (!existsSync(r.from) && !renamedAway.has(r.from)) {
+      // Nothing to archive — the supersession set only includes what exists.
+      continue;
+    }
+    entries.push({ kind: 'rename', from: r.from, to: r.to });
+    renamedAway.add(r.from);
+  }
+  if (mutation.snapshot !== undefined) pushFile(paths.snapshot);
+  if (mutation.project !== undefined) pushFile(paths.projectJson);
+  if (mutation.overlay !== undefined) pushFile(paths.overlay);
+  if (mutation.parity !== undefined) pushFile(paths.parity);
+  if (mutation.strategy !== undefined) pushFile(paths.strategy);
+  if (mutation.specDir !== undefined) entries.push({ kind: 'dir_create', path: paths.specDir });
+  pushFile(paths.state); // the revision bump is the FINAL journaled write
+  return entries;
+}
+
+/** Perform the journaled mutation: journal → writes in canonical order →
+ *  revision → journal removal. Any failure rolls back in-process; a rollback
+ *  failure leaves the journal for deterministic crash recovery. The caller
+ *  holds the renewal writer lock. */
+function applyStateMutation(projectDir: string, mutation: StateMutationPlan): void {
+  const paths = renewalPaths(projectDir);
+  const entries = planJournalEntries(projectDir, paths, mutation);
+  const journal: TxJournalFile = {
+    schema_version: 1,
+    holder: { pid: process.pid, acquiredAt: new Date().toISOString() },
+    base_revision: readRevisionUnlocked(projectDir),
+    integrity: '' as `sha256:${string}`,
+    entries,
+  };
+  journal.integrity = txJournalIntegrity(journal);
+  activeJournalDir = projectDir;
+  persistTrustedJson({ projectDir, path: paths.journal, value: journal });
+  try {
+    // Canonical order (matches planJournalEntries' simulation exactly).
+    for (const dir of mutation.ensureDirs ?? []) authorizedEnsureDir({ projectDir, path: dir });
+    for (const r of mutation.archive ?? []) {
+      if (entries.some((e) => e.kind === 'rename' && e.from === r.from && e.to === r.to)) {
+        authorizedRenameNoClobber({ projectDir, from: r.from, to: r.to });
+      }
+    }
+    if (mutation.snapshot !== undefined) persistTrustedJson({ projectDir, path: paths.snapshot, value: mutation.snapshot });
+    if (mutation.project !== undefined) persistTrustedJson({ projectDir, path: paths.projectJson, value: mutation.project });
+    if (mutation.overlay !== undefined) persistTrustedJson({ projectDir, path: paths.overlay, value: mutation.overlay });
+    if (mutation.parity !== undefined) persistTrustedJson({ projectDir, path: paths.parity, value: mutation.parity });
+    if (mutation.strategy !== undefined) persistTrustedJson({ projectDir, path: paths.strategy, value: mutation.strategy });
+    if (mutation.specDir !== undefined) {
+      authorizedCreateDirAtomically({ projectDir, targetDir: paths.specDir, files: mutation.specDir.files as never });
+    }
+    // The revision bump — LAST, and itself journaled: a crash anywhere before
+    // this point recovers to complete revision R; after it, the journal is
+    // removed and revision R+1 with its full write set stands.
+    const next = journal.base_revision + 1;
+    persistTrustedJson({ projectDir, path: paths.state, value: { schema_version: 1, revision: next } });
+    removeJournal(projectDir, paths);
+  } catch (err) {
+    const cause = err as Error;
+    try {
+      rollbackJournal(projectDir, paths, journal);
+      removeJournal(projectDir, paths);
+      throw new TrustStateError(
+        'commit_failed_without_state_change',
+        `trusted-state commit failed and was ROLLED BACK to the previous complete revision (${cause.message}) — ` +
+          `no partial state was left behind; re-run the operation`,
+      );
+    } catch (rb) {
+      if (rb instanceof TrustStateError && rb.code === 'commit_failed_without_state_change') throw rb;
+      // The commit is over and the journal is now a DEAD ARTIFACT of this
+      // process — clear the in-flight marker so even a long-lived process
+      // (the MCP server) recovers deterministically on its next trusted read.
+      if (activeJournalDir === projectDir) activeJournalDir = null;
+      throw new TrustStateError(
+        'recovery_required',
+        `trusted-state commit failed (${cause.message}) AND rollback failed (${(rb as Error).message}) — ` +
+          `the transaction journal is retained; the next trusted read recovers the previous complete revision ` +
+          `deterministically. Re-run the operation after recovery.`,
+      );
+    }
+  }
+}
+
+function removeJournal(projectDir: string, paths: ReturnType<typeof renewalPaths>): void {
+  try {
+    if (existsSync(paths.journal)) authorizedRemoveTree({ projectDir, path: paths.journal });
+  } finally {
+    if (activeJournalDir === projectDir) activeJournalDir = null;
+  }
+}
+
+/** Reverse-apply journal entries (tolerant: a step never performed, or already
+ *  restored, is a no-op — the journal is the authority, and every restore is
+ *  idempotent). */
+function rollbackJournal(projectDir: string, _paths: ReturnType<typeof renewalPaths>, journal: TxJournalFile): void {
+  for (const entry of [...journal.entries].reverse()) {
+    if (entry.kind === 'file') {
+      if (entry.oldContent === null) {
+        if (existsSync(entry.path)) authorizedRemoveTree({ projectDir, path: entry.path });
+      } else {
+        authorizedWrite({ projectDir, path: entry.path, content: entry.oldContent, mode: 0o600 });
+      }
+    } else if (entry.kind === 'rename') {
+      if (existsSync(entry.to) && !existsSync(entry.from)) {
+        authorizedRenameNoClobber({ projectDir, from: entry.to, to: entry.from });
+      } else if (existsSync(entry.to) && existsSync(entry.from)) {
+        throw new TrustStateError('recovery_required', `journal rollback inconsistency at ${entry.from}/${entry.to} — manual inspection required`);
+      }
+    } else if (entry.kind === 'dir_create') {
+      if (existsSync(entry.path)) authorizedRemoveTree({ projectDir, path: entry.path });
+    } else {
+      if (!entry.existed && existsSync(entry.path)) authorizedRemoveTree({ projectDir, path: entry.path });
+    }
+  }
+}
+
+/** readRevision that never triggers recovery (used inside the committer). */
+function readRevisionUnlocked(projectDir: string): number {
+  const path = renewalPaths(projectDir).state;
+  if (!existsSync(path)) return 0;
+  let text: string;
+  try {
+    text = authorizedRead({ projectDir, path });
+  } catch {
+    throw new TrustStateError(
+      'state_corrupt',
+      `renewal state revision file unreadable (${path}) — inspect it after review; refusing to guess`,
+    );
+  }
+  try {
+    const parsed = JSON.parse(text) as { schema_version?: unknown; revision?: unknown };
+    if (parsed.schema_version === 1 && typeof parsed.revision === 'number' && Number.isInteger(parsed.revision) && parsed.revision >= 0) {
+      return parsed.revision;
+    }
+  } catch {
+    /* fall through to typed failure */
+  }
+  throw new TrustStateError(
+    'state_corrupt',
+    `renewal state revision file corrupt (${path}) — inspect or remove it after review; refusing to guess`,
+  );
+}
+
+/**
+ * Deterministic crash recovery (S4-H-01): a journal on disk means a committer
+ * died mid-commit — the trusted state is NOT interpreted as healthy. Under
+ * the writer lock (so recovery cannot interleave with a new committer), the
+ * journal is integrity-verified and reverse-applied, restoring the COMPLETE
+ * previous revision R; the journal is then removed. A journal belonging to a
+ * live committer (another writer holds the lock) is a typed refusal — retry.
+ * A tampered journal is refused, never interpreted. The caller does NOT hold
+ * the lock (this runs from the first trusted read).
+ */
+function recoverTxJournal(projectDir: string, paths: ReturnType<typeof renewalPaths>): void {
+  if (activeJournalDir === projectDir) return; // our own commit is in flight
+  const lockDir = renewalWriterLockDir(projectDir);
+  authorizeProjectDestination(projectDir, join(lockDir, '.lco-revision.lock'));
+  let lock: SpecRootLock;
+  try {
+    lock = acquireSpecRootLock(lockDir, new Date().toISOString());
+  } catch (e) {
+    throw new TrustStateError(
+      'recovery_required',
+      `an unfinished trusted-state transaction journal exists (${paths.journal}) and the writer lock is held ` +
+        `(${(e as Error).message}) — another writer may be committing, or a recent one died inside the stale window. ` +
+        `Retry shortly; recovery is deterministic once the lock frees.`,
+    );
+  }
+  try {
+    if (!existsSync(paths.journal)) return; // recovered by a concurrent reader
+    let journal: TxJournalFile;
+    try {
+      journal = JSON.parse(authorizedRead({ projectDir, path: paths.journal })) as TxJournalFile;
+    } catch (e) {
+      throw new TrustStateError(
+        'recovery_required',
+        `the trusted-state transaction journal is unreadable (${(e as Error).message}) — inspect ` +
+          `${paths.journal} manually; recovery refuses to guess`,
+      );
+    }
+    if (
+      journal.schema_version !== 1 ||
+      !Array.isArray(journal.entries) ||
+      typeof journal.base_revision !== 'number' ||
+      txJournalIntegrity(journal) !== journal.integrity
+    ) {
+      throw new TrustStateError(
+        'recovery_required',
+        `the trusted-state transaction journal failed integrity verification (${paths.journal}) — it is tampered ` +
+          `or of an unknown format; recovery refuses to interpret it. Inspect it after review.`,
+      );
+    }
+    rollbackJournal(projectDir, paths, journal);
+    authorizedRemoveTree({ projectDir, path: paths.journal });
+  } finally {
+    lock.release();
+  }
+}
+
 // --- the transaction ----------------------------------------------------------------------
 
 export interface TxExpectation {
@@ -324,20 +600,23 @@ export type TxFoldPolicy = 'additive' | 'strict';
 
 /**
  * The read-modify-write protocol for trusted renewal state. See the module
- * doc for the begin→work→commit flow and the two merge policies. `commit`
- * performs its writes via the trusted persist helpers; the revision bumps
- * once after a successful commit. Nothing in this protocol can silently
- * lose a newer valid update: additive folds run against the FRESH state,
- * strict commits refuse on ANY drift, and a snapshot change always refuses.
+ * doc for the begin→work→commit flow and the two merge policies. `plan`
+ * computes the NEXT store values as DATA; the kernel performs every write
+ * inside a journaled all-or-nothing commit (S4-H-01) and bumps the revision
+ * itself. Nothing in this protocol can silently lose a newer valid update:
+ * additive folds run against the FRESH state, strict commits refuse on ANY
+ * drift, a snapshot change always refuses, and a failed commit leaves the
+ * COMPLETE previous revision (rolled back in-process, or recovered from the
+ * journal on the next trusted read).
  */
 export async function runRenewalStateTx<W, R>(args: {
   projectDir: string;
   nowIso: string;
-  /** The read view this transaction started from (required for 'strict'). */
-  expected?: TxExpectation;
+  /** The read view this transaction started from (required for both policies). */
+  expected: TxExpectation;
   policy: TxFoldPolicy;
   work: (state: ActiveRenewalState) => Promise<W> | W;
-  commit: (fresh: ActiveRenewalState, workResult: W) => Promise<R> | R;
+  plan: (fresh: ActiveRenewalState, workResult: W) => { mutation: StateMutationPlan; result: R };
 }): Promise<R> {
   const begin = loadActiveState(args.projectDir);
   if (args.expected === undefined) {
@@ -356,76 +635,75 @@ export async function runRenewalStateTx<W, R>(args: {
         `the renewal project changed mid-operation (${begin.identity.projectName} → ${fresh.identity.projectName}) — refusing to commit`,
       );
     }
-    if (args.expected !== undefined && fresh.identity.snapshotId !== args.expected.snapshotId) {
+    if (fresh.identity.snapshotId !== args.expected.snapshotId) {
       throw new TrustStateError(
         'snapshot_superseded',
         `the active snapshot changed mid-operation (${args.expected.snapshotId} → ${fresh.identity.snapshotId}; ` +
           `a refresh superseded this work) — re-run the operation against the new snapshot`,
       );
     }
-    if (args.expected !== undefined && fresh.identity.snapshotId !== begin.identity.snapshotId) {
+    if (fresh.identity.snapshotId !== begin.identity.snapshotId) {
       throw new TrustStateError(
         'snapshot_superseded',
         `the active snapshot changed mid-operation (${begin.identity.snapshotId} → ${fresh.identity.snapshotId}) — re-run the operation`,
       );
     }
-    if (args.policy === 'strict' && fresh.identity.revision !== args.expected!.revision) {
+    if (args.policy === 'strict' && fresh.identity.revision !== args.expected.revision) {
       throw new TrustStateError(
         'stale_revision',
-        `trusted state changed mid-operation (revision ${args.expected!.revision} → ${fresh.identity.revision}) — ` +
+        `trusted state changed mid-operation (revision ${args.expected.revision} → ${fresh.identity.revision}) — ` +
           `this operation must re-run from current state rather than commit a stale result`,
       );
     }
-    const result = await args.commit(fresh, workResult);
-    bumpStateRevisionTrusted(args.projectDir);
-    return result;
+    const planned = await args.plan(fresh, workResult);
+    applyStateMutation(args.projectDir, planned.mutation);
+    return planned.result;
   });
 }
 
-// --- refresh supersession (S3-H-04, S3-M-05) ----------------------------------------------
-
-export interface SupersessionOutcome {
-  archived: string[];
-  retained: string[];
-}
-
 /**
- * Archive EVERY per-snapshot store for a refresh: overlay, parity,
- * strategy — AND the spec directory (a surviving pre-refresh spec used to
- * render as current while blocking the replacement plan). Renames are
- * NO-CLOBBER: a same-snapshot re-refresh refuses rather than overwriting
- * earlier history. Analyses/approvals stay in place as immutable history.
- * Caller holds the writer lock.
+ * Journaled strict mutation for init/refresh (S4-H-01): the epoch-rebind
+ * write set (snapshot + project + optional first-init stores + supersession
+ * archives) commits with the SAME all-or-nothing guarantee as the command
+ * transactions. `expected` (when present) is the pre-build epoch that must
+ * still hold; force-recovery over torn state passes none (rebuild semantics).
  */
-export function supersedeStoresForRefresh(
-  projectDir: string,
+/**
+ * The refresh supersession set (S3-H-04, S3-M-05): no-clobber archive renames
+ * for every EXISTING per-snapshot store — overlay, parity, strategy, AND the
+ * spec directory — under the old snapshot id. Analyses/approvals are retained
+ * as immutable history. Consumed as `archive` entries of a journaled mutation
+ * (the kernel performs and journals each rename).
+ */
+export function refreshArchiveEntries(
   paths: ReturnType<typeof renewalPaths>,
   oldSnapshotId: string,
-): SupersessionOutcome {
-  const archived: string[] = [];
-  for (const [name, path] of [
-    ['overlay', paths.overlay],
-    ['parity', paths.parity],
-    ['strategy', paths.strategy],
-  ] as const) {
-    if (!existsSync(path)) continue;
-    const target = `${path}.${oldSnapshotId}.superseded`;
-    authorizedRenameNoClobber({ projectDir, from: path, to: target });
-    archived.push(`${name} → ${target.split(/[\\/]/).pop()}`);
+): { from: string; to: string }[] {
+  const entries: { from: string; to: string }[] = [];
+  for (const p of [paths.overlay, paths.parity, paths.strategy, paths.specDir]) {
+    if (!existsSync(p)) continue;
+    entries.push({ from: p, to: `${p}.${oldSnapshotId}.superseded` });
   }
-  if (existsSync(paths.specDir)) {
-    const target = `${paths.specDir}.${oldSnapshotId}.superseded`;
-    // spec/ is a DIRECTORY: rename with the same no-clobber discipline.
-    const fromResolved = authorizeProjectDestination(projectDir, paths.specDir);
-    const toResolved = authorizeProjectDestination(projectDir, target);
-    if (existsSync(toResolved)) {
-      throw new TrustStateError(
-        'archive_collision',
-        `refusing to archive spec → ${target}: the destination already exists (supersession archives never overwrite history)`,
-      );
+  return entries;
+}
+
+export async function runJournaledRenewalMutation(args: {
+  projectDir: string;
+  nowIso: string;
+  expected?: TxExpectation;
+  mutation: StateMutationPlan;
+}): Promise<void> {
+  return withRenewalWriterLock(args.projectDir, args.nowIso, () => {
+    if (args.expected !== undefined) {
+      const fresh = loadActiveState(args.projectDir);
+      if (fresh.identity.snapshotId !== args.expected.snapshotId || fresh.identity.revision !== args.expected.revision) {
+        throw new TrustStateError(
+          'snapshot_superseded',
+          `renewal state changed during the graph rebuild (snapshot ${args.expected.snapshotId} → ` +
+            `${fresh.identity.snapshotId}, revision ${args.expected.revision} → ${fresh.identity.revision}) — re-run the refresh`,
+        );
+      }
     }
-    renameSync(fromResolved, toResolved);
-    archived.push(`spec → ${target.split(/[\\/]/).pop()}`);
-  }
-  return { archived, retained: ['analyses (immutable history)', 'approvals (immutable human history)'] };
+    applyStateMutation(args.projectDir, args.mutation);
+  });
 }

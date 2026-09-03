@@ -19,7 +19,7 @@ import { RenewalProjectSchema, renewalPaths, type RenewalProject } from '../core
 import { reloadSnapshot, type ProjectSnapshot } from '../core/snapshot-record';
 import { authorizedWrite } from '../trust/fs';
 import { authorizedRead } from '../trust/fs';
-import { bumpStateRevisionTrusted, loadActiveState, readRevision, supersedeStoresForRefresh } from '../trust/state';
+import { bumpStateRevisionTrusted, loadActiveState, readRevision } from '../trust/state';
 import { preflightRenewalSurface } from '../trust/fs';
 
 export { RenewalProjectSchema, renewalPaths } from '../core/project-record';
@@ -36,25 +36,6 @@ export function authorizeRenewalState(dir: string): { ok: true } | { ok: false; 
 export type ProjectLoad =
   | { ok: true; project: RenewalProject }
   | { ok: false; code: 'project_missing' | 'project_corrupt'; message: string };
-
-/**
- * C-05 — explicit refresh supersession: per-snapshot stores (overlay, parity,
- * strategy) are ARCHIVED under their old snapshot id, never silently reused
- * across a snapshot change. Analyses and approvals are immutable human/LLM
- * history: retained in place, but consumers bind them to the ACTIVE snapshot
- * only (cross-snapshot records are historical, never planning inputs).
- */
-export interface SupersessionResult {
-  archived: string[]; // "overlay → overlay.json.RSN-….superseded"
-  retained: string[]; // store names kept as history
-}
-
-export function supersedeRenewalStores(dir: string, paths: ReturnType<typeof renewalPaths>, oldSnapshotId: string): SupersessionResult {
-  // Trust kernel: archives overlay/parity/strategy AND spec (S3-H-04), with
-  // no-clobber renames (S3-M-05). Caller holds the renewal writer lock.
-  const outcome = supersedeStoresForRefresh(dir, paths, oldSnapshotId);
-  return { archived: outcome.archived, retained: outcome.retained };
-}
 
 /** Trusted project.json read (authorized reader — S4-M-01 bypass 1 closed). */
 export function loadRenewalProject(dir: string): ProjectLoad {

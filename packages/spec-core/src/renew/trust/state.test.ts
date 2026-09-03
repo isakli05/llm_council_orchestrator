@@ -10,7 +10,8 @@ import {
   bumpStateRevisionTrusted,
   loadActiveState,
   runRenewalStateTx,
-  supersedeStoresForRefresh,
+  runJournaledRenewalMutation,
+  refreshArchiveEntries,
   withRenewalWriterLock,
 } from './state';
 import { TrustStateError } from './errors';
@@ -105,9 +106,9 @@ describe('state: the transaction protocol', () => {
       expected: { snapshotId: before.identity.snapshotId, revision: before.identity.revision },
       policy: 'strict',
       work: () => 'done',
-      commit: (fresh) => {
+      plan: (fresh) => {
         expect(fresh.identity.revision).toBe(before.identity.revision);
-        return 'committed';
+        return { mutation: {}, result: 'committed' };
       },
     });
     expect(out).toBe('committed');
@@ -130,7 +131,7 @@ describe('state: the transaction protocol', () => {
             bumpStateRevisionTrusted(project);
           });
         },
-        commit: () => {
+        plan: () => {
           throw new Error('must not commit');
         },
       }),
@@ -157,9 +158,9 @@ describe('state: the transaction protocol', () => {
           bumpStateRevisionTrusted(project);
         });
       },
-      commit: (fresh) => {
+      plan: (fresh) => {
         sawFreshOverlayCount = fresh.overlay.ok ? fresh.overlay.store.records.length : -1;
-        return 'folded';
+        return { mutation: {}, result: 'folded' };
       },
     });
     expect(sawFreshOverlayCount).toBe(0);
@@ -192,7 +193,7 @@ describe('state: the transaction protocol', () => {
           const r = await init.cmdRenewInit({ dir: project, target, force: true }, caps);
           if (r.code !== 0) throw new Error(`forced refresh failed: ${r.output}`);
         },
-        commit: () => {
+        plan: () => {
           throw new Error('must not commit');
         },
       }),
@@ -205,18 +206,23 @@ describe('state: the transaction protocol', () => {
     mkdirSync(paths.specDir, { recursive: true });
     writeFileSync(join(paths.specDir, 'intent.md'), '# intent');
     const state = loadActiveState(project);
-    const outcome = await withRenewalWriterLock(project, '2026-09-03T00:00:00Z', () =>
-      supersedeStoresForRefresh(project, paths, state.identity.snapshotId),
-    );
-    expect(outcome.archived.some((a) => a.startsWith('spec →'))).toBe(true);
+    // S4-H-01: supersession is now an ARCHIVE-ENTRY journaled mutation — the
+    // kernel performs and journals each rename.
+    await runJournaledRenewalMutation({
+      projectDir: project,
+      nowIso: '2026-09-03T00:00:00Z',
+      mutation: { archive: refreshArchiveEntries(paths, state.identity.snapshotId) },
+    });
     expect(existsSync(paths.specDir)).toBe(false);
     expect(existsSync(`${paths.specDir}.${state.identity.snapshotId}.superseded`)).toBe(true);
     // second supersession of the same epoch REFUSES (S3-M-05)
     mkdirSync(paths.specDir, { recursive: true });
     await expect(
-      withRenewalWriterLock(project, '2026-09-03T00:00:00Z', () =>
-        supersedeStoresForRefresh(project, paths, state.identity.snapshotId),
-      ),
+      runJournaledRenewalMutation({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:00Z',
+        mutation: { archive: refreshArchiveEntries(paths, state.identity.snapshotId) },
+      }),
     ).rejects.toThrow();
   });
 });

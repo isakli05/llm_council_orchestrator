@@ -79,7 +79,7 @@ describe('Composition A — FilesystemCapability + StateTransaction', () => {
             bumpStateRevisionTrusted(project);
           });
         },
-        commit: () => {
+        plan: () => {
           throw new Error('must not commit');
         },
       }),
@@ -103,10 +103,9 @@ describe('Composition A — FilesystemCapability + StateTransaction', () => {
         nowIso: '2026-09-03T00:00:03Z',
         policy: 'additive',
         work: () => undefined,
-        commit: (fresh) => {
-          bumpStateRevisionTrusted(project); // authorizedWrite must refuse the symlinked slot
-          void fresh;
-        },
+        // S4-H-01: the kernel performs the writes — the revision bump inside
+        // the journaled commit must refuse the symlinked state slot.
+        plan: () => ({ mutation: {}, result: undefined }),
       }),
     ).rejects.toThrow();
     expect(readFileSync(victim, 'utf8')).toBe('VICTIM');

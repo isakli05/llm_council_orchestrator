@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { buildArchitectureView } from './archview/architecture-view';
 import { parseGraphText } from './intel/graph-reader';
 import { renderRenewalReport } from './project/export';
-import { supersedeRenewalStores, renewalPaths } from './project/project';
+import { renewalPaths } from './project/project';
 import { loadActiveState } from './trust/state';
 import { buildGuardedCopy } from './ingest/workspace-copy';
 import { persistStrategy, buildStrategyDecision, parseStrategyDecision } from './planner/strategy';
@@ -182,34 +182,49 @@ describe('ingest caps and exclusions', () => {
   });
 });
 describe('project state binding errors', () => {
-  it('supersession archives only EXISTING stores and refuses a same-snapshot re-archive (S3-M-05)', () => {
+  it('supersession archives only EXISTING stores and refuses a same-snapshot re-archive (S3-M-05)', async () => {
     const dir = freshDir('lco-sup-');
     const paths = renewalPaths(dir);
     mkdirSync(join(dir, '.lco', 'renewal'), { recursive: true });
     writeFileSync(paths.overlay, JSON.stringify({ schema_version: 1, snapshot_id: 'RSN-old', records: [] }));
-    // parity + strategy + spec deliberately absent
-    const result = supersedeRenewalStores(dir, paths, 'RSN-old');
-    expect(result.archived).toHaveLength(1);
-    expect(result.archived[0]).toMatch(/overlay\.json\.RSN-old\.superseded/);
+    // parity + strategy + spec deliberately absent. S4-H-01: supersession is
+    // a journaled mutation (archive entries); the kernel performs the renames.
+    const { runJournaledRenewalMutation, refreshArchiveEntries } = await import('./trust/state');
+    await runJournaledRenewalMutation({
+      projectDir: dir,
+      nowIso: '2026-09-03T00:00:00Z',
+      mutation: { archive: refreshArchiveEntries(paths, 'RSN-old') },
+    });
     expect(existsSync(`${paths.overlay}.RSN-old.superseded`)).toBe(true);
     expect(existsSync(paths.overlay)).toBe(false);
-    expect(result.retained.length).toBe(2);
     // Trust kernel (S3-M-05): archives are NO-CLOBBER — re-creating the store
     // and re-archiving under the SAME snapshot id refuses instead of
     // overwriting earlier history.
     writeFileSync(paths.overlay, JSON.stringify({ schema_version: 1, snapshot_id: 'RSN-old', records: [] }));
-    expect(() => supersedeRenewalStores(dir, paths, 'RSN-old')).toThrow(/already exists|archive_collision/);
+    await expect(
+      runJournaledRenewalMutation({
+        projectDir: dir,
+        nowIso: '2026-09-03T00:00:00Z',
+        mutation: { archive: refreshArchiveEntries(paths, 'RSN-old') },
+      }),
+    ).rejects.toThrow(/already exists|archive_collision|commit_failed_without_state_change/);
     expect(existsSync(`${paths.overlay}.RSN-old.superseded`)).toBe(true); // prior archive intact
   });
-  it('S3-H-04: a surviving spec/ directory is archived WITH the stores on refresh', () => {
+  it('S3-H-04: a surviving spec/ directory is archived WITH the stores on refresh', async () => {
     const dir = freshDir('lco-sup-spec-');
     const paths = renewalPaths(dir);
     mkdirSync(join(dir, '.lco', 'renewal'), { recursive: true });
     mkdirSync(paths.specDir, { recursive: true });
     writeFileSync(paths.overlay, JSON.stringify({ schema_version: 1, snapshot_id: 'RSN-old', records: [] }));
-    const result = supersedeRenewalStores(dir, paths, 'RSN-old');
-    expect(result.archived).toHaveLength(2); // overlay AND spec
-    expect(result.archived.some((a) => /spec\.RSN-old\.superseded/.test(a))).toBe(true);
+    const { runJournaledRenewalMutation, refreshArchiveEntries } = await import('./trust/state');
+    const archive = refreshArchiveEntries(paths, 'RSN-old');
+    expect(archive).toHaveLength(2); // overlay AND spec
+    expect(archive.some((a) => /spec\.RSN-old\.superseded/.test(a.to))).toBe(true);
+    await runJournaledRenewalMutation({
+      projectDir: dir,
+      nowIso: '2026-09-03T00:00:00Z',
+      mutation: { archive },
+    });
     expect(existsSync(`${paths.specDir}.RSN-old.superseded`)).toBe(true);
     expect(existsSync(paths.specDir)).toBe(false); // no stale pre-refresh spec survives
   });
