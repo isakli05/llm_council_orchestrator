@@ -287,3 +287,28 @@ describe('S4-H-04: remaining verification arms', () => {
     if (!r2.ok) expect(r2.code).toBe('coherence_failed');
   });
 });
+
+
+describe('S4-H-04: source-set drift arm (coverage completion)', () => {
+  it('a binding whose source_set_digest does not match the graph refuses', async () => {
+    const a = artifactSet('a');
+    const computed = computeStructuralBinding({ manifestText: a.manifestText, graphText: a.graphText, graphifyVersion: '0.9.50', nowIso: '2026-09-03T00:00:00Z' });
+    if (!computed.ok) throw new Error(computed.message);
+    // tamper only the source-set digest and re-stamp integrity (simulates a
+    // binding written against a different graph shape over the same pair)
+    const tampered = { ...computed.binding, source_set_digest: 'sha256:' + 'f'.repeat(64) };
+    const { domainDigest } = await import('./canonical');
+    const core = {
+      schema_version: tampered.schema_version,
+      graphify_version: tampered.graphify_version,
+      manifest_digest: tampered.manifest_digest,
+      graph_digest: tampered.graph_digest,
+      source_set_digest: tampered.source_set_digest,
+      created_at: tampered.created_at,
+    };
+    tampered.binding_digest = domainDigest('LCO:STRUCTURE', 1, core);
+    const r = structuralIdentity({ ...a, bindingText: `${JSON.stringify(tampered, null, 2)}\n` });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('coherence_failed');
+  });
+});

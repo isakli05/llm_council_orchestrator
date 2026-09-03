@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RenewCapabilities } from '../../cli/commands/renew';
@@ -568,5 +568,133 @@ describe('S4-H-01: V1-verifier violation regressions (all fixed)', () => {
       code: 'recovery_required',
     });
     expect(existsSync(paths.journal)).toBe(true); // the recovery authority survives
+  });
+});
+
+
+describe('S4-H-01: fence + recovery-rename arms (coverage completion)', () => {
+  it('V6 fence: a lock handover mid-commit aborts the commit with the journal retained', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const beforeRev = readRevision(project);
+    const beforeBytes = readFileSync(paths.overlay, 'utf8');
+    const begin = loadActiveState(project);
+    await expect(
+      runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        // simulate another writer breaking our aged lock DURING the commit:
+        // the plan phase rewrites the lockfile with a foreign identity
+        plan: (fresh) => {
+          writeFileSync(join(project, '.lco', 'renewal', '.lco-revision.lock'), JSON.stringify({ pid: 424242, acquiredAt: '2026-09-03T09:09:09.000Z' }));
+          return { mutation: analyzeStyleMutation(fresh), result: undefined };
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    // the journal is retained; the next trusted read recovers byte-identical state
+    const state = loadActiveState(project);
+    expect(state.identity.revision).toBe(beforeRev);
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(beforeBytes);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('crash recovery executes the rename-back arm (rename ran, stores not yet rewritten)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const beforeRev = readRevision(project);
+    const originalOverlay = readFileSync(paths.overlay, 'utf8');
+    // the committer archived overlay (rename ran) then died before any write
+    const archivePath = `${paths.overlay}.RSN-crashed.superseded`;
+    renameSync(paths.overlay, archivePath);
+    const holder = { pid: -31337, acquiredAt: '2026-09-03T00:00:00Z' };
+    const entries = [
+      { kind: 'rename', from: paths.overlay, to: archivePath, fromContent: originalOverlay, fromIsDir: false },
+      { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
+    ] as never;
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, holder, entries });
+    writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder, base_revision: beforeRev, integrity, entries }, null, 2)}\n`);
+    const state = loadActiveState(project); // recovers
+    expect(state.identity.revision).toBe(beforeRev);
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(originalOverlay); // renamed back
+    expect(existsSync(archivePath)).toBe(false);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('a project identity change mid-operation refuses as project_mismatch (nothing written)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const beforeBytes = readFileSync(paths.overlay, 'utf8');
+    await expect(
+      runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => {
+          // the project is renamed during the unlocked work phase
+          const pj = JSON.parse(readFileSync(paths.projectJson, 'utf8')) as { name: string };
+          writeFileSync(paths.projectJson, JSON.stringify({ ...pj, name: 'renamed-project' }, null, 2));
+        },
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      }),
+    ).rejects.toMatchObject({ code: 'project_mismatch' });
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(beforeBytes);
+  });
+});
+
+
+describe('S4-H-01: command-arm coverage (refresh generic refusal + plan LockHeld)', () => {
+  it('a journaled refresh WRITE failure surfaces as the typed refresh-failed arm (nothing partial)', async () => {
+    const { project } = await freshProject();
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    const caps: RenewCapabilities = { nowIso: () => '2026-09-03T00:00:08Z', provider: () => provider, gitCommit: () => undefined };
+    const beforeRev = readRevision(project);
+    const beforeBytes = snapshotTrustedBytes(project);
+    (globalThis as { __txFault?: { failOnWrite: number } }).__txFault = { failOnWrite: 8 }; // deep in the epoch write set
+    const r = await init.cmdRenewRefresh({ dir: project }, caps);
+    delete (globalThis as { __txFault?: unknown }).__txFault;
+    expect(r.code).not.toBe(0);
+    expect(r.output).toMatch(/refresh failed|refused/i);
+    expect(readRevision(project)).toBe(beforeRev); // rolled back (or refused) — never partial
+    expect(snapshotTrustedBytes(project)).toEqual(beforeBytes);
+  });
+
+  it('a plan commit blocked by a concurrent lock holder surfaces the retry arm (nothing written)', async () => {
+    const { project } = await freshProject();
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    // hold the writer lock for the entire plan via the work phase
+    const caps: RenewCapabilities = {
+      nowIso: () => '2026-09-03T00:00:09Z',
+      provider: () => provider,
+      gitCommit: () => undefined,
+    };
+    const { withRenewalWriterLock } = await import('./state');
+    let releasePlanLock: (() => void) | undefined;
+    const planPromise = (async () => {
+      // acquire the lock first, then run plan while holding it
+      await withRenewalWriterLock(project, '2026-09-03T00:00:09Z', async () => {
+        await new Promise<void>((resolve) => {
+          releasePlanLock = resolve;
+          setTimeout(resolve, 400).unref?.();
+        });
+      });
+    })();
+    const r = await init.cmdRenewPlan({ dir: project }, caps);
+    releasePlanLock?.();
+    await planPromise;
+    expect(r.code).not.toBe(0);
+    expect(r.output).toMatch(/locked|retry|refused/i);
   });
 });

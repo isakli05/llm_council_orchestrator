@@ -136,12 +136,12 @@ function extractProvenance(config: OpenAiCompatibleConfig, data: ChatResponse): 
     providerKind: config.providerKind,
     requestedModel: config.model,
   };
-  if (typeof data.id === 'string' && data.id !== '') provenance.requestId = data.id;
-  if (typeof data.model === 'string' && data.model !== '') provenance.resolvedModel = data.model;
+  if (Object.hasOwn(data, 'id') && typeof data.id === 'string' && data.id !== '') provenance.requestId = data.id;
+  if (Object.hasOwn(data, 'model') && typeof data.model === 'string' && data.model !== '') provenance.resolvedModel = data.model;
 
   // OpenRouter router metadata (opt-in header set by the openrouter factory):
   // permissive decode, unknown fields ignored by design.
-  const meta = data.openrouter_metadata;
+  const meta = Object.hasOwn(data, 'openrouter_metadata') ? data.openrouter_metadata : undefined;
   if (isPlainObject(meta)) {
     if (typeof meta.attempt === 'number') provenance.fallbackObserved = meta.attempt > 1;
     const available = isPlainObject(meta.endpoints) ? meta.endpoints.available : undefined;
@@ -154,7 +154,7 @@ function extractProvenance(config: OpenAiCompatibleConfig, data: ChatResponse): 
   }
   // Compatible fallback: some OpenAI-compatible gateways report a top-level
   // provider object. Only read when openrouter_metadata did not answer.
-  if (provenance.upstreamProvider === undefined && isPlainObject(data.provider)) {
+  if (provenance.upstreamProvider === undefined && Object.hasOwn(data, 'provider') && isPlainObject(data.provider)) {
     const name = data.provider.name;
     if (typeof name === 'string' && name !== '') provenance.upstreamProvider = name;
   }
@@ -162,7 +162,7 @@ function extractProvenance(config: OpenAiCompatibleConfig, data: ChatResponse): 
 }
 
 function extractUsageDetails(data: ChatResponse): LlmUsageDetails | undefined {
-  const u = data.usage;
+  const u = Object.hasOwn(data, 'usage') ? data.usage : undefined;
   if (!isPlainObject(u)) return undefined;
   const details: LlmUsageDetails = {};
   const read = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
@@ -277,14 +277,18 @@ export function createOpenAiCompatibleLlm(config: OpenAiCompatibleConfig): LlmAd
       throw new Error(`LLM HTTP ${res.status} response was not JSON: ${msg}`);
     }
 
-    const text = data.choices?.[0]?.message?.content;
+    // V3 re-verifier residual (b): response fields are read as OWN
+    // properties only — prototype-injected phantoms cannot forge completions,
+    // usage accounting, or provenance.
+    const choices = Object.hasOwn(data, 'choices') ? data.choices : undefined;
+    const text = choices?.[0]?.message?.content;
     if (typeof text !== 'string') {
       throw new Error(
         'LLM HTTP response missing choices[0].message.content (fail-closed; refusing to invent output)',
       );
     }
 
-    const u = data.usage;
+    const u = Object.hasOwn(data, 'usage') ? data.usage : undefined;
     const usage =
       typeof u?.prompt_tokens === 'number' && typeof u?.completion_tokens === 'number'
         ? { in_tokens: u.prompt_tokens, out_tokens: u.completion_tokens }

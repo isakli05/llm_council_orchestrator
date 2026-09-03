@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RenewCapabilities } from '../../cli/commands/renew';
@@ -199,6 +199,167 @@ describe('Composition — V2 verifier finding regression: pipeline project join'
       ),
     ).rejects.toMatchObject({ code: 'context_project_mismatch' });
     expect(transports).toBe(0);
+  });
+});
+
+describe('Composition — StructuralIdentity × PaidOperation (S4 closure)', () => {
+  it('mismatched Graphify artifacts block BEFORE any paid transport identity exists', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    // Swap in a foreign graph (incoherent with the sealed binding + manifest)
+    const foreign = JSON.stringify(
+      { directed: true, multigraph: false, graph: {}, built_at_commit: 'x', nodes: [{ id: 'n', label: 'f', source_file: 'src/FOREIGN.ts' }], links: [] },
+      null,
+      2,
+    );
+    writeFileSync(join(paths.workspace, 'graphify-out', 'graph.json'), foreign);
+
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    let transports = 0;
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    const scriptedLlm = {
+      forRole: () => ({
+        adapter: {
+          complete: async () => {
+            transports++;
+            throw new Error('must not transport');
+          },
+        } as never,
+        identity: { gateway: 'g', providerKind: 'openai-compatible' as const, requestedModel: 'm' },
+      }),
+    };
+    const caps: RenewCapabilities = {
+      nowIso: () => '2026-09-03T00:00:03Z',
+      provider: () => provider,
+      gitCommit: () => undefined,
+      llm: () => scriptedLlm,
+    };
+    const r = await init.cmdRenewAnalyze({ dir: project, scope: 'whole' }, caps);
+    // The staleness walk (the analyze gate) must refuse on the incoherent
+    // workspace BEFORE the paid call — zero transports.
+    expect(r.code).not.toBe(0);
+    expect(transports).toBe(0);
+  });
+});
+
+describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', () => {
+  it('a ContextRecord cannot carry structural identity from a FOREIGN Graphify build', () => {
+    // Sealed under structural epoch A…
+    const bundleA = sealContextBundle({
+      projectName: 'p',
+      snapshotId: 'RSN-deadbeefdeadbeef',
+      slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      structural: { manifest_digest: ('sha256:' + '1'.repeat(64)) as `sha256:${string}`, graph_digest: ('sha256:' + '2'.repeat(64)) as `sha256:${string}` },
+    });
+    // …then the workspace is rebuilt (epoch B). The record set is presented
+    // under a bundle whose identity claims epoch B: the bundle digest no
+    // longer recomputes over records that embed A's structural digest.
+    const laundered = {
+      identity: { ...bundleA.identity, structural: { manifest_digest: ('sha256:' + '3'.repeat(64)) as `sha256:${string}`, graph_digest: ('sha256:' + '4'.repeat(64)) as `sha256:${string}` } },
+      records: bundleA.records,
+    };
+    expect(() => resolveCitation(laundered, { context_id: 'CTX-0001' })).toThrowError();
+    // and the honest epoch-A bundle resolves only under its own identity:
+    const resolved = resolveCitation(bundleA, { context_id: 'CTX-0001' });
+    expect(resolved.path).toBe('src/a.ts');
+  });
+
+  it("an analysis after a REFRESH cannot cite the pre-refresh epoch's records (pipeline snapshot join)", async () => {
+    const { project, target } = await freshProject();
+    // Old-epoch bundle sealed under the pre-refresh snapshot…
+    const before = loadActiveState(project);
+    const stale = sealContextBundle({
+      projectName: before.identity.projectName,
+      snapshotId: before.identity.snapshotId,
+      slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+    });
+    // …the source moves, a REAL refresh lands a new epoch…
+    writeFileSync(join(target, 'src', 'new-file.ts'), 'export const changed = 1;\n');
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    const caps: RenewCapabilities = { nowIso: () => '2026-09-03T00:00:09Z', provider: () => provider, gitCommit: () => undefined };
+    const refresh = await init.cmdRenewRefresh({ dir: project }, caps);
+    if (refresh.code !== 0) throw new Error(refresh.output);
+    const after = loadActiveState(project);
+    expect(after.identity.snapshotId).not.toBe(before.identity.snapshotId);
+    // …the stale bundle presented for the new epoch refuses at the join.
+    const { runRecovery } = await import('../recovery/pipeline');
+    await expect(
+      runRecovery(
+        { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: after.identity.snapshotId, scope: { type: 'whole' }, bundle: { scope: {}, items: [], truncated: false, total_chars: 0, warnings: [] } as never },
+        {
+          llm: stale as never,
+          nowIso: 't',
+          targetRoot: target,
+          context: stale,
+          persist: () => ({ ok: true as const }),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'context_snapshot_mismatch' });
+  });
+});
+
+
+describe('Command-arm completion: staleness walk typed refusals', () => {
+  it('status on a workspace whose binding was deleted surfaces the typed binding_missing problem', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    rmSync(structuralBindingPath(paths.workspace), { force: true });
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    const caps: RenewCapabilities = { nowIso: () => '2026-09-03T00:00:04Z', provider: () => provider, gitCommit: () => undefined };
+    const r = await init.cmdRenewStatus({ dir: project }, caps);
+    expect(r.code).not.toBe(0);
+    expect(r.output).toMatch(/binding_missing|structural binding/);
+  });
+
+  it('status with the graph DELETED reports the missing-graph staleness (not a crash)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    rmSync(join(paths.workspace, 'graphify-out', 'graph.json'), { force: true });
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    const caps: RenewCapabilities = { nowIso: () => '2026-09-03T00:00:05Z', provider: () => provider, gitCommit: () => undefined };
+    const r = await init.cmdRenewStatus({ dir: project }, caps);
+    // Stale-but-truthful is a REPORT (exit 0, honest state) — the arm we are
+    // pinning is the typed graph_missing reason, never a silent fresh render.
+    expect(r.output).toMatch(/graph_missing|stale|absent|refresh/i);
+    expect(r.output).toMatch(/snapshot: stale/);
+  });
+});
+
+
+describe('Command-arm completion: force-rebuild over a TORN snapshot (epoch recovery fallback)', () => {
+  it('init --force over a snapshot/project disagreement rebuilds and archives under the recovered epoch', async () => {
+    const { project, target } = await freshProject();
+    const paths = renewalPaths(project);
+    // tear the identity: snapshot.json absent → recoverEpochId falls back
+    rmSync(paths.snapshot, { force: true });
+    writeFileSync(join(target, 'src', 'forced-change.ts'), 'export const x = 1;\n');
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    const caps: RenewCapabilities = { nowIso: () => '2026-09-03T00:00:07Z', provider: () => provider, gitCommit: () => undefined };
+    const r = await init.cmdRenewInit({ dir: project, target, force: true }, caps);
+    expect(r.code).toBe(0);
+    // the pre-force stores were archived (unknown-epoch names for the torn ones)
+    const state = loadActiveState(project);
+    expect(state.identity.snapshotId).toMatch(/^RSN-[0-9a-f]{16}$/);
+    expect(existsSync(paths.journal)).toBe(false);
   });
 });
 

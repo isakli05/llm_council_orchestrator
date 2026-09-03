@@ -488,6 +488,14 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
     removeJournal(projectDir, paths);
   } catch (err) {
     const cause = err as Error;
+    // A fence abort (recovery_required) is a clean abort: roll the performed
+    // prefix back and propagate the ORIGINAL typed refusal — the state is
+    // complete R and no journal is needed.
+    if (err instanceof TrustStateError && err.code === 'recovery_required') {
+      rollbackPerformedPrefix(projectDir, journal, performed);
+      removeJournal(projectDir, paths);
+      throw err;
+    }
     try {
       rollbackPerformedPrefix(projectDir, journal, performed);
       removeJournal(projectDir, paths);

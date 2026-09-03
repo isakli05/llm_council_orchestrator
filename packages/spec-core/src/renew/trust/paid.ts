@@ -161,14 +161,20 @@ function deepFreeze<T>(value: T): T {
  * routes produce different digests, and a route field that changes after
  * authorization changes the digest (S3-H-07/H-10).
  */
+/** Own-property read (V3 re-verifier residual): optional route fields must
+ *  be the route's OWN values — never prototype-injected phantoms. */
+function ownField<T>(holder: object, key: string): T | undefined {
+  return Object.hasOwn(holder, key) ? (holder as Record<string, unknown>)[key] as T | undefined : undefined;
+}
+
 export function resolvedRouteDigest(route: ResolvedPaidRoute): `sha256:${string}` {
   return domainDigest('LCO:CONSENT', 1, {
     origin: route.origin,
     gateway: route.gateway,
     baseUrl: route.baseUrl,
     model: route.model,
-    maxTokens: route.maxTokens ?? null,
-    extraBody: route.extraBody ?? null,
+    maxTokens: ownField<number>(route, 'maxTokens') ?? null,
+    extraBody: ownField<Record<string, unknown>>(route, 'extraBody') ?? null,
     routingMode: route.routingMode,
     budget: route.budget,
   });
@@ -232,8 +238,10 @@ export function createPaidOperation(args: {
     baseUrl: wireRoute.baseUrl,
     apiKey: args.apiKey,
     model: wireRoute.model,
-    maxTokens: wireRoute.maxTokens,
-    extraBody: wireRoute.extraBody,
+    // V3 re-verifier residual (a): own-property reads only — a prototype-
+    // injected phantom cannot reach the wire or the digest.
+    maxTokens: Object.hasOwn(wireRoute, 'maxTokens') ? wireRoute.maxTokens : undefined,
+    extraBody: Object.hasOwn(wireRoute, 'extraBody') ? wireRoute.extraBody : undefined,
     extraHeaders: undefined,
     costExtractor: undefined,
     budget: ledger,
