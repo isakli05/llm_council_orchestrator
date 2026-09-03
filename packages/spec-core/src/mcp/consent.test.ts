@@ -278,13 +278,20 @@ describe('scrubbedExecutor', () => {
 // --- preview digest ----------------------------------------------------------------
 
 describe('checkPreviewDigest', () => {
-  it('is deterministic and matches the repo hashing idiom sha256(JSON.stringify(payload, null, 2))', async () => {
+  it('is deterministic and byte-pinned to the LCO:CONSENT canonical domain digest (S4-M-02)', async () => {
     const { bundle } = await loadedBundle(inlineConforming());
     const digest = checkPreviewDigest(bundle);
 
-    // The exact expected value, computed by hand with the same idiom the
-    // manifest artifact hashes use — pins BOTH the hash framing and the
-    // payload shape {spec_version, tasks:[{task_id, verification:[{command,expect}]}]}.
+    // The exact expected value under the domain-separated canonical envelope
+    // (hand-computed literal — pins BOTH the digest framing and the payload
+    // shape {spec_version, tasks:[{task_id, verification:[{command,expect}]}]}).
+    const expected = 'sha256:b5ac569179b11a84a086aecf63cf296cc25501e0a9482cad4ba6c03e4621d951';
+    expect(digest).toBe(expected);
+    expect(digest).toBe(checkPreviewDigest(bundle)); // deterministic
+
+    // S4-M-02 anti-regression: the consent digest must NOT be the old ad-hoc
+    // sha256(JSON.stringify(payload, null, 2)) idiom — consent digests are
+    // owned by the CanonicalDigest domain layer.
     const payload = {
       spec_version: 1,
       tasks: [
@@ -294,10 +301,9 @@ describe('checkPreviewDigest', () => {
         },
       ],
     };
-    const expected =
+    const adhoc =
       'sha256:' + createHash('sha256').update(JSON.stringify(payload, null, 2), 'utf8').digest('hex');
-    expect(digest).toBe(expected);
-    expect(digest).toBe(checkPreviewDigest(bundle)); // deterministic
+    expect(digest).not.toBe(adhoc);
   });
 
   it('the digest binds the SELECTION CONTENT: filtering changes it when the selected commands differ', async () => {
@@ -463,22 +469,26 @@ describe('generateOptInFromEnv', () => {
 });
 
 describe('generateConsentDigest', () => {
-  it('deterministic, repo idiom sha256(JSON.stringify({intent, profile, variant}, null, 2)) — byte-pinned', () => {
+  it('deterministic, byte-pinned to the LCO:CONSENT canonical domain digest (S4-M-02)', () => {
     const digest = generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council');
 
-    // Hand-computed with the same framing the manifest artifact hashes use —
-    // pins BOTH the hash idiom and the payload shape.
+    // Hand-computed literal under the domain-separated canonical envelope —
+    // pins BOTH the digest framing and the payload shape.
+    const expected = 'sha256:5c06874fd2ffe124e20825fcdc248c01fc30069274cfb6552cb493c2cd308d1e';
+    expect(digest).toBe(expected);
+    expect(generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council')).toBe(
+      digest,
+    );
+
+    // S4-M-02 anti-regression: the old ad-hoc idiom must NOT reproduce the digest.
     const payload = {
       intent: 'build a small pet clinic scheduler',
       profile: 'p-mini',
       variant: 'council',
     };
-    const expected =
+    const adhoc =
       'sha256:' + createHash('sha256').update(JSON.stringify(payload, null, 2), 'utf8').digest('hex');
-    expect(digest).toBe(expected);
-    expect(generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council')).toBe(
-      digest,
-    );
+    expect(digest).not.toBe(adhoc);
   });
 
   it('binds EVERY effectual component: intent, profile, or variant change → different digest', () => {

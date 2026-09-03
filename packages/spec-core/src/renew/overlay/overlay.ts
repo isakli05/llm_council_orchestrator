@@ -9,83 +9,32 @@
  *
  * Persistence: atomic (temp file + rename in the same directory), stable
  * ordering by id, strict schemas — diffable by design.
+ *
+ * Trust Kernel groundwork (S4-M-02): the schemas, types, id helpers, and
+ * strict parsers now live in `renew/core/store-records.ts` (the PURE record
+ * leaf the kernel depends on downward); this module keeps the domain
+ * behavior (append/supersede/persist/staleness) and re-exports the record
+ * surface unchanged for existing importers.
  */
-import { z } from 'zod';
-import { CodeAnchorPayloadSchema } from '../../schemas/evidence';
 import { authorizedWrite } from '../trust/fs';
 import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
+import {
+  OverlayRecordSchema,
+  type OverlayRecord,
+  type OverlayStore,
+  nextOverlayId,
+} from '../core/store-records';
 
-/** The audit-approved relation vocabulary (STEP 7) — do not extend speculatively. */
-export const OVERLAY_RELATIONS = [
-  'renewal_risk',
-  'business_rule',
-  'parity_required',
-  'replacement_target',
-  'migration_priority',
-  'deprecated_candidate',
-  'target_component',
-  'behavior_preserve',
-  'behavior_change',
-  'security_risk',
-  'data_migration',
-  'manual_review',
-  'uncertain_behavior',
-] as const;
-
-export type OverlayRelation = (typeof OVERLAY_RELATIONS)[number];
-
-export const OverlayEntityRefSchema = z
-  .object({
-    node_id: z.string().min(1).max(500).optional(),
-    path: z.string().min(1).max(1_000),
-    symbol: z.string().min(1).max(500).optional(),
-  })
-  .strict();
-
-export const OverlayRecordSchema = z
-  .object({
-    id: z.string().regex(/^OVL-\d{4}$/),
-    relation: z.enum(OVERLAY_RELATIONS),
-    subject: OverlayEntityRefSchema,
-    value: z.string().min(1).max(4_000).optional(),
-    anchors: z.array(CodeAnchorPayloadSchema).min(1).max(20),
-    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
-    confidence: z.enum(['low', 'medium', 'high']),
-    status: z.enum(['active', 'stale', 'superseded']),
-    lineage: z
-      .object({
-        analysis_id: z.string().regex(/^AN-\d{4}$/).optional(),
-        decision_id: z.string().min(1).max(100).optional(),
-        approval_id: z.string().min(1).max(100).optional(),
-      })
-      .strict(),
-    note: z.string().max(4_000).optional(),
-  })
-  .strict();
-
-export const OverlayStoreSchema = z
-  .object({
-    schema_version: z.literal(1),
-    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
-    records: z.array(OverlayRecordSchema),
-  })
-  .strict();
-
-export type OverlayRecord = z.infer<typeof OverlayRecordSchema>;
-export type OverlayStore = z.infer<typeof OverlayStoreSchema>;
-
-export function emptyOverlay(snapshotId: string): OverlayStore {
-  return { schema_version: 1, snapshot_id: snapshotId, records: [] };
-}
-
-export function nextOverlayId(existingIds: readonly string[]): string {
-  let max = 0;
-  for (const id of existingIds) {
-    const m = /^OVL-(\d{4})$/.exec(id);
-    if (m) max = Math.max(max, Number.parseInt(m[1], 10));
-  }
-  return `OVL-${String(max + 1).padStart(4, '0')}`;
-}
+export {
+  OVERLAY_RELATIONS,
+  OverlayEntityRefSchema,
+  OverlayRecordSchema,
+  OverlayStoreSchema,
+  emptyOverlay,
+  nextOverlayId,
+  parseOverlayStore,
+} from '../core/store-records';
+export type { OverlayRelation, OverlayRecord, OverlayStore, OverlayLoad } from '../core/store-records';
 
 export type NewOverlayRecord = Omit<OverlayRecord, 'id'> & { id?: string };
 
@@ -117,48 +66,6 @@ export function persistOverlay(projectDir: string, path: string, store: OverlayS
   };
   authorizedWrite({ projectDir, path, content: `${JSON.stringify(sorted, null, 2)}\n` });
   return { ok: true, path };
-}
-
-export type OverlayLoad =
-  | { ok: true; store: OverlayStore }
-  | { ok: false; code: 'overlay_missing' | 'overlay_corrupt'; message: string };
-
-/** Pure parse+validate of overlay.json TEXT (schema + duplicate-state checks). */
-export function parseOverlayStore(text: string): OverlayLoad {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch (e) {
-    return { ok: false, code: 'overlay_corrupt', message: `overlay.json is not valid JSON (${(e as Error).message})` };
-  }
-  const parsed = OverlayStoreSchema.safeParse(value);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const where = issue.path.join('.');
-    return {
-      ok: false,
-      code: 'overlay_corrupt',
-      message: `overlay.json failed schema validation (${where ? `${where}: ` : ''}${issue.message})`,
-    };
-  }
-  // M-02: duplicate record ids and duplicate ACTIVE (relation, subject) pairs
-  // are corrupt state, not silent last-write-wins.
-  const seenIds = new Set<string>();
-  const seenActive = new Set<string>();
-  for (const rec of parsed.data.records) {
-    if (seenIds.has(rec.id)) {
-      return { ok: false, code: 'overlay_corrupt', message: `overlay.json contains duplicate record id ${rec.id} — refusing ambiguous state` };
-    }
-    seenIds.add(rec.id);
-    if (rec.status === 'active') {
-      const key = `${rec.relation}|${rec.subject.path}${rec.subject.symbol ?? ''}`;
-      if (seenActive.has(key)) {
-        return { ok: false, code: 'overlay_corrupt', message: `overlay.json contains duplicate active ${rec.relation} record for ${rec.subject.path} — resolve the conflict explicitly` };
-      }
-      seenActive.add(key);
-    }
-  }
-  return { ok: true, store: parsed.data };
 }
 
 export interface OverlayStalenessResult {

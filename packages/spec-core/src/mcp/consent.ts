@@ -4,6 +4,7 @@ import { execInProcessGroup, type Executor } from '../check/runner';
 import { loadBundleAtLevel } from '../compiler/validation';
 import { verifyFrozen } from '../compiler/verify';
 import { sha256Content } from '../compiler/hash';
+import { domainDigest } from '../renew/trust/canonical';
 import { isInside } from '../storage/paths';
 import type { SpecBundle } from '../schemas';
 
@@ -140,7 +141,7 @@ export function checkPreviewDigest(b: SpecBundle, task?: string, effectualDir?: 
       verification: t.verification.map((v) => ({ command: v.command, expect: v.expect })),
     })),
   };
-  return sha256Content(JSON.stringify(payload, null, 2));
+  return domainDigest('LCO:CONSENT', 1, payload);
 }
 
 // --- environment scrubbing ----------------------------------------------------------
@@ -480,26 +481,20 @@ export const RENEW_CONSENT_PROTOCOL = 'lco-renew/consent-v2';
 
 export function renewConsentDigest(args: RenewConsentInputs): `sha256:${string}` {
   const dir = args.dir === '' ? '' : args.dir.replace(/\/+$/, '');
-  return sha256Content(
-    JSON.stringify(
-      {
-        renew: 'analyze',
-        consentProtocol: RENEW_CONSENT_PROTOCOL,
-        dir,
-        scope: args.scope,
-        ...(args.snapshotId !== undefined ? { snapshotId: args.snapshotId } : {}),
-        ...(args.graphDigest !== undefined ? { graphDigest: args.graphDigest } : {}),
-        ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
-        ...(args.profileFingerprint !== undefined ? { profileFingerprint: args.profileFingerprint } : {}),
-        ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
-        ...(args.routeDigest !== undefined ? { routeDigest: args.routeDigest } : {}),
-        ...(args.promptProtocol !== undefined ? { promptProtocol: args.promptProtocol } : {}),
-        ...(args.budget !== undefined ? { budget: args.budget } : {}),
-      },
-      null,
-      2,
-    ),
-  );
+  return domainDigest('LCO:CONSENT', 1, {
+    renew: 'analyze',
+    consentProtocol: RENEW_CONSENT_PROTOCOL,
+    dir,
+    scope: args.scope,
+    ...(args.snapshotId !== undefined ? { snapshotId: args.snapshotId } : {}),
+    ...(args.graphDigest !== undefined ? { graphDigest: args.graphDigest } : {}),
+    ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
+    ...(args.profileFingerprint !== undefined ? { profileFingerprint: args.profileFingerprint } : {}),
+    ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
+    ...(args.routeDigest !== undefined ? { routeDigest: args.routeDigest } : {}),
+    ...(args.promptProtocol !== undefined ? { promptProtocol: args.promptProtocol } : {}),
+    ...(args.budget !== undefined ? { budget: args.budget } : {}),
+  });
 }
 
 export function generateConsentDigest(
@@ -513,19 +508,13 @@ export function generateConsentDigest(
    *  a name that resolves elsewhere. */
   resolvedProfileFingerprint?: string,
 ): `sha256:${string}` {
-  return sha256Content(
-    JSON.stringify(
-      {
-        intent,
-        profile,
-        variant,
-        ...(llmProfile !== undefined ? { llmProfile } : {}),
-        ...(resolvedProfileFingerprint !== undefined ? { resolvedProfileFingerprint } : {}),
-      },
-      null,
-      2,
-    ),
-  );
+  return domainDigest('LCO:CONSENT', 1, {
+    intent,
+    profile,
+    variant,
+    ...(llmProfile !== undefined ? { llmProfile } : {}),
+    ...(resolvedProfileFingerprint !== undefined ? { resolvedProfileFingerprint } : {}),
+  });
 }
 
 /**

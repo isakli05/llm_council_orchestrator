@@ -10,180 +10,23 @@
  * `snapshot_id` derives from the identity fields ONLY (never `created_at`):
  * the same tree produces the same id across runs — idempotent by construction.
  */
-import { createHash } from 'node:crypto';
-import { z } from 'zod';
 import type { FileManifest } from '../ingest/workspace-copy';
+import type { ProjectSnapshot } from '../core/snapshot-record';
 
+// S4-M-02 (closure): the schema, deterministic identity, create/reload, and
+// the LCO:SNAPSHOT domain digest moved to the PURE `renew/core/snapshot-record`
+// leaf so `trust/state` depends on the record contract, not on this domain
+// module. Re-exported here for the existing import surface.
+export {
+  SnapshotFileEntrySchema,
+  ProjectSnapshotSchema,
+  createSnapshot,
+  deriveSnapshotId,
+  reloadSnapshot,
+  snapshotIdentityPayload,
+} from '../core/snapshot-record';
+export type { ProjectSnapshot, SnapshotInputs, SnapshotReload } from '../core/snapshot-record';
 export type { FileManifest, FileManifestEntry } from '../ingest/workspace-copy';
-
-const Sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
-
-export const SnapshotFileEntrySchema = z
-  .object({ path: z.string().min(1), sha256: Sha256 })
-  .strict();
-
-export const ProjectSnapshotSchema = z
-  .object({
-    schema_version: z.literal(1),
-    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
-    /** Injected-clock timestamp; excluded from identity. */
-    created_at: z.string().min(1),
-    target: z
-      .object({
-        root_realpath: z.string().min(1),
-        repo_kind: z.enum(['git', 'plain']),
-        git_commit: z.string().min(1).optional(),
-      })
-      .strict(),
-    graph: z
-      .object({
-        graphify_version: z.string().min(1),
-        manifest_digest: Sha256,
-        manifest_entries: z.number().int().nonnegative(),
-        node_count: z.number().int().nonnegative(),
-        edge_count: z.number().int().nonnegative(),
-        /** sha256 over the graph.json BYTES — structural graph content binding
-         * (C-04): a schema-valid mutation of graph content cannot stay fresh. */
-        graph_digest: Sha256,
-      })
-      .strict(),
-    /** Sorted by path. */
-    files: z.array(SnapshotFileEntrySchema),
-    files_truncated: z.boolean(),
-  })
-  .strict();
-
-export type ProjectSnapshot = z.infer<typeof ProjectSnapshotSchema>;
-
-export interface SnapshotInputs {
-  rootRealpath: string;
-  repoKind: 'git' | 'plain';
-  gitCommit?: string;
-  files: FileManifest;
-  filesTruncated: boolean;
-  graph: { graphifyVersion: string; nodeCount: number; edgeCount: number; graphDigest: string };
-  graphManifest: { digest: string; entries: number };
-  nowIso: string;
-}
-
-/** The canonical identity payload of a snapshot's stable content. */
-function identityPayload(p: {
-  target: { root_realpath: string; repo_kind: 'git' | 'plain'; git_commit?: string };
-  files: FileManifest;
-  graph: {
-    graphify_version: string;
-    node_count: number;
-    edge_count: number;
-    manifest_digest: string;
-    manifest_entries: number;
-    graph_digest: string;
-  };
-}): string {
-  return JSON.stringify({
-    root: p.target.root_realpath,
-    repo_kind: p.target.repo_kind,
-    git_commit: p.target.git_commit ?? null,
-    files: p.files,
-    graph: {
-      version: p.graph.graphify_version,
-      nodes: p.graph.node_count,
-      edges: p.graph.edge_count,
-      manifest_digest: p.graph.manifest_digest,
-      manifest_entries: p.graph.manifest_entries,
-      graph_digest: p.graph.graph_digest,
-    },
-  });
-}
-
-/** Deterministic identity over the stable content of the snapshot. */
-export function deriveSnapshotId(snapshot: Omit<ProjectSnapshot, 'snapshot_id' | 'schema_version' | 'created_at' | 'files_truncated'> & { files: FileManifest }): string {
-  return `RSN-${createHash('sha256').update(identityPayload(snapshot), 'utf8').digest('hex').slice(0, 16)}`;
-}
-
-export function createSnapshot(inputs: SnapshotInputs): ProjectSnapshot {
-  const files = [...inputs.files].sort((a, b) => (a.path < b.path ? -1 : 1));
-  return {
-    schema_version: 1,
-    snapshot_id: deriveSnapshotId({
-      target: {
-        root_realpath: inputs.rootRealpath,
-        repo_kind: inputs.repoKind,
-        ...(inputs.gitCommit !== undefined ? { git_commit: inputs.gitCommit } : {}),
-      },
-      files,
-      graph: {
-        graphify_version: inputs.graph.graphifyVersion,
-        node_count: inputs.graph.nodeCount,
-        edge_count: inputs.graph.edgeCount,
-        manifest_digest: inputs.graphManifest.digest,
-        manifest_entries: inputs.graphManifest.entries,
-        graph_digest: inputs.graph.graphDigest,
-      },
-    }),
-    created_at: inputs.nowIso,
-    target: {
-      root_realpath: inputs.rootRealpath,
-      repo_kind: inputs.repoKind,
-      ...(inputs.gitCommit !== undefined ? { git_commit: inputs.gitCommit } : {}),
-    },
-    graph: {
-      graphify_version: inputs.graph.graphifyVersion,
-      manifest_digest: inputs.graphManifest.digest,
-      manifest_entries: inputs.graphManifest.entries,
-      node_count: inputs.graph.nodeCount,
-      edge_count: inputs.graph.edgeCount,
-      graph_digest: inputs.graph.graphDigest,
-    },
-    files,
-    files_truncated: inputs.filesTruncated,
-  };
-}
-
-export type SnapshotReload =
-  | { ok: true; snapshot: ProjectSnapshot }
-  | { ok: false; code: 'snapshot_corrupt'; message: string };
-
-/**
- * Load a stored snapshot FAIL-CLOSED and SELF-VERIFYING (C-04): the stored
- * `snapshot_id` is never trusted — it is recomputed from the stored identity
- * fields and compared. A tampered id, or tampered identity content that no
- * longer matches the id, is `snapshot_corrupt` (tamper-evident), not "fresh".
- */
-export function reloadSnapshot(text: string): SnapshotReload {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch (e) {
-    return { ok: false, code: 'snapshot_corrupt', message: `snapshot.json is not valid JSON (${(e as Error).message})` };
-  }
-  const parsed = ProjectSnapshotSchema.safeParse(value);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const where = issue.path.join('.');
-    return {
-      ok: false,
-      code: 'snapshot_corrupt',
-      message: `snapshot.json failed schema validation (${where ? `${where}: ` : ''}${issue.message})`,
-    };
-  }
-  const s = parsed.data;
-  const recomputed = deriveSnapshotId({
-    target: s.target,
-    files: s.files,
-    graph: s.graph,
-  });
-  if (recomputed !== s.snapshot_id) {
-    return {
-      ok: false,
-      code: 'snapshot_corrupt',
-      message:
-        `snapshot.json identity mismatch: stored snapshot_id ${s.snapshot_id} does not match the ` +
-        `identity recomputed from its own content (${recomputed}) — the snapshot was tampered with or ` +
-        `hand-edited. Run 'lco renew refresh <dir>' to rebuild trusted state.`,
-    };
-  }
-  return { ok: true, snapshot: s };
-}
 
 // --- staleness -----------------------------------------------------------------
 

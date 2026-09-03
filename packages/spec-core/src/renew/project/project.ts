@@ -6,57 +6,25 @@
  * TRUST KERNEL: trusted reads/writes route through trust/fs + trust/state;
  * the persist helpers here are thin domain wrappers over the authorized
  * primitives (they add the stable-on-disk sorting the stores promise).
+ *
+ * S4-M-02 (closure): the schema and path table now live in the PURE
+ * `renew/core/project-record` leaf — this module imports them (and the
+ * kernel) DOWNWARD, and `trust/state.ts` no longer imports this module, so
+ * the former `state ↔ project` cycle is structurally gone. S4-M-01 bypass
+ * closure: `loadRenewalProject`/`loadSnapshotFile` read through the
+ * authorized reader (chain-validated), never raw `readFileSync`.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { z } from 'zod';
-import { tryRealpath } from '../../storage/paths';
+import { existsSync } from 'node:fs';
+import { RenewalProjectSchema, renewalPaths, type RenewalProject } from '../core/project-record';
+import { reloadSnapshot, type ProjectSnapshot } from '../core/snapshot-record';
 import { authorizedWrite } from '../trust/fs';
-import { bumpStateRevisionTrusted, loadActiveState, supersedeStoresForRefresh } from '../trust/state';
+import { authorizedRead } from '../trust/fs';
+import { bumpStateRevisionTrusted, loadActiveState, readRevision, supersedeStoresForRefresh } from '../trust/state';
 import { preflightRenewalSurface } from '../trust/fs';
-import { reloadSnapshot, type ProjectSnapshot } from '../snapshot/snapshot';
 
-export const RenewalProjectSchema = z
-  .object({
-    schema_version: z.literal(1),
-    name: z.string().min(1).max(200),
-    target_path: z.string().min(1),
-    created_at: z.string().min(1),
-    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
-  })
-  .strict();
-
-export type RenewalProject = z.infer<typeof RenewalProjectSchema>;
-
-export interface RenewalPaths {
-  projectJson: string;
-  snapshot: string;
-  workspace: string;
-  overlay: string;
-  parity: string;
-  strategy: string;
-  analyses: string;
-  approvals: string;
-  specDir: string;
-  /** INV-B2: monotonic trusted-state revision counter (state.json). */
-  state: string;
-}
-
-export function renewalPaths(dir: string): RenewalPaths {
-  const root = join(dir, '.lco', 'renewal');
-  return {
-    projectJson: join(root, 'project.json'),
-    snapshot: join(root, 'snapshot.json'),
-    workspace: join(root, 'graph-workspace'),
-    overlay: join(root, 'overlay.json'),
-    parity: join(root, 'parity.json'),
-    strategy: join(root, 'strategy.json'),
-    analyses: join(root, 'analyses'),
-    approvals: join(dir, 'approvals'),
-    specDir: join(dir, 'spec'),
-    state: join(root, 'state.json'),
-  };
-}
+export { RenewalProjectSchema, renewalPaths } from '../core/project-record';
+export type { RenewalProject, RenewalPaths } from '../core/project-record';
+export { loadActiveState };
 
 export function authorizeRenewalState(dir: string): { ok: true } | { ok: false; message: string } {
   // UX preflight over the fixed surface (enforcement lives per-write inside
@@ -81,13 +49,14 @@ export interface SupersessionResult {
   retained: string[]; // store names kept as history
 }
 
-export function supersedeRenewalStores(dir: string, paths: RenewalPaths, oldSnapshotId: string): SupersessionResult {
+export function supersedeRenewalStores(dir: string, paths: ReturnType<typeof renewalPaths>, oldSnapshotId: string): SupersessionResult {
   // Trust kernel: archives overlay/parity/strategy AND spec (S3-H-04), with
   // no-clobber renames (S3-M-05). Caller holds the renewal writer lock.
   const outcome = supersedeStoresForRefresh(dir, paths, oldSnapshotId);
   return { archived: outcome.archived, retained: outcome.retained };
 }
 
+/** Trusted project.json read (authorized reader — S4-M-01 bypass 1 closed). */
 export function loadRenewalProject(dir: string): ProjectLoad {
   const path = renewalPaths(dir).projectJson;
   if (!existsSync(path)) {
@@ -98,7 +67,7 @@ export function loadRenewalProject(dir: string): ProjectLoad {
     };
   }
   try {
-    return { ok: true, project: RenewalProjectSchema.parse(JSON.parse(readFileSync(path, 'utf8'))) };
+    return { ok: true, project: RenewalProjectSchema.parse(JSON.parse(authorizedRead({ projectDir: dir, path }))) };
   } catch (e) {
     return { ok: false, code: 'project_corrupt', message: `project.json invalid: ${(e as Error).message}` };
   }
@@ -120,18 +89,15 @@ export function persistSnapshotFile(dir: string, snapshot: ProjectSnapshot): voi
   });
 }
 
+/** Trusted snapshot.json read (authorized reader — S4-M-01 bypass 2 closed). */
 export function loadSnapshotFile(dir: string): { ok: true; snapshot: ProjectSnapshot } | { ok: false; message: string } {
   const path = renewalPaths(dir).snapshot;
   if (!existsSync(path)) return { ok: false, message: `snapshot missing (${path}) — run lco renew refresh` };
-  const r = reloadSnapshot(readFileSync(path, 'utf8'));
+  const r = reloadSnapshot(authorizedRead({ projectDir: dir, path }));
   return r.ok ? { ok: true, snapshot: r.snapshot } : { ok: false, message: r.message };
 }
 
 // --- INV-B2: versioned trusted-state revision ---------------------------------------
-
-const RenewalStateFileSchema = z
-  .object({ schema_version: z.literal(1), revision: z.number().int().nonnegative() })
-  .strict();
 
 /**
  * The monotonic revision of the trusted Renewal stores (snapshot, project,
@@ -140,28 +106,14 @@ const RenewalStateFileSchema = z
  * Absent file reads as 0 (pre-revision projects stay loadable); a CORRUPT
  * file fails closed — silently resetting the revision would re-enable lost
  * updates. Bumps are atomic (tmp+rename) and happen under the renewal lock.
+ * Reads route through the kernel's typed reader (trust/state.readRevision).
  */
 export function readStateRevision(dir: string): number {
-  const path = renewalPaths(dir).state;
-  if (!existsSync(path)) return 0;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (e) {
-    // Verifier VB-10: a non-JSON state.json is a TYPED corrupt refusal, not
-    // a raw SyntaxError.
-    throw new Error(`renewal state revision file corrupt (${path}: ${(e as Error).message}) — inspect or remove it after review; refusing to guess`);
-  }
-  const parsed = RenewalStateFileSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`renewal state revision file corrupt (${path}: ${parsed.error.issues[0]?.message ?? 'invalid'}) — inspect or remove it after review; refusing to guess`);
-  }
-  return parsed.data.revision;
+  // Trust kernel wrapper (typed corrupt-first refusal; caller holds the lock).
+  return readRevision(dir);
 }
 
 export function bumpStateRevision(dir: string): void {
   // Trust kernel wrapper (authorized atomic write; caller holds the lock).
   bumpStateRevisionTrusted(dir);
 }
-
-export { loadActiveState };

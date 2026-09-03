@@ -16,73 +16,27 @@ import { authorizedWrite } from '../trust/fs';
 import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
 import type { AnalysisRecord } from '../recovery/schemas';
 import type { RenewalApprovalRecord } from '../clarify/approvals';
+import { canonicalRuling } from '../trust/authority';
 
-export const ParityEvidenceSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('code_anchor'), anchor: CodeAnchorPayloadSchema }).strict(),
-  z
-    .object({ kind: z.literal('user_decision'), claim_id: z.string().regex(/^(UNC|OVL|STG)-\d{4}$/) })
-    .strict(),
-]);
+export { CANONICAL_PARITY_RULINGS, canonicalRuling } from '../trust/authority';
+export type { CanonicalParityRuling } from '../trust/authority';
+import {
+  ParityEntrySchema,
+  emptyParity,
+  nextParityId,
+  type ParityEntry,
+  type ParityStore,
+} from '../core/store-records';
 
-export const ParityEntrySchema = z
-  .object({
-    id: z.string().regex(/^PAR-\d{4}$/),
-    behavior: z.string().min(1).max(2_000),
-    ruling: z.enum(['preserve', 'change', 'drop', 'unresolved']),
-    rationale: z.string().min(1).max(4_000).optional(),
-    evidence: z.array(ParityEvidenceSchema).min(1).max(20),
-    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
-    source_analysis: z.string().regex(/^AN-\d{4}$/).optional(),
-    /** The clarification claim whose approved answer rules this entry. */
-    decision_claim_id: z.string().regex(/^(UNC|OVL|PAR)-\d{4}$/).optional(),
-    approval_id: z.string().regex(/^APPR-\d{4}$/).optional(),
-    /**
-     * INV-C: semantic support status of the underlying claim — DISTINCT from
-     * provenance (the anchors' byte verification). 'unvalidated' is the honest
-     * default for machine-recovered behavior (no deterministic algorithm
-     * proves business-rule entailment from code); a human ruling sets
-     * 'human_confirmed'. Absent = unvalidated (pre-field records).
-     */
-    support_status: z.enum(['unvalidated', 'human_confirmed', 'contradicted']).optional(),
-    note: z.string().max(4_000).optional(),
-  })
-  .strict()
-  .superRefine((e, ctx) => {
-    if (e.ruling !== 'unresolved' && e.rationale === undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `a ${e.ruling} ruling requires a rationale` });
-    }
-    if (e.ruling === 'unresolved' && e.rationale !== undefined && e.approval_id === undefined) {
-      // rationale on unresolved is allowed ONLY as recorded approval text (note),
-      // not as a ruling justification — enforced by callers, not the schema.
-    }
-    if (e.ruling === 'drop' && e.approval_id === undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'a DROP ruling requires explicit approval lineage (destructive acts are human)' });
-    }
-  });
-
-export const ParityStoreSchema = z
-  .object({
-    schema_version: z.literal(1),
-    snapshot_id: z.string().regex(/^RSN-[0-9a-f]{16}$/),
-    records: z.array(ParityEntrySchema),
-  })
-  .strict();
-
-export type ParityEntry = z.infer<typeof ParityEntrySchema>;
-export type ParityStore = z.infer<typeof ParityStoreSchema>;
-
-export function emptyParity(snapshotId: string): ParityStore {
-  return { schema_version: 1, snapshot_id: snapshotId, records: [] };
-}
-
-export function nextParityId(ids: readonly string[]): string {
-  let max = 0;
-  for (const id of ids) {
-    const m = /^PAR-(\d{4})$/.exec(id);
-    if (m) max = Math.max(max, Number.parseInt(m[1], 10));
-  }
-  return `PAR-${String(max + 1).padStart(4, '0')}`;
-}
+export {
+  ParityEvidenceSchema,
+  ParityEntrySchema,
+  ParityStoreSchema,
+  emptyParity,
+  nextParityId,
+  parseParityStore,
+} from '../core/store-records';
+export type { ParityEntry, ParityStore, ParityLoad } from '../core/store-records';
 
 export type NewParityEntry = Omit<ParityEntry, 'id' | 'ruling' | 'snapshot_id'> & {
   ruling?: ParityEntry['ruling'];
@@ -158,13 +112,6 @@ export interface ApplyApprovalResult {
  * guesses. This is the ONLY text→ruling mapping in the system and it is a
  * pure identity check, not a parser.
  */
-export const CANONICAL_PARITY_RULINGS: readonly ParityEntry['ruling'][] = ['preserve', 'change', 'drop'];
-
-export function canonicalRuling(selectedOption: string | undefined): ParityEntry['ruling'] | undefined {
-  return CANONICAL_PARITY_RULINGS.includes(selectedOption as ParityEntry['ruling'])
-    ? (selectedOption as ParityEntry['ruling'])
-    : undefined;
-}
 
 /**
  * Fold an approval record into the ledger.
@@ -335,56 +282,4 @@ export function persistParity(projectDir: string, path: string, store: ParitySto
   const sorted: ParityStore = { ...store, records: [...store.records].sort((a, b) => (a.id < b.id ? -1 : 1)) };
   authorizedWrite({ projectDir, path, content: `${JSON.stringify(sorted, null, 2)}\n` });
   return { ok: true, path };
-}
-
-export type ParityLoad =
-  | { ok: true; store: ParityStore }
-  | { ok: false; code: 'parity_missing' | 'parity_corrupt'; message: string };
-
-/** Pure parse+validate of parity.json TEXT (schema + duplicate-authority checks). */
-export function parseParityStore(text: string): ParityLoad {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch (e) {
-    return { ok: false, code: 'parity_corrupt', message: `parity.json is not valid JSON (${(e as Error).message})` };
-  }
-  const parsed = ParityStoreSchema.safeParse(value);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    return {
-      ok: false,
-      code: 'parity_corrupt',
-      message: `parity.json failed schema validation (${issue.path.join('.')}: ${issue.message})`,
-    };
-  }
-  // M-03 + S2-M-02 (INV-D3): duplicate ids AND semantically duplicate entries
-  // — two records for the SAME behavior on one store, whatever their ids or
-  // rulings — are duplicated authority and corrupt state. Never silently
-  // resolved, never first-wins.
-  const seenIds = new Set<string>();
-  const byBehavior = new Map<string, { id: string; ruling: string }>();
-  for (const rec of parsed.data.records) {
-    if (seenIds.has(rec.id)) {
-      return { ok: false, code: 'parity_corrupt', message: `parity.json contains duplicate entry id ${rec.id} — refusing ambiguous state` };
-    }
-    seenIds.add(rec.id);
-    const existing = byBehavior.get(rec.behavior);
-    if (existing !== undefined) {
-      if (existing.ruling !== rec.ruling) {
-        return {
-          ok: false,
-          code: 'parity_corrupt',
-          message: `parity.json holds contradictory rulings for the same behavior (${existing.id}: ${existing.ruling} vs ${rec.id}: ${rec.ruling}) — resolve the conflict explicitly`,
-        };
-      }
-      return {
-        ok: false,
-        code: 'parity_corrupt',
-        message: `parity.json holds semantically duplicate entries for the same behavior (${existing.id} and ${rec.id}, both '${rec.ruling}') — two active authorities for one behavior are ambiguous; dedupe explicitly`,
-      };
-    }
-    byBehavior.set(rec.behavior, { id: rec.id, ruling: rec.ruling });
-  }
-  return { ok: true, store: parsed.data };
 }

@@ -2,11 +2,11 @@ import { existsSync, readdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireSpecRootLock, type SpecRootLock } from '../../storage/revision';
 import { tryRealpath } from '../../storage/paths';
-import { renewalPaths, RenewalProjectSchema, type RenewalProject } from '../project/project';
-import { reloadSnapshot, type ProjectSnapshot } from '../snapshot/snapshot';
-import { parseOverlayStore, type OverlayStore } from '../overlay/overlay';
-import { parseParityStore, type ParityStore } from '../parity/ledger';
-import { parseStrategyDecision, type StrategyDecision } from '../planner/strategy';
+import { renewalPaths, RenewalProjectSchema, type RenewalProject } from '../core/project-record';
+import { reloadSnapshot, type ProjectSnapshot } from '../core/snapshot-record';
+import { parseOverlayStore, type OverlayStore } from '../core/store-records';
+import { parseParityStore, type ParityStore } from '../core/store-records';
+import { parseStrategyDecision, type StrategyDecision } from './authority';
 import { AnalysisRecordSchema, type AnalysisRecord } from '../recovery/schemas';
 import { authorizedRead, authorizedWrite, authorizeProjectDestination, authorizedRenameNoClobber } from './fs';
 import { TrustStateError } from './errors';
@@ -86,8 +86,9 @@ export interface ActiveRenewalState {
   specExists: boolean;
 }
 
-/** Read + parse state.json — the FIRST trusted read (corrupt fails closed). */
-function readRevision(projectDir: string): number {
+/** Read + parse state.json — the FIRST trusted read (corrupt fails closed).
+ *  Exported for the domain wrapper (project.readStateRevision). */
+export function readRevision(projectDir: string): number {
   const path = renewalPaths(projectDir).state;
   if (!existsSync(path)) return 0;
   let text: string;

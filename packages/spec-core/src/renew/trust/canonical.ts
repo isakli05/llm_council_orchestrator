@@ -56,13 +56,19 @@ function canonicalReplacer(_key: string, value: unknown): unknown {
   return value;
 }
 
-/** The trust domains that own digests (each defines its own payload schema). */
+/** The trust domains that own digests (each defines its own payload schema).
+ *  S4-M-02 closure: EVERY domain listed here is actually used by its owning
+ *  primitive — snapshot identity (snapshot-record), authority v3, all consent
+ *  digests (MCP check/generate + renewal route + final renew consent), the
+ *  paid context bundle identity, the state-transaction journal integrity, and
+ *  the LCO StructuralBinding (S4-H-04). No decorative domains. */
 export type DigestDomain =
   | 'LCO:SNAPSHOT'
   | 'LCO:AUTHORITY'
   | 'LCO:CONSENT'
   | 'LCO:PAID_CONTEXT'
-  | 'LCO:STATE_TX';
+  | 'LCO:STATE_TX'
+  | 'LCO:STRUCTURE';
 
 /**
  * A domain-separated digest over the CANONICAL form of `payload`:

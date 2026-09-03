@@ -296,6 +296,23 @@ export const StrategyDecisionSchema = z
 
 export type StrategyDecision = z.infer<typeof StrategyDecisionSchema>;
 
+export type StrategyLoad =
+  | { ok: true; decision: StrategyDecision }
+  | { ok: false; code: 'strategy_missing' | 'strategy_corrupt'; message: string };
+
+/**
+ * Pure parse+validate of strategy.json TEXT — lives beside the schema it
+ * parses (S4-M-02 groundwork: trust/state consumes the parser downward from
+ * the kernel instead of importing the planner domain module).
+ */
+export function parseStrategyDecision(text: string): StrategyLoad {
+  try {
+    return { ok: true, decision: StrategyDecisionSchema.parse(JSON.parse(text)) };
+  } catch (e) {
+    return { ok: false, code: 'strategy_corrupt', message: `strategy.json invalid (${(e as Error).message})` };
+  }
+}
+
 /**
  * Verify a strategy decision's authority: workspace selections must resolve
  * a valid approval (own identity, digest, evidence) that JOINS the active

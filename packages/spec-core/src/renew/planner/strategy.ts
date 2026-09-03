@@ -13,13 +13,15 @@
 import {
   MODERNIZATION_STRATEGIES,
   StrategyDecisionSchema,
+  parseStrategyDecision,
   type ModernizationStrategy,
   type StrategyDecision,
+  type StrategyLoad,
 } from '../trust/authority';
 import { authorizedWrite } from '../trust/fs';
 
-export { MODERNIZATION_STRATEGIES, StrategyDecisionSchema };
-export type { ModernizationStrategy, StrategyDecision };
+export { MODERNIZATION_STRATEGIES, StrategyDecisionSchema, parseStrategyDecision };
+export type { ModernizationStrategy, StrategyDecision, StrategyLoad };
 
 export interface BuildStrategyArgs {
   strategy: ModernizationStrategy;
@@ -49,15 +51,3 @@ export function persistStrategy(projectDir: string, path: string, decision: Stra
   return { ok: true, path };
 }
 
-export type StrategyLoad =
-  | { ok: true; decision: StrategyDecision }
-  | { ok: false; code: 'strategy_missing' | 'strategy_corrupt'; message: string };
-
-/** Pure parse+validate of strategy.json TEXT. */
-export function parseStrategyDecision(text: string): StrategyLoad {
-  try {
-    return { ok: true, decision: StrategyDecisionSchema.parse(JSON.parse(text)) };
-  } catch (e) {
-    return { ok: false, code: 'strategy_corrupt', message: `strategy.json invalid (${(e as Error).message})` };
-  }
-}
