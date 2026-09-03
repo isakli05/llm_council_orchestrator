@@ -954,4 +954,84 @@ describe('S4-H-01: V1-re-verifier H1 — post-fence abort preserves a concurrent
       } as never),
     ).rejects.toMatchObject({ code: 'fold_conflict' });
   });
+
+  it('zombie-write closure: a lock broken mid-write-set aborts the NEXT forward write BEFORE it lands', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const beforeBytes = snapshotTrustedBytes(project);
+    const beforeRev = readRevision(project);
+    // write #2 is A's overlay (1=journal): the hook swaps the lockfile there
+    // (only — no throw); A's NEXT fence (before parity) must abort the commit
+    // with A's overlay the ONLY zombie byte, and the abort (journal ours,
+    // revision unchanged) rolls even that back cleanly.
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void; only: boolean } } }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(join(project, '.lco', 'renewal', '.lco-revision.lock'), JSON.stringify({ pid: 424244, acquiredAt: '2026-09-03T09:09:11.000Z' }));
+        },
+      },
+    };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    // every trusted byte is base-R; no journal; revision unchanged
+    expect(snapshotTrustedBytes(project)).toEqual(beforeBytes);
+    expect(readRevision(project)).toBe(beforeRev);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('revisionMoved abort with a FOREIGN journal names the true evidence state (no marker written)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const bHolder = { pid: -88888, acquiredAt: '2026-09-03T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: 99, holder: bHolder, entries: bEntries });
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void } } }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        commit: () => {
+          // the concurrent writer owns the journal path AND committed (revision moved)
+          writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: 99, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`);
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: 99 }, null, 2));
+        },
+      },
+    };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    const onDisk = JSON.parse(readFileSync(paths.journal, 'utf8')) as { holder?: { pid?: number }; superseded?: boolean };
+    expect(onDisk.holder?.pid).toBe(-88888); // B's journal untouched — no marker clobbered it
+    expect(onDisk.superseded).toBeUndefined();
+    // the next read recovers through B's journal (the authority): its
+    // oldContent restores the overlay byte-identically and consumes the journal
+    const restored = loadActiveState(project);
+    expect(restored.identity.revision).toBe(99); // B's authority stands
+    expect(existsSync(paths.journal)).toBe(false);
+  });
 });

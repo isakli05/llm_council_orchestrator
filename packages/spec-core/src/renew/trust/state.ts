@@ -466,22 +466,28 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
   let performed = 0; // count of completed forward steps (V1-verifier V2/V3)
   try {
     // Canonical order (matches planJournalEntries' construction exactly).
+    // Every step is ownership-fenced (zombie-write closure): a stale-broken
+    // writer aborts at the NEXT boundary instead of completing its writes
+    // over the live committer's bytes.
     for (const dir of mutation.ensureDirs ?? []) {
+      fenceBeforeWrite(projectDir, holder, 'ensureDir');
       authorizedEnsureDir({ projectDir, path: dir });
       performed += 1;
     }
     for (const r of mutation.archive ?? []) {
       if (entries.some((e) => e.kind === 'rename' && e.from === r.from && e.to === r.to)) {
+        fenceBeforeWrite(projectDir, holder, 'archive');
         authorizedRenameNoClobber({ projectDir, from: r.from, to: r.to });
         performed += 1;
       }
     }
-    if (mutation.snapshot !== undefined) { persistTrustedJson({ projectDir, path: paths.snapshot, value: mutation.snapshot }); performed += 1; }
-    if (mutation.project !== undefined) { persistTrustedJson({ projectDir, path: paths.projectJson, value: mutation.project }); performed += 1; }
-    if (mutation.overlay !== undefined) { persistTrustedJson({ projectDir, path: paths.overlay, value: mutation.overlay }); performed += 1; }
-    if (mutation.parity !== undefined) { persistTrustedJson({ projectDir, path: paths.parity, value: mutation.parity }); performed += 1; }
-    if (mutation.strategy !== undefined) { persistTrustedJson({ projectDir, path: paths.strategy, value: mutation.strategy }); performed += 1; }
+    if (mutation.snapshot !== undefined) { fenceBeforeWrite(projectDir, holder, 'snapshot'); persistTrustedJson({ projectDir, path: paths.snapshot, value: mutation.snapshot }); performed += 1; }
+    if (mutation.project !== undefined) { fenceBeforeWrite(projectDir, holder, 'project'); persistTrustedJson({ projectDir, path: paths.projectJson, value: mutation.project }); performed += 1; }
+    if (mutation.overlay !== undefined) { fenceBeforeWrite(projectDir, holder, 'overlay'); persistTrustedJson({ projectDir, path: paths.overlay, value: mutation.overlay }); performed += 1; }
+    if (mutation.parity !== undefined) { fenceBeforeWrite(projectDir, holder, 'parity'); persistTrustedJson({ projectDir, path: paths.parity, value: mutation.parity }); performed += 1; }
+    if (mutation.strategy !== undefined) { fenceBeforeWrite(projectDir, holder, 'strategy'); persistTrustedJson({ projectDir, path: paths.strategy, value: mutation.strategy }); performed += 1; }
     if (mutation.specDir !== undefined) {
+      fenceBeforeWrite(projectDir, holder, 'specDir');
       authorizedCreateDirAtomically({ projectDir, targetDir: paths.specDir, files: mutation.specDir.files as never });
       performed += 1;
     }
@@ -531,8 +537,9 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       throw new TrustStateError(
         'recovery_required',
         `trusted-state commit failed (${cause.message}) AND the revision advanced past this commit's base — ` +
-          `a concurrent writer committed. On-disk state may combine both writers; the journal is retained as a ` +
-          `superseded marker. Inspect the state after review before re-running.`,
+          `a concurrent writer committed. On-disk state may combine both writers; ` +
+          `${ours ? 'the journal is retained as a superseded marker' : 'the concurrent writer owns the journal path'}; ` +
+          `inspect the state after review before re-running.`,
       );
     }
 
@@ -611,10 +618,8 @@ function journalIsOurs(projectDir: string, paths: ReturnType<typeof renewalPaths
   );
 }
 
-/** The V6 fence: the lockfile must still name THIS holder and the on-disk
- *  revision must still be our base. A stale-break by another writer (or any
- *  intervening commit) aborts THIS commit — typed, journal retained. */
-function fenceWriterLock(projectDir: string, holder: { pid: number; acquiredAt: string }, baseRevision: number): void {
+/** Ownership probe: does the lockfile still name THIS holder? */
+function lockStillOurs(projectDir: string, holder: { pid: number; acquiredAt: string }): boolean {
   const lockPath = join(renewalWriterLockDir(projectDir), '.lco-revision.lock');
   let text: string | undefined;
   try {
@@ -622,16 +627,37 @@ function fenceWriterLock(projectDir: string, holder: { pid: number; acquiredAt: 
   } catch {
     text = undefined;
   }
-  let stillOurs = false;
-  if (text !== undefined) {
-    try {
-      const parsed = JSON.parse(text) as { pid?: unknown; acquiredAt?: unknown };
-      stillOurs = parsed.pid === holder.pid && parsed.acquiredAt === holder.acquiredAt;
-    } catch {
-      stillOurs = false;
-    }
+  if (text === undefined) return false;
+  try {
+    const parsed = JSON.parse(text) as { pid?: unknown; acquiredAt?: unknown };
+    return parsed.pid === holder.pid && parsed.acquiredAt === holder.acquiredAt;
+  } catch {
+    return false;
   }
-  if (!stillOurs) {
+}
+
+/**
+ * The PER-WRITE fence (final-V1 zombie-write closure): before EVERY forward
+ * write, the writer proves the lock still names it. A stale-broken writer
+ * that resumes mid-write-set therefore aborts at the next write boundary —
+ * BEFORE its zombie bytes land over the live committer's stores. The window
+ * shrinks to inside a single authorized write (staging+fsync+rename), which
+ * cannot outlive the 10s stale-break on a healthy filesystem.
+ */
+function fenceBeforeWrite(projectDir: string, holder: { pid: number; acquiredAt: string }, what: string): void {
+  if (!lockStillOurs(projectDir, holder)) {
+    throw new TrustStateError(
+      'recovery_required',
+      `the renewal writer lock changed hands before the ${what} write (this writer's lock was stale-broken) — ` +
+        `the commit aborts BEFORE writing over another writer's state`,
+    );
+  }
+}
+
+/** The V6 fence (pre-revision): the lockfile must still name THIS holder and
+ *  the on-disk revision must still be our base. */
+function fenceWriterLock(projectDir: string, holder: { pid: number; acquiredAt: string }, baseRevision: number): void {
+  if (!lockStillOurs(projectDir, holder)) {
     throw new TrustStateError(
       'recovery_required',
       'the renewal writer lock changed hands mid-commit (the stale window elapsed and another writer broke it) — ' +
