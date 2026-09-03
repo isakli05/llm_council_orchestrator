@@ -207,11 +207,11 @@ describe('buffer arms (variance margin)', () => {
     if (!absent.ok) expect(absent.code).toBe('manifest_missing');
   });
 
-  it('digestGraphManifest maps malformed input to the explicit empty-list constant', async () => {
-    const { digestGraphManifest } = await import('./snapshot/snapshot');
-    const d = digestGraphManifest('garbage{');
-    expect(d.entries).toBe(0);
-    expect(d.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+  it('S3-L-03: the non-strict manifest digest fallback is DELETED — malformed input is a typed refusal, never an empty-identity digest', async () => {
+    const { parseGraphManifestStrict } = await import('./trust/structural');
+    const d = parseGraphManifestStrict('garbage{');
+    expect(d.ok).toBe(false);
+    if (!d.ok) expect(d.code).toBe('manifest_invalid');
   });
 
   it('evaluateStaleness: a changed manifest digest, absent graph, and invalid graph each carry their own reason code', async () => {

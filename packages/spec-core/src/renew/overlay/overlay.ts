@@ -11,7 +11,6 @@
  * ordering by id, strict schemas — diffable by design.
  */
 import { z } from 'zod';
-import { readFileSync } from 'node:fs';
 import { CodeAnchorPayloadSchema } from '../../schemas/evidence';
 import { authorizedWrite } from '../trust/fs';
 import { verifyAnchor, type CodeAnchorInput } from '../anchors/verifier';
@@ -123,22 +122,6 @@ export function persistOverlay(projectDir: string, path: string, store: OverlayS
 export type OverlayLoad =
   | { ok: true; store: OverlayStore }
   | { ok: false; code: 'overlay_missing' | 'overlay_corrupt'; message: string };
-
-/** D2: missing is NOT corrupt — callers give missing domain-specific init
- * semantics; existing+corrupt always stops the operation.
- * @deprecated TRUST KERNEL: trusted reads route through
- * trust/state.loadActiveState (authorizedRead + this parser). */
-export function loadOverlay(path: string): OverlayLoad {
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') return { ok: false, code: 'overlay_missing', message: `no overlay store at ${path}` };
-    return { ok: false, code: 'overlay_corrupt', message: `overlay.json unreadable (${err.message})` };
-  }
-  return parseOverlayStore(text);
-}
 
 /** Pure parse+validate of overlay.json TEXT (schema + duplicate-state checks). */
 export function parseOverlayStore(text: string): OverlayLoad {

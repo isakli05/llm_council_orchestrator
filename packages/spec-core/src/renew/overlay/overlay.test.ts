@@ -1,21 +1,29 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+
   OVERLAY_RELATIONS,
   OverlayRecordSchema,
   OverlayStoreSchema,
   addOverlayRecord,
   emptyOverlay,
   evaluateOverlayStaleness,
-  loadOverlay,
+  parseOverlayStore,
   markSuperseded,
   nextOverlayId,
   persistOverlay,
   type NewOverlayRecord,
 } from './overlay';
+
+/** Test-local raw fixture reader (production reads route through the kernel). */
+const loadOverlayFile = (path: string) =>
+  existsSync(path)
+    ? parseOverlayStore(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'overlay_missing' as const, message: `no overlay store at ${path}` });
+
 
 const tmpDirs: string[] = [];
 function freshDir(): string {
@@ -94,7 +102,7 @@ describe('overlay store (ids, ordering, atomic persistence, reload)', () => {
     // Trust kernel: authorized write — the temp dir is the project root
     // (a file directly in projectDir authorizes; staging is unpredictable).
     expect(persistOverlay(dir, path, store)).toMatchObject({ ok: true });
-    const loaded = loadOverlay(path);
+    const loaded = loadOverlayFile(path);
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
     expect(JSON.stringify(loaded.store)).toBe(JSON.stringify(store));
@@ -123,7 +131,7 @@ describe('overlay store (ids, ordering, atomic persistence, reload)', () => {
     const dir = freshDir();
     const path = join(dir, 'overlay.json');
     writeFileSync(path, '{nope');
-    const r = loadOverlay(path);
+    const r = loadOverlayFile(path);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.code).toBe('overlay_corrupt');

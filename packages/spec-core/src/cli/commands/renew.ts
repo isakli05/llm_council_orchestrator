@@ -30,7 +30,7 @@ import { addParityEntry, applyApprovalToParity, emptyParity, persistParity } fro
 import { makeRenewalDriver, STRATEGY_CLAIM_ID } from '../../renew/clarify/distiller';
 import { createRenewalClarifySession } from '../../renew/clarify/session';
 import { nextRenewalApprovalId, writeRenewalApproval } from '../../renew/clarify/approvals';
-import { buildStrategyDecision, loadStrategy, persistStrategy, MODERNIZATION_STRATEGIES } from '../../renew/planner/strategy';
+import { buildStrategyDecision, persistStrategy, MODERNIZATION_STRATEGIES } from '../../renew/planner/strategy';
 import { buildModernizationPlan } from '../../renew/planner/plan';
 import {
   loadRenewalProject,

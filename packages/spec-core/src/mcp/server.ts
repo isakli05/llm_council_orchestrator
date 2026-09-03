@@ -43,7 +43,6 @@ import { cmdRenewStatus, cmdRenewExport, cmdRenewAnalyze, type RenewCapabilities
 import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
 import { renewalPaths, loadRenewalProject } from '../renew/project/project';
 import { singleRoutePlan } from '../llm/plan';
-import { createHttpLlm } from '../eval/llm/http';
 import {
   MAX_RECOVERY_WIRE_BYTES,
   createPaidOperation,

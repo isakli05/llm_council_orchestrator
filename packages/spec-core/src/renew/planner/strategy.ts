@@ -10,7 +10,6 @@
  * persistence/read functions here are deprecated bypass shapes being
  * migrated to trust/state + trust/fs.
  */
-import { readFileSync } from 'node:fs';
 import {
   MODERNIZATION_STRATEGIES,
   StrategyDecisionSchema,
@@ -53,17 +52,6 @@ export function persistStrategy(projectDir: string, path: string, decision: Stra
 export type StrategyLoad =
   | { ok: true; decision: StrategyDecision }
   | { ok: false; code: 'strategy_missing' | 'strategy_corrupt'; message: string };
-
-/** @deprecated TRUST KERNEL: trusted reads route through trust/state.loadActiveState. */
-export function loadStrategy(path: string): StrategyLoad {
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch {
-    return { ok: false, code: 'strategy_missing', message: `no strategy selected yet (${path}) — selection is a human act (renew review or --strategy)` };
-  }
-  return parseStrategyDecision(text);
-}
 
 /** Pure parse+validate of strategy.json TEXT. */
 export function parseStrategyDecision(text: string): StrategyLoad {

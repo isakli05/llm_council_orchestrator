@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync,  mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,7 +8,7 @@ import {
   addParityEntry,
   applyApprovalToParity,
   emptyParity,
-  loadParity,
+  parseParityStore,
   parityFromAnalyses,
   parityGate,
   parityProjection,
@@ -17,6 +17,13 @@ import {
 } from './ledger';
 import type { AnalysisRecord } from '../recovery/schemas';
 import { buildRenewalApprovalRecord, type RenewalApprovalRecord } from '../clarify/approvals';
+
+/** Test-local raw fixture reader (production reads route through the kernel). */
+const loadParityFile = (path: string) =>
+  existsSync(path)
+    ? parseParityStore(readFileSync(path, 'utf8'))
+    : ({ ok: false as const, code: 'parity_missing' as const, message: `no parity ledger at ${path}` });
+
 
 const tmpDirs: string[] = [];
 function freshDir(): string {
@@ -247,10 +254,10 @@ describe('projection to the spec legacy package + persistence', () => {
     const store = parityFromAnalyses([hypothesisAnalysis()], SNAP);
     // Trust kernel: authorized write — the temp dir is the project root.
     expect(persistParity(dir, path, store)).toMatchObject({ ok: true });
-    const loaded = loadParity(path);
+    const loaded = loadParityFile(path);
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.store.records).toHaveLength(1);
     writeFileSync(path, '{nope');
-    expect(loadParity(path).ok).toBe(false);
+    expect(loadParityFile(path).ok).toBe(false);
   });
 });

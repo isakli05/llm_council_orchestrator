@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../../schemas';
 import { acquireSpecRootLock, createDirAtomically } from '../../storage/revision';
@@ -52,7 +52,6 @@ export function writeSpecDir(dir: string, bundle: SpecBundle, nowIso: string): v
   if (existsSync(specDir)) {
     throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
   }
-  mkdirSync(dir, { recursive: true });
   const lock = acquireSpecRootLock(dir, nowIso);
   try {
     stageSpecDir(dir, bundle);

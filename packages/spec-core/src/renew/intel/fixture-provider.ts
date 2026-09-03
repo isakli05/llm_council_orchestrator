@@ -13,7 +13,6 @@ import type {
   IntelItems,
   IntelProbe,
 } from './provider';
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { ParsedGraph } from './graph-reader';
@@ -26,6 +25,7 @@ import {
   shortestPath,
 } from './graph-ops';
 import { SUPPORTED_GRAPHIFY_RANGE } from './graphify-adapter';
+import { authorizedEnsureDir, authorizedWrite } from '../trust/fs';
 
 export class StaticGraphProvider implements CodeIntelligenceProvider {
   constructor(
@@ -45,11 +45,12 @@ export class StaticGraphProvider implements CodeIntelligenceProvider {
     // ast_hash = sha256 over that file's sorted node ids) so snapshot
     // identity behaves exactly like the real tool's output.
     if (opts?.workspaceRoot !== undefined) {
+      // Trust kernel: even the fixture substrate writes through the authorized
+      // primitive (the workspace root is its own project domain), so no
+      // production file in the renewal surface performs a plain write.
       const outDir = join(opts.workspaceRoot, 'graphify-out');
-      mkdirSync(outDir, { recursive: true });
-      writeFileSync(
-        join(outDir, 'graph.json'),
-        JSON.stringify(
+      authorizedEnsureDir({ projectDir: opts.workspaceRoot, path: outDir });
+      const graphJson = JSON.stringify(
           {
             directed: this.fixtureGraph.directed,
             multigraph: false,
@@ -71,8 +72,8 @@ export class StaticGraphProvider implements CodeIntelligenceProvider {
           },
           null,
           2,
-        ),
-      );
+        );
+      authorizedWrite({ projectDir: opts.workspaceRoot, path: join(outDir, 'graph.json'), content: graphJson });
       const files = new Map<string, string[]>();
       for (const n of this.fixtureGraph.nodes) {
         if (n.source_file === undefined) continue;
@@ -82,7 +83,7 @@ export class StaticGraphProvider implements CodeIntelligenceProvider {
       for (const [file, ids] of [...files.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
         manifest[file] = { ast_hash: createHash('sha256').update(JSON.stringify([...ids].sort())).digest('hex') };
       }
-      writeFileSync(join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      authorizedWrite({ projectDir: opts.workspaceRoot, path: join(outDir, 'manifest.json'), content: `${JSON.stringify(manifest, null, 2)}\n` });
     }
     return { ok: true };
   }

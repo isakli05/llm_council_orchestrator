@@ -14,10 +14,6 @@ import { tryRealpath } from '../../storage/paths';
 import { authorizedWrite } from '../trust/fs';
 import { bumpStateRevisionTrusted, loadActiveState, supersedeStoresForRefresh } from '../trust/state';
 import { preflightRenewalSurface } from '../trust/fs';
-import { loadAnalysisRecords } from '../recovery/analysis-store';
-import { loadOverlay } from '../overlay/overlay';
-import { loadParity } from '../parity/ledger';
-import { loadStrategy } from '../planner/strategy';
 import { reloadSnapshot, type ProjectSnapshot } from '../snapshot/snapshot';
 
 export const RenewalProjectSchema = z
@@ -60,33 +56,6 @@ export function renewalPaths(dir: string): RenewalPaths {
     specDir: join(dir, 'spec'),
     state: join(root, 'state.json'),
   };
-}
-
-/**
- * INV-A (S2-C-01): every trusted Renewal state destination, including the
- * atomic tmp+rename siblings, that must live under a REAL-directory chain of
- * the resolved project root before any renewal command reads or writes state.
- * One shared authorization boundary for the whole command surface.
- */
-export function renewalStateDestinations(paths: RenewalPaths): string[] {
-  return [
-    paths.projectJson,
-    `${paths.projectJson}.tmp`,
-    paths.snapshot,
-    `${paths.snapshot}.tmp`,
-    paths.overlay,
-    `${paths.overlay}.tmp`,
-    paths.parity,
-    `${paths.parity}.tmp`,
-    paths.strategy,
-    `${paths.strategy}.tmp`,
-    paths.state,
-    `${paths.state}.tmp`,
-    paths.workspace,
-    paths.analyses,
-    paths.approvals,
-    paths.specDir,
-  ];
 }
 
 export function authorizeRenewalState(dir: string): { ok: true } | { ok: false; message: string } {
@@ -156,75 +125,6 @@ export function loadSnapshotFile(dir: string): { ok: true; snapshot: ProjectSnap
   if (!existsSync(path)) return { ok: false, message: `snapshot missing (${path}) — run lco renew refresh` };
   const r = reloadSnapshot(readFileSync(path, 'utf8'));
   return r.ok ? { ok: true, snapshot: r.snapshot } : { ok: false, message: r.message };
-}
-
-/** Everything status/export need, loaded once, missing stores tolerated. */
-export interface RenewalState {
-  project: RenewalProject;
-  snapshot: ProjectSnapshot | undefined;
-  snapshotError: string | undefined;
-  analyses: ReturnType<typeof loadAnalysisRecords>;
-  overlay: { ok: true; store: import('../overlay/overlay').OverlayStore } | { ok: false; message: string };
-  parity: { ok: true; store: import('../parity/ledger').ParityStore } | { ok: false; message: string };
-  strategy: { ok: true; decision: import('../planner/strategy').StrategyDecision } | { ok: false; message: string };
-  specExists: boolean;
-}
-
-/**
- * INV-B1 (S2-H-11, reopening C-04): the project-level target pointer and the
- * snapshot's target identity are ONE identity — `realpath(project.target_path)`
- * must equal `snapshot.target.root_realpath`. A `fresh` verdict must never
- * describe Snapshot A while the project points at Target B (an identical clone
- * included). Changing the pointer is the explicit `refresh` transition, never
- * a silent mutation. Throws a typed message the command surface converts into
- * a fail-closed refusal.
- */
-export function assertTargetSnapshotJoin(project: RenewalProject, snapshot: ProjectSnapshot): void {
-  const targetReal = tryRealpath(project.target_path);
-  if (targetReal === undefined) {
-    throw new Error(
-      `renewal target missing: project.json points at ${project.target_path}, which does not exist — ` +
-        `the recorded source state is unverifiable. Run 'lco renew refresh' against a present target.`,
-    );
-  }
-  if (targetReal !== snapshot.target.root_realpath) {
-    throw new Error(
-      `renewal target identity mismatch: the project points at ${targetReal} but the active snapshot ` +
-        `${snapshot.snapshot_id} was taken of ${snapshot.target.root_realpath} — a fresh verdict must never ` +
-        `describe one source while the project points at another. Run 'lco renew refresh' to rebind explicitly.`,
-    );
-  }
-}
-
-export function loadRenewalState(dir: string): RenewalState {
-  const p = loadRenewalProject(dir);
-  if (!p.ok) throw new Error(p.message);
-  const paths = renewalPaths(dir);
-  const snap = loadSnapshotFile(dir);
-  if (snap.ok) assertTargetSnapshotJoin(p.project, snap.snapshot);
-  return {
-    project: p.project,
-    snapshot: snap.ok ? snap.snapshot : undefined,
-    snapshotError: snap.ok ? undefined : snap.message,
-    analyses: loadAnalysisRecords(paths.analyses),
-    overlay: existsSync(paths.overlay)
-      ? (() => {
-          const r = loadOverlay(paths.overlay);
-          return r.ok ? { ok: true, store: r.store } : { ok: false, message: r.message };
-        })()
-      : { ok: true, store: { schema_version: 1, snapshot_id: p.project.snapshot_id, records: [] } },
-    parity: existsSync(paths.parity)
-      ? (() => {
-          const r = loadParity(paths.parity);
-          return r.ok ? { ok: true, store: r.store } : { ok: false, message: r.message };
-        })()
-      : { ok: true, store: { schema_version: 1, snapshot_id: p.project.snapshot_id, records: [] } },
-    strategy: (() => {
-      const r = loadStrategy(paths.strategy);
-      return r.ok ? { ok: true, decision: r.decision } : { ok: false, message: r.message };
-    })(),
-    specExists: existsSync(paths.specDir),
-  };
 }
 
 // --- INV-B2: versioned trusted-state revision ---------------------------------------

@@ -90,10 +90,12 @@ describe('architecture: paid transport only through ResolvedPaidOperation discip
     const forbidden = ['createOpenAiCompatibleLlm(', 'createHttpLlm('];
     const violations: string[] = [];
     for (const file of renewalSurface()) {
-      const text = readFileSync(file, 'utf8');
-      for (const fn of forbidden) {
-        if (text.includes(fn)) violations.push(`${REL(file)}: ${fn}`);
-      }
+      readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+        if (line.trim().startsWith('*') || line.trim().startsWith('//')) return; // prose, not a call site
+        for (const fn of forbidden) {
+          if (line.includes(fn)) violations.push(`${REL(file)}:${i + 1}: ${fn}`);
+        }
+      });
     }
     expect(violations, violations.join('\n')).toEqual([]);
   });

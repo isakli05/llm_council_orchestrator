@@ -292,19 +292,4 @@ export type { GraphManifestParse } from '../trust/structural';
 export { parseGraphManifestStrict } from '../trust/structural';
 import { parseGraphManifestStrict as strictParse } from '../trust/structural';
 
-export interface GraphManifestIdentity {
-  digest: string;
-  entries: number;
-}
 
-/**
- * @deprecated TRUST KERNEL MIGRATION: the non-strict fallback digest is a
- * forbidden-bypass shape (S3-L-03 — malformed state must NEVER become an
- * "empty manifest" digest). Remaining callers are being migrated to
- * structuralIdentity(); this wrapper disappears with them.
- */
-export function digestGraphManifest(text: string): GraphManifestIdentity {
-  const strict = strictParse(text);
-  if (strict.ok) return strict.identity;
-  return { digest: `sha256:${createHash('sha256').update(JSON.stringify([]), 'utf8').digest('hex')}`, entries: 0 };
-}

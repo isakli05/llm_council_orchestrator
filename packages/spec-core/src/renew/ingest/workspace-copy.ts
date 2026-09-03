@@ -8,7 +8,7 @@
  * so manifests, exclusion reports, and cap decisions are stable across runs.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DEFAULT_INGEST_LIMITS, guardPath, isDeniedDirectory, looksBinary, type IngestLimits } from './guards';
 import { authorizedCopyWrite } from '../trust/fs';
@@ -151,12 +151,13 @@ export function buildGuardedCopy(
       // content — restrict at-rest exposure to the owning user (files 0600,
       // dirs 0700) and write through the authorized primitive when a project
       // root is supplied (fresh-file, chain-authorized workspace writes).
-      if (opts?.projectDir !== undefined) {
-        authorizedCopyWrite({ projectDir: opts.projectDir, path: dest, content: buf.toString('utf8') });
-      } else {
-        mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
-        writeFileSync(dest, buf, { mode: 0o600 });
+      // Trust kernel: copy-mode writes REQUIRE the authorized primitive —
+      // there is no plain-write fallback anymore (the fallback WAS the
+      // bypass class the architecture guard exists to catch).
+      if (opts?.projectDir === undefined) {
+        throw new Error('buildGuardedCopy: copy mode requires projectDir (trusted writes only through the trust kernel)');
       }
+      authorizedCopyWrite({ projectDir: opts.projectDir, path: dest, content: buf.toString('utf8') });
     }
     manifest.push({ path: f.rel, sha256: `sha256:${createHash('sha256').update(buf).digest('hex')}` });
   }
