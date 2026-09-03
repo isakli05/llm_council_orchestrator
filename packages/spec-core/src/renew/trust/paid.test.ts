@@ -7,7 +7,6 @@ import {
   resolvedRouteDigest,
 } from './paid';
 import { TrustPaidError } from './errors';
-import type { BudgetLedger } from '../../eval/budget';
 
 function noopLedger(): BudgetLedger {
   let attempts = 0;
@@ -80,7 +79,6 @@ describe('paid: wire-byte cap over the SERIALIZED request (S3-H-05)', () => {
     const op = createPaidOperation({
       route: resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://gw.example/v1', LCO_LLM_MODEL: 'm-1', LCO_LLM_EXTRA_BODY: '{"temperature": 0.5}' }, { maxAttempts: 1 }),
       apiKey: 'k',
-      ledger: noopLedger(),
       wireByteCap: 10_000,
       fetchImpl: recordingFetch(seen),
     });
@@ -98,7 +96,6 @@ describe('paid: wire-byte cap over the SERIALIZED request (S3-H-05)', () => {
     const op = createPaidOperation({
       route: resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://gw.example/v1', LCO_LLM_MODEL: 'm-1' }, { maxAttempts: 1 }),
       apiKey: 'k',
-      ledger: noopLedger(),
       wireByteCap: 10, // anything serialized exceeds this
       fetchImpl: recordingFetch(seen),
     });
@@ -113,7 +110,6 @@ describe('paid: wire-byte cap over the SERIALIZED request (S3-H-05)', () => {
     const probe = createPaidOperation({
       route: resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://gw.example/v1', LCO_LLM_MODEL: 'm' }, { maxAttempts: 1 }),
       apiKey: 'k',
-      ledger: noopLedger(),
       fetchImpl: recordingFetch(seen),
     });
     await probe.adapter.complete(prompt);
@@ -122,8 +118,7 @@ describe('paid: wire-byte cap over the SERIALIZED request (S3-H-05)', () => {
       createPaidOperation({
         route: resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://gw.example/v1', LCO_LLM_MODEL: 'm' }, { maxAttempts: 1 }),
         apiKey: 'k',
-        ledger: noopLedger(),
-        wireByteCap: cap,
+          wireByteCap: cap,
         fetchImpl: recordingFetch(seen),
       });
     const at = mk(exact);
@@ -137,7 +132,6 @@ describe('paid: wire-byte cap over the SERIALIZED request (S3-H-05)', () => {
     const probe = createPaidOperation({
       route: resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://gw.example/v1', LCO_LLM_MODEL: 'm' }, { maxAttempts: 1 }),
       apiKey: 'k',
-      ledger: noopLedger(),
       fetchImpl: recordingFetch(seen),
     });
     await probe.adapter.complete('short');
@@ -145,7 +139,6 @@ describe('paid: wire-byte cap over the SERIALIZED request (S3-H-05)', () => {
     const op = createPaidOperation({
       route: resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://gw.example/v1', LCO_LLM_MODEL: 'm' }, { maxAttempts: 1 }),
       apiKey: 'k',
-      ledger: noopLedger(),
       wireByteCap: shortBytes, // admits the first prompt, must refuse the retry-expanded one
       fetchImpl: recordingFetch(seen),
     });

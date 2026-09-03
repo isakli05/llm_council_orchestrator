@@ -49,6 +49,7 @@ import {
   MAX_RECOVERY_WIRE_BYTES,
   createPaidOperation,
   resolveLegacyEnvRoute,
+  routeFromConfig,
   resolvedRouteDigest,
   wireCap,
 } from '../renew/trust/paid';
@@ -288,6 +289,32 @@ async function renewalConsentState(
           )
           .digest('hex')}`;
         resolvedModel = role.model;
+        // S4-H-03 closure: named-profile consent binds the ROUTE DIGEST of the
+        // SAME operation the tool call will construct (resolve → routeFromConfig
+        // → resolvedRouteDigest) — consent no longer reconstructs an
+        // equivalent-looking identity from profile parts.
+        try {
+          const fullRole = (profile.roles as Record<string, import('../config/llm-config').ResolvedRole | undefined>)['renew_recover'];
+          if (fullRole !== undefined) {
+            const { resolveRoleConfig } = await import('../llm/providers');
+            const { config } = resolveRoleConfig(fullRole, process.env, { routingMode: profile.routingMode });
+            const { routeFromConfig, resolvedRouteDigest } = await import('../renew/trust/paid');
+            const rb = defaultRenewalBudget();
+            legacyRouteDigest = resolvedRouteDigest(
+              routeFromConfig({
+                config,
+                origin: 'named-profile',
+                profileName: opts.llmProfile,
+                routingMode: profile.routingMode,
+                apiKeyEnvName: fullRole.apiKeyEnv,
+                budget: { maxAttempts: rb.maxAttempts ?? 8, ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}) },
+              }),
+            );
+          }
+        } catch {
+          // unresolvable route (missing key env etc.): nothing to bind — the
+          // tool call refuses before any adapter exists (zero spend)
+        }
       }
     }
     // An unresolvable profile leaves the fields unbound here — the
@@ -827,13 +854,16 @@ const TOOLS: readonly ToolDef[] = [
       // uncounted). S3-H-05: adapters measure/cap the exact serialized wire
       // request before transport.
       const caps = renewCaps(input.dir, nowIso);
-      const { createBudgetLedger } = await import('../eval/budget');
-      const opLedger = createBudgetLedger(budget, { nowMs: Date.now });
-      const { buildRoleAdapter } = await import('../llm/providers');
-      const cap = wireCap(MAX_RECOVERY_WIRE_BYTES);
-      let llmPlan;
+      // S4-H-03 closure: every renewal route (named profile AND legacy env)
+      // resolves into ONE immutable PaidOperation — deep-cloned frozen route,
+      // digest over the exact transported state, and a ledger OWNED by the
+      // operation and derived from the digest-bound budget. There is no
+      // independently constructible ledger here anymore: a route budgeting 1
+      // attempt cannot be paired with a ledger budgeting more.
+      let op: ReturnType<typeof createPaidOperation> | undefined;
+      let injectedPlan;
       if (call.llm !== undefined) {
-        llmPlan = singleRoutePlan(call.llm);
+        injectedPlan = singleRoutePlan(call.llm);
       } else if (input.llmProfile !== undefined) {
         const resolved = call.resolveLlmProfile(input.llmProfile);
         if (!resolved.ok) return { code: 2, output: resolved.output };
@@ -851,38 +881,62 @@ const TOOLS: readonly ToolDef[] = [
             output: `renewal analysis refused: llm profile '${resolved.profile.name}' has no route for role 'renew_recover' (zero LLM calls)`,
           };
         }
-        const adapter = buildRoleAdapter(role, process.env, {
-          routingMode: profile.routingMode,
-          budget: opLedger,
-          onSerializedWire: cap.onSerializedWire,
-        });
-        llmPlan = {
-          forRole: () => ({
-            adapter,
-            identity: { gateway: role.gateway, providerKind: 'openai-compatible' as const, requestedModel: role.model },
-          }),
-        };
+        try {
+          const { resolveRoleConfig } = await import('../llm/providers');
+          const { config, apiKey } = resolveRoleConfig(role, process.env, { routingMode: profile.routingMode });
+          op = createPaidOperation({
+            route: routeFromConfig({
+              config,
+              origin: 'named-profile',
+              profileName: input.llmProfile,
+              routingMode: profile.routingMode,
+              apiKeyEnvName: role.apiKeyEnv,
+              budget: { maxAttempts: budget.maxAttempts ?? 8, ...(budget.maxWallMs !== undefined ? { wallMs: budget.maxWallMs } : {}) },
+            }),
+            apiKey,
+            wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+            nowMs: Date.now,
+          });
+        } catch (e) {
+          return { code: 2, output: `renewal analysis refused: no LLM route (${(e as Error).message}) — zero calls were made` };
+        }
       } else {
         // Legacy env via the paid kernel: the FULL route (base URL, model,
-        // max tokens, extra body) resolves once, fails closed, and the
-        // adapter is wire-capped with the SAME ledger (S3-H-07).
+        // max tokens, extra body) resolves once, fails closed, and the ledger
+        // is the operation's own (S3-H-07 + S4-H-03).
         try {
-          const route = resolveLegacyEnvRoute(process.env, { maxAttempts: budget.maxAttempts ?? 8 });
+          const route = resolveLegacyEnvRoute(process.env, {
+            maxAttempts: budget.maxAttempts ?? 8,
+            ...(budget.maxWallMs !== undefined ? { wallMs: budget.maxWallMs } : {}),
+          });
           const apiKey = process.env.LCO_LLM_API_KEY?.trim();
           if (apiKey === undefined || apiKey === '') {
             throw new Error('LLM env incomplete: LCO_LLM_API_KEY must be set with LCO_LLM_BASE_URL and LCO_LLM_MODEL');
           }
-          llmPlan = singleRoutePlan(
-            createPaidOperation({ route, apiKey, ledger: opLedger, wireByteCap: MAX_RECOVERY_WIRE_BYTES }).adapter,
-          );
+          op = createPaidOperation({ route, apiKey, wireByteCap: MAX_RECOVERY_WIRE_BYTES, nowMs: Date.now });
         } catch (e) {
           return { code: 2, output: `renewal analysis refused: no LLM route (${(e as Error).message}) — zero calls were made` };
         }
       }
+      const llmPlan =
+        injectedPlan !== undefined
+          ? injectedPlan
+          : op !== undefined
+            ? {
+                forRole: () => ({
+                  adapter: op!.adapter,
+                  identity: {
+                    gateway: op!.route.gateway,
+                    providerKind: 'openai-compatible' as const,
+                    requestedModel: op!.route.model,
+                  },
+                }),
+              }
+            : undefined;
       const capsWithLlm: RenewCapabilities = {
         ...caps,
-        llm: () => llmPlan,
-        budget: () => opLedger,
+        ...(llmPlan !== undefined ? { llm: () => llmPlan } : {}),
+        ...(op !== undefined ? { budget: () => op.ledger } : {}),
       };
       return cmdRenewAnalyze({ dir: input.dir, scope: 'whole' }, capsWithLlm);
     },

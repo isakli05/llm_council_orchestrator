@@ -1,7 +1,7 @@
 import { createOpenAiCompatibleLlm } from '../../llm/openai-compatible';
 import type { OpenAiCompatibleConfig } from '../../llm/openai-compatible';
 import type { LlmAdapter } from '../../eval/llm/adapter';
-import type { BudgetLedger } from '../../eval/budget';
+import { createBudgetLedger, type BudgetLedger } from '../../eval/budget';
 import { domainDigest } from './canonical';
 import { TrustPaidError } from './errors';
 
@@ -95,7 +95,7 @@ export function resolveLegacyEnvRoute(env: NodeJS.ProcessEnv, defaults: { maxAtt
       throw new TrustPaidError('route_unresolved', `LCO_LLM_EXTRA_BODY is not valid JSON (${(err as Error).message})`);
     }
   }
-  return {
+  return deepFreezeRoute({
     origin: 'legacy-env',
     gateway: 'legacy-env',
     baseUrl,
@@ -105,7 +105,7 @@ export function resolveLegacyEnvRoute(env: NodeJS.ProcessEnv, defaults: { maxAtt
     routingMode: 'single',
     apiKeyEnvName: 'LCO_LLM_API_KEY',
     budget: { maxAttempts: defaults.maxAttempts, ...(defaults.wallMs !== undefined ? { wallMs: defaults.wallMs } : {}) },
-  };
+  });
 }
 
 /**
@@ -122,18 +122,37 @@ export function routeFromConfig(args: {
   apiKeyEnvName: string;
   budget: { maxAttempts: number; wallMs?: number };
 }): ResolvedPaidRoute {
-  return {
+  // S4-H-03: DEEP-clone everything — the caller keeps its original objects
+  // and any later mutation of them must not be able to reach this value.
+  return deepFreezeRoute({
     origin: args.origin,
     ...(args.profileName !== undefined ? { profileName: args.profileName } : {}),
     gateway: args.config.gateway,
     baseUrl: args.config.baseUrl,
     model: args.config.model,
     ...(args.config.maxTokens !== undefined ? { maxTokens: args.config.maxTokens } : {}),
-    ...(args.config.extraBody !== undefined ? { extraBody: { ...args.config.extraBody } } : {}),
+    ...(args.config.extraBody !== undefined ? { extraBody: structuredClone(args.config.extraBody) } : {}),
     routingMode: args.routingMode,
     apiKeyEnvName: args.apiKeyEnvName,
     budget: { maxAttempts: args.budget.maxAttempts, ...(args.budget.wallMs !== undefined ? { wallMs: args.budget.wallMs } : {}) },
-  };
+  });
+}
+
+/** Deep-clone then deep-freeze a route value (S4-H-03: callers keep mutable
+ *  originals; the ROUTE is the kernel's own immutable snapshot). */
+function deepFreezeRoute(route: ResolvedPaidRoute): ResolvedPaidRoute {
+  const clone = structuredClone(route) as ResolvedPaidRoute;
+  return deepFreeze(clone) as ResolvedPaidRoute;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      deepFreeze((value as Record<string, unknown>)[key]);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }
 
 /**
@@ -171,31 +190,42 @@ export interface PaidOperation {
 }
 
 /**
- * Construct the paid operation: route resolved, ONE ledger bound, transport
- * built with the wire hook that measures the exact serialized request and
- * enforces the cap BEFORE any fetch. `wireByteCap` undefined = measuring
- * only (non-renewal consumers keep their documented envelope policy); every
- * renewal paid path passes a cap.
+ * THE paid-operation constructor (S4-H-03 closure). The caller's route input
+ * is DEEP-CLONED into the operation's own frozen internal snapshot — caller
+ * mutation of any original object (extraBody, routing, gateway, budget, ...)
+ * can never reach the transported state. The LEDGER IS DERIVED from the
+ * frozen route's budget inside this constructor (an externally supplied,
+ * differently-budgeted ledger is unrepresentable — the API takes none). The
+ * digest is computed from the exact frozen value the transport consumes.
+ * `wireByteCap` undefined = measuring only (non-renewal consumers keep their
+ * documented envelope policy); every renewal paid path passes a cap.
  */
 export function createPaidOperation(args: {
   route: ResolvedPaidRoute;
   apiKey: string;
-  ledger: BudgetLedger;
   wireByteCap?: number;
   fetchImpl?: typeof fetch;
   nowMs?: () => number;
 }): PaidOperation {
+  const route = deepFreezeRoute(args.route);
+  const ledger = createBudgetLedger(
+    {
+      maxAttempts: route.budget.maxAttempts,
+      ...(route.budget.wallMs !== undefined ? { maxWallMs: route.budget.wallMs } : {}),
+    },
+    { nowMs: args.nowMs ?? (() => Date.now()) },
+  );
   let lastWireBytes: number | undefined;
-  const label = `${args.route.gateway}/${args.route.model}`;
+  const label = `${route.gateway}/${route.model}`;
   const adapter = createOpenAiCompatibleLlm({
-    gateway: args.route.gateway,
+    gateway: route.gateway,
     providerKind: 'openai-compatible',
-    baseUrl: args.route.baseUrl,
+    baseUrl: route.baseUrl,
     apiKey: args.apiKey,
-    model: args.route.model,
-    ...(args.route.maxTokens !== undefined ? { maxTokens: args.route.maxTokens } : {}),
-    ...(args.route.extraBody !== undefined ? { extraBody: args.route.extraBody } : {}),
-    budget: args.ledger,
+    model: route.model,
+    ...(route.maxTokens !== undefined ? { maxTokens: route.maxTokens } : {}),
+    ...(route.extraBody !== undefined ? { extraBody: route.extraBody } : {}),
+    budget: ledger,
     ...(args.fetchImpl !== undefined ? { fetchImpl: args.fetchImpl } : {}),
     ...(args.nowMs !== undefined ? { nowMs: args.nowMs } : {}),
     onSerializedWire: (requestBody: string) => {
@@ -211,9 +241,9 @@ export function createPaidOperation(args: {
     },
   });
   return {
-    route: args.route,
-    routeDigest: resolvedRouteDigest(args.route),
-    ledger: args.ledger,
+    route,
+    routeDigest: resolvedRouteDigest(route),
+    ledger,
     adapter,
     lastWireBytes: () => lastWireBytes,
   };

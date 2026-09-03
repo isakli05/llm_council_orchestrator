@@ -146,11 +146,18 @@ export function toGenericConfig(role: ResolvedRole, apiKey: string): OpenAiCompa
  * or borrows a key. The ledger is shared with the run (per-attempt charging
  * across every role of the council).
  */
-export function buildRoleAdapter(
+/**
+ * Resolve ONE role's transport config (API key BY NAME from the environment,
+ * fail-closed; provider-specific mapping). Split out of buildRoleAdapter so
+ * the renewal paid kernel can build its immutable ResolvedPaidRoute from the
+ * SAME resolved facts the adapter would use (S4-H-03: one resolution, one
+ * identity — no parallel reconstruction).
+ */
+export function resolveRoleConfig(
   role: ResolvedRole,
   env: NodeJS.ProcessEnv,
-  ctx: RoleCallContext & { budget?: BudgetLedger },
-): LlmAdapter {
+  ctx: RoleCallContext,
+): { config: OpenAiCompatibleConfig; apiKey: string } {
   const raw = env[role.apiKeyEnv];
   const apiKey = raw?.trim();
   if (apiKey === undefined || apiKey === '') {
@@ -159,14 +166,23 @@ export function buildRoleAdapter(
         'set the environment variable; lco.config.json stores the NAME, never the value',
     );
   }
-  const base: OpenAiCompatibleConfig =
+  const config: OpenAiCompatibleConfig =
     role.providerKind === 'openrouter'
       ? toOpenRouterConfig(role, apiKey, ctx)
       : role.providerKind === 'routellm'
         ? toRouteLlmConfig(role, apiKey, ctx)
         : toGenericConfig(role, apiKey);
+  return { config, apiKey };
+}
+
+export function buildRoleAdapter(
+  role: ResolvedRole,
+  env: NodeJS.ProcessEnv,
+  ctx: RoleCallContext & { budget?: BudgetLedger },
+): LlmAdapter {
+  const { config } = resolveRoleConfig(role, env, ctx);
   return createOpenAiCompatibleLlm({
-    ...base,
+    ...config,
     ...(ctx.budget !== undefined ? { budget: ctx.budget } : {}),
     ...(ctx.onSerializedWire !== undefined ? { onSerializedWire: ctx.onSerializedWire } : {}),
   });

@@ -28,8 +28,8 @@ import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
 import { renewalPaths } from '../renew/project/project';
 import { singleRoutePlan, type LlmPlan, type LlmRoute } from '../llm/plan';
 import { createHttpLlm } from '../eval/llm/http';
-import { MAX_RECOVERY_WIRE_BYTES, createPaidOperation, resolveLegacyEnvRoute, wireCap } from '../renew/trust/paid';
-import { buildRoleAdapter } from '../llm/providers';
+import { MAX_RECOVERY_WIRE_BYTES, createPaidOperation, resolveLegacyEnvRoute, routeFromConfig } from '../renew/trust/paid';
+import { resolveRoleConfig } from '../llm/providers';
 import { execFileSync, spawn } from 'node:child_process';
 import { cmdGenerateInteractive } from './commands/generate-interactive';
 import { parseArgs, commandHelp, renewSubHelp, USAGE } from './args';
@@ -388,15 +388,32 @@ export async function runCli(argv: string[]): Promise<number> {
                   // included) and refuses over-cap BEFORE any transport —
                   // the validation retry goes through the same adapter and
                   // is capped again.
-                  const cap = wireCap(MAX_RECOVERY_WIRE_BYTES);
-                  const adapter = buildRoleAdapter(role, process.env, {
+                  // S4-H-03 (trust kernel closure): the named-profile renewal
+                  // route resolves through the SAME paid kernel as the legacy
+                  // route — one immutable operation (deep-cloned frozen route,
+                  // digest-bound, wire-capped) with an INTERNALLY owned
+                  // ledger derived from the digest-bound budget. There is no
+                  // parallel buildRoleAdapter reconstruction here anymore.
+                  const rb = renewalBudget();
+                  const { config, apiKey } = resolveRoleConfig(role, process.env, {
                     routingMode: resolved.resolved.routingMode,
-                    budget: ledger,
-                    onSerializedWire: cap.onSerializedWire,
+                  });
+                  const op = createPaidOperation({
+                    route: routeFromConfig({
+                      config,
+                      origin: 'named-profile',
+                      profileName: r.llmProfile,
+                      routingMode: resolved.resolved.routingMode,
+                      apiKeyEnvName: role.apiKeyEnv,
+                      budget: { maxAttempts: rb.maxAttempts, ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}) },
+                    }),
+                    apiKey,
+                    wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+                    nowMs: Date.now,
                   });
                   const plan: LlmPlan = {
                     forRole: () => ({
-                      adapter,
+                      adapter: op.adapter,
                       identity: {
                         gateway: role.gateway,
                         providerKind: 'openai-compatible' as LlmRoute['identity']['providerKind'],
@@ -422,8 +439,8 @@ export async function runCli(argv: string[]): Promise<number> {
                   createPaidOperation({
                     route,
                     apiKey,
-                    ledger: oneLedger(),
                     wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+                    nowMs: Date.now,
                   }).adapter,
                 );
               },
