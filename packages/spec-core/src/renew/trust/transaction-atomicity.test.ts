@@ -33,7 +33,7 @@ import { domainDigest } from './canonical';
 vi.mock('./fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./fs')>();
   type Fault = { failOnWrite?: number; seen?: number; failed?: boolean; failOnRestore?: number; restoreSeen?: number };
-  type Interleave = { onWrite: number; commit: () => void };
+  type Interleave = { onWrite: number; commit: () => void; only?: boolean };
   return {
     ...actual,
     authorizedWrite: (args: Parameters<typeof actual.authorizedWrite>[0]) => {
@@ -46,7 +46,9 @@ vi.mock('./fs', async (importOriginal) => {
             // A CONCURRENT WRITER commits inside our write window, then our
             // write fails (the V1-re-verifier overlap interleave).
             fault.interleaveAndFail.commit();
-            throw new Error(`injected trusted-write failure #${fault.seen} (${args.path}) — after a concurrent commit`);
+            if (fault.interleaveAndFail.only !== true) {
+              throw new Error(`injected trusted-write failure #${fault.seen} (${args.path}) — after a concurrent commit`);
+            }
           }
         }
         if (fault.failOnWrite !== undefined) {
@@ -797,5 +799,159 @@ describe('S4-H-01: V1-re-verifier H1 — post-fence abort preserves a concurrent
     }
     expect(readFileSync(paths.state, 'utf8')).toBe('{torn'); // not blindly rewritten
     expect(() => loadActiveState(project)).toThrowError(TrustStateError); // fail-closed read
+  });
+
+  it('NH-1: a FOREIGN journal at the abort (revision unchanged) means another writer owns the state — NO rollback, NO removal', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const baseRev = readRevision(project);
+    const begin = loadActiveState(project);
+    const bOverlayBytes = `${JSON.stringify({ schema_version: 1, snapshot_id: begin.identity.snapshotId, records: [] }, null, 2)}\n`;
+    // B mid-commit: its own journal is on the path (foreign to A), its overlay
+    // written, revision NOT yet bumped. A's write then fails.
+    const bHolder = { pid: -55555, acquiredAt: '2026-09-03T00:00:00Z' };
+    const bEntries = [
+      { kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') },
+      { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
+    ] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: baseRev, holder: bHolder, entries: bEntries });
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void } } }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2, // A's first store write
+        commit: () => {
+          writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: baseRev, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`);
+          writeFileSync(paths.overlay, bOverlayBytes);
+        },
+      },
+    };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    // A did NOT delete B's journal and did NOT roll back over B's bytes; the
+    // next read recovers through B's journal to complete base state.
+    const after = loadActiveState(project);
+    expect(after.identity.revision).toBe(baseRev);
+    expect(existsSync(paths.journal)).toBe(false); // consumed by B's recovery
+  });
+
+  it('NH-2: the ownership-conditioned removal never deletes a foreign journal at the commit point (defense-in-depth)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const beforeRev = readRevision(project);
+    const foreignHolder = { pid: -77777, acquiredAt: '2026-09-03T00:00:00Z' };
+    const foreignEntries = [
+      { kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') },
+    ] as never;
+    const foreignIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, holder: foreignHolder, entries: foreignEntries, superseded: true });
+    const plantForeignMarker = (): void => {
+      writeFileSync(
+        paths.journal,
+        `${JSON.stringify({ schema_version: 1, holder: foreignHolder, base_revision: beforeRev, integrity: foreignIntegrity, superseded: true, entries: foreignEntries }, null, 2)}\n`,
+      );
+    };
+    // A protocol-violating actor replaces the journal at OUR commit point
+    // (the revision write is the last authorized write before removal).
+    // writes: 1=journal, 2..=stores/revision — plant at the revision write.
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void; only: boolean } } }).__txFault = {
+      interleaveAndFail: { onWrite: 4, commit: plantForeignMarker, only: true },
+    };
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:03Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    // the commit landed… and the FOREIGN journal survived our cleanup
+    // (trusted reads are blocked by the preserved marker — read raw)
+    const rawRevision = (): number => (JSON.parse(readFileSync(paths.state, 'utf8')) as { revision: number }).revision;
+    expect(rawRevision()).toBeGreaterThan(beforeRev);
+    expect(existsSync(paths.journal)).toBe(true);
+    const onDisk = JSON.parse(readFileSync(paths.journal, 'utf8')) as { superseded?: boolean; holder?: { pid?: number } };
+    expect(onDisk.superseded).toBe(true);
+    expect(onDisk.holder?.pid).toBe(-77777);
+    // reads fail closed on the preserved evidence until manual recovery
+    expect(() => loadActiveState(project)).toThrowError(TrustStateError);
+  });
+
+  it('abort arms: unparseable journal at the path / corrupt lockfile at the fence / missing expectation all refuse typed', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const beforeRev = readRevision(project);
+    const begin = loadActiveState(project);
+
+    // (a) an UNPARSEABLE journal at the abort point is foreign-by-definition:
+    // no rollback, no removal, typed refusal.
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void } } }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        commit: () => {
+          writeFileSync(paths.journal, '{corrupt journal');
+        },
+      },
+    };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    expect(readFileSync(paths.journal, 'utf8')).toBe('{corrupt journal'); // untouched by our abort
+
+    // (b) a CORRUPT lockfile at the fence aborts the commit (not ours to trust)
+    rmSync(paths.journal);
+    const begin2 = loadActiveState(project);
+    await expect(
+      runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:03Z',
+        expected: { snapshotId: begin2.identity.snapshotId, revision: begin2.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => {
+          writeFileSync(join(project, '.lco', 'renewal', '.lco-revision.lock'), 'not json');
+          return { mutation: analyzeStyleMutation(fresh), result: undefined };
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(readRevision(project)).toBe(beforeRev);
+
+    // (c) a transaction without its read-view expectation is refused (VB-5)
+    rmSync(join(project, '.lco', 'renewal', '.lco-revision.lock'), { force: true });
+    await expect(
+      runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:04Z',
+        // expected deliberately omitted
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      } as never),
+    ).rejects.toMatchObject({ code: 'fold_conflict' });
   });
 });

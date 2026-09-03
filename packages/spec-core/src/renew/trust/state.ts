@@ -497,29 +497,36 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
     const next = journal.base_revision + 1;
     persistTrustedJson({ projectDir, path: paths.state, value: { schema_version: 1, revision: next } });
     performed += 1;
-    removeJournal(projectDir, paths);
+    removeJournal(projectDir, paths, holder);
   } catch (err) {
     const cause = err as Error;
-    // V1-re-verifier H1: if ANOTHER WRITER COMMITTED (the revision moved off
-    // our base), this state is no longer exclusively ours — rolling the
-    // journal back would clobber their commit. Preserve the journal as a
-    // SUPERSEDED evidence marker and fail loud (manual recovery); write
-    // nothing else.
+    // Final-V1-re-verifier NH-1/NH-2 protocol: abort paths NEVER touch
+    // shared state without proving the journal at the path is still OURS.
+    // A live concurrent committer consumed our journal at its begin (that is
+    // how every transaction starts); a foreign journal on disk is therefore
+    // proof another writer owns the state — we must not roll back over it,
+    // remove it, or clobber it with a marker.
     let revisionMoved = false;
     try {
       revisionMoved = readRevisionUnlocked(projectDir) !== journal.base_revision;
     } catch {
       revisionMoved = true; // unreadable revision after a mid-commit failure — fail loud too
     }
+    const ours = journalIsOurs(projectDir, paths, holder);
+
     if (revisionMoved) {
       if (activeJournalDir === projectDir) activeJournalDir = null;
-      try {
-        const supersededJournal: TxJournalFile = { ...journal, superseded: true };
-        supersededJournal.integrity = txJournalIntegrity(supersededJournal);
-        persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
-      } catch {
-        // the marker itself could not be written — the typed refusal below is
-        // the remaining evidence
+      // The marker is evidence ONLY over our own journal (or an empty path);
+      // a foreign journal belongs to the concurrent writer and stays theirs.
+      if (ours || journalOnDisk(projectDir, paths) === undefined) {
+        try {
+          const supersededJournal: TxJournalFile = { ...journal, superseded: true };
+          supersededJournal.integrity = txJournalIntegrity(supersededJournal);
+          persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
+        } catch {
+          // the marker itself could not be written — the typed refusal below
+          // is the remaining evidence
+        }
       }
       throw new TrustStateError(
         'recovery_required',
@@ -528,15 +535,30 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
           `superseded marker. Inspect the state after review before re-running.`,
       );
     }
-    // A fence abort (lock changed hands but nobody committed) is a clean
-    // abort: roll the performed prefix back and propagate the ORIGINAL typed
-    // refusal — the state is complete R and no journal is needed. (H2: the
-    // rollback is guarded — a failure here is typed and never sticks the
-    // in-flight marker.)
+
+    if (!ours) {
+      // Revision unchanged but the journal is NOT ours: a concurrent writer
+      // consumed ours and is mid-commit (or crashed). Do NOT roll back — our
+      // performed writes will be superseded by their completion or recovered
+      // by THEIR journal. Any write of ours here is a lost-update machine.
+      if (activeJournalDir === projectDir) activeJournalDir = null;
+      throw new TrustStateError(
+        'recovery_required',
+        `trusted-state commit aborted (${cause.message}) while another writer owns the transaction journal — ` +
+          `this commit's partial writes are left to be superseded by the concurrent commit or its recovery; ` +
+          `inspect the state after review before re-running.`,
+      );
+    }
+
+    // The journal is still OURS and the revision is unchanged: no other
+    // writer exists (a live one would have consumed the journal at its
+    // begin). The clean abort is exclusively ours — roll the performed
+    // prefix back and propagate the ORIGINAL typed refusal. (H2: guarded —
+    // a rollback failure is typed and never sticks the in-flight marker.)
     if (err instanceof TrustStateError && err.code === 'recovery_required') {
       try {
         rollbackPerformedPrefix(projectDir, journal, performed);
-        removeJournal(projectDir, paths);
+        removeJournal(projectDir, paths, holder);
       } catch (rb) {
         if (activeJournalDir === projectDir) activeJournalDir = null;
         throw new TrustStateError(
@@ -549,7 +571,7 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
     }
     try {
       rollbackPerformedPrefix(projectDir, journal, performed);
-      removeJournal(projectDir, paths);
+      removeJournal(projectDir, paths, holder);
       throw new TrustStateError(
         'commit_failed_without_state_change',
         `trusted-state commit failed and was ROLLED BACK to the previous complete revision (${cause.message}) — ` +
@@ -557,9 +579,6 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       );
     } catch (rb) {
       if (rb instanceof TrustStateError && rb.code === 'commit_failed_without_state_change') throw rb;
-      // The commit is over and the journal is now a DEAD ARTIFACT of this
-      // process — clear the in-flight marker so even a long-lived process
-      // (the MCP server) recovers deterministically on its next trusted read.
       if (activeJournalDir === projectDir) activeJournalDir = null;
       throw new TrustStateError(
         'recovery_required',
@@ -569,6 +588,27 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       );
     }
   }
+}
+
+/** Read the journal currently on disk (undefined when absent/unparseable). */
+function journalOnDisk(projectDir: string, paths: ReturnType<typeof renewalPaths>): TxJournalFile | undefined {
+  if (!existsSync(paths.journal)) return undefined;
+  try {
+    return JSON.parse(authorizedRead({ projectDir, path: paths.journal })) as TxJournalFile;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Is the journal on disk still THIS holder's (and not superseded)? */
+function journalIsOurs(projectDir: string, paths: ReturnType<typeof renewalPaths>, holder: { pid: number; acquiredAt: string }): boolean {
+  const onDisk = journalOnDisk(projectDir, paths);
+  return (
+    onDisk !== undefined &&
+    onDisk.holder?.pid === holder.pid &&
+    onDisk.holder?.acquiredAt === holder.acquiredAt &&
+    onDisk.superseded !== true
+  );
 }
 
 /** The V6 fence: the lockfile must still name THIS holder and the on-disk
@@ -595,7 +635,7 @@ function fenceWriterLock(projectDir: string, holder: { pid: number; acquiredAt: 
     throw new TrustStateError(
       'recovery_required',
       'the renewal writer lock changed hands mid-commit (the stale window elapsed and another writer broke it) — ' +
-        'this commit is aborted and the journal is retained; the next trusted read recovers deterministically',
+        'this commit is aborted; the abort path decides whether recovery or rollback applies',
     );
   }
   if (readRevisionUnlocked(projectDir) !== baseRevision) {
@@ -607,9 +647,37 @@ function fenceWriterLock(projectDir: string, holder: { pid: number; acquiredAt: 
   }
 }
 
-function removeJournal(projectDir: string, paths: ReturnType<typeof renewalPaths>): void {
+/**
+ * Remove the journal — OWNERSHIP-CONDITIONED (final-V1-re-verifier NH-1/NH-2):
+ * a writer only unlinks ITS OWN journal. A foreign journal (a concurrent
+ * committer's) or a SUPERSEDED marker at the path is NEVER removed by us —
+ * removing another writer's in-flight journal or an abort-evidence marker is
+ * exactly how silent torn states were produced. Recovery keeps its own
+ * removal authority (it processes the dead writer's journal deliberately).
+ */
+function removeJournal(
+  projectDir: string,
+  paths: ReturnType<typeof renewalPaths>,
+  holder?: { pid: number; acquiredAt: string },
+  opts?: { recoveryOwns?: boolean },
+): void {
   try {
-    if (existsSync(paths.journal)) authorizedRemoveTree({ projectDir, path: paths.journal });
+    if (!existsSync(paths.journal)) return;
+    if (opts?.recoveryOwns === true) {
+      // recovery processes whatever journal is there (superseded ones were
+      // refused before this point)
+      authorizedRemoveTree({ projectDir, path: paths.journal });
+      return;
+    }
+    if (holder !== undefined) {
+      if (journalIsOurs(projectDir, paths, holder)) {
+        authorizedRemoveTree({ projectDir, path: paths.journal });
+      }
+      // foreign or superseded: leave it — its owner (or manual recovery)
+      // resolves it; we must never delete another writer's authority
+      return;
+    }
+    throw new Error('removeJournal requires a holder (or recoveryOwns) — unconditional journal removal is unrepresentable');
   } finally {
     if (activeJournalDir === projectDir) activeJournalDir = null;
   }
@@ -779,13 +847,14 @@ function recoverTxJournal(projectDir: string, paths: ReturnType<typeof renewalPa
     try {
       rollbackJournal(projectDir, paths, journal);
     } catch (e) {
+      void 0;
       throw new TrustStateError(
         'recovery_required',
         `journal rollback could not complete (${(e as Error).message}) — the journal is retained; ` +
           `inspect it after review and recover manually`,
       );
     }
-    authorizedRemoveTree({ projectDir, path: paths.journal });
+    removeJournal(projectDir, paths, undefined, { recoveryOwns: true });
   } finally {
     lock.release();
   }
