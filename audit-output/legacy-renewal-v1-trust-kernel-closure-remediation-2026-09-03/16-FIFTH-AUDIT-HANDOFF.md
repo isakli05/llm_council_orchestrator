@@ -45,8 +45,12 @@ one canonical digest layer (`trust/canonical.ts`). Guards:
 - Expected safe result: byte-identical complete-previous-revision or typed
   `commit_failed_without_state_change` / `recovery_required` — never
   partial-at-R.
-- Residual: rename-instant micro-TOCTOU (kernel-internal, documented); the
-  ≤10s lock stale window bounds crash-recovery latency.
+- Residual: the interior of a single authorized write under a >10s FS hang
+  while a concurrent writer breaks the lock, commits, and the hung write then
+  lands (same class as the rename-instant micro-TOCTOU; needs a filesystem
+  that stalls one write longer than the stale window); the ≤10s lock stale
+  window bounds crash-recovery latency; a redundant same-bytes archive copy
+  may remain after crash recovery (cosmetic).
 
 ## 2. ContextBundle binding (S4-H-02)
 
@@ -61,9 +65,12 @@ one canonical digest layer (`trust/canonical.ts`). Guards:
 - Neighbors: re-order records under the original identity; duplicate a
   record; empty-slices bundle; claim with only start_line; identity.structural
   dropped/added; a bundle sealed for project A presented under project B's
-  pipeline (check whether the PIPELINE join covers project too — the resolver
-  does; the pipeline joins snapshot only — evaluate whether that gap matters
-  given the CLI seals from beginState).
+  pipeline (the pipeline entry join now covers project AND snapshot — verify
+  both, and try bypassing the pipeline by calling resolveCitation directly
+  with a self-consistent foreign bundle: the resolver's own project join
+  fires only against a laundered identity; an INTACT foreign bundle resolves
+  by design because the presented bundle IS the active-bundle authority —
+  judge that boundary).
 - Command: `npx vitest run src/renew/trust/evidence.test.ts
   src/renew/recovery/pipeline.test.ts src/renew/trust/journey.test.ts`
 - Expected: `unknown_context` / `context_project_mismatch` /

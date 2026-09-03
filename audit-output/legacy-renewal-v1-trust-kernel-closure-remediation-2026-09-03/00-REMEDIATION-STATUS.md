@@ -33,8 +33,8 @@ boundary by this program's contracts (see `13-FOURTH-AUDIT-FINDING-MATRIX.md`).
 
 ## Gate status (final HEAD)
 
-build PASS · lint PASS · test **172 files / 2402 tests PASS** · coverage
-**92.91 / 89.02 / 96.02 / 92.91** (thresholds unchanged 91/89/96/91) · schema
+build PASS · lint PASS · test **172 files / 2437 tests PASS** · coverage
+**92.99 / 89.00 / 96.29 / 92.99** (thresholds unchanged 91/89/96/91) · schema
 freshness PASS · `git diff --check` PASS · packed install smoke PASS (292
 files: CLI init, doctor, MCP handshake, browser clarification, Renewal
 offline) · frozen-spec verify exit 0 · real installed Graphify 0.9.50 suite
@@ -43,4 +43,15 @@ PyPI + upstream verified 2026-09-03) 7/7 green · architecture guards 16/16 ·
 zero real paid calls.
 
 Independent verification: 6 fresh read-only verifier agents (contracts, not
-repros) — results in `12-MAO-VERIFIER-RESULTS.md`.
+repros) + 5 targeted re-verifiers across 8 closure rounds — full results in
+`12-MAO-VERIFIER-RESULTS.md`. Final verifier verdicts: V2 HELD (project-join
+gap fixed), V3 all three holes FIXED (re-verified; residuals closed), V4
+DEFECT FIXED (re-verified), V5 A/B/C HELD, V6 9/9 HELD, V1 six violations →
+all fixed → re-verified → two deeper residual windows found and closed
+(ownership-gated abort/removal + per-write fencing) → zombie-byte evidence
+sidecar → **closing verification: ZOMBIE-BYTE EVIDENCE FIXED** (every
+demonstrated schedule ends in a complete commit or a typed fail-closed
+read). The evidence channel itself now survives transient single I/O faults
+(bounded retries); a persistent write-selective fault blocking only the
+evidence file while permitting every other trusted write remains the
+documented physics-limited residual (same class as the journal write).

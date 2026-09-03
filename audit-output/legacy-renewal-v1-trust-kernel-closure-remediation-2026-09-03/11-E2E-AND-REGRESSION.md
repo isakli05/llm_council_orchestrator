@@ -59,7 +59,7 @@ versions.
 ## Non-Renewal regression
 
 Full suite covers compile/freeze/verify/change/trace/plan(legacy)/init/check/
-generate/doctor/clarification surfaces (172 files / 2402 tests green); packed
+generate/doctor/clarification surfaces (172 files / 2437 tests green); packed
 install smoke ran the real tarball: CLI init/help/version, doctor, MCP
 initialize/notification/parse-error handshake, browser clarification, Renewal
 help + offline non-project refusal — Graphify not required for ordinary

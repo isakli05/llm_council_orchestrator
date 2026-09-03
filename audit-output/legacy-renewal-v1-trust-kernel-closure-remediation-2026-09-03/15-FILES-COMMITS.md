@@ -16,7 +16,16 @@ push/merge/tag):
 | `213da0b` | F+G / S4-M-01/02 | remaining bypasses removed; architecture guards upgraded |
 | `2be0ac8` | F/H | consumer-inventory closure B1/B2/B4/B5 + bound recheck bracket + cross-primitive compositions |
 | `d6703e9` | H | coverage-gate completion (thresholds unchanged, gate green) |
-| (final) | I | remediation reports + fifth-audit handoff (this directory) |
+| `f287c70` | I | reports 00–11 + 14–16 (first pass) |
+| `98a8a48` | H | verifier-closure round 1 — V2 pipeline project join + V4 binding-required brackets |
+| `d496f9d` | H | round 2 — V3 paid holes + V5/V6 hardening |
+| `0b2e8e1` | H | round 3 — V1 transaction-kernel violations (all six fixed) |
+| `778b8eb` | H | round 4 — V3 residuals + fence propagation + coverage completion |
+| `5971b3c` | H | round 5 — H1/H2/N1c superseded-journal protocol |
+| `92a5528` | H | round 6 — final-V1 NH-1/NH-2 ownership-gated abort + journal removal |
+| `9fa9b3c` | H | round 7 — zombie-write closure (per-write ownership fencing) |
+| `8b30384` | H | round 8 — zombie-byte evidence sidecar (fail-closed reads) |
+| (final) | I | reports 12/13 + final refresh + fifth-audit handoff (this directory) |
 
 ## Principal production files touched
 

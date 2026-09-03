@@ -25,8 +25,8 @@ coverage          statements 93.10% · branches 89.05% · functions 96.05% · li
 ```text
 build             PASS
 lint              PASS
-test              172 files / 2402 tests PASS  (+4 files / +56 tests: the closure matrices)
-coverage          statements 92.91% · branches 89.02% · functions 96.02% · lines 92.91%
+test              172 files / 2437 tests PASS  (+4 files / +56 tests: the closure matrices)
+coverage          statements 92.99% · branches 89.00% · functions 96.29% · lines 92.99%
                   thresholds UNCHANGED (91/89/96/91); no exclusions/ignores added
 schema freshness  PASS (generated/spec-schema.json byte-identical)
 git diff --check  PASS

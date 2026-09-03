@@ -94,6 +94,21 @@ remain green in `trust/concurrency.test.ts` + `trust/composition.test.ts` +
 the new `trust/cross-primitive-closure.test.ts` (failed tx cannot lose a human
 ruling — byte-identical parity at the same revision).
 
+## Concurrent-writer interleave hardening (verifier rounds 2–7)
+
+The adversarial verifier pass drove real two/three-process interleaves
+(stale-lock breaks >10s, mid-write stalls, SIGKILLs) against the journaled
+commit and found — and the closure then fixed — six violations plus three
+successively deeper residuals: the superseded-journal protocol (an abort
+after a concurrent commit never rolls back over it), the ownership-gated
+abort/removal (no rollback, removal, or marker over a foreign journal — the
+journal's owner at the abort point is the exclusivity proof), and per-write
+ownership fencing (a zombie writer aborts at the next write boundary before
+its bytes land). Committed regressions cover every schedule; the remaining
+window is the interior of a single authorized write, which cannot outlive
+the 10s stale-break on a healthy filesystem (the documented rename-instant
+class).
+
 ## Documented residual
 
 A commit whose entire synchronous journal+write sequence outlives the lock's
