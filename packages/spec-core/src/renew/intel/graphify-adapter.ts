@@ -25,9 +25,11 @@ import type {
 } from './provider';
 import type { HealthFailure, IntelFailure } from './provider';
 import { parseGraphText, type ParsedGraph } from './graph-reader';
-import { parseGraphManifestStrict } from '../trust/structural';
+import type { StructuralBinding } from '../trust/structural';
+import { computeStructuralBinding, coerceStructuralBinding, requireStructuralIdentity, structuralBindingPath, parseGraphManifestStrict } from '../trust/structural';
 import { affectedReverse, godNodes, graphHealthOf, neighborhood, querySeeds, shortestPath } from './graph-ops';
 import { runSubprocess, type SubprocessRunner } from './subprocess';
+import { authorizedWrite } from '../trust/fs';
 
 /** The deliberate, audited pin (graphify 0.9.50 verified live 2026-09-02). */
 export const SUPPORTED_GRAPHIFY_RANGE = '>=0.9.50 <0.10.0';
@@ -59,9 +61,15 @@ export function versionSupported(version: string): boolean {
 export interface GraphifyAdapterOptions {
   /** LCO-owned directory that graphify treats as the repo root. */
   workspaceRoot: string;
+  /** The RENEWAL PROJECT dir (trust domain for the LCO-owned structural
+   *  binding written after each build — S4-H-04). */
+  projectDir: string;
   executable?: string;
   runner?: SubprocessRunner;
   readFile?: (path: string) => string;
+  /** Trusted write path for the LCO structural binding (S4-H-04). Default:
+   *  the kernel's authorized write against projectDir; tests inject. */
+  writeFile?: (path: string, content: string) => void;
   probeTimeoutMs?: number;
   buildTimeoutMs?: number;
   queryTimeoutMs?: number;
@@ -80,9 +88,11 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
   static readonly versionSupportedStatic = versionSupported;
 
   private readonly workspaceRoot: string;
+  private readonly projectDir: string;
   private readonly exe: string;
   private readonly runner: SubprocessRunner;
   private readonly readFileImpl: (path: string) => string;
+  private readonly writeFileImpl: (path: string, content: string) => void;
   private readonly opts: {
     probeTimeoutMs: number;
     buildTimeoutMs: number;
@@ -93,9 +103,11 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
 
   constructor(o: GraphifyAdapterOptions) {
     this.workspaceRoot = o.workspaceRoot;
+    this.projectDir = o.projectDir;
     this.exe = o.executable ?? DEFAULTS.executable;
     this.runner = o.runner ?? runSubprocess;
     this.readFileImpl = o.readFile ?? ((path: string) => readFileSync(path, 'utf8'));
+    this.writeFileImpl = o.writeFile ?? ((path: string, content: string) => authorizedWrite({ projectDir: this.projectDir, path, content, mode: 0o600 }));
     this.opts = {
       probeTimeoutMs: o.probeTimeoutMs ?? DEFAULTS.probeTimeoutMs,
       buildTimeoutMs: o.buildTimeoutMs ?? DEFAULTS.buildTimeoutMs,
@@ -106,6 +118,10 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
 
   private get graphPath(): string {
     return join(this.workspaceRoot, 'graphify-out', 'graph.json');
+  }
+
+  private get manifestPath(): string {
+    return join(this.workspaceRoot, 'graphify-out', 'manifest.json');
   }
 
   async probe(): Promise<IntelProbe> {
@@ -188,8 +204,49 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
         stderr: tail(r.stderr),
       };
     }
+    // S4-H-04: immediately after a successful build, LCO seals the
+    // manifest/graph pair with a structural binding (strict parse + source-
+    // set coherence verified by the kernel; written through the authorized
+    // primitive). Every later trusted graph read verifies it. The binding
+    // records the provider's real version, so probe if we haven't. The
+    // PRE-bind verification is pair-level (the binding does not exist yet —
+    // this build is what creates it); the post-bind read is fully bound.
+    if (this.probedVersion === undefined) {
+      const p = await this.probe();
+      if (!p.ok) return { ok: false, code: p.code, message: p.message, hint: p.hint };
+    }
+    const prebound = this.rebind();
+    if (!prebound.ok) return prebound;
     const graph = this.loadGraph();
-    return graph.ok ? { ok: true } : graph;
+    if (!graph.ok) return graph;
+    return { ok: true };
+  }
+
+  /** Verify the CURRENT artifact pair and write/refresh its structural
+   *  binding (pair-level verification; the fully-bound gate is loadGraph). */
+  private rebind(): { ok: true } | IntelFailure {
+    let manifestText: string | undefined;
+    try {
+      manifestText = this.readFileImpl(this.manifestPath);
+    } catch {
+      manifestText = undefined;
+    }
+    let graphText: string;
+    try {
+      graphText = this.readFileImpl(this.graphPath);
+    } catch {
+      return { ok: false, code: 'graph_missing', message: `no graphify graph at ${this.graphPath} — build it first (lco renew refresh)` };
+    }
+    const version = this.probedVersion ?? 'unknown';
+    const r = computeStructuralBinding({
+      manifestText,
+      graphText,
+      graphifyVersion: version,
+      nowIso: new Date().toISOString(),
+    });
+    if (!r.ok) return { ok: false, code: r.code as never, message: r.message } as IntelFailure;
+    this.writeFileImpl(structuralBindingPath(this.workspaceRoot), `${JSON.stringify(r.binding, null, 2)}\n`);
+    return { ok: true };
   }
 
   async graph(): Promise<{ ok: true; graph: ParsedGraph } | IntelFailure> {
@@ -262,7 +319,9 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     if (!g.ok) {
       return g.code === 'graph_missing'
         ? { ...g, status: 'missing' }
-        : { ...g, status: 'malformed' };
+        : g.code === 'binding_missing' || g.code === 'coherence_failed' || g.code === 'binding_tampered'
+          ? { ...g, status: 'coherence_failed' }
+          : { ...g, status: 'malformed' };
     }
     // Honest provider identity: probe once if we haven't; a failed probe is a
     // typed failure (unsupported ⇒ 'incompatible'), never fabricated as a
@@ -286,18 +345,15 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
       }
       version = p.providerVersion;
     }
-    const manifestPath = join(this.workspaceRoot, 'graphify-out', 'manifest.json');
-    let manifestText: string;
-    try {
-      manifestText = this.readFileImpl(manifestPath);
-    } catch {
-      return {
-        ok: false,
-        code: 'graph_missing',
-        status: 'missing',
-        message: `no graphify manifest at ${manifestPath} — graph state is incomplete; rebuild it (lco renew refresh)`,
-      };
-    }
+    const manifestText = g.ok
+      ? (() => {
+          try {
+            return this.readFileImpl(this.manifestPath);
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
     // S3-M-01 + trust kernel (VERIFIER E-M-01 fix): manifest acceptance is
     // the KERNEL's strict parser — one implementation, no hand-rolled copy —
     // and the healthy report carries the manifest identity digest.
@@ -313,10 +369,13 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     return graphHealthOf(g.graph, version, manifestId.identity.entries, manifestId.identity.digest);
   }
 
-  private loadGraph(): { ok: true; graph: ParsedGraph } | IntelFailure {
-    let text: string;
+  private loadGraph(): { ok: true; graph: ParsedGraph; binding: StructuralBinding } | IntelFailure {
+    // S4-H-04 (trust kernel closure): the raw parseGraphText call is GONE —
+    // every load-bearing graph consumer now flows through the kernel's
+    // coherent identity check (manifest + graph + LCO binding as ONE build).
+    let graphText: string;
     try {
-      text = this.readFileImpl(this.graphPath);
+      graphText = this.readFileImpl(this.graphPath);
     } catch {
       return {
         ok: false,
@@ -324,9 +383,35 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
         message: `no graphify graph at ${this.graphPath} — build it first (lco renew refresh)`,
       };
     }
-    const parsed = parseGraphText(text);
+    let manifestText: string | undefined;
+    try {
+      manifestText = this.readFileImpl(this.manifestPath);
+    } catch {
+      manifestText = undefined;
+    }
+    let bindingText: string | undefined;
+    try {
+      bindingText = this.readFileImpl(structuralBindingPath(this.workspaceRoot));
+    } catch {
+      bindingText = undefined;
+    }
+    try {
+      requireStructuralIdentity({ manifestText, graphText, bindingText, source: 'graph workspace' });
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      // Preserve the adapter's public vocabulary: manifest-gate failures are
+      // graph_missing/graph_invalid; binding/coherence failures carry their
+      // own S4-H-04 codes.
+      const mapped =
+        err.code === 'manifest_missing' ? 'graph_missing' : err.code === 'manifest_invalid' ? 'graph_invalid' : (err.code ?? 'graph_invalid');
+      return { ok: false, code: mapped as never, message: err.message ?? String(e) } as IntelFailure;
+    }
+    const parsed = parseGraphText(graphText);
     if (!parsed.ok) return parsed;
-    return { ok: true, graph: parsed.graph };
+    const binding = coerceStructuralBinding(bindingText);
+    return binding.ok
+      ? { ok: true, graph: parsed.graph, binding: binding.binding }
+      : ({ ok: false, code: binding.code as never, message: binding.message } as IntelFailure);
   }
 }
 

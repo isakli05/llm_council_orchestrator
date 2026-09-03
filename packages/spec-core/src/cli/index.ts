@@ -309,7 +309,7 @@ export async function runCli(argv: string[]): Promise<number> {
       const r = parsed.renew;
       const caps: RenewCapabilities = {
         nowIso: () => new Date().toISOString(),
-        provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(r.dir).workspace }),
+        provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(r.dir).workspace, projectDir: r.dir }),
         // L-02: a QUIET, single-purpose probe — non-Git targets produce a
         // structured repo_kind:'plain' in the snapshot, never raw Git fatal
         // stderr noise on the operator's terminal.

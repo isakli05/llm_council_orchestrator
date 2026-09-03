@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { parseGraphText } from '../intel/graph-reader';
+import { authorizedWrite } from './fs';
+import { domainDigest } from './canonical';
 import { TrustStructuralError } from './errors';
 
 /**
@@ -117,17 +120,72 @@ export function parseGraphManifestStrict(text: string | undefined): GraphManifes
 export function structuralIdentity(args: {
   manifestText: string | undefined;
   graphText: string;
+  /** When supplied, the pair must ALSO be the binding's pair (S4-H-04). */
+  bindingText?: string;
+  /** Optional identity joins the caller requires. */
+  expected?: { graphifyVersion?: string; manifestDigest?: string; graphDigest?: string };
 }): { ok: true; identity: StructuralIdentity } | { ok: false; code: string; message: string } {
   const manifest = parseGraphManifestStrict(args.manifestText);
   if (!manifest.ok) return manifest;
   const graph = parseGraphText(args.graphText);
   if (!graph.ok) return graph;
+  // S4-H-04 — SOURCE-SET COHERENCE: every graph node's source_file must be a
+  // manifest key with a recorded ast_hash. Graphify's real semantic: the
+  // graph may reference only sources the manifest recorded for THIS build.
+  // Separately-valid-but-different documents are no longer enough.
+  const manifestKeys = new Set(Object.keys(JSON.parse(args.manifestText!) as Record<string, unknown>));
+  for (const n of graph.graph.nodes) {
+    if (n.source_file === undefined) continue;
+    if (!manifestKeys.has(n.source_file)) {
+      return {
+        ok: false,
+        code: 'coherence_failed',
+        message:
+          `the graph references source file '${n.source_file}' which the manifest does not record — ` +
+          `the manifest and graph are from DIFFERENT builds; rebuild the workspace (lco renew refresh)`,
+      };
+    }
+  }
+  const graphDigest = `sha256:${createHash('sha256').update(args.graphText, 'utf8').digest('hex')}` as `sha256:${string}`;
+  if (args.bindingText !== undefined) {
+    const binding = coerceStructuralBinding(args.bindingText);
+    if (!binding.ok) return binding;
+    if (binding.binding.manifest_digest !== manifest.identity.digest || binding.binding.graph_digest !== graphDigest) {
+      return {
+        ok: false,
+        code: 'coherence_failed',
+        message:
+          `the manifest/graph pair does not match the workspace's structural binding (binding: manifest ` +
+          `${binding.binding.manifest_digest.slice(0, 19)}…/graph ${binding.binding.graph_digest.slice(0, 19)}…; ` +
+          `artifacts differ) — the documents are from different builds; rebuild the workspace (lco renew refresh)`,
+      };
+    }
+    if (binding.binding.source_set_digest !== sourceSetDigest(args.graphText)) {
+      return {
+        ok: false,
+        code: 'coherence_failed',
+        message: 'the graph source set does not match the structural binding — rebuild the workspace (lco renew refresh)',
+      };
+    }
+  }
+  if (args.expected?.manifestDigest !== undefined && args.expected.manifestDigest !== manifest.identity.digest) {
+    return { ok: false, code: 'coherence_failed', message: 'the manifest digest differs from the expected structural identity' };
+  }
+  if (args.expected?.graphDigest !== undefined && args.expected.graphDigest !== graphDigest) {
+    return { ok: false, code: 'coherence_failed', message: 'the graph digest differs from the expected structural identity' };
+  }
+  if (args.expected?.graphifyVersion !== undefined && args.bindingText !== undefined) {
+    const binding = coerceStructuralBinding(args.bindingText);
+    if (binding.ok && binding.binding.graphify_version !== args.expected.graphifyVersion) {
+      return { ok: false, code: 'incompatible', message: `the workspace was built by graphify ${binding.binding.graphify_version} but ${args.expected.graphifyVersion} is expected` };
+    }
+  }
   return {
     ok: true,
     identity: {
       manifest_digest: manifest.identity.digest,
       manifest_entries: manifest.identity.entries,
-      graph_digest: `sha256:${createHash('sha256').update(args.graphText, 'utf8').digest('hex')}`,
+      graph_digest: graphDigest,
       node_count: graph.graph.nodes.length,
       edge_count: graph.graph.edges.length,
     },
@@ -143,6 +201,150 @@ export interface StructuralIdentity {
   edge_count: number;
 }
 
+// --- LCO StructuralBinding (S4-H-04) -----------------------------------------------------
+
+/** The LCO-owned coherence record proving a manifest/graph pair came from
+ *  ONE build. Graphify (0.9.50/0.9.53) exposes no cross-document build
+ *  identity (the manifest is a per-path ast_hash map; the graph is a
+ *  node-link document with built_at_commit and per-node source_file), so the
+ *  kernel owns this binding: written immediately after a successful build
+ *  validation, verified before any trusted structural use. Never model/user
+ *  supplied. */
+export interface StructuralBinding {
+  schema_version: 1;
+  /** Project the binding was built for (diagnostic; not a snapshot join). */
+  project_name?: string;
+  graphify_version: string;
+  manifest_digest: `sha256:${string}`;
+  graph_digest: `sha256:${string}`;
+  /** Digest over the graph's sorted source-file set — the source-set join. */
+  source_set_digest: `sha256:${string}`;
+  created_at: string;
+  /** domainDigest('LCO:STRUCTURE', 1, core fields) — integrity over the
+   *  binding's own content; a hand-edited binding fails this recompute. */
+  binding_digest: `sha256:${string}`;
+}
+
+/** Where the binding lives inside a built workspace. */
+export function structuralBindingPath(workspaceRoot: string): string {
+  return join(workspaceRoot, 'graphify-out', 'lco-binding.json');
+}
+
+function structuralBindingCore(b: Omit<StructuralBinding, 'binding_digest'>): `sha256:${string}` {
+  return domainDigest('LCO:STRUCTURE', 1, {
+    schema_version: b.schema_version,
+    ...(b.project_name !== undefined ? { project_name: b.project_name } : {}),
+    graphify_version: b.graphify_version,
+    manifest_digest: b.manifest_digest,
+    graph_digest: b.graph_digest,
+    source_set_digest: b.source_set_digest,
+    created_at: b.created_at,
+  });
+}
+
+/** Digest over the graph's source-file SET (sorted, deduped). */
+export function sourceSetDigest(graphText: string): `sha256:${string}` {
+  const parsed = parseGraphText(graphText);
+  if (!parsed.ok) throw new TrustStructuralError('graph_invalid', parsed.message);
+  const files = new Set<string>();
+  for (const n of parsed.graph.nodes) {
+    if (n.source_file !== undefined) files.add(n.source_file);
+  }
+  return `sha256:${createHash('sha256').update(JSON.stringify([...files].sort()), 'utf8').digest('hex')}`;
+}
+
+/**
+ * THE build-time constructor (S4-H-04): verify the manifest/graph pair
+ * STRICTLY and COHERENTLY, then write the binding into the workspace. Called
+ * by the LCO-controlled build path immediately after `graphify update`
+ * succeeds — never from model or user input.
+ */
+export function computeStructuralBinding(args: {
+  manifestText: string | undefined;
+  graphText: string;
+  graphifyVersion: string;
+  projectName?: string;
+  nowIso: string;
+}): { ok: true; binding: StructuralBinding } | { ok: false; code: string; message: string } {
+  const identity = structuralIdentity({ manifestText: args.manifestText, graphText: args.graphText });
+  if (!identity.ok) return identity;
+  const binding: StructuralBinding = {
+    schema_version: 1,
+    ...(args.projectName !== undefined ? { project_name: args.projectName } : {}),
+    graphify_version: args.graphifyVersion,
+    manifest_digest: identity.identity.manifest_digest,
+    graph_digest: identity.identity.graph_digest,
+    source_set_digest: sourceSetDigest(args.graphText),
+    created_at: args.nowIso,
+    binding_digest: '' as `sha256:${string}`,
+  };
+  binding.binding_digest = structuralBindingCore(binding);
+  return { ok: true, binding };
+}
+
+export function bindStructuralArtifacts(args: {
+  projectDir: string;
+  workspaceRoot: string;
+  manifestText: string | undefined;
+  graphText: string;
+  graphifyVersion: string;
+  projectName?: string;
+  nowIso: string;
+}): { ok: true; binding: StructuralBinding } | { ok: false; code: string; message: string } {
+  const computed = computeStructuralBinding(args);
+  if (!computed.ok) return computed;
+  authorizedWrite({
+    projectDir: args.projectDir,
+    path: structuralBindingPath(args.workspaceRoot),
+    content: `${JSON.stringify(computed.binding, null, 2)}\n`,
+    mode: 0o600,
+  });
+  return computed;
+}
+
+export type StructuralBindingParse =
+  | { ok: true; binding: StructuralBinding }
+  | { ok: false; code: 'binding_missing' | 'binding_corrupt' | 'binding_tampered'; message: string };
+
+/** Parse + integrity-verify a binding (the binding's own digest must
+ *  recompute — a hand-edited binding is REFUSED, never interpreted). */
+export function coerceStructuralBinding(text: string | undefined): StructuralBindingParse {
+  if (text === undefined || text.trim() === '') {
+    return {
+      ok: false,
+      code: 'binding_missing',
+      message: 'the workspace has no LCO structural binding (lco-binding.json) — it predates the trust-kernel closure or the build was torn; rebuild it (lco renew refresh)',
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return { ok: false, code: 'binding_corrupt', message: `lco-binding.json is not valid JSON (${(e as Error).message})` };
+  }
+  const b = parsed as StructuralBinding;
+  if (
+    b.schema_version !== 1 ||
+    typeof b.graphify_version !== 'string' ||
+    typeof b.manifest_digest !== 'string' ||
+    typeof b.graph_digest !== 'string' ||
+    typeof b.source_set_digest !== 'string' ||
+    typeof b.created_at !== 'string' ||
+    typeof b.binding_digest !== 'string'
+  ) {
+    return { ok: false, code: 'binding_corrupt', message: 'lco-binding.json does not match the binding contract' };
+  }
+  const { binding_digest, ...core } = b;
+  if (structuralBindingCore(core) !== binding_digest) {
+    return {
+      ok: false,
+      code: 'binding_tampered',
+      message: 'the LCO structural binding failed integrity verification — it was hand-edited; rebuild the workspace (lco renew refresh)',
+    };
+  }
+  return { ok: true, binding: b };
+}
+
 /**
  * THROWING variant for callers inside trust flows that treat any malformed
  * structural state as a hard refusal (identity-bearing reads).
@@ -150,9 +352,18 @@ export interface StructuralIdentity {
 export function requireStructuralIdentity(args: {
   manifestText: string | undefined;
   graphText: string;
+  /** REQUIRED (S4-H-04): load-bearing structural use consumes a BOUND pair. */
+  bindingText: string | undefined;
   source?: string;
 }): StructuralIdentity {
-  const r = structuralIdentity(args);
+  if (args.bindingText === undefined) {
+    throw new TrustStructuralError(
+      'binding_missing',
+      `${args.source ? `${args.source}: ` : ''}the workspace has no LCO structural binding (lco-binding.json) — ` +
+        `it predates the trust-kernel closure or the build was torn; rebuild it (lco renew refresh)`,
+    );
+  }
+  const r = structuralIdentity({ ...args, bindingText: args.bindingText });
   if (!r.ok) {
     throw new TrustStructuralError(r.code, `${args.source ? `${args.source}: ` : ''}${r.message}`);
   }
@@ -172,7 +383,8 @@ export type StructuralHealthState =
   | 'missing'
   | 'malformed'
   | 'incompatible'
-  | 'probe_unavailable';
+  | 'probe_unavailable'
+  | 'coherence_failed';
 
 /**
  * The total health result: `state` is required on BOTH arms. A failure

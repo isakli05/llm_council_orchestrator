@@ -380,7 +380,7 @@ function transitiveRenewalRootCheck(dir: string, allowed: EffectiveMcpRoot): { o
 /** Boundary capabilities for renewal tools: clock, GraphifyAdapter, git. */
 function renewCaps(dir: string, nowIso: string): RenewCapabilities {  return {
     nowIso: () => nowIso,
-    provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(dir).workspace }),
+    provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(dir).workspace, projectDir: dir }),
     gitCommit: (root) => {
       try {
         // S2-L-02: mirror the CLI's QUIET probe — a plain (non-Git) target

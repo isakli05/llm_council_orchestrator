@@ -54,7 +54,7 @@ import {
   authorizedWrite,
 } from '../../renew/trust/fs';
 import { validateRenewalApproval, verifyStrategyAuthority } from '../../renew/trust/authority';
-import { structuralIdentity } from '../../renew/trust/structural';
+import { coerceStructuralBinding, structuralBindingPath, structuralIdentity } from '../../renew/trust/structural';
 import { sealContextBundle } from '../../renew/trust/evidence';
 import { specDirFiles } from './write-spec';
 import { cmdFreeze } from './freeze';
@@ -125,13 +125,22 @@ async function currentStaleness(
   if (graphPresent && !manifestId.ok) {
     return { ok: false, code: 1, output: `renewal graph workspace problem (${manifestId.code}): ${manifestId.message}` };
   }
+  // S4-H-04: the structural binding participates in every staleness walk —
+  // a workspace whose manifest/graph pair is incoherent (or unbound) is a
+  // typed workspace problem, never a freshness verdict.
+  const bindingText = existsSync(structuralBindingPath(paths.workspace))
+    ? readWorkspaceFile(dir, structuralBindingPath(paths.workspace))
+    : undefined;
+  let bindingDigest: string | undefined;
   // When the graph is absent, presence (not digest comparison) drives the
   // staleness verdict; the sentinel can never equal a recorded digest.
   let graphDigest: string;
   if (graphPresent) {
-    const ident = structuralIdentity({ manifestText, graphText: readWorkspaceFile(dir, graphJson) });
+    const ident = structuralIdentity({ manifestText, graphText: readWorkspaceFile(dir, graphJson), bindingText });
     if (!ident.ok) return { ok: false, code: 1, output: `renewal graph workspace problem (${ident.code}): ${ident.message}` };
     graphDigest = ident.identity.graph_digest;
+    const bound = bindingText !== undefined ? coerceStructuralBinding(bindingText) : undefined;
+    bindingDigest = bound !== undefined && bound.ok ? bound.binding.binding_digest : undefined;
   } else {
     graphDigest = 'sha256:absent';
   }
@@ -152,6 +161,7 @@ async function currentStaleness(
     files: walk.manifest,
     graphManifestDigest: manifestId.ok ? manifestId.identity.digest : graphDigest,
     graphDigest,
+    ...(bindingDigest !== undefined ? { graphBindingDigest: bindingDigest } : {}),
     graphPresent,
     graphValid,
   });
@@ -222,6 +232,15 @@ export async function cmdRenewInit(
     graphText: readWorkspaceFile(args.dir, graphJson),
   });
   if (!graphDigest.ok) return { code: 1, output: `renewal init failed (${graphDigest.code}): ${graphDigest.message}` };
+  // S4-H-04: the build sealed a structural binding proving the manifest/
+  // graph pair is ONE build — load and verify it, and bind its digest into
+  // the snapshot identity (the snapshot↔binding join).
+  const bindingPath = structuralBindingPath(paths.workspace);
+  const bindingParse = coerceStructuralBinding(existsSync(bindingPath) ? readWorkspaceFile(args.dir, bindingPath) : undefined);
+  if (!bindingParse.ok) {
+    return { code: 1, output: `renewal init failed (${bindingParse.code}): ${bindingParse.message}` };
+  }
+  const graphBinding = bindingParse.binding;
 
   const health = await caps.provider().graphHealth();
   const version = health.ok ? health.provider_version : probe.providerVersion ?? 'unknown';
@@ -246,6 +265,7 @@ export async function cmdRenewInit(
       graphDigest: graphDigest.identity.graph_digest,
     },
     graphManifest: { digest: gm.identity.digest, entries: gm.identity.entries },
+    graphBinding: { digest: graphBinding.binding_digest },
     nowIso: caps.nowIso(),
   });
 

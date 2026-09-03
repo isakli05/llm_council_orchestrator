@@ -191,10 +191,22 @@ describe('provider contracts over a MINIMAL graph (no labels/locations)', () => 
     const ws = freshDir('lco-t5-ws-');
     const { mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
     mkdirSync(join(ws, 'graphify-out'), { recursive: true });
-    writeFileSync(join(ws, 'graphify-out', 'graph.json'), JSON.stringify({ directed: true, nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], links: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }] }));
-    writeFileSync(join(ws, 'graphify-out', 'manifest.json'), '{}');
+    const graphText = JSON.stringify({ directed: true, nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], links: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }] });
+    writeFileSync(join(ws, 'graphify-out', 'graph.json'), graphText);
+    writeFileSync(join(ws, 'graphify-out', 'manifest.json'), JSON.stringify({ 'src/minimal.ts': { ast_hash: 'h1' } }, null, 2));
+    // S4-H-04: seal the pair (the fixture substrate writes a real binding).
+    const { bindStructuralArtifacts } = await import('./trust/structural');
+    const bound = bindStructuralArtifacts({
+      projectDir: ws,
+      workspaceRoot: ws,
+      manifestText: JSON.stringify({ 'src/minimal.ts': { ast_hash: 'h1' } }, null, 2),
+      graphText,
+      graphifyVersion: '0.9.50',
+      nowIso: '2026-09-03T00:00:00Z',
+    });
+    if (!bound.ok) throw new Error(bound.message);
     const ok = (s: string) => ({ status: 'exited' as const, exitCode: 0, stdout: `graphify ${s}\n`, stderr: '' });
-    const adapter = new GraphifyAdapter({ workspaceRoot: ws, runner: async () => ok('0.9.50') });
+    const adapter = new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: async () => ok('0.9.50'), writeFile: () => {} });
 
     const q = await adapter.query('anything');
     expect(q.ok).toBe(true);
@@ -212,15 +224,9 @@ describe('provider contracts over a MINIMAL graph (no labels/locations)', () => 
     expect(a.ok).toBe(true);
     const gods = await adapter.godNodes(2);
     expect(Array.isArray(gods) && gods.length).toBeGreaterThan(0);
-    // S2-H-06/INV-G1: a '{}' manifest beside a built graph is INCONSISTENT
-    // state — typed malformed, never a healthy zero-entry metric.
-    const h = await adapter.graphHealth();
-    expect(h.ok).toBe(false);
-    if (!h.ok) {
-      expect(h.code).toBe('graph_invalid');
-      expect(h.status).toBe('malformed');
-      expect(h.message).toMatch(/no entries/);
-    }
+    // (S2-H-06/INV-G1 — the '{}' manifest-is-malformed case — is covered in
+    // graphify-adapter.test.ts; this workspace now carries a REAL manifest +
+    // binding so the read paths exercise the healthy arm.)
   });
 
   it('per-method failure arms: a missing graph yields typed failures everywhere', async () => {

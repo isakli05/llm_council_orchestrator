@@ -149,10 +149,13 @@ describe('self-verifying snapshot identity (C-04)', () => {
     graph.nodes[0]!.label = 'tampered-label';
     writeFileSync(graphPath, JSON.stringify(graph, null, 2));
 
+    // S4-H-04 hardening: with the structural binding, a mutated graph no
+    // longer reads as ordinary staleness — the pair fails the binding's
+    // coherence check and status REFUSES (typed workspace problem), never a
+    // fresh-looking render over tampered artifacts.
     const status = await cmdRenewStatus({ dir: project }, baseCaps());
-    expect(status.code).toBe(0);
-    expect(status.output).toMatch(/graph_changed/);
-    expect(status.output).toMatch(/stale/);
+    expect(status.code).not.toBe(0);
+    expect(status.output).toMatch(/coherence_failed|graph workspace problem/);
   });
 
   it('a malformed manifest fails closed — never fresh-empty identity', async () => {

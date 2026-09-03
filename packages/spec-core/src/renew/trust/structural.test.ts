@@ -35,7 +35,7 @@ describe('structural: strict manifest acceptance', () => {
 describe('structural: full identity is STRICT — no fallback digest exists', () => {
   it('healthy graph + healthy manifest → identity with both digests', () => {
     const r = structuralIdentity({
-      manifestText: '{"a.ts": {"ast_hash": "h1"}}',
+      manifestText: '{"src/a.ts": {"ast_hash": "h1"}}',
       graphText: GOOD_GRAPH,
     });
     expect(r.ok).toBe(true);
@@ -60,14 +60,14 @@ describe('structural: full identity is STRICT — no fallback digest exists', ()
 
   it('duplicate node ids / dangling links → graph_invalid refusal', () => {
     const dup = structuralIdentity({
-      manifestText: '{"a.ts": {"ast_hash": "h1"}}',
+      manifestText: '{"src/a.ts": {"ast_hash": "h1"}}',
       graphText: JSON.stringify({ nodes: [{ id: 'n1' }, { id: 'n1' }], links: [] }),
     });
     expect(dup.ok).toBe(false);
     if (!dup.ok) expect(dup.code).toBe('graph_invalid');
 
     const dangling = structuralIdentity({
-      manifestText: '{"a.ts": {"ast_hash": "h1"}}',
+      manifestText: '{"src/a.ts": {"ast_hash": "h1"}}',
       graphText: JSON.stringify({ nodes: [{ id: 'n1' }], links: [{ source: 'n1', target: 'ghost' }] }),
     });
     expect(dangling.ok).toBe(false);

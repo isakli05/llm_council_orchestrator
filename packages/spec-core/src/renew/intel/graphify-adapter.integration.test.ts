@@ -62,7 +62,7 @@ describe('GraphifyAdapter × CI canary (H-13)', () => {
 });
 
 describe.skipIf(!available)('GraphifyAdapter × real graphify (pinned, offline)', () => {
-  const adapter = () => new GraphifyAdapter({ workspaceRoot });
+  const adapter = () => new GraphifyAdapter({ workspaceRoot, projectDir: workspaceRoot });
 
   it('probes the installed version as supported', async () => {
     const probe = await adapter().probe();

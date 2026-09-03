@@ -16,6 +16,10 @@ export type IntelFailureCode =
   | 'build_failed'
   | 'graph_missing'
   | 'graph_invalid'
+  | 'binding_missing'
+  | 'binding_corrupt'
+  | 'binding_tampered'
+  | 'coherence_failed'
   | 'query_failed'
   | 'timeout'
   | 'output_cap'
@@ -28,7 +32,7 @@ export type IntelFailureCode =
  * graphHealthOf, non-health failures) stays assignable; consumers tighten
  * onto it incrementally.
  */
-export type GraphHealthStatus = 'healthy' | 'missing' | 'malformed' | 'incompatible' | 'probe_unavailable';
+export type GraphHealthStatus = 'healthy' | 'missing' | 'malformed' | 'incompatible' | 'probe_unavailable' | 'coherence_failed';
 
 /** A graph-HEALTH failure: like IntelFailure but with a REQUIRED state —
  *  every arm of graphHealth() classifies itself (S3-M-01: generic probe

@@ -6,6 +6,7 @@ import type { SubprocessRunner, SubprocessResult } from './subprocess';
 
 const fixturePath = join(__dirname, '..', '..', '..', 'fixtures', 'legacy-app', 'graph-fixture.json');
 const fixtureGraphText = readFileSync(fixturePath, 'utf8');
+import { computeStructuralBinding } from '../trust/structural';
 
 /** Scripted runner: answers by inspecting argv, never executes anything real. */
 function fakeRunner(
@@ -30,12 +31,33 @@ const goodFile = () => fixtureGraphText;
 
 /** Real graphify manifest shape: file path → { mtime, seen, ast_hash, … }. */
 const validManifestText = JSON.stringify({
+  'src/inventory.ts': { mtime: 3, seen: 3, ast_hash: 'i1', semantic_hash: 'i1' },
+  'src/main.ts': { mtime: 4, seen: 4, ast_hash: 'm1', semantic_hash: '' },
   'src/orders.ts': { mtime: 1, seen: 1, ast_hash: 'a1b2c3', semantic_hash: 'a1b2c3' },
   'src/pricing.ts': { mtime: 2, seen: 2, ast_hash: 'd4e5f6', semantic_hash: '' },
 });
 
+/** The S4-H-04 world: a workspace serves graph.json + manifest.json + the
+ *  LCO structural binding that proves the pair came from ONE build. */
+function bindingTextFor(manifestText: string, graphText: string): string {
+  const r = computeStructuralBinding({ manifestText, graphText, graphifyVersion: '0.9.50', nowIso: '2026-09-03T00:00:00Z' });
+  if (!r.ok) throw new Error(`test binding could not be computed: ${r.message}`);
+  return `${JSON.stringify(r.binding, null, 2)}\n`;
+}
+
+/** Default fake workspace: the fixture graph + the full manifest + a valid
+ *  binding over exactly those artifacts. */
+function workspaceFiles(runner: SubprocessRunner): GraphifyAdapter {
+  const readFile = (p: string): string => {
+    if (p.endsWith('manifest.json')) return validManifestText;
+    if (p.endsWith('lco-binding.json')) return bindingTextFor(validManifestText, fixtureGraphText);
+    return fixtureGraphText;
+  };
+  return new GraphifyAdapter({ workspaceRoot: '/tmp/ws', projectDir: '/tmp/ws', runner, readFile, writeFile: () => {} });
+}
+
 function makeAdapter(runner: SubprocessRunner, readFile: (p: string) => string = goodFile) {
-  return new GraphifyAdapter({ workspaceRoot: '/tmp/ws', runner, readFile });
+  return new GraphifyAdapter({ workspaceRoot: '/tmp/ws', projectDir: '/tmp/ws', runner, readFile, writeFile: () => {} });
 }
 
 describe('version handling', () => {
@@ -108,7 +130,7 @@ describe('GraphifyAdapter.probe (fail-closed)', () => {
 describe('GraphifyAdapter.build', () => {
   it('runs "update <workspaceRoot>" with an explicit argv and a build-scale timeout', async () => {
     const runner = fakeRunner(() => okVersion('0.9.50'));
-    const adapter = makeAdapter(runner);
+    const adapter = workspaceFiles(runner);
     const build = await adapter.build();
     expect(build.ok).toBe(true);
     expect(runner.calls[0].exe).toBe('graphify');
@@ -139,7 +161,7 @@ describe('GraphifyAdapter.build', () => {
 
   it('passes --force only when explicitly requested', async () => {
     const runner = fakeRunner(() => okVersion('0.9.50'));
-    await makeAdapter(runner).build({ force: true });
+    await workspaceFiles(runner).build({ force: true });
     expect(runner.calls[0].args).toContain('--force');
   });
 });
@@ -148,10 +170,17 @@ describe('GraphifyAdapter graph reads', () => {
   it('graphHealth reads graph.json under the workspace and reports honest counts', async () => {
     const runner = fakeRunner(() => okVersion('0.9.50'));
     const readPaths: string[] = [];
-    const adapter = makeAdapter(runner, (p) => {
-      readPaths.push(p);
-      if (p.endsWith('manifest.json')) return validManifestText;
-      return fixtureGraphText;
+    const adapter = new GraphifyAdapter({
+      workspaceRoot: '/tmp/ws',
+      projectDir: '/tmp/ws',
+      runner,
+      readFile: (p) => {
+        readPaths.push(p);
+        if (p.endsWith('manifest.json')) return validManifestText;
+        if (p.endsWith('lco-binding.json')) return bindingTextFor(validManifestText, fixtureGraphText);
+        return fixtureGraphText;
+      },
+      writeFile: () => {},
     });
     const health = await adapter.graphHealth();
     expect(health.ok).toBe(true);
@@ -165,7 +194,7 @@ describe('GraphifyAdapter graph reads', () => {
     // the graph read happens first, the manifest read second.
     expect(readPaths[0]).toBe(join('/tmp/ws', 'graphify-out', 'graph.json'));
     expect(readPaths[1]).toBe(join('/tmp/ws', 'graphify-out', 'manifest.json'));
-    expect(health.manifest_entries).toBe(2);
+    expect(health.manifest_entries).toBe(4);
   });
 
   it('reports graph_missing when graph.json is absent', async () => {
@@ -180,15 +209,19 @@ describe('GraphifyAdapter graph reads', () => {
     expect(health.status).toBe('missing');
   });
 
-  it('reports graph_invalid on malformed graph.json (never a partial success)', async () => {
+  it('reports a typed malformed-graph failure (never a partial success)', async () => {
     const runner = fakeRunner(() => okVersion('0.9.50'));
-    const health = makeAdapter(runner, () => '{"nodes":[]}').graphHealth();
-    await expect(health).resolves.toMatchObject({ ok: false, code: 'graph_invalid', status: 'malformed' });
+    // manifest is valid, the GRAPH text is malformed: the strict gates refuse.
+    const health = makeAdapter(runner, (p) => {
+      if (p.endsWith('manifest.json')) return validManifestText;
+      return '{"nodes":[]}'; // malformed graph AND (as binding) garbage — both gates refuse
+    }).graphHealth();
+    await expect(health).resolves.toMatchObject({ ok: false, status: 'malformed' });
   });
 
   it('serves affected/godNodes/path/explain deterministically from the graph file', async () => {
     const runner = fakeRunner(() => okVersion('0.9.50'));
-    const adapter = makeAdapter(runner);
+    const adapter = workspaceFiles(runner);
     const affected = await adapter.affected('src_pricing_applydiscount', { depth: 1 });
     expect(affected.ok).toBe(true);
     const gods = await adapter.godNodes(2);
@@ -211,16 +244,23 @@ describe('GraphifyAdapter graph reads', () => {
 describe('GraphifyAdapter.graphHealth typed statuses (INV-G3: S2-H-06/M-08)', () => {
   /** graph.json serves the committed fixture; manifest.json serves `manifest`. */
   const healthWithManifest = (manifest: string) =>
-    makeAdapter(fakeRunner(() => okVersion('0.9.50')), (p) =>
-      p.endsWith('manifest.json') ? manifest : fixtureGraphText,
-    ).graphHealth();
+    makeAdapter(fakeRunner(() => okVersion('0.9.50')), (p) => {
+      if (p.endsWith('manifest.json')) return manifest;
+      if (p.endsWith('lco-binding.json')) {
+        // a binding exists only for a pair that could bind; malformed
+        // manifests fail the manifest gate before the binding is consulted
+        const bound = computeStructuralBinding({ manifestText: manifest, graphText: fixtureGraphText, graphifyVersion: '0.9.50', nowIso: '2026-09-03T00:00:00Z' });
+        return bound.ok ? `${JSON.stringify(bound.binding, null, 2)}\n` : '{}';
+      }
+      return fixtureGraphText;
+    }).graphHealth();
 
   it('healthy: valid graph + valid non-empty manifest + supported version', async () => {
     const health = await healthWithManifest(validManifestText);
     expect(health.ok).toBe(true);
     if (!health.ok) return;
     expect(health.status).toBe('healthy');
-    expect(health.manifest_entries).toBe(2);
+    expect(health.manifest_entries).toBe(4);
     expect(health.provider_version).toBe('0.9.50');
   });
 
@@ -299,9 +339,11 @@ describe('GraphifyAdapter.graphHealth typed statuses (INV-G3: S2-H-06/M-08)', ()
   });
 
   it('incompatible: an unsupported provider version is a typed failure, not healthy-unknown', async () => {
-    const health = await makeAdapter(fakeRunner(() => okVersion('0.10.0')), (p) =>
-      p.endsWith('manifest.json') ? validManifestText : fixtureGraphText,
-    ).graphHealth();
+    const health = await makeAdapter(fakeRunner(() => okVersion('0.10.0')), (p) => {
+      if (p.endsWith('manifest.json')) return validManifestText;
+      if (p.endsWith('lco-binding.json')) return bindingTextFor(validManifestText, fixtureGraphText);
+      return fixtureGraphText;
+    }).graphHealth();
     expect(health.ok).toBe(false);
     if (health.ok) return;
     expect(health.code).toBe('unsupported_version');
@@ -311,7 +353,11 @@ describe('GraphifyAdapter.graphHealth typed statuses (INV-G3: S2-H-06/M-08)', ()
   it('S3-M-01: probe failure that is NOT a version mismatch is TOTAL — own code plus probe_unavailable (never statusless)', async () => {
     const health = await makeAdapter(
       fakeRunner(() => ({ status: 'spawn_failed', message: 'ENOENT' })),
-      (p) => (p.endsWith('manifest.json') ? validManifestText : fixtureGraphText),
+      (p) => {
+        if (p.endsWith('manifest.json')) return validManifestText;
+        if (p.endsWith('lco-binding.json')) return bindingTextFor(validManifestText, fixtureGraphText);
+        return fixtureGraphText;
+      },
     ).graphHealth();
     expect(health.ok).toBe(false);
     if (health.ok) return;

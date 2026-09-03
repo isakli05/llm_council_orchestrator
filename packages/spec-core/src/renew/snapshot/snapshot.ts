@@ -56,6 +56,10 @@ export interface StalenessCurrent {
   graphManifestDigest: string;
   /** sha256 over the CURRENT graph.json bytes (C-04 — structural binding). */
   graphDigest?: string;
+  /** S4-H-04: digest of the CURRENT LCO structural binding — the manifest/
+   *  graph coherence proof participates in freshness like the other
+   *  structural digests. */
+  graphBindingDigest?: string;
   graphPresent: boolean;
   graphValid?: boolean;
 }
@@ -120,6 +124,18 @@ export function evaluateStaleness(snapshot: ProjectSnapshot, current: StalenessC
       reasons.push({
         code: 'graph_changed',
         detail: 'graph.json content no longer matches the snapshot (structural graph digest differs)',
+      });
+    }
+    // S4-H-04: the structural binding digest participates in the verdict — a
+    // rebuilt/mixed workspace is a new structural epoch.
+    if (
+      current.graphBindingDigest !== undefined &&
+      snapshot.graph.binding_digest !== null &&
+      current.graphBindingDigest !== snapshot.graph.binding_digest
+    ) {
+      reasons.push({
+        code: 'graph_changed',
+        detail: 'the workspace structural binding no longer matches the snapshot (manifest/graph pair was rebuilt)',
       });
     }
   }

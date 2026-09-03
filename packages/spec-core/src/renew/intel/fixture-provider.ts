@@ -26,6 +26,7 @@ import {
 } from './graph-ops';
 import { SUPPORTED_GRAPHIFY_RANGE } from './graphify-adapter';
 import { authorizedEnsureDir, authorizedWrite } from '../trust/fs';
+import { bindStructuralArtifacts } from '../trust/structural';
 
 export class StaticGraphProvider implements CodeIntelligenceProvider {
   constructor(
@@ -84,6 +85,18 @@ export class StaticGraphProvider implements CodeIntelligenceProvider {
         manifest[file] = { ast_hash: createHash('sha256').update(JSON.stringify([...ids].sort())).digest('hex') };
       }
       authorizedWrite({ projectDir: opts.workspaceRoot, path: join(outDir, 'manifest.json'), content: `${JSON.stringify(manifest, null, 2)}\n` });
+      // S4-H-04: the fixture substrate seals the SAME structural binding a
+      // real build would, so every downstream coherence gate behaves
+      // identically for injected providers.
+      const bound = bindStructuralArtifacts({
+        projectDir: opts.workspaceRoot,
+        workspaceRoot: opts.workspaceRoot,
+        manifestText: `${JSON.stringify(manifest, null, 2)}\n`,
+        graphText: graphJson,
+        graphifyVersion: this.version,
+        nowIso: '2026-09-03T00:00:00Z',
+      });
+      if (!bound.ok) return { ok: false as never, code: bound.code as never, message: bound.message } as never;
     }
     return { ok: true };
   }

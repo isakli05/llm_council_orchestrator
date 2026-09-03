@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { bindStructuralArtifacts } from '../trust/structural';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GraphifyAdapter } from './graphify-adapter';
@@ -44,6 +45,17 @@ function graphWorkspace(): { ws: string; graphJson: string } {
   }
   for (const [f, ids] of files) manifest[f] = { ast_hash: `h-${ids.length}` };
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  // S4-H-04: seal the pair with a real structural binding (the kernel's own
+  // constructor, written through the authorized primitive).
+  const bound = bindStructuralArtifacts({
+    projectDir: ws,
+    workspaceRoot: ws,
+    manifestText: `${JSON.stringify(manifest, null, 2)}\n`,
+    graphText: JSON.stringify(graphJson, null, 2),
+    graphifyVersion: '0.9.50',
+    nowIso: '2026-09-03T00:00:00Z',
+  });
+  if (!bound.ok) throw new Error(bound.message);
   return { ws, graphJson: JSON.stringify(graphJson) };
 }
 
@@ -64,7 +76,7 @@ const fakeRunner = (impl: (exe: string, args: readonly string[]) => SubprocessRe
 describe('GraphifyAdapter full contract (fixture graph on disk)', () => {
   it('probe: supported version, parsed and remembered', async () => {
     const { ws } = graphWorkspace();
-    const adapter = new GraphifyAdapter({ workspaceRoot: ws, runner: fakeRunner(() => okVersion('0.9.50')) });
+    const adapter = new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: fakeRunner(() => okVersion('0.9.50')) });
     const probe = await adapter.probe();
     expect(probe.ok).toBe(true);
     if (!probe.ok) return;
@@ -76,7 +88,7 @@ describe('GraphifyAdapter full contract (fixture graph on disk)', () => {
     const { ws } = graphWorkspace();
     const mk = (r: SubprocessResult | (() => SubprocessResult)) => {
       const impl = typeof r === 'function' ? r : () => r;
-      return new GraphifyAdapter({ workspaceRoot: ws, runner: fakeRunner(() => impl()) });
+      return new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: fakeRunner(() => impl()) });
     };
     const t = await mk({ status: 'timeout', stdout: '', stderr: '' }).probe();
     expect(t.ok).toBe(false);
@@ -97,12 +109,12 @@ describe('GraphifyAdapter full contract (fixture graph on disk)', () => {
 
   it('graph(): parses the on-disk graph (nodes/edges/warnings) and reports missing', async () => {
     const { ws } = graphWorkspace();
-    const adapter = new GraphifyAdapter({ workspaceRoot: ws, runner: fakeRunner(() => okVersion('0.9.50')) });
+    const adapter = new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: fakeRunner(() => okVersion('0.9.50')) });
     const g = await adapter.graph();
     expect(g.ok).toBe(true);
     if (!g.ok) return;
     expect(g.graph.nodes.length).toBeGreaterThan(0);
-    const missing = new GraphifyAdapter({ workspaceRoot: freshDir('lco-intel-empty-'), runner: fakeRunner(() => okVersion('0.9.50')) });
+    const missing = new GraphifyAdapter({ workspaceRoot: freshDir('lco-intel-empty-'), projectDir: '.', runner: fakeRunner(() => okVersion('0.9.50')) });
     const m = await missing.graph();
     expect(m.ok).toBe(false);
     if (!m.ok) expect(m.code).toBe('graph_missing');
@@ -110,7 +122,7 @@ describe('GraphifyAdapter full contract (fixture graph on disk)', () => {
 
   it('query/path/explain/affected/godNodes operate over the graph deterministically', async () => {
     const { ws } = graphWorkspace();
-    const adapter = new GraphifyAdapter({ workspaceRoot: ws, runner: fakeRunner(() => okVersion('0.9.50')) });
+    const adapter = new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: fakeRunner(() => okVersion('0.9.50')) });
     const g = await adapter.graph();
     if (!g.ok) throw new Error('graph');
     const someNode = g.graph.nodes[0]!.node_id;
@@ -159,7 +171,7 @@ describe('GraphifyAdapter full contract (fixture graph on disk)', () => {
 
   it('build(): success path loads the graph; failure modes are typed with stderr tails', async () => {
     const { ws } = graphWorkspace();
-    const ok = await new GraphifyAdapter({ workspaceRoot: ws, runner: fakeRunner(() => okVersion('0.9.50')) }).build();
+    const ok = await new GraphifyAdapter({ workspaceRoot: ws, projectDir: ws, runner: fakeRunner(() => okVersion('0.9.50')) }).build();
     expect(ok.ok).toBe(true);
 
     const fail = await new GraphifyAdapter({

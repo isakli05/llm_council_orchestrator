@@ -797,7 +797,7 @@ export async function cmdDoctor(dir: string, opts: DoctorOptions): Promise<Docto
   // usage must not require Graphify.
   await run('graphify', async () => {
     const { GraphifyAdapter, SUPPORTED_GRAPHIFY_RANGE } = await import('../../renew/intel/graphify-adapter');
-    const probe = await new GraphifyAdapter({ workspaceRoot: dir }).probe();
+    const probe = await new GraphifyAdapter({ workspaceRoot: dir, projectDir: dir }).probe();
     if (probe.ok) {
       return { name: 'graphify', status: 'ok', detail: `graphify ${probe.providerVersion} (supported ${SUPPORTED_GRAPHIFY_RANGE}) — renewal ready` };
     }
