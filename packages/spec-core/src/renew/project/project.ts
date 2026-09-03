@@ -19,7 +19,7 @@ import { RenewalProjectSchema, renewalPaths, type RenewalProject } from '../core
 import { reloadSnapshot, type ProjectSnapshot } from '../core/snapshot-record';
 import { authorizedWrite } from '../trust/fs';
 import { authorizedRead } from '../trust/fs';
-import { bumpStateRevisionTrusted, loadActiveState, readRevision } from '../trust/state';
+import { loadActiveState, readRevision } from '../trust/state';
 import { preflightRenewalSurface } from '../trust/fs';
 
 export { RenewalProjectSchema, renewalPaths } from '../core/project-record';
@@ -94,7 +94,3 @@ export function readStateRevision(dir: string): number {
   return readRevision(dir);
 }
 
-export function bumpStateRevision(dir: string): void {
-  // Trust kernel wrapper (authorized atomic write; caller holds the lock).
-  bumpStateRevisionTrusted(dir);
-}

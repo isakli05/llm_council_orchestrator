@@ -322,9 +322,11 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     if (!g.ok) {
       return g.code === 'graph_missing'
         ? { ...g, status: 'missing' }
-        : g.code === 'binding_missing' || g.code === 'coherence_failed' || g.code === 'binding_tampered'
-          ? { ...g, status: 'coherence_failed' }
-          : { ...g, status: 'malformed' };
+        : g.code === 'incompatible'
+          ? { ...g, status: 'incompatible' }
+          : g.code === 'binding_missing' || g.code === 'binding_corrupt' || g.code === 'binding_tampered' || g.code === 'coherence_failed'
+            ? { ...g, status: 'coherence_failed' }
+            : { ...g, status: 'malformed' };
     }
     // Honest provider identity: probe once if we haven't; a failed probe is a
     // typed failure (unsupported ⇒ 'incompatible'), never fabricated as a

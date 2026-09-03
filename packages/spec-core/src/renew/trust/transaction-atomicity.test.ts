@@ -7,6 +7,7 @@ import { StaticGraphProvider } from '../intel/fixture-provider';
 import { parseGraphText } from '../intel/graph-reader';
 import { renewalPaths } from '../core/project-record';
 import { emptyOverlay, parseOverlayStore } from '../core/store-records';
+import { addParityEntry } from '../parity/ledger';
 import { loadActiveState, runRenewalStateTx, readRevision } from './state';
 import { TrustStateError } from './errors';
 import { domainDigest } from './canonical';
@@ -230,10 +231,11 @@ describe('S4-H-01: crash recovery from an on-disk journal', () => {
       { kind: 'file', path: paths.parity, oldContent: oldParity },
       { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
     ] as never;
-    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, entries });
+    const holder = { pid: -999999, acquiredAt: '2026-09-03T00:00:00Z' };
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, holder, entries });
     const journal = {
       schema_version: 1,
-      holder: { pid: -999999, acquiredAt: '2026-09-03T00:00:00Z' },
+      holder,
       base_revision: beforeRev,
       integrity,
       entries,
@@ -373,11 +375,12 @@ describe('S4-H-01: remaining recovery/rollback arms', () => {
       { kind: 'dir_ensure', path: join(project, 'fresh-dir'), existed: false },
       { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
     ] as never;
-    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, entries });
+    const holder = { pid: -1, acquiredAt: '2026-09-03T00:00:00Z' };
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, holder, entries });
     mkdirSync(join(project, 'fresh-dir'), { recursive: true }); // the dir_ensure step had run
     writeFileSync(
       paths.journal,
-      `${JSON.stringify({ schema_version: 1, holder: { pid: -1, acquiredAt: '2026-09-03T00:00:00Z' }, base_revision: beforeRev, integrity, entries }, null, 2)}\n`,
+      `${JSON.stringify({ schema_version: 1, holder, base_revision: beforeRev, integrity, entries }, null, 2)}\n`,
     );
     const state = loadActiveState(project); // recovers
     expect(state.identity.revision).toBe(beforeRev);
@@ -426,10 +429,144 @@ describe('S4-H-01: remaining recovery/rollback arms', () => {
       { kind: 'file', path: paths.overlay, oldContent: oldOverlay },
       { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
     ] as never;
-    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, entries });
+    const holder = { pid: -1, acquiredAt: '2026-09-03T00:00:00Z' };
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, holder, entries });
     writeFileSync(
       paths.journal,
-      `${JSON.stringify({ schema_version: 1, holder: { pid: -1, acquiredAt: '2026-09-03T00:00:00Z' }, base_revision: beforeRev, integrity, entries }, null, 2)}\n`,
+      `${JSON.stringify({ schema_version: 1, holder, base_revision: beforeRev, integrity, entries }, null, 2)}\n`,
     );
   }
+});
+
+
+describe('S4-H-01: V1-verifier violation regressions (all fixed)', () => {
+  it('V1: a plan whose specDir ALREADY EXISTS fails WITHOUT deleting the pre-existing spec/', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    mkdirSync(paths.specDir, { recursive: true });
+    writeFileSync(join(paths.specDir, 'intent.json'), '{}');
+    const beforeBytes = readFileSync(join(paths.specDir, 'intent.json'), 'utf8');
+    const beforeRev = readRevision(project);
+    const before = loadActiveState(project);
+    await expect(
+      runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: before.identity.snapshotId, revision: before.identity.revision },
+        policy: 'strict',
+        work: () => undefined,
+        plan: (fresh) => ({
+          mutation: { specDir: { files: [{ name: 'intent.json', content: {} }] } },
+          result: undefined,
+        }),
+      }),
+    ).rejects.toThrow();
+    expect(existsSync(paths.specDir)).toBe(true);
+    expect(readFileSync(join(paths.specDir, 'intent.json'), 'utf8')).toBe(beforeBytes);
+    expect(readRevision(project)).toBe(beforeRev);
+  });
+
+  it('V2: a refresh ARCHIVE COLLISION after a committed analyze leaves the committed store INTACT (the headline zero-injection chain)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    // commit one analyze-style fold (a real record lands)
+    const b = loadActiveState(project);
+    await runRenewalStateTx({
+      projectDir: project,
+      nowIso: '2026-09-03T00:00:01Z',
+      expected: { snapshotId: b.identity.snapshotId, revision: b.identity.revision },
+      policy: 'additive',
+      work: () => undefined,
+      plan: (fresh) => {
+        if (!fresh.parity.ok) throw new Error('parity missing');
+        const folded = { ...fresh.parity.store, records: [...fresh.parity.store.records] };
+        addParityEntry(folded, {
+          behavior: 'committed-behavior',
+          evidence: [{ kind: 'code_anchor', anchor: { path: 'src/orders.ts', content_hash: 'sha256:' + '0'.repeat(64) } }],
+        });
+        return { mutation: { parity: folded }, result: undefined };
+      },
+    });
+    const committedBytes = readFileSync(paths.parity, 'utf8');
+    // first archive of the epoch lands
+    const { runJournaledRenewalMutation, refreshArchiveEntries } = await import('./state');
+    const epoch = loadActiveState(project).identity.snapshotId;
+    await runJournaledRenewalMutation({ projectDir: project, nowIso: '2026-09-03T00:00:02Z', mutation: { archive: refreshArchiveEntries(paths, epoch) } });
+    // the store is recreated (as a refresh would) and a SECOND archive of the
+    // SAME epoch collides — the committed record must survive everything.
+    const recreated = JSON.parse(committedBytes) as { snapshot_id: string };
+    writeFileSync(paths.parity, JSON.stringify({ ...recreated, records: recreated.records }, null, 2));
+    const revBefore = readRevision(project);
+    await expect(
+      runJournaledRenewalMutation({ projectDir: project, nowIso: '2026-09-03T00:00:03Z', mutation: { archive: refreshArchiveEntries(paths, epoch) } }),
+    ).rejects.toThrow(/archive_collision|commit failed|ROLLED BACK/);
+    // prior archive intact AND the recreated store still present
+    expect(existsSync(`${paths.parity}.${epoch}.superseded`)).toBe(true);
+    expect(existsSync(paths.parity)).toBe(true);
+    expect(readRevision(project)).toBe(revBefore);
+  });
+
+  it('V4: a journal WRITE failure leaves no stuck marker — a later foreign journal still recovers in-process', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const beforeRev = readRevision(project);
+    // crash-state journal on disk (from ANOTHER process)
+    const oldOverlay = readFileSync(paths.overlay, 'utf8');
+    writeFileSync(paths.overlay, `${JSON.stringify(emptyOverlay(loadActiveState(project).identity.snapshotId), null, 2)}\n`);
+    const holder = { pid: -424242, acquiredAt: '2026-09-03T00:00:00Z' };
+    const entries = [
+      { kind: 'file', path: paths.overlay, oldContent: oldOverlay },
+      { kind: 'file', path: paths.state, oldContent: readFileSync(paths.state, 'utf8') },
+    ] as never;
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: beforeRev, holder, entries });
+    writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder, base_revision: beforeRev, integrity, entries }, null, 2)}\n`);
+
+    const before2 = loadActiveState(project); // recovers the crashed journal FIRST
+    // OUR journal write fails (write #1) — previously this left the marker stuck
+    (globalThis as { __txFault?: { failOnWrite: number } }).__txFault = { failOnWrite: 1 };
+    await expect(
+      runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: before2.identity.snapshotId, revision: before2.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      }),
+    ).rejects.toThrow();
+    delete (globalThis as { __txFault?: unknown }).__txFault;
+    // the next trusted read IN THIS PROCESS recovers the crashed journal
+    const state = loadActiveState(project);
+    expect(state.identity.revision).toBe(beforeRev);
+    expect(existsSync(paths.journal)).toBe(false);
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(oldOverlay);
+  });
+
+  it('V5: force-mode init REFUSES a recovery-required journal instead of rebuilding over it', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    // a journal whose rollback fails (INCONSISTENT state): integrity-valid but
+    // its rename entries point at paths that cannot be restored
+    const holder = { pid: -7, acquiredAt: '2026-09-03T00:00:00Z' };
+    // A rollback that CANNOT complete: an integrity-valid journal whose
+    // restore target is outside the project (authorizedWrite refuses) —
+    // recovery fails closed with recovery_required, which force must NOT swallow.
+    const entries = [
+      { kind: 'file', path: join(project, '..', 'outside-project-state.json'), oldContent: 'x' },
+    ] as never;
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: 1, holder, entries });
+    writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder, base_revision: 1, integrity, entries }, null, 2)}\n`);
+    const init = await import('../../cli/commands/renew');
+    const graphText = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    const graphParsed = parseGraphText(graphText);
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const provider = new StaticGraphProvider(graphParsed.graph, '0.9.50');
+    const caps: RenewCapabilities = { nowIso: () => '2026-09-03T00:00:05Z', provider: () => provider, gitCommit: () => undefined };
+    const target = mkdtempSync(join(tmpdir(), 'lco-v5-target-'));
+    tmpDirs.push(target);
+    await expect(init.cmdRenewInit({ dir: project, target, force: true }, caps)).rejects.toMatchObject({
+      code: 'recovery_required',
+    });
+    expect(existsSync(paths.journal)).toBe(true); // the recovery authority survives
+  });
 });

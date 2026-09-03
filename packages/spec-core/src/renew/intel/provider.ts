@@ -16,6 +16,7 @@ export type IntelFailureCode =
   | 'build_failed'
   | 'graph_missing'
   | 'graph_invalid'
+  | 'incompatible'
   | 'binding_missing'
   | 'binding_corrupt'
   | 'binding_tampered'

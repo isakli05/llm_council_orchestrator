@@ -294,7 +294,12 @@ export async function cmdRenewInit(
     try {
       beginState = loadActiveState(args.dir);
     } catch (e) {
-      if (!args.force) throw e;
+      const err = e as Error & { domain?: string; code?: string };
+      // V1-verifier V5: force-mode tolerates IDENTITY failures (a torn
+      // snapshot/project join — exactly the state whose remedy is refresh),
+      // but NEVER a recovery-required journal: rebuilding would overwrite the
+      // recovery authority. Recovery refusals propagate for a retry.
+      if (!args.force || err.domain === 'trust:state' && err.code === 'recovery_required') throw e;
       beginState = undefined; // recovery mode: rebuild over the torn state
     }
   }
