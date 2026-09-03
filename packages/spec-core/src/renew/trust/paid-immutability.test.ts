@@ -186,3 +186,31 @@ describe('S4-H-03 B: budget/ledger identity — one authority', () => {
     expect(op.routeDigest).toBe(resolvedRouteDigest(op.route));
   });
 });
+
+
+describe('S4-H-03 (V3 verifier finding): MCP legacy consent digest === transported operation digest', () => {
+  it('the consent-time route and the transported route resolve IDENTICALLY (wallMs included) — digests equal by construction', async () => {
+    const env = {
+      LCO_LLM_BASE_URL: 'https://gw.example/v1',
+      LCO_LLM_MODEL: 'm-1',
+      LCO_LLM_EXTRA_BODY: '{"temperature": 0.5}',
+    };
+    const { defaultRenewalBudget } = await import('../../mcp/server');
+    const { resolveLegacyEnvRoute, resolvedRouteDigest } = await import('./paid');
+    const rb = defaultRenewalBudget();
+    // consent-side construction (server.ts renewalConsentState)
+    const consentRoute = resolveLegacyEnvRoute(env, {
+      maxAttempts: rb.maxAttempts ?? 8,
+      ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}),
+    });
+    // transport-side construction (the renew tool)
+    const opRoute = resolveLegacyEnvRoute(env, {
+      maxAttempts: rb.maxAttempts ?? 8,
+      ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}),
+    });
+    expect(resolvedRouteDigest(consentRoute)).toBe(resolvedRouteDigest(opRoute));
+    // and a wallMs divergence (the original defect) WOULD change the digest
+    const noWall = resolveLegacyEnvRoute(env, { maxAttempts: rb.maxAttempts ?? 8 });
+    expect(resolvedRouteDigest(noWall)).not.toBe(resolvedRouteDigest(consentRoute));
+  });
+});

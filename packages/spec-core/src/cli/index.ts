@@ -356,7 +356,6 @@ export async function runCli(argv: string[]): Promise<number> {
                   // both fail closed; keys are never invented here. Both routes
                   // share the ONE ledger above.
                   if (r.llmProfile !== undefined) {
-                    const ledger = oneLedger();
                     let text: string;
                   try {
                     text = require('node:fs').readFileSync(join(r.dir, 'lco.config.json'), 'utf8');

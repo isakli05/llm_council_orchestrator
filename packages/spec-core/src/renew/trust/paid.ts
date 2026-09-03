@@ -217,17 +217,28 @@ export function createPaidOperation(args: {
   );
   let lastWireBytes: number | undefined;
   const label = `${route.gateway}/${route.model}`;
+  // S4-H-03 (V3 verifier): the transport consumes a PRIVATE second clone of
+  // the frozen route — never the shared op.route object. deepFreeze cannot
+  // pin exotic internal slots (e.g. a Date's [[DateValue]]), so a consumer
+  // mutating op.route's internals must not be able to reach the wire; the
+  // transported state stays pinned to construction time = digest time.
+  // Optional fields are materialized as OWN properties (undefined when
+  // absent) so prototype-chain lookups at complete() time cannot inject
+  // extraBody/maxTokens/extraHeaders/fetch/cost behavior.
+  const wireRoute = structuredClone(route);
   const adapter = createOpenAiCompatibleLlm({
-    gateway: route.gateway,
+    gateway: wireRoute.gateway,
     providerKind: 'openai-compatible',
-    baseUrl: route.baseUrl,
+    baseUrl: wireRoute.baseUrl,
     apiKey: args.apiKey,
-    model: route.model,
-    ...(route.maxTokens !== undefined ? { maxTokens: route.maxTokens } : {}),
-    ...(route.extraBody !== undefined ? { extraBody: route.extraBody } : {}),
+    model: wireRoute.model,
+    maxTokens: wireRoute.maxTokens,
+    extraBody: wireRoute.extraBody,
+    extraHeaders: undefined,
+    costExtractor: undefined,
     budget: ledger,
-    ...(args.fetchImpl !== undefined ? { fetchImpl: args.fetchImpl } : {}),
-    ...(args.nowMs !== undefined ? { nowMs: args.nowMs } : {}),
+    fetchImpl: args.fetchImpl,
+    nowMs: args.nowMs,
     onSerializedWire: (requestBody: string) => {
       const bytes = Buffer.byteLength(requestBody, 'utf8');
       lastWireBytes = bytes;

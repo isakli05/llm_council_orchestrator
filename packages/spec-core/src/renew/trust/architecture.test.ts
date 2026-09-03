@@ -128,6 +128,10 @@ describe('architecture: paid transport only through ResolvedPaidOperation discip
     // prose comments — renewal surfaces construct transports only through
     // the kernel entry points.
     const forbidden = ['createOpenAiCompatibleLlm', 'createHttpLlm'];
+    // V5 gap 4: a direct paid fetch from the renewal surface bypasses the
+    // operation (ledger/wire-cap) — ban the call token (fetchImpl params do
+    // not match the bare call shape).
+    const forbiddenCalls = [/(^|[^A-Za-z0-9_$.])fetch\(/];
     const violations: string[] = [];
     for (const file of renewalSurface()) {
       readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
@@ -135,6 +139,9 @@ describe('architecture: paid transport only through ResolvedPaidOperation discip
         if (trimmed.startsWith('*') || trimmed.startsWith('//')) return; // '/* parked */ code' is CODE (E9)
         for (const fn of forbidden) {
           if (line.includes(fn)) violations.push(`${REL(file)}:${i + 1}: ${fn}`);
+        }
+        for (const re of forbiddenCalls) {
+          if (re.test(line)) violations.push(`${REL(file)}:${i + 1}: direct fetch( call`);
         }
       });
     }
@@ -165,8 +172,19 @@ describe('architecture: dependency direction + canonical ownership (S4-M-02)', (
     return out;
   }
 
+  /** ALL module specifiers: static imports + require() + dynamic import(). */
+  function allSpecifiers(text: string): string[] {
+    const out = importSpecifiers(text);
+    for (const m of text.matchAll(/require\('([^']+)'\)/g)) out.push(m[1]!);
+    for (const m of text.matchAll(/require\("([^"]+)"\)/g)) out.push(m[1]!);
+    for (const m of text.matchAll(/import\('([^']+)'\)/g)) out.push(m[1]!);
+    for (const m of text.matchAll(/import\("([^"]+)"\)/g)) out.push(m[1]!);
+    return out;
+  }
+
   it('trust kernel modules never import upward (CLI/MCP/browser/command modules)', () => {
-    const banned = ['../../cli/', '../cli/', "'../../mcp/", '../mcp/', 'browser'];
+    // V5 gap 5: ban the bare module paths too (no trailing-segment requirement)
+    const banned = ['../cli', "'../../mcp", '../mcp/', 'browser'];
     const violations: string[] = [];
     for (const file of productionFiles(join(PKG, 'src', 'renew', 'trust'))) {
       const text = readFileSync(file, 'utf8');
@@ -197,7 +215,7 @@ describe('architecture: dependency direction + canonical ownership (S4-M-02)', (
       if (seen.has(key)) return [];
       seen.add(key);
       const text = readFileSync(file, 'utf8');
-      for (const spec of importSpecifiers(text)) {
+      for (const spec of allSpecifiers(text)) {
         const target = resolved(file, spec);
         if (target === undefined) continue;
         const cycle = walk(target, [...stack, file]);
@@ -214,7 +232,10 @@ describe('architecture: dependency direction + canonical ownership (S4-M-02)', (
     // bundle/binding) are domain digests. The raw JSON-stringify framing is
     // banned in production outside the canonical layer and its compiler
     // re-export.
-    const allow = new Set(['src/renew/trust/canonical.ts', 'src/compiler/hash.ts']);
+    // structural.ts OWNS structural document identity (sorted manifest
+    // entries / graph bytes / source set — blessed in the closure plan §8);
+    // compiler/hash.ts is the frozen-spec byte-compat re-export.
+    const allow = new Set(['src/renew/trust/canonical.ts', 'src/compiler/hash.ts', 'src/renew/trust/structural.ts']);
     const violations: string[] = [];
     for (const file of productionFiles(join(PKG, 'src'))) {
       if (allow.has(REL(file))) continue;
@@ -222,7 +243,8 @@ describe('architecture: dependency direction + canonical ownership (S4-M-02)', (
       text.split('\n').forEach((line, i) => {
         const t = line.trim();
         if (t.startsWith('*') || t.startsWith('//')) return; // doc mentions are prose
-        if (line.includes('sha256Content(') && line.includes('JSON.stringify(')) {
+        const isSha = line.includes('sha256Content(') || (line.includes('createHash(') && line.includes('.update('));
+        if (isSha && line.includes('JSON.stringify(')) {
           violations.push(`${REL(file)}:${i + 1}: ad-hoc digest framing`);
         }
       });

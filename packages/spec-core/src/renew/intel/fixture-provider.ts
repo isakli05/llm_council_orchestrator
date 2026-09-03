@@ -13,7 +13,12 @@ import type {
   IntelItems,
   IntelProbe,
 } from './provider';
-import { createHash } from 'node:crypto';
+import { sha256Content, canonicalJson } from '../trust/canonical';
+
+/** Synthetic per-file ast_hash via the canonical layer (deterministic). */
+function canonicalJsonOfIds(sortedIds: string[]): string {
+  return sha256Content(canonicalJson(sortedIds)).slice('sha256:'.length);
+}
 import { join } from 'node:path';
 import type { ParsedGraph } from './graph-reader';
 import {
@@ -82,7 +87,7 @@ export class StaticGraphProvider implements CodeIntelligenceProvider {
       }
       const manifest: Record<string, { ast_hash: string }> = {};
       for (const [file, ids] of [...files.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
-        manifest[file] = { ast_hash: createHash('sha256').update(JSON.stringify([...ids].sort())).digest('hex') };
+        manifest[file] = { ast_hash: canonicalJsonOfIds([...ids].sort()) };
       }
       authorizedWrite({ projectDir: opts.workspaceRoot, path: join(outDir, 'manifest.json'), content: `${JSON.stringify(manifest, null, 2)}\n` });
       // S4-H-04: the fixture substrate seals the SAME structural binding a

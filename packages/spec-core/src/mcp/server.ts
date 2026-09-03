@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { authorizedRead } from '../renew/trust/fs';
 import { structuralIdentity } from '../renew/trust/structural';
 import { join } from 'node:path';
@@ -215,7 +214,7 @@ const RENEW_DIR_PROPERTY = {
  * attempt ceiling is bounded above that, and the wall ceiling bounds the
  * whole paid stage.
  */
-function defaultRenewalBudget(): { maxAttempts: number; maxWallMs: number } {
+export function defaultRenewalBudget(): { maxAttempts: number; maxWallMs: number } {
   return { maxAttempts: 8, maxWallMs: 15 * 60_000 };
 }
 
@@ -323,8 +322,15 @@ async function renewalConsentState(
     // CANONICAL ROUTE DIGEST, not the model alone.
     resolvedModel = process.env.LCO_LLM_MODEL;
     try {
+      // S4-H-03 (V3 verifier): the consent-time route resolves with the SAME
+      // budget shape (maxAttempts AND wallMs) as the transported operation —
+      // the digests must be equal by construction, never incidentally.
+      const rb = defaultRenewalBudget();
       legacyRouteDigest = resolvedRouteDigest(
-        resolveLegacyEnvRoute(process.env, { maxAttempts: defaultRenewalBudget().maxAttempts ?? 8 }),
+        resolveLegacyEnvRoute(process.env, {
+          maxAttempts: rb.maxAttempts ?? 8,
+          ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}),
+        }),
       );
     } catch {
       // unconfigured env: nothing to bind — post-consent resolution refuses
@@ -926,6 +932,19 @@ const TOOLS: readonly ToolDef[] = [
                 }),
               }
             : undefined;
+      // S4-H-03/V6 verifier closure: the constructed operation IS the
+      // consented operation — assert the digests are equal instead of
+      // relying on twin resolutions staying in sync. A mismatch refuses with
+      // zero transports.
+      if (op !== undefined && consentState.routeDigest !== undefined && op.routeDigest !== consentState.routeDigest) {
+        return {
+          code: 1,
+          output:
+            `renewal analysis refused: the resolved LLM route no longer matches the consented route digest ` +
+            `(consented ${consentState.routeDigest.slice(0, 19)}…, resolved ${op.routeDigest.slice(0, 19)}…) — ` +
+            `re-consent to the current route; zero LLM calls were made`,
+        };
+      }
       const capsWithLlm: RenewCapabilities = {
         ...caps,
         ...(llmPlan !== undefined ? { llm: () => llmPlan } : {}),
