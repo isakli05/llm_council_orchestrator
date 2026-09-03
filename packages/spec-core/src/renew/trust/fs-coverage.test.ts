@@ -198,3 +198,34 @@ describe('project loaders — UX entry arms', () => {
     if (!r.ok) expect(r.message).toMatch(/snapshot missing/);
   });
 });
+
+
+describe('fs closing arms: read/remove refusals', () => {
+  it('authorizedRead refuses a symlinked trusted read path (chain-validated)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lco-fs-arm-'));
+    const victim = join(dir, 'real.json');
+    writeFileSync(victim, '{}');
+    const link = join(dir, 'link.json');
+    symlinkSync(victim, link);
+    expect(() => authorizedRead({ projectDir: dir, path: link })).toThrow();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('authorizedRemoveTree refuses a symlink target (never follows links)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lco-fs-arm2-'));
+    const victim = join(dir, 'real');
+    writeFileSync(victim, 'keep');
+    const link = join(dir, 'lnk');
+    symlinkSync(victim, link);
+    expect(() => authorizedRemoveTree({ projectDir: dir, path: link })).toThrow();
+    expect(readFileSync(victim, 'utf8')).toBe('keep');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('authorizedRead rethrows a NON-refusal fs error raw (no mislabeling)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lco-fs-arm3-'));
+    const p = join(dir, 'sub', 'missing.json'); // ENOENT inside a missing dir
+    expect(() => authorizedRead({ projectDir: dir, path: p })).toThrow();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

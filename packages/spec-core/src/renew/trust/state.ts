@@ -540,20 +540,22 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       // The marker is evidence ONLY over our own journal (or an empty path);
       // a foreign journal belongs to the concurrent writer and stays theirs.
       if (ours || journalOnDisk(projectDir, paths) === undefined) {
-        try {
-          const supersededJournal: TxJournalFile = { ...journal, superseded: true };
-          supersededJournal.integrity = txJournalIntegrity(supersededJournal);
-          persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
-        } catch {
-          // the marker itself could not be written — the typed refusal below
-          // is the remaining evidence
+        const supersededJournal: TxJournalFile = { ...journal, superseded: true };
+        supersededJournal.integrity = txJournalIntegrity(supersededJournal);
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
+            break;
+          } catch {
+            // transient fault — retry (bounded); the typed refusal remains otherwise
+          }
         }
       }
       throw new TrustStateError(
         'recovery_required',
         `trusted-state commit failed (${cause.message}) AND the revision advanced past this commit's base — ` +
           `a concurrent writer committed. On-disk state may combine both writers; ` +
-          `${ours ? 'the journal is retained as a superseded marker' : 'the concurrent writer owns the journal path'}; ` +
+          `${ours ? 'the journal is retained as a superseded marker' : journalOnDisk(projectDir, paths) !== undefined ? 'the concurrent writer owns the journal path (abort evidence retained separately)' : 'a superseded marker is retained on the journal path'}; ` +
           `inspect the state after review before re-running.`,
       );
     }
@@ -622,24 +624,30 @@ function abortEvidencePath(projectDir: string): string {
   return join(renewalPaths(projectDir).journal, '..', 'tx-abort-evidence.json');
 }
 
-/** Best-effort sidecar write; the typed refusal is the fallback evidence. */
+/** Bounded-retry sidecar write (closing-verify hardening): the evidence
+ *  channel must survive a TRANSIENT single I/O fault at exactly this write
+ *  (ENOSPC/EIO blip) — three attempts with fresh staging each time. A
+ *  PERSISTENT write-selective fault that blocks only this file while
+ *  permitting every other trusted write is the documented residual (same
+ *  physics-limited class as the journal write itself). */
 function writeAbortEvidence(projectDir: string, journal: TxJournalFile, performed: number): void {
-  try {
-    persistTrustedJson({
-      projectDir,
-      path: abortEvidencePath(projectDir),
-      value: {
-        schema_version: 1,
-        holder: journal.holder,
-        base_revision: journal.base_revision,
-        performed_steps: performed,
-        evidence: 'a transaction aborted while another writer owned the journal path; in-flight bytes may have landed over the concurrent commit',
-        written_at: new Date().toISOString(),
-        remedy: 'inspect the trusted state against both writers, then remove tx-abort-evidence.json',
-      },
-    });
-  } catch {
-    // the typed refusal below is the remaining evidence
+  const value = {
+    schema_version: 1,
+    holder: journal.holder,
+    base_revision: journal.base_revision,
+    performed_steps: performed,
+    evidence: 'a transaction aborted while another writer owned the journal path; in-flight bytes may have landed over the concurrent commit',
+    written_at: new Date().toISOString(),
+    remedy: 'inspect the trusted state against both writers, then remove tx-abort-evidence.json',
+  };
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      persistTrustedJson({ projectDir, path: abortEvidencePath(projectDir), value });
+      return;
+    } catch {
+      // transient fault — retry with fresh staging; after the final attempt
+      // the typed refusal (and the process-level abort signal) is what remains
+    }
   }
 }
 

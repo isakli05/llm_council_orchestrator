@@ -67,6 +67,14 @@ vi.mock('./fs', async (importOriginal) => {
           }
         }
       }
+      // closing-verify arm: transient single-fault on the ABORT-EVIDENCE write
+      const evFault = (globalThis as { __txEvidenceFault?: { hookArmed: boolean; evidenceFailures: number; evidenceWrites: number } }).__txEvidenceFault;
+      if (evFault !== undefined && evFault.hookArmed && args.path.endsWith('tx-abort-evidence.json')) {
+        evFault.evidenceWrites += 1;
+        if (evFault.evidenceFailures >= evFault.evidenceWrites) {
+          throw new Error(`injected transient evidence-write failure #${evFault.evidenceWrites}`);
+        }
+      }
       return actual.authorizedWrite(args);
     },
   };
@@ -1165,5 +1173,94 @@ describe('S4-H-01: V1-re-verifier H1 — post-fence abort preserves a concurrent
     // manual recovery: inspect, remove evidence; B's journal then recovers
     rmSync(evidencePath);
     loadActiveState(project); // recovers through B's journal (its base = begin revision)
+  });
+
+  it('closing-verify hardening: a TRANSIENT fault on the sidecar write is retried — evidence still lands', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const evidencePath = join(project, '.lco', 'renewal', 'tx-abort-evidence.json');
+    const begin = loadActiveState(project);
+    const bHolder = { pid: -66663, acquiredAt: '2026-09-03T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+    const fault = { hookArmed: true, evidenceFailures: 1, evidenceWrites: 0 }; // first attempt fails, retry lands
+    (globalThis as { __txEvidenceFault?: typeof fault }).__txEvidenceFault = fault;
+    (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void; only: boolean } } }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`);
+          writeFileSync(join(project, '.lco', 'renewal', '.lco-revision.lock'), JSON.stringify({ pid: -66663, acquiredAt: '2026-09-03T00:00:00Z' }));
+        },
+      },
+    };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txEvidenceFault?: unknown }).__txEvidenceFault;
+    }
+    expect(existsSync(evidencePath)).toBe(true); // retried past the transient fault
+    expect(() => loadActiveState(project)).toThrowError(TrustStateError);
+  });
+
+  it('H2 arm: the clean-abort rollback failure is typed and leaves the journal (auto-recovery follows)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const beforeBytes = snapshotTrustedBytes(project);
+    // fail the fence-abort (lock swap in plan) AND the first rollback restore
+    (globalThis as { __txFault?: { failOnWrite?: number; failOnRestore?: number } }).__txFault = { failOnRestore: 1 };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => {
+            writeFileSync(join(project, '.lco', 'renewal', '.lco-revision.lock'), JSON.stringify({ pid: 424245, acquiredAt: '2026-09-03T09:09:12.000Z' }));
+            return { mutation: analyzeStyleMutation(fresh), result: undefined };
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    // hmm — with the lock swapped, the fence aborts at the OVERLAY write (per-write fence) —
+    // performed=0 — the clean abort rolls back nothing; to hit the rollback-failure arm we
+    // need bytes performed first. Restore the real lock, fail at store write 3 (performed=1),
+    // then fail the first rollback restore.
+    const begin2 = loadActiveState(project);
+    (globalThis as { __txFault?: { failOnWrite?: number; failOnRestore?: number } }).__txFault = { failOnWrite: 3, failOnRestore: 1 };
+    try {
+      await expect(
+        runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:03Z',
+          expected: { snapshotId: begin2.identity.snapshotId, revision: begin2.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        }),
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    expect(existsSync(paths.journal)).toBe(true); // retained authority
+    const after = loadActiveState(project); // auto-recovery (journal ours)
+    expect(snapshotTrustedBytes(project)).toEqual(beforeBytes);
+    expect(after.identity.revision).toBe(begin2.identity.revision);
   });
 });
