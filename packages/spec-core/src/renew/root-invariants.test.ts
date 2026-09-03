@@ -548,11 +548,11 @@ describe('INV-D authority/approval/destructive integrity', () => {
     const record = build();
     const path = join(dir, 'APPR-0001.json');
     writeFileSync(path, JSON.stringify(record, null, 2));
-    expect(loadRenewalApproval(path).ok).toBe(true);
+    expect(loadRenewalApproval(dir, path).ok).toBe(true);
     const tampered = JSON.parse(JSON.stringify(record));
     tampered.snapshot_id = 'RSN-fedcba9876543210';
     writeFileSync(path, JSON.stringify(tampered, null, 2));
-    const loaded = loadRenewalApproval(path);
+    const loaded = loadRenewalApproval(dir, path);
     expect(loaded.ok).toBe(false);
     if (!loaded.ok) expect(loaded.code).toBe('digest_mismatch');
   });
@@ -561,12 +561,14 @@ describe('INV-D authority/approval/destructive integrity', () => {
     const tamper = (mutate: (r: Record<string, unknown>) => void): boolean => {
       const copy = JSON.parse(JSON.stringify(record));
       mutate(copy);
-      return loadRenewalApproval(writeTmp(copy)).ok === false;
+      const t = writeTmp(copy);
+      return loadRenewalApproval(t.dir, t.path).ok === false;
     };
-    function writeTmp(value: unknown): string {
-      const p = join(freshDir('lco-ri-appr2-'), 'APPR-0001.json');
+    function writeTmp(value: unknown): { dir: string; path: string } {
+      const d = freshDir('lco-ri-appr2-');
+      const p = join(d, 'APPR-0001.json');
       writeFileSync(p, JSON.stringify(value, null, 2));
-      return p;
+      return { dir: d, path: p };
     }
     expect(tamper((r) => { r.approval_id = 'APPR-0009'; })).toBe(true);
     expect(tamper((r) => { r.session_id = 'sess-2'; })).toBe(true);

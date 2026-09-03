@@ -659,16 +659,24 @@ export async function analyzeWithFresh(
     const graphJson = join(paths.workspace, 'graphify-out', 'graph.json');
     const manifestJson = join(paths.workspace, 'graphify-out', 'manifest.json');
     if (!existsSync(graphJson)) return { ok: false, reasons: ['graph_missing: graph.json vanished mid-analysis'] };
+    // S4-H-04: the post-call bracket verifies the FULL bound triple — a
+    // swapped or incoherent workspace mid-analysis is stale, not fresh.
+    const bindingText = existsSync(structuralBindingPath(paths.workspace))
+      ? readWorkspaceFile(dir, structuralBindingPath(paths.workspace))
+      : undefined;
     const ident = structuralIdentity({
       manifestText: existsSync(manifestJson) ? readWorkspaceFile(dir, manifestJson) : undefined,
       graphText: readWorkspaceFile(dir, graphJson),
+      bindingText,
     });
     if (!ident.ok) return { ok: false, reasons: [ident.code] };
+    const bound = bindingText !== undefined ? coerceStructuralBinding(bindingText) : undefined;
     const verdict = evaluateStaleness(beginState.snapshot, {
       gitCommit: caps.gitCommit(targetRoot),
       files: walk.manifest,
       graphManifestDigest: ident.identity.manifest_digest,
       graphDigest: ident.identity.graph_digest,
+      ...(bound !== undefined && bound.ok ? { graphBindingDigest: bound.binding.binding_digest } : {}),
       graphPresent: true,
       graphValid: true,
     });

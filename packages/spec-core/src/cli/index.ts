@@ -27,7 +27,6 @@ import {
 import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
 import { renewalPaths } from '../renew/project/project';
 import { singleRoutePlan, type LlmPlan, type LlmRoute } from '../llm/plan';
-import { createHttpLlm } from '../eval/llm/http';
 import { MAX_RECOVERY_WIRE_BYTES, createPaidOperation, resolveLegacyEnvRoute, routeFromConfig } from '../renew/trust/paid';
 import { resolveRoleConfig } from '../llm/providers';
 import { execFileSync, spawn } from 'node:child_process';
@@ -411,6 +410,10 @@ export async function runCli(argv: string[]): Promise<number> {
                     wireByteCap: MAX_RECOVERY_WIRE_BYTES,
                     nowMs: Date.now,
                   });
+                  // S4-H-03 (B5 closure): the operation OWNS the ledger — the
+                  // shared envelope the pipeline charges IS op.ledger (derived
+                  // from the digest-bound budget), never a second instance.
+                  sharedLedger = op.ledger;
                   const plan: LlmPlan = {
                     forRole: () => ({
                       adapter: op.adapter,
@@ -435,14 +438,16 @@ export async function runCli(argv: string[]): Promise<number> {
                 if (apiKey === undefined || apiKey === '') {
                   throw new Error('LLM env incomplete: LCO_LLM_API_KEY must be set with LCO_LLM_BASE_URL and LCO_LLM_MODEL (fail-closed; no default endpoint)');
                 }
-                return singleRoutePlan(
-                  createPaidOperation({
-                    route,
-                    apiKey,
-                    wireByteCap: MAX_RECOVERY_WIRE_BYTES,
-                    nowMs: Date.now,
-                  }).adapter,
-                );
+                const op = createPaidOperation({
+                  route,
+                  apiKey,
+                  wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+                  nowMs: Date.now,
+                });
+                // S4-H-03 (B5 closure): one ledger lineage — the pipeline's
+                // envelope IS the operation's own ledger.
+                sharedLedger = op.ledger;
+                return singleRoutePlan(op.adapter);
               },
               };
             })()

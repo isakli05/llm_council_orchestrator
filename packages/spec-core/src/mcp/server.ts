@@ -53,6 +53,7 @@ import {
   resolvedRouteDigest,
 } from '../renew/trust/paid';
 import { renewConsentDigest } from './consent';
+import { domainDigest } from '../renew/trust/canonical';
 import { RECOVERY_PROMPT_PROTOCOL } from '../renew/recovery/prompts';
 import { createBudgetLedger } from '../eval/budget';
 import { execFileSync } from 'node:child_process';
@@ -277,16 +278,13 @@ async function renewalConsentState(
       if (role !== undefined) {
         // Fingerprint of the profile's ROUTING CONTENT (name + mode + every
         // role's gateway/model) — any effectual routing change re-digests.
-        profileFingerprint = `sha256:${createHash('sha256')
-          .update(
-            JSON.stringify({
-              name: resolved.profile.name,
-              routingMode: profile.routingMode,
-              roles: profile.roles,
-            }),
-            'utf8',
-          )
-          .digest('hex')}`;
+        // S4-M-02 (B4 closure): profile fingerprints are canonical domain
+        // digests — no ad-hoc sha256(JSON.stringify(...)) framing.
+        profileFingerprint = domainDigest('LCO:CONSENT', 1, {
+          name: resolved.profile.name,
+          routingMode: profile.routingMode,
+          roles: profile.roles,
+        });
         resolvedModel = role.model;
         // S4-H-03 closure: named-profile consent binds the ROUTE DIGEST of the
         // SAME operation the tool call will construct (resolve → routeFromConfig
@@ -657,12 +655,8 @@ const TOOLS: readonly ToolDef[] = [
         }
         preResolvedProfile = resolved.profile;
         const rp = resolved.profile.resolved;
-        resolvedFingerprint = `sha256:${createHash('sha256')
-          .update(
-            JSON.stringify({ name: resolved.profile.name, routingMode: rp.routingMode, roles: rp.roles }),
-            'utf8',
-          )
-          .digest('hex')}`;
+        // S4-M-02 (B4 closure): canonical domain digest.
+        resolvedFingerprint = domainDigest('LCO:CONSENT', 1, { name: resolved.profile.name, routingMode: rp.routingMode, roles: rp.roles });
       }
       const expected = generateConsentDigest(input.intent!, profile, variant, input.llmProfile, resolvedFingerprint);
 

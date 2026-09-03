@@ -233,7 +233,7 @@ describe('architecture: dependency direction + canonical ownership (S4-M-02)', (
 
 describe('architecture: one policy, one vocabulary, one reader per trust concern (S4-M-01)', () => {
   it('raw current-state file reads are absent from the project/snapshot domain modules (bypasses 1+2)', () => {
-    for (const rel of ['src/renew/project/project.ts', 'src/renew/recovery/analysis-store.ts']) {
+    for (const rel of ['src/renew/project/project.ts', 'src/renew/recovery/analysis-store.ts', 'src/renew/clarify/approvals.ts']) {
       const text = readFileSync(join(PKG, rel), 'utf8');
       expect(text.includes('readFileSync('), `${rel} must read through the authorized reader`).toBe(false);
     }

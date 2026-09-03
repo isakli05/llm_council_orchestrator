@@ -302,7 +302,8 @@ describe('renewal approvals edges', () => {
   });
 
   it('a missing approval file is typed approval_missing', () => {
-    const r = loadRenewalApproval(join(freshDir('lco-t6-miss-'), 'APPR-9999.json'));
+    const missDir = freshDir('lco-t6-miss-');
+    const r = loadRenewalApproval(missDir, join(missDir, 'APPR-9999.json'));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('approval_missing');
   });

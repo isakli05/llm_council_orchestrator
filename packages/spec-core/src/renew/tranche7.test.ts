@@ -60,14 +60,14 @@ describe('approval corrupt-load variants', () => {
   it('invalid JSON and schema-invalid records are typed approval_corrupt', () => {
     const dir = freshDir('lco-t7-appr-');
     writeFileSync(join(dir, 'APPR-0001.json'), '{not json');
-    const r1 = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r1 = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r1.ok).toBe(false);
     if (!r1.ok) {
       expect(r1.code).toBe('approval_corrupt');
       expect(r1.message).toMatch(/not valid JSON/);
     }
     writeFileSync(join(dir, 'APPR-0002.json'), '[1,2,3]');
-    const r2 = loadRenewalApproval(join(dir, 'APPR-0002.json'));
+    const r2 = loadRenewalApproval(dir, join(dir, 'APPR-0002.json'));
     expect(r2.ok).toBe(false);
     if (!r2.ok) {
       expect(r2.code).toBe('approval_corrupt');
@@ -95,7 +95,7 @@ describe('approval corrupt-load variants', () => {
     delete v2.project_name;
     delete v2.snapshot_id;
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(v2));
-    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.code).toBe('approval_corrupt');

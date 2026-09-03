@@ -12,7 +12,6 @@
  *   - all read operations parse graph.json defensively via graph-reader —
  *     Graphify is a trusted executable but an untrusted data producer.
  */
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   AffectedOptions,
@@ -29,7 +28,7 @@ import type { StructuralBinding } from '../trust/structural';
 import { computeStructuralBinding, coerceStructuralBinding, requireStructuralGraph, structuralBindingPath, parseGraphManifestStrict } from '../trust/structural';
 import { affectedReverse, godNodes, graphHealthOf, neighborhood, querySeeds, shortestPath } from './graph-ops';
 import { runSubprocess, type SubprocessRunner } from './subprocess';
-import { authorizedWrite } from '../trust/fs';
+import { authorizedWrite, authorizedRead } from '../trust/fs';
 
 /** The deliberate, audited pin (graphify 0.9.50 verified live 2026-09-02). */
 export const SUPPORTED_GRAPHIFY_RANGE = '>=0.9.50 <0.10.0';
@@ -106,7 +105,11 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
     this.projectDir = o.projectDir;
     this.exe = o.executable ?? DEFAULTS.executable;
     this.runner = o.runner ?? runSubprocess;
-    this.readFileImpl = o.readFile ?? ((path: string) => readFileSync(path, 'utf8'));
+    // S4-M-01 (B2 closure): the DEFAULT workspace reader is the kernel's
+    // authorized reader (chain-validated) — graph.json/manifest.json/
+    // lco-binding.json are trusted inputs. Injected readers stay for tests.
+    this.readFileImpl =
+      o.readFile ?? ((path: string) => authorizedRead({ projectDir: this.projectDir, path }));
     this.writeFileImpl = o.writeFile ?? ((path: string, content: string) => authorizedWrite({ projectDir: this.projectDir, path, content, mode: 0o600 }));
     this.opts = {
       probeTimeoutMs: o.probeTimeoutMs ?? DEFAULTS.probeTimeoutMs,

@@ -12,10 +12,10 @@
  * re-exports the kernel surface for existing imports.
  */
 import { readdirSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
+
 import { join } from 'node:path';
 import { z } from 'zod';
-import { authorizedCreateExclusive } from '../trust/fs';
+import { authorizedCreateExclusive, authorizedRead } from '../trust/fs';
 import {
   RenewalApprovalRecordSchema,
   buildRenewalApprovalRecord,
@@ -81,10 +81,12 @@ export type RenewalApprovalLoad =
  * digest, per-decision evidence hashes. v2 (optional-scope) records fail
  * closed as pre-release dev state: re-run the review to re-approve.
  */
-export function loadRenewalApproval(path: string): RenewalApprovalLoad {
+export function loadRenewalApproval(projectDir: string, path: string): RenewalApprovalLoad {
   let text: string;
   try {
-    text = readFileSync(path, 'utf8');
+    // S4-M-01 (B1 closure): trusted approval reads go through the authorized
+    // reader (chain-validated) — never raw readFileSync.
+    text = authorizedRead({ projectDir, path });
   } catch {
     return { ok: false, code: 'approval_missing', message: `approval record not found: ${path}` };
   }

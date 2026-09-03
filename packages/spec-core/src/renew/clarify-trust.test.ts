@@ -160,7 +160,7 @@ describe('approval record self-verification (F3)', () => {
   it('a well-formed record loads verified', () => {
     const dir = freshDir('lco-appr-');
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(buildRecord()));
-    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(true);
   });
 
@@ -170,7 +170,7 @@ describe('approval record self-verification (F3)', () => {
     delete v2.project_name;
     delete v2.snapshot_id;
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(v2));
-    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.code).toBe('approval_corrupt');
@@ -182,7 +182,7 @@ describe('approval record self-verification (F3)', () => {
     const rec = buildRecord() as unknown as Record<string, unknown>;
     rec.content_digest = 'sha256:0000000000000000000000000000000000000000000000000000000000000000';
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(rec));
-    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.code).toBe('digest_mismatch');
@@ -197,7 +197,7 @@ describe('approval record self-verification (F3)', () => {
     // layer is the one that fires (both layers must detect).
     rec.content_digest = renewalApprovalDigest(rec);
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(rec));
-    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.code).toBe('evidence_mismatch');
@@ -208,7 +208,7 @@ describe('approval record self-verification (F3)', () => {
     const rec = buildRecord() as unknown as RenewalApprovalRecord;
     rec.snapshot_id = 'RSN-ffffffffffffffff'; // moved authority to another state
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(rec));
-    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.code).toBe('digest_mismatch');

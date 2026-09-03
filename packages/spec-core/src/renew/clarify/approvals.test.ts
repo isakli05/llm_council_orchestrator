@@ -89,7 +89,7 @@ describe('renewal approval records', () => {
     delete v2.project_name;
     delete v2.snapshot_id;
     writeFileSync(join(dir, 'APPR-0001.json'), JSON.stringify(v2));
-    const r = loadRenewalApproval(join(dir, 'APPR-0001.json'));
+    const r = loadRenewalApproval(dir, join(dir, 'APPR-0001.json'));
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.code).toBe('approval_corrupt');
