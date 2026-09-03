@@ -171,6 +171,53 @@ describe('paid: single-charge accounting (S3-H-06)', () => {
   });
 });
 
+describe('paid: routeFromConfig + wireCap direct', () => {
+  it('routeFromConfig projects the config effectual route facts', async () => {
+    const { routeFromConfig } = await import('./paid');
+    const route = routeFromConfig({
+      config: {
+        gateway: 'openrouter',
+        providerKind: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'secret-value',
+        model: 'm-1',
+        maxTokens: 4096,
+        extraBody: { temperature: 0.3 },
+      },
+      origin: 'named-profile',
+      profileName: 'p1',
+      routingMode: 'product',
+      apiKeyEnvName: 'OR_KEY',
+      budget: { maxAttempts: 8, wallMs: 900_000 },
+    });
+    expect(route.model).toBe('m-1');
+    expect(route.maxTokens).toBe(4096);
+    expect(route.extraBody).toEqual({ temperature: 0.3 });
+    expect(route.budget.wallMs).toBe(900_000);
+    // the API key VALUE never enters the route
+    expect(JSON.stringify(route)).not.toContain('secret-value');
+  });
+
+  it('wireCap measures and refuses directly-installed hooks', async () => {
+    const { wireCap } = await import('./paid');
+    const cap = wireCap(1_000);
+    expect(() => cap.onSerializedWire('x'.repeat(999))).not.toThrow();
+    expect(cap.lastWireBytes()).toBe(999);
+    expect(() => cap.onSerializedWire('x'.repeat(1_001))).toThrowError(/request_over_budget|wire cap/);
+    expect(cap.lastWireBytes()).toBe(1_001);
+  });
+
+  it('resolveLegacyEnvRoute fails closed on malformed env', async () => {
+    const { resolveLegacyEnvRoute } = await import('./paid');
+    expect(() => resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://x', LCO_LLM_MODEL: 'm', LCO_LLM_MAX_TOKENS: 'zero' } as never, { maxAttempts: 1 })).toThrow();
+    expect(() => resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://x', LCO_LLM_MODEL: 'm', LCO_LLM_EXTRA_BODY: 'not json' } as never, { maxAttempts: 1 })).toThrow();
+    expect(() => resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://x', LCO_LLM_MODEL: 'm', LCO_LLM_EXTRA_BODY: '[1]' } as never, { maxAttempts: 1 })).toThrow(/JSON object/);
+    // a non-named legacy budget default carries through
+    const r = resolveLegacyEnvRoute({ LCO_LLM_BASE_URL: 'https://x', LCO_LLM_MODEL: 'm' }, { maxAttempts: 3, wallMs: 1000 });
+    expect(r.budget).toEqual({ maxAttempts: 3, wallMs: 1000 });
+  });
+});
+
 describe('paid: recovery wire cap constant', () => {
   it('keeps the 1MB boundary, now over wire bytes', () => {
     expect(MAX_RECOVERY_WIRE_BYTES).toBe(1_000_000);
