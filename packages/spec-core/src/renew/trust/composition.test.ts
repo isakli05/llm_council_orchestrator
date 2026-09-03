@@ -270,11 +270,16 @@ describe('Composition G — StateTransaction + Export/Status views', () => {
     expect(r.code).toBe(0);
     const after = loadActiveState(project);
     expect(after.analyses.active).toEqual([]);
-    expect(after.overlay.ok).toBe(true); // fresh empty store for the new epoch
-    if (after.overlay.ok) expect(after.overlay.store.records).toEqual([]);
+    // fresh empty store for the new epoch (narrowed via local for strict tsc)
+    const afterOverlay = after.overlay;
+    expect(afterOverlay.ok).toBe(true);
+    if (afterOverlay.ok) expect(afterOverlay.store.records).toEqual([]);
     // And a cross-snapshot store placed in the slot is TYPED, not zero:
     const paths = renewalPaths(project);
-    const foreign = JSON.stringify({ ...after.overlay.store, snapshot_id: 'RSN-00000000000000ff', records: [{ id: 'OVL-0001', relation: 'business_rule', subject: { path: 'x' }, anchors: [], snapshot_id: 'RSN-00000000000000ff', confidence: 'low', status: 'active', lineage: {} }] });
+    const foreignStore = afterOverlay.ok
+      ? afterOverlay.store
+      : { schema_version: 1 as const, snapshot_id: 'RSN-00000000000000ff', records: [] };
+    const foreign = JSON.stringify({ ...foreignStore, snapshot_id: 'RSN-00000000000000ff', records: [{ id: 'OVL-0001', relation: 'business_rule', subject: { path: 'x' }, anchors: [], snapshot_id: 'RSN-00000000000000ff', confidence: 'low', status: 'active', lineage: {} }] });
     writeFileSync(paths.overlay, foreign);
     const reloaded = loadActiveState(project);
     expect(reloaded.overlay.ok).toBe(false);
