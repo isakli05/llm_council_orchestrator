@@ -91,7 +91,9 @@ function approval(
     snapshot_id: SNAP,
     decisions: decisions.map((d) => ({
       claim_id: d.claim_id,
-      kind: 'parity' as const,
+      // kind follows the claim prefix (C-5): UNC-linked decisions are
+      // informational uncertainty answers and never rule parity.
+      kind: d.claim_id.startsWith('UNC-') ? ('uncertainty' as const) : ('parity' as const),
       ...(d.selected_option !== undefined ? { selected_option: d.selected_option } : {}),
       ...(d.free_text !== undefined ? { free_text: d.free_text } : {}),
       evidence: {

@@ -14,6 +14,7 @@
  */
 import { sha256Content } from '../../compiler/hash';
 import { accountCompletionAttempts } from '../trust/paid';
+import { TrustPaidError } from '../trust/errors';
 import { resolveCitation, type ContextRecord, type ResolvedCitation, type TrustedAnchorPayload } from '../trust/evidence';
 import { TrustCitationError } from '../trust/errors';
 import { stripJsonFences } from '../../eval/runner';
@@ -117,9 +118,24 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     try {
       res = await route.adapter.complete(prompt);
     } catch (e) {
+      // D-3: a WIRE-CAP refusal is a pre-transport budget block, not a
+      // transport failure — typed refused-before-transport outcome, zero or
+      // capped fetches, honest labels (never "transport failure: … zero paid
+      // calls").
+      if (e instanceof TrustPaidError && e.code === 'request_over_budget') {
+        throw e;
+      }
       // Budget exhaustion is an in-process refusal, not a transport failure:
       // nothing was spent on the wire — propagate unchanged, persist nothing.
       if (e instanceof BudgetExceededError) throw e;
+      // D-1: even on failure the LEDGER knows the truth — every fetch the
+      // transport attempted was charged. Surface the honest attempt count in
+      // the failed-call trail instead of persisting zeros over real spend.
+      const spentAttempts = deps.budget?.spent?.().attempts;
+      if (typeof spentAttempts === 'number' && spentAttempts > usage.attempts) {
+        usage.attempts = spentAttempts;
+        usage.calls = Math.max(usage.calls, 1);
+      }
       // H-05: a transport failure still consumed wall-clock and possibly
       // spend — record the honest failed-call trail, then surface the typed
       // failure to the caller.
@@ -269,11 +285,29 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   }
 
   let responseText: string;
+  const wireBudgetBlocked = (e: unknown): boolean => e instanceof TrustPaidError && (e as TrustPaidError).code === 'request_over_budget';
   try {
     responseText = await complete(prompt);
   } catch (e) {
     // Budget refusal: nothing spent — propagate (existing contract).
     if (e instanceof BudgetExceededError) throw e;
+    // D-3: a wire-cap refusal happened BEFORE transport (zero or capped
+    // fetches) — persisted as a BUDGET block, never mislabeled a transport
+    // failure. The failed-call trail from complete() (if any) is already on
+    // disk; this record carries the honest zero/one-call accounting.
+    if (wireBudgetBlocked(e)) {
+      const wireRecord: AnalysisRecord = {
+        ...baseRecord,
+        model: routeIdentity,
+        outcome: 'blocked_prompt_budget',
+        validation: { schema_ok: false, retry_used: false, issues: [scrubDiagnostic((e as Error).message)], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+        promoted: { hypotheses: [], uncertainties: [] },
+        rejected: [],
+        coverage_notes: [],
+        usage: { ...usage },
+      };
+      return { ok: false, code: 'blocked_prompt_budget', record: wireRecord };
+    }
     // Transport failure: the failed-call record was already persisted by
     // complete(); surface the typed outcome so callers exit non-zero.
     return { ok: false, code: 'transport_failed', record: { ...baseRecord, model: routeIdentity, outcome: 'transport_failed', validation: { schema_ok: false, retry_used: false, issues: ['transport failure'], anchors_total: 0, anchors_ok: 0, anchors_failed: 0 }, promoted: { hypotheses: [], uncertainties: [] }, rejected: [], coverage_notes: [], usage: { ...usage } } };
@@ -308,6 +342,21 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       retryText = await complete(buildValidationRetryPrompt(prompt, attempt.issues));
     } catch (e) {
       if (e instanceof BudgetExceededError) throw e;
+      // D-3: the retry's wire-cap refusal is a budget block with the HONEST
+      // retry_used: true (a first call was made and its issues are recorded).
+      if (wireBudgetBlocked(e)) {
+        const wireRecord: AnalysisRecord = {
+          ...baseRecord,
+          model: routeIdentity,
+          outcome: 'blocked_prompt_budget',
+          validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20).map(scrubDiagnostic), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 },
+          promoted: { hypotheses: [], uncertainties: [] },
+          rejected: [],
+          coverage_notes: [],
+          usage: { ...usage },
+        };
+        return { ok: false, code: 'blocked_prompt_budget', record: wireRecord };
+      }
       return { ok: false, code: 'transport_failed', record: { ...baseRecord, model: routeIdentity, outcome: 'transport_failed', validation: { schema_ok: false, retry_used: true, issues: attempt.issues.slice(0, 20).map(scrubDiagnostic), anchors_total: 0, anchors_ok: 0, anchors_failed: 0 }, promoted: { hypotheses: [], uncertainties: [] }, rejected: [], coverage_notes: [], usage: { ...usage } } };
     }
     // The retry is ALSO a paid call: freshness re-verified again (C-10).
@@ -438,7 +487,9 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       } catch (e) {
         anchorsFailed += 1;
         const code = e instanceof TrustCitationError ? e.code : 'citation_refused';
-        return { path: `<unresolved:${claim.context_id}>`, ok: false, scope: 'whole_file' as AnchorScope, code };
+        // D-2: the id is MODEL-controlled text — redact before it reaches a
+      // persisted reason (token-shaped echoes stay out of analysis records).
+      return { path: `<unresolved:${redactSecrets(claim.context_id).text}>`, ok: false, scope: 'whole_file' as AnchorScope, code };
       }
       const scope = citation.scope;
       const fail = (code: string): AnchorResult => {

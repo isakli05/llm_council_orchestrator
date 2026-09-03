@@ -250,7 +250,7 @@ describe('GraphifyAdapter.graphHealth typed statuses (INV-G3: S2-H-06/M-08)', ()
     expect(health.ok).toBe(false);
     if (health.ok) return;
     expect(health.status).toBe('malformed');
-    expect(health.message).toMatch(/0 entries/);
+    expect(health.message).toMatch(/no entries/);
   });
 
   it('mutation-sensitivity: a HEALTHY verdict is impossible when the manifest is {}', async () => {

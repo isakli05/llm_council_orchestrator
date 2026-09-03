@@ -7,6 +7,7 @@ import { StaticGraphProvider } from '../intel/fixture-provider';
 import { parseGraphText } from '../intel/graph-reader';
 import { renewalPaths } from '../project/project';
 import {
+  bumpStateRevisionTrusted,
   loadActiveState,
   runRenewalStateTx,
   supersedeStoresForRefresh,
@@ -217,5 +218,27 @@ describe('state: the transaction protocol', () => {
         supersedeStoresForRefresh(project, paths, state.identity.snapshotId),
       ),
     ).rejects.toThrow();
+  });
+});
+
+
+describe('verifier VB-1 (HIGH): lock liveness is decided by the ACQUISITION clock, not the caller-supplied one', () => {
+  it('a lock acquired with a pre-work (minutes-old) nowIso is NOT born stale — a concurrent writer is refused, no lost update', async () => {
+    const { project } = await freshProject();
+    // Simulate the MCP analyze fold: the boundary clock is frozen BEFORE a
+    // long paid call; the fold then acquires the writer lock with that OLD
+    // reading. Under the defect, breakStaleLock saw age>10s and the second
+    // writer broke the live lock mid-commit (reproduced lost update).
+    const staleClock = '2026-09-03T00:00:00Z';
+    await withRenewalWriterLock(project, staleClock, async () => {
+      const second = await withRenewalWriterLock(project, '2026-09-03T09:00:00Z', () => 'ran').then(
+        () => 'ran',
+        (e: Error) => e.message,
+      );
+      expect(second).toMatch(/locked by another writer/);
+      // and the mid-commit mutation stands
+      bumpStateRevisionTrusted(project);
+    });
+    expect(loadActiveState(project).identity.revision).toBeGreaterThanOrEqual(1);
   });
 });

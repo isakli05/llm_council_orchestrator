@@ -37,36 +37,65 @@ function renewalSurface(): string[] {
     ...productionFiles(join(PKG, 'src', 'renew')).filter((f) => !REL(f).startsWith('src/renew/trust/')),
     join(PKG, 'src', 'cli', 'commands', 'renew.ts'),
     join(PKG, 'src', 'cli', 'commands', 'write-spec.ts'),
+    // Verifier A-F4: renew plan --freeze reaches cmdFreeze's spec writes.
+    join(PKG, 'src', 'cli', 'commands', 'freeze.ts'),
     join(PKG, 'src', 'mcp', 'server.ts'),
   ];
   return files.filter((f) => existsSync(f));
 }
 
-/** Write/mutate primitives no renewal-surface file may use directly.
- *  (trust/fs.ts and storage/revision.ts are outside the scanned surface —
- *  they ARE the authorized implementors.) */
+/** Write/mutate primitives no renewal-surface file may use directly —
+ *  Sync AND promises forms, with-or-without a space before the paren, plus
+ *  the whole fs.promises / node:fs/promises surface and dynamic code
+ *  primitives (verifier F-1/A-F4). trust/fs.ts and storage/revision.ts are
+ *  outside the scanned surface — they ARE the authorized implementors. */
 const WRITE_PRIMITIVES = [
   'writeFileSync(',
+  'writeFileSync (',
+  'writeFile(',
+  'writeFile (',
   'renameSync(',
+  'rename(',
   'unlinkSync(',
+  'unlink(',
   'rmSync(',
+  'rm(',
   'appendFileSync(',
+  'appendFile(',
   'truncateSync(',
   'truncate(',
   'linkSync(',
   'mkdirSync(',
+  'mkdir(',
   'openSync(',
+  'open(',
   'cpSync(',
+  'cp(',
   'copyFileSync(',
+  'copyFile(',
+  'createWriteStream(',
+  'fs.promises',
+  "from 'node:fs/promises'",
+  `require("node:fs")`,
+  "require('node:fs')",
+  'eval(',
+  'new Function(',
 ];
 
 describe('architecture: no trusted filesystem writes outside FilesystemCapability', () => {
   it('renewal-surface production files contain no direct write primitives', () => {
+    // NOTE on promises-form detection: bare `writeFile(...)`-style calls are
+    // unreachable without an import route that is ITSELF banned outright —
+    // the `fs.promises` token, `from 'node:fs/promises'`, and dynamic
+    // `require('node:fs')`/eval are all in WRITE_PRIMITIVES as substrings, so
+    // every import path to those functions trips the scan before any call
+    // shape matters (verifier F-1's aliasing concern is covered for the same
+    // reason: an aliased import still carries the original name in its
+    // import line).
     const violations: string[] = [];
     for (const file of renewalSurface()) {
       const text = readFileSync(file, 'utf8');
       for (const primitive of WRITE_PRIMITIVES) {
-        // scan line-wise for actionable messages
         text.split('\n').forEach((line, i) => {
           if (line.includes(primitive) && !line.trim().startsWith('*') && !line.trim().startsWith('//')) {
             violations.push(`${REL(file)}:${i + 1}: ${primitive.trim()} ${line.trim().slice(0, 80)}`);
@@ -87,11 +116,15 @@ describe('architecture: no trusted filesystem writes outside FilesystemCapabilit
 
 describe('architecture: paid transport only through ResolvedPaidOperation discipline', () => {
   it('renewal surfaces never construct a transport directly (kernel entry points only)', () => {
-    const forbidden = ['createOpenAiCompatibleLlm(', 'createHttpLlm('];
+    // Verifier F-4: ban the IDENTIFIER anywhere (import-alias-proof) except
+    // prose comments — renewal surfaces construct transports only through
+    // the kernel entry points.
+    const forbidden = ['createOpenAiCompatibleLlm', 'createHttpLlm'];
     const violations: string[] = [];
     for (const file of renewalSurface()) {
       readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
-        if (line.trim().startsWith('*') || line.trim().startsWith('//')) return; // prose, not a call site
+        const trimmed = line.trim();
+        if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) return;
         for (const fn of forbidden) {
           if (line.includes(fn)) violations.push(`${REL(file)}:${i + 1}: ${fn}`);
         }

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { authorizedRead } from '../renew/trust/fs';
+import { structuralIdentity } from '../renew/trust/structural';
 import { join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { cmdCompile } from '../cli/commands/compile';
@@ -246,9 +248,17 @@ async function renewalConsentState(
     if (p.ok) {
       const snap = loadSnapshotFile(dir);
       if (snap.ok) snapshotId = snap.snapshot.snapshot_id;
+      // Verifier F-7/E-L-01: the consent graph digest goes through the SAME
+      // authorized read + kernel identity as every other graph consumer —
+      // one implementation, byte-identical semantics (structuralIdentity
+      // digests the decoded text exactly as the strict kernel contract).
       const graphPath = join(renewalPaths(dir).workspace, 'graphify-out', 'graph.json');
+      const manifestPath = join(renewalPaths(dir).workspace, 'graphify-out', 'manifest.json');
       try {
-        graphDigest = `sha256:${createHash('sha256').update(readFileSync(graphPath)).digest('hex')}`;
+        const graphText = authorizedRead({ projectDir: dir, path: graphPath });
+        const manifestText = existsSync(manifestPath) ? authorizedRead({ projectDir: dir, path: manifestPath }) : undefined;
+        const ident = structuralIdentity({ manifestText, graphText });
+        graphDigest = ident.ok ? ident.identity.graph_digest : undefined;
       } catch {
         graphDigest = undefined;
       }

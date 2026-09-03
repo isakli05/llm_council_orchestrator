@@ -13,6 +13,7 @@
  *   plan — offline deterministic; refuses on stale state or unresolved parity.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { CodeIntelligenceProvider } from '../../renew/intel/provider';
 import type { LlmPlan } from '../../llm/plan';
@@ -48,11 +49,18 @@ import {
   withRenewalWriterLock,
   type ActiveRenewalState,
 } from '../../renew/trust/state';
-import { authorizedRead, authorizedWrite, authorizedEnsureDir, authorizedRemoveTree } from '../../renew/trust/fs';
-import { validateRenewalApproval } from '../../renew/trust/authority';
+import {
+  authorizedCreateDirAtomically,
+  authorizedEnsureDir,
+  authorizedRead,
+  authorizedRemoveTree,
+  authorizedWrite,
+} from '../../renew/trust/fs';
+import { validateRenewalApproval, verifyStrategyAuthority } from '../../renew/trust/authority';
 import { structuralIdentity } from '../../renew/trust/structural';
+import { sha256Content } from '../../compiler/hash';
 import { assignContextRecords } from '../../renew/trust/evidence';
-import { stageSpecDir } from './write-spec';
+import { specDirFiles } from './write-spec';
 import { cmdFreeze } from './freeze';
 import { renderRenewalReport } from '../../renew/project/export';
 import { assertDisjointRealRoots, resolveContainedOutputPath, tryRealpath } from '../../storage/paths';
@@ -251,7 +259,23 @@ export async function cmdRenewInit(
   // snapshot or revision during the graph build refuses as superseded
   // instead of interleaving archive/rebuild sequences (S3-H-03).
   const preExisting = existsSync(paths.projectJson);
-  const beginState = preExisting ? loadActiveState(args.dir) : undefined;
+  // Verifier VB-2: a torn refresh/crash can leave snapshot.json and
+  // project.json DISAGREEING (the join throws) — exactly the state whose
+  // remedy is refresh. The force path therefore tolerates identity failure:
+  // recover the archive epoch from the snapshot file and rebuild everything.
+  let beginState: ActiveRenewalState | undefined;
+  if (preExisting) {
+    try {
+      beginState = loadActiveState(args.dir);
+    } catch (e) {
+      if (!args.force) throw e;
+      beginState = undefined; // recovery mode: rebuild over the torn state
+    }
+  }
+  const recoverEpochId = () => {
+    const snap = loadSnapshotFile(args.dir);
+    return snap.ok ? snap.snapshot.snapshot_id : 'unknown';
+  };
   return withRenewalWriterLock(args.dir, caps.nowIso(), () => {
     if (beginState !== undefined) {
       const fresh = loadActiveState(args.dir);
@@ -267,12 +291,13 @@ export async function cmdRenewInit(
     authorizedEnsureDir({ projectDir: args.dir, path: join(args.dir, '.lco', 'renewal') });
     authorizedEnsureDir({ projectDir: args.dir, path: paths.analyses });
     authorizedEnsureDir({ projectDir: args.dir, path: paths.approvals });
-    if (args.force && beginState !== undefined) {
+    if (args.force) {
       // C-05 + S3-H-04: refresh is an EXPLICIT state transition. Per-snapshot
       // stores — overlay, parity, strategy, AND spec — are archived under
-      // their old snapshot id (no-clobber); analyses/approvals are retained
-      // as immutable history.
-      supersedeRenewalStores(args.dir, paths, beginState.identity.snapshotId);
+      // their old snapshot id (no-clobber; VB-2 recovery uses the snapshot
+      // file's own epoch when the joined view is torn); analyses/approvals
+      // are retained as immutable history.
+      supersedeRenewalStores(args.dir, paths, beginState?.identity.snapshotId ?? recoverEpochId());
     }
     persistSnapshotFile(args.dir, snapshot);
     persistRenewalProject(args.dir, {
@@ -401,7 +426,13 @@ export async function cmdRenewStatus(args: { dir: string; json?: boolean }, caps
     strategy: strategyLabel,
     plan: state.specExists ? 'spec/ present' : 'none',
   };
-  if (args.json) return { code: 0, output: JSON.stringify(status, null, 2) };
+  // Verifier VB-7: truthful RENDERING is not enough for gating — a corrupt
+  // or superseded-bound store is actionable state; status exits non-zero.
+  const overlayUnhealthy = !state.overlay.ok && state.overlay.code !== 'store_missing';
+  const parityUnhealthy = !state.parity.ok && state.parity.code !== 'store_missing';
+  const strategyUnhealthy = !state.strategy.ok && state.strategy.code !== 'store_missing';
+  const exitCode = overlayUnhealthy || parityUnhealthy || strategyUnhealthy ? 1 : 0;
+  if (args.json) return { code: exitCode, output: JSON.stringify(status, null, 2) };
   const lines = [
     `renewal status: ${status.project}`,
     `  snapshot: ${status.snapshot_state} (${status.snapshot_id})`,
@@ -415,7 +446,7 @@ export async function cmdRenewStatus(args: { dir: string; json?: boolean }, caps
     `  plan: ${status.plan}`,
   ];
   if (status.snapshot_state === 'stale') lines.push(`  ${REFRESH_REMEDY}`);
-  return { code: 0, output: lines.join('\n') };
+  return { code: exitCode, output: lines.join('\n') };
 }
 
 function safeState(dir: string): ActiveRenewalState | string {
@@ -504,7 +535,8 @@ export async function analyzeWithFresh(
         whole_file_hash: i.content_hash,
         start_line: i.start_line,
         end_line: i.end_line,
-        slice_text_hash: i.slice_text_hash ?? 'sha256:unknown',
+        // Verifier C-6: never a placeholder — derive the supplied-text hash.
+        slice_text_hash: i.slice_text_hash ?? sha256Content(i.text),
         file_line_count: i.file_line_count ?? i.end_line,
         ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
       })),
@@ -517,6 +549,26 @@ export async function analyzeWithFresh(
       output: 'no LLM route configured for renewal analysis (role renew_recover) — set LCO_LLM_* or a named profile; analyze is the PAID step and made ZERO calls',
     };
   }
+  // Verifier F-9: the context record's whole-file hash comes from the TARGET
+  // manifest while the slice text is read from the WORKSPACE copy — require
+  // byte equality up front, or the model could be analyzed on divergent
+  // bytes that every downstream check (which re-hashes the target) would
+  // still bless. Divergence is a typed refusal: refresh the workspace.
+  for (const item of bundle.items) {
+    if (item.kind !== 'file_slice') continue;
+    const wsPath = join(paths.workspace, item.path);
+    const wsHash = `sha256:${createHash('sha256').update(readWorkspaceFile(dir, wsPath)).digest('hex')}`;
+    if (wsHash !== item.content_hash) {
+      return {
+        code: 1,
+        output:
+          `renewal analyze refused: the guarded workspace copy of ${item.path} does not match the ` +
+          `snapshot manifest hash (workspace ${wsHash.slice(0, 19)}… vs manifest ${item.content_hash.slice(0, 19)}…) — ` +
+          `the model may only be shown bytes identical to the analyzed source. Run 'lco renew refresh' to rebuild the workspace.`,
+      };
+    }
+  }
+
   // TRUST KERNEL read view: identity joins, revision, typed stores — all
   // from loadActiveState (the only trusted reader).
   let beginState: ActiveRenewalState;
@@ -602,6 +654,16 @@ export async function analyzeWithFresh(
         } catch (e) {
           return { ok: false, code: 'state_domain_changed', message: (e as Error).message };
         }
+        // Verifier VB-8: two concurrent analyzes can allocate the same AN id
+        // from their unlocked begin views. On collision, re-allocate from the
+        // CURRENT on-disk set and retry once — the immutable spend trail must
+        // never be reducible to console output.
+        const first = persistAnalysisRecord(dir, paths.analyses, record);
+        if (first.ok) return first;
+        if (first.code !== 'already_exists') return first;
+        const { loadAnalysisRecords } = require('../../renew/recovery/analysis-store') as typeof import('../../renew/recovery/analysis-store');
+        const fresh = loadAnalysisRecords(paths.analyses);
+        record.analysis_id = nextAnalysisId(fresh.records.map((r) => r.analysis_id));
         return persistAnalysisRecord(dir, paths.analyses, record);
       },
     },
@@ -808,9 +870,11 @@ export async function cmdRenewReview(args: RenewReviewArgs, caps: RenewCapabilit
       } catch (e) {
         return { ok: false as const, error: (e as Error).message };
       }
-      const approvalId = nextRenewalApprovalId(paths.approvals);
-      const result = writeRenewalApproval(args.dir, paths.approvals, { ...record, approval_id: approvalId });
-      if (result.ok) sessionApprovalId.id = approvalId;
+      // Verifier VB-9: the record's approval_id was digested by the session —
+      // write it EXACTLY as built; never re-scan and re-id (a re-id'd record
+      // strands the approval with a digest_mismatch at fold time).
+      const result = writeRenewalApproval(args.dir, paths.approvals, record);
+      if (result.ok) sessionApprovalId.id = record.approval_id;
       return result.ok ? { ok: true as const } : { ok: false as const, error: result.message };
     },
     snapshotId: state.snapshot.snapshot_id,
@@ -1068,6 +1132,32 @@ export async function cmdRenewPlan(
     }
   };
 
+  // Verifier C-3: a workspace strategy selection re-verifies its approval
+  // lineage AT PLAN TIME (write-time soundness is not a read-time join); a
+  // tampered or stale strategy.json cannot plan on a matching snapshot_id alone.
+  if (strategyForPlan.selected_via === 'workspace') {
+    try {
+      verifyStrategyAuthority({
+        decision: strategyForPlan,
+        resolveApproval: (approvalId) => {
+          const rec = loadApprovalValidated(approvalId);
+          if (rec === undefined) {
+            throw new (require('../../renew/trust/errors') as typeof import('../../renew/trust/errors')).TrustAuthorityError(
+              'unresolved_approval',
+              `approval ${approvalId} did not pass validation (missing, corrupt, or out of scope) — it cannot authorize the workspace strategy`,
+              approvalId,
+            );
+          }
+          return rec;
+        },
+        activeScope: { projectName: state.project.name, snapshotId: state.identity.snapshotId },
+      });
+    } catch (e) {
+      const err = e as Error & { code?: string };
+      return { code: 1, output: `plan refused: workspace strategy authority failed verification (${err.code ?? 'error'}): ${err.message}` };
+    }
+  }
+
   // TRUST KERNEL: the whole plan runs as a STRICT transaction — the read
   // view's snapshot AND revision must still hold at commit; any intervening
   // trusted mutation (analyze fold, review ruling, refresh) is a typed
@@ -1148,8 +1238,13 @@ export async function cmdRenewPlan(
         if (!workResult.ok) return workResult;
         // S3-H-04 shadow: a pre-refresh spec cannot survive here (refresh
         // archives it), and the tx re-validated the epoch — write the spec
-        // inside the critical section via the shared staging core.
-        stageSpecDir(args.dir, workResult.bundle);
+        // inside the critical section through the AUTHORIZED primitive
+        // (verifier VB-3: the raw staging core is not a kernel boundary).
+        authorizedCreateDirAtomically({
+          projectDir: args.dir,
+          targetDir: join(args.dir, 'spec'),
+          files: specDirFiles(workResult.bundle),
+        });
         if (flagStrategyDecision !== undefined) {
           persistStrategy(args.dir, paths.strategy, flagStrategyDecision);
         }
@@ -1199,6 +1294,10 @@ export async function cmdRenewExport(args: { dir: string; out?: string }, caps: 
   if (typeof state === 'string') return { code: 2, output: state };
   const p = loadRenewalProject(args.dir);
   if (!p.ok) return { code: 2, output: p.message };
+  // Verifier E-L-05: the workspace graph enters through the authorized read
+  // boundary even on the export-only path (no staleness walk precedes it).
+  const graphJsonPath = join(renewalPaths(args.dir).workspace, 'graphify-out', 'graph.json');
+  if (existsSync(graphJsonPath)) authorizedRead({ projectDir: args.dir, path: graphJsonPath });
   const graph = await caps.provider().graph();
   const manifest = state.snapshot?.files ?? [];
   const archView = graph.ok ? buildArchitectureView(graph.graph, manifest, state.project.snapshot_id) : undefined;

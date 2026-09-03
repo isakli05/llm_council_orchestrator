@@ -268,6 +268,20 @@ export function parityGate(store: ParityStore, targetRoot: string, approvals?: P
         continue;
       }
     }
+    // Verifier C-2: the support axis is LOAD-BEARING — a ruled entry used
+    // for planning must carry human_confirmed support ('contradicted'
+    // authorizes nothing; machine stages never set it themselves). Runs
+    // AFTER approval-reference integrity so the more specific authority
+    // blockers surface first.
+    if (rec.support_status !== 'human_confirmed') {
+      blockers.push({
+        id: rec.id,
+        reason:
+          `ruling '${rec.ruling}' lacks human-confirmed support (support_status: ${rec.support_status ?? 'unrecorded'}) — ` +
+          `re-run the review so the approval sets it; a ruled entry without recorded human confirmation is not plannable`,
+      });
+      continue;
+    }
     for (const ev of rec.evidence) {
       if (ev.kind !== 'code_anchor') continue;
       const v = verifyAnchor(ev.anchor as CodeAnchorInput, targetRoot);

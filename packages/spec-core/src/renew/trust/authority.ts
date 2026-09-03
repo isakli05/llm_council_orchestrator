@@ -51,7 +51,25 @@ const ApprovalDecisionSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((d, ctx) => {
+    // Verifier C-5: a decision's kind must match its claim-id prefix — a
+    // hand-crafted record cannot blur what a claim authorizes.
+    const expected = d.claim_id.startsWith('UNC-')
+      ? 'uncertainty'
+      : d.claim_id.startsWith('OVL-')
+        ? 'overlay_review'
+        : d.claim_id.startsWith('PAR-')
+          ? 'parity'
+          : 'strategy';
+    if (d.kind !== expected) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['kind'],
+        message: `claim ${d.claim_id} requires kind '${expected}' (got '${d.kind}')`,
+      });
+    }
+  });
 
 export const RenewalApprovalRecordSchema = z
   .object({
@@ -120,7 +138,11 @@ export function buildRenewalApprovalRecord(args: {
   snapshot_id: string;
   decisions: ApprovalDecision[];
 }): RenewalApprovalRecord {
-  const sorted = [...args.decisions].sort((a, b) => (a.claim_id < b.claim_id ? -1 : 1));
+  // Verifier C-5: decisions are schema-validated at CONSTRUCTION too (the
+  // builder is the ONLY record constructor; kind/prefix agreement and every
+  // other decision invariant hold for anything it emits).
+  const validated = args.decisions.map((d) => ApprovalDecisionSchema.parse(d));
+  const sorted = [...validated].sort((a, b) => (a.claim_id < b.claim_id ? -1 : 1));
   const record: RenewalApprovalRecord = {
     schema_version: 1,
     approval_id: args.approval_id,

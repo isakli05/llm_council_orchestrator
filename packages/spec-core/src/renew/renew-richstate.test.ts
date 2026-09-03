@@ -310,7 +310,7 @@ describe('analyze defensive arms', () => {
       }),
     };
     // Hold the renewal lock across the whole analyze (acquired before, released after).
-    const lock = acquireSpecRootLock(join(project, '.lco', 'renewal'), NOW);
+    const lock = acquireSpecRootLock(join(project, '.lco', 'renewal'), new Date().toISOString()); // VB-1: liveness is the real clock — a fixed stale stamp is breakable by design
     try {
       const r = await cmdRenewAnalyze({ dir: project }, { ...c, llm: () => singleRoutePlan(scripted, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }) });
       expect(r.code).toBe(1);

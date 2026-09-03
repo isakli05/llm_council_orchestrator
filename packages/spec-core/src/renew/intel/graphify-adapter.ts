@@ -298,53 +298,19 @@ export class GraphifyAdapter implements CodeIntelligenceProvider {
         message: `no graphify manifest at ${manifestPath} — graph state is incomplete; rebuild it (lco renew refresh)`,
       };
     }
-    let manifest: unknown;
-    try {
-      manifest = JSON.parse(manifestText);
-    } catch (e) {
+    // S3-M-01 + trust kernel (VERIFIER E-M-01 fix): manifest acceptance is
+    // the KERNEL's strict parser — one implementation, no hand-rolled copy —
+    // and the healthy report carries the manifest identity digest.
+    const manifestId = parseGraphManifestStrict(manifestText);
+    if (!manifestId.ok) {
       return {
         ok: false,
-        code: 'graph_invalid',
-        status: 'malformed',
-        message: `manifest.json is not valid JSON (${(e as Error).message}); rebuild the graph (lco renew refresh)`,
+        code: manifestId.code === 'manifest_missing' ? 'graph_missing' : 'graph_invalid',
+        status: manifestId.code === 'manifest_missing' ? 'missing' : 'malformed',
+        message: manifestId.message,
       };
     }
-    if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
-      return {
-        ok: false,
-        code: 'graph_invalid',
-        status: 'malformed',
-        message: `manifest.json is not an object mapping file paths to entries (${JSON.stringify(manifest).slice(0, 60)}); rebuild the graph (lco renew refresh)`,
-      };
-    }
-    const entries = manifest as Record<string, unknown>;
-    const entryPaths = Object.keys(entries);
-    if (entryPaths.length === 0) {
-      // INV-G1: a built graph has ≥1 manifest entry — an empty manifest
-      // beside a parsed graph is inconsistent state, NOT a healthy 0.
-      return {
-        ok: false,
-        code: 'graph_invalid',
-        status: 'malformed',
-        message: `manifest.json has 0 entries while graph.json has ${g.graph.nodes.length} node(s) — a built graph always has ≥1 manifest entry; rebuild the graph (lco renew refresh)`,
-      };
-    }
-    const malformed = entryPaths.filter((p) => {
-      const v = entries[p];
-      if (typeof v !== 'object' || v === null || Array.isArray(v)) return true;
-      const hash = (v as { ast_hash?: unknown }).ast_hash;
-      return typeof hash !== 'string' || hash.length === 0;
-    });
-    if (malformed.length > 0) {
-      const sample = malformed.sort().slice(0, 5).join(', ');
-      return {
-        ok: false,
-        code: 'graph_invalid',
-        status: 'malformed',
-        message: `manifest.json has ${malformed.length} malformed ${malformed.length === 1 ? 'entry' : 'entries'} (${sample}${malformed.length > 5 ? ` +${malformed.length - 5} more` : ''}) — every entry must be an object with a non-empty string ast_hash; rebuild the graph (lco renew refresh)`,
-      };
-    }
-    return { ...graphHealthOf(g.graph, version, entryPaths.length), status: 'healthy' };
+    return graphHealthOf(g.graph, version, manifestId.identity.entries, manifestId.identity.digest);
   }
 
   private loadGraph(): { ok: true; graph: ParsedGraph } | IntelFailure {

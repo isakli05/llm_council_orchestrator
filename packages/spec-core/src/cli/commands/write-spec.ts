@@ -44,6 +44,14 @@ const SECTION_KEYS = [
  * as environment failures (exit 2), matching init's write-error contract.
  * `nowIso` is injected per the interface contract (lock holder identity).
  */
+/** The staged section files for a bundle (single safe name segments). */
+export function specDirFiles(bundle: SpecBundle): { name: string; content: unknown }[] {
+  return [
+    ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: bundle[key] })),
+    ...(bundle.legacy !== undefined ? [{ name: 'legacy.json', content: bundle.legacy }] : []),
+  ];
+}
+
 export function writeSpecDir(dir: string, bundle: SpecBundle, nowIso: string): void {
   const specDir = join(dir, 'spec');
   // SEC-003: lstat catches a DANGLING spec symlink the existsSync no-clobber

@@ -9,7 +9,8 @@
  * Strategy selection is ALWAYS a question here — a human act, never an
  * autonomous choice (audit 17 §D).
  */
-import { createHash } from 'node:crypto';
+
+import { sha256Content } from '../trust/canonical';
 import type { ClarificationQuestion } from '../../eval/runner';
 import type { ClarificationAnswer } from '../../clarify/model';
 import type { AnalysisRecord } from '../recovery/schemas';
@@ -185,6 +186,6 @@ function evidenceOf(sessionId: string, round: number, answerText: string) {
   return {
     source: `renewal-clarify:${sessionId}/round${round}`,
     answer_text: answerText,
-    hash: `sha256:${createHash('sha256').update(answerText, 'utf8').digest('hex')}`,
+    hash: sha256Content(answerText),
   };
 }

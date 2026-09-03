@@ -221,7 +221,7 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: reado
     // retry either.
     ...issues.map((i) => `  - ${escapeLineUnsafe(redactSecrets(i).text)}`),
     '',
-    'Return the corrected JSON object only. Same rules as above — anchors must copy the',
-    'ANCHORABLE FILES table verbatim; do not drop uncertainty material to "fix" the output.',
+    'Return the corrected JSON object only. Same rules as above — anchors must cite the',
+    'CITABLE CONTEXTS table exactly (context_id, optional narrowing inside the supplied window); do not drop uncertainty material to "fix" the output.',
   ].join('\n');
 }

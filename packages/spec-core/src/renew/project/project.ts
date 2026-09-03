@@ -144,7 +144,15 @@ const RenewalStateFileSchema = z
 export function readStateRevision(dir: string): number {
   const path = renewalPaths(dir).state;
   if (!existsSync(path)) return 0;
-  const parsed = RenewalStateFileSchema.safeParse(JSON.parse(readFileSync(path, 'utf8')));
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    // Verifier VB-10: a non-JSON state.json is a TYPED corrupt refusal, not
+    // a raw SyntaxError.
+    throw new Error(`renewal state revision file corrupt (${path}: ${(e as Error).message}) — inspect or remove it after review; refusing to guess`);
+  }
+  const parsed = RenewalStateFileSchema.safeParse(raw);
   if (!parsed.success) {
     throw new Error(`renewal state revision file corrupt (${path}: ${parsed.error.issues[0]?.message ?? 'invalid'}) — inspect or remove it after review; refusing to guess`);
   }

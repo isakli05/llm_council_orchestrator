@@ -286,9 +286,25 @@ export function renewalWriterLockDir(projectDir: string): string {
   return join(projectDir, '.lco', 'renewal');
 }
 
-/** Hold the renewal writer lock across `fn` (every trusted mutation). */
+/**
+ * Hold the renewal writer lock across `fn` (every trusted mutation).
+ *
+ * Verifier VB-1 (HIGH, reproduced): the lockfile's `acquiredAt` stamp MUST be
+ * a clock reading taken AT ACQUISITION. Callers pass a transaction `nowIso`
+ * captured BEFORE the unlocked work phase (the MCP boundary freezes one
+ * reading per tool call; the paid phase runs up to 15 minutes) — stamping
+ * with that pre-work reading makes every long transaction's lock BORN STALE
+ * (age > 10s the instant it is acquired), so a concurrent writer breaks it
+ * mid-commit and silently drops the first writer's fold. The injected
+ * `nowIso` therefore governs caller-side semantics only; liveness is decided
+ * by the real clock, evaluated at acquisition. Verifier VB-6: the lock path
+ * is authorized through the kernel before the lockfile write.
+ */
 export async function withRenewalWriterLock<T>(projectDir: string, nowIso: string, fn: (lock: SpecRootLock) => Promise<T> | T): Promise<T> {
-  const lock = acquireSpecRootLock(renewalWriterLockDir(projectDir), nowIso);
+  void nowIso; // pre-work clock — deliberately NOT used for lock liveness
+  const lockDir = renewalWriterLockDir(projectDir);
+  authorizeProjectDestination(projectDir, join(lockDir, '.lco-revision.lock'));
+  const lock = acquireSpecRootLock(lockDir, new Date().toISOString());
   try {
     return await fn(lock);
   } finally {
@@ -323,8 +339,11 @@ export async function runRenewalStateTx<W, R>(args: {
   commit: (fresh: ActiveRenewalState, workResult: W) => Promise<R> | R;
 }): Promise<R> {
   const begin = loadActiveState(args.projectDir);
-  if (args.policy === 'strict' && args.expected === undefined) {
-    throw new TrustStateError('fold_conflict', "a strict transaction requires its read-view expectation");
+  if (args.expected === undefined) {
+    // Verifier VB-5: BOTH policies require their read-view expectation —
+    // additive-without-expected silently skipped snapshot-supersession
+    // validation (a documented property, never an option).
+    throw new TrustStateError('fold_conflict', `a ${args.policy} transaction requires its read-view expectation`);
   }
   const workResult = await args.work(begin);
 

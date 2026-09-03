@@ -217,7 +217,7 @@ describe('provider contracts over a MINIMAL graph (no labels/locations)', () => 
     if (!h.ok) {
       expect(h.code).toBe('graph_invalid');
       expect(h.status).toBe('malformed');
-      expect(h.message).toMatch(/0 entries/);
+      expect(h.message).toMatch(/no entries/);
     }
   });
 

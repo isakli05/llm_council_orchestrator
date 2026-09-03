@@ -63,7 +63,25 @@ export const RecoveryOutputSchema = z
     uncertainties: z.array(RecoveryUncertaintySchema).max(50),
     coverage_notes: z.array(z.string().min(1).max(1_000)).max(20),
   })
-  .strict();
+  .strict()
+  .superRefine((out, ctx) => {
+    // Verifier C-4: duplicate model-authored ids collapse clarification
+    // questions (one answer covers two uncertainties). Ids are unique within
+    // a response — a duplicate is a schema failure (the validation retry
+    // asks the model to fix it), never a silent merge.
+    const seen = new Set<string>();
+    for (const item of [...out.hypotheses, ...out.uncertainties]) {
+      if (seen.has(item.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['hypotheses'],
+          message: `duplicate claim id ${item.id} — every BHV/UNC id must be unique within one response`,
+        });
+        return;
+      }
+      seen.add(item.id);
+    }
+  });
 
 export type RecoveryOutput = z.infer<typeof RecoveryOutputSchema>;
 export type RecoveryHypothesis = z.infer<typeof RecoveryHypothesisSchema>;

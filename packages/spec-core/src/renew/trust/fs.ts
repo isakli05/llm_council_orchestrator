@@ -13,7 +13,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { isInside, resolveNearestExisting, tryRealpath } from '../../storage/paths';
 import { createDirAtomically, fsyncDir, type StagedFile } from '../../storage/revision';
 import { TrustFsError } from './errors';
@@ -81,11 +81,23 @@ function tryLstat(p: string): import('node:fs').Stats | undefined {
  * A not-yet-existing tail is legal (creation happens beneath it).
  */
 export function authorizeProjectDestination(projectDir: string, dest: string): string {
+  // The operation acts on the LEXICAL destination (never through a link).
+  const lexical = resolve(dest);
   const rootReal = tryRealpath(projectDir);
   if (rootReal === undefined) {
-    // A nonexistent root cannot hold pre-planted children; creation beneath
-    // it is the caller's next step (same policy as the second-audit walk).
-    return resolveNearestExisting(dest);
+    // Nonexistent root (verifier A-F2): still enforce LEXICAL containment —
+    // join-derived destinations stay under the (to-be-created) root, and an
+    // arbitrary absolute path outside it refuses instead of authorizing.
+    const rootLexical = resolve(projectDir);
+    const rel = relative(rootLexical, lexical);
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)) {
+      throw new TrustFsError(
+        'destination_outside_project',
+        dest,
+        `renewal destination ${dest} is outside the project root ${rootLexical} — refusing`,
+      );
+    }
+    return lexical;
   }
   const resolved = resolveNearestExisting(dest);
   const rel = relative(rootReal, resolved);
@@ -112,7 +124,23 @@ export function authorizeProjectDestination(projectDir: string, dest: string): s
       );
     }
   }
-  return resolved;
+  // Verifier A-F1 (HIGH): the FINAL component of the INTENDED path must be a
+  // real file/directory. A symlink at the destination — even one resolving
+  // INSIDE the root — redirects every operation onto attacker-chosen state
+  // (writes replace the link's target; reads source trusted state from it;
+  // no-clobber renames move the TARGET away). Legitimate intermediate aliasing
+  // (a parent component resolving inside the root) remains the documented
+  // accepted policy; the destination itself never follows a link.
+  const finalStat = tryLstat(lexical);
+  if (finalStat !== undefined && finalStat.isSymbolicLink()) {
+    throw new TrustFsError(
+      'symlink_in_chain',
+      lexical,
+      `renewal trust domain refused: the destination ${lexical} is a symlink — operations act ` +
+        `on the intended path only and never follow a link at the destination (remove the link)`,
+    );
+  }
+  return lexical;
 }
 
 /** Refuse destinations that resolve inside the analyzed (read-only) target. */
@@ -307,9 +335,10 @@ export function authorizedEnsureDir(args: { projectDir: string; path: string; mo
  * history silently). Both endpoints are authorized; an existing destination
  * is a typed refusal naming both sides.
  */
-export function authorizedRenameNoClobber(args: { projectDir: string; from: string; to: string }): void {
+export function authorizedRenameNoClobber(args: { projectDir: string; from: string; to: string; targetDir?: string }): void {
   const fromResolved = authorizeProjectDestination(args.projectDir, args.from);
   const toResolved = authorizeProjectDestination(args.projectDir, args.to);
+  refuseIfInsideTarget(args.to, toResolved, args.targetDir);
   if (existsSync(toResolved)) {
     throw new TrustFsError(
       'archive_collision',
@@ -415,5 +444,7 @@ export function preflightRenewalSurface(projectDir: string): string[] {
   return refusals;
 }
 
-/** re-export for consumers needing stat identity of authorized paths */
-export { statSync as authorizedStat };
+/** No-follow stat of a path (lstat semantics — a symlink reports AS a link). */
+export function authorizedStat(p: string): import('node:fs').Stats {
+  return lstatSync(p);
+}

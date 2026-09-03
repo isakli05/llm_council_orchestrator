@@ -90,7 +90,9 @@ describe('status variants', () => {
     overlay.snapshot_id = 'RSN-1111111111111111';
     writeFileSync(overlayPath, JSON.stringify(overlay, null, 2));
     const r = await cmdRenewStatus({ dir: project }, caps());
-    expect(r.code).toBe(0);
+    // Verifier VB-7: truthful rendering AND a non-zero exit — a superseded
+    // store is actionable state, never green-over-broken.
+    expect(r.code).toBe(1);
     // Trust kernel (S3-H-09): the typed view renders the store's TYPED state
     // (cross-snapshot history), never as trusted zeros.
     expect(r.output).toMatch(/overlay: superseded \(overlay\.json belongs to snapshot RSN-1111/);

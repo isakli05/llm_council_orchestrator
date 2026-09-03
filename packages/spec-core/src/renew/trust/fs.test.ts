@@ -319,3 +319,74 @@ describe('archive / remove / preflight', () => {
     expect(Array.isArray(refusals)).toBe(true);
   });
 });
+
+
+describe('verifier A-F1 (HIGH): final-destination symlinks — even INSIDE the root — never followed', () => {
+  let project: string;
+  let target: string;
+  beforeEach(() => {
+    const f = freshProject();
+    project = f.project;
+    target = f.target;
+    dirs.push(project, target);
+  });
+
+  it('a store file linked onto a write-once approval record refuses; the approval is untouched', () => {
+    const { writeFileSync, symlinkSync, readFileSync, mkdirSync } = require('node:fs') as typeof import('node:fs');
+    mkdirSync(join(project, '.lco', 'renewal'), { recursive: true });
+    mkdirSync(join(project, 'approvals'), { recursive: true });
+    writeFileSync(join(project, 'approvals', 'APPR-0001.json'), 'IMMUTABLE APPROVAL');
+    symlinkSync(join(project, 'approvals', 'APPR-0001.json'), join(project, '.lco', 'renewal', 'overlay.json'));
+    expect(() =>
+      authorizedWrite({ projectDir: project, path: join(project, '.lco', 'renewal', 'overlay.json'), content: 'EVIL OVERLAY' }),
+    ).toThrowError(TrustFsError);
+    expect(readFileSync(join(project, 'approvals', 'APPR-0001.json'), 'utf8')).toBe('IMMUTABLE APPROVAL');
+  });
+
+  it('a store file linked onto a superseded archive refuses; history is not overwritten', () => {
+    const { writeFileSync, symlinkSync, readFileSync } = require('node:fs') as typeof import('node:fs');
+    const archive = join(project, '.lco', 'renewal', 'overlay.json.RSN-0123456789abcdef.superseded');
+    const overlay = join(project, '.lco', 'renewal', 'overlay.json');
+    require('node:fs').mkdirSync(join(project, '.lco', 'renewal'), { recursive: true });
+    writeFileSync(archive, 'HISTORY');
+    symlinkSync(archive, overlay);
+    expect(() => authorizedWrite({ projectDir: project, path: overlay, content: 'FRESH OVERLAY' })).toThrowError(
+      TrustFsError,
+    );
+    expect(readFileSync(archive, 'utf8')).toBe('HISTORY');
+  });
+
+  it('authorizedRead refuses a final symlink; attacker content is never sourced as trusted state', () => {
+    const { writeFileSync, symlinkSync, mkdirSync } = require('node:fs') as typeof import('node:fs');
+    mkdirSync(join(project, '.lco', 'renewal'), { recursive: true });
+    writeFileSync(join(project, 'notes.md'), '{"revision":999}');
+    symlinkSync(join(project, 'notes.md'), join(project, '.lco', 'renewal', 'state.json'));
+    expect(() =>
+      authorizedRead({ projectDir: project, path: join(project, '.lco', 'renewal', 'state.json') }),
+    ).toThrowError(TrustFsError);
+  });
+
+  it('authorizedRenameNoClobber refuses a linked endpoint; the link target is never moved away', () => {
+    const { writeFileSync, symlinkSync, existsSync, mkdirSync } = require('node:fs') as typeof import('node:fs');
+    mkdirSync(join(project, '.lco', 'renewal'), { recursive: true });
+    const approval = join(project, 'approvals', 'APPR-0002.json');
+    mkdirSync(join(project, 'approvals'), { recursive: true });
+    writeFileSync(approval, 'IMMUTABLE APPROVAL 2');
+    const overlay = join(project, '.lco', 'renewal', 'overlay.json');
+    symlinkSync(approval, overlay);
+    expect(() =>
+      authorizedRenameNoClobber({
+        projectDir: project,
+        from: overlay,
+        to: `${overlay}.RSN-0123456789abcdef.superseded`,
+      }),
+    ).toThrowError(TrustFsError);
+    expect(existsSync(approval)).toBe(true);
+  });
+
+  it('verifier A-F2: a nonexistent project root still enforces lexical containment', () => {
+    expect(() =>
+      authorizedWrite({ projectDir: '/x/no-such-project', path: '/etc/lco-pwned.txt', content: 'OUTSIDE' }),
+    ).toThrowError(TrustFsError);
+  });
+});

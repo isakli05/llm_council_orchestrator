@@ -247,15 +247,26 @@ export class GraphContextProvider implements ContextProvider {
       const slice = this.opts.readSlice(path, clippedStart, clippedEnd);
       if (slice === undefined) continue;
       const redacted = redactSecrets(slice.text);
-      const text =
-        redacted.text.length > this.limits.maxFileSliceChars
-          ? `${redacted.text.slice(0, this.limits.maxFileSliceChars)}…[truncated]`
-          : redacted.text;
+      let text = redacted.text;
+      let endLine = slice.endLine;
+      if (text.length > this.limits.maxFileSliceChars) {
+        // Verifier C-1 (HIGH): the citable window must never be broader than
+        // the RENDERED text. Truncating characters while keeping the full
+        // line window let citations cover an invisible tail. Narrow the
+        // window to the last RENDERED line; the truncation marker rides the
+        // final rendered line.
+        const rendered = text.slice(0, this.limits.maxFileSliceChars);
+        const lastNewline = rendered.lastIndexOf('\n');
+        const kept = lastNewline > 0 ? rendered.slice(0, lastNewline) : rendered;
+        const renderedLines = kept.split('\n').length;
+        endLine = Math.min(slice.endLine, slice.startLine + renderedLines - 1);
+        text = `${kept}\n…[truncated]`;
+      }
       items.push({
         kind: 'file_slice',
         path,
         start_line: slice.startLine,
-        end_line: slice.endLine,
+        end_line: endLine,
         text,
         content_hash: this.manifestHashes.get(path)!,
         redactions: redacted.count,

@@ -424,7 +424,7 @@ describe('INV-B project/snapshot identity + active state', () => {
     expect((await cmdRenewAnalyze({ dir: project }, caps)).code).toBe(0);
     // Hold the renewal lock (as another in-flight writer would)…
     const { acquireSpecRootLock } = await import('../storage/revision');
-    const lock = acquireSpecRootLock(join(project, '.lco', 'renewal'), '2026-09-02T12:00:00.000Z');
+    const lock = acquireSpecRootLock(join(project, '.lco', 'renewal'), new Date().toISOString()); // VB-1: stamp with the real clock — the fold acquires with it too
     try {
       const answers = join(project, 'answers.json');
       writeFileSync(
