@@ -15,7 +15,7 @@
 import { sha256Content } from '../../compiler/hash';
 import { accountCompletionAttempts } from '../trust/paid';
 import { TrustPaidError } from '../trust/errors';
-import { resolveCitation, type ContextRecord, type ResolvedCitation, type TrustedAnchorPayload } from '../trust/evidence';
+import { resolveCitation, type ResolvedCitation, type TrustedAnchorPayload, type SealedContext } from '../trust/evidence';
 import { TrustCitationError } from '../trust/errors';
 import { stripJsonFences } from '../../eval/runner';
 import { BudgetExceededError, type BudgetLedger } from '../../eval/budget';
@@ -56,11 +56,13 @@ export interface RecoveryDeps {
   recheckFreshness?: () => { ok: true } | { ok: false; reasons: string[] };
   persist: (record: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string };
   /**
-   * S3-H-01 (trust kernel): the server-owned context records assigned to
-   * THIS analysis's supplied slices — the only material citations may cover.
-   * Required: resolution (and therefore promotion) is impossible without it.
+   * S4-H-02 (trust kernel): the SEALED context bundle — identity (project,
+   * snapshot, bundle digest, structural epoch) plus the server-owned records
+   * for THIS analysis's supplied slices. Required: resolution (and therefore
+   * promotion) is impossible without it, and the bundle's snapshot identity
+   * must equal the request's snapshotId (joined at entry).
    */
-  contextRecords: readonly ContextRecord[];
+  context: SealedContext;
 }
 
 export type RecoveryOutcome =
@@ -106,6 +108,17 @@ function zodIssues(error: { issues: { path: (string | number)[]; message: string
 }
 
 export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Promise<RecoveryOutcome> {
+  // S4-H-02: the request's snapshot identity and the sealed context bundle's
+  // MUST be the same snapshot — a bundle from another epoch (stale after a
+  // refresh, or hand-assembled) is refused before anything paid happens.
+  if (deps.context.identity.snapshot_id !== req.snapshotId) {
+    throw new TrustCitationError(
+      'context_snapshot_mismatch',
+      `the supplied context bundle was sealed for snapshot ${deps.context.identity.snapshot_id} but the ` +
+        `analysis request runs under ${req.snapshotId} — re-supply the context for the active snapshot`,
+    );
+  }
+
   const usage: UsageState = { calls: 0, attempts: 0, in_tokens: 0, out_tokens: 0, usage_known: true };
 
   const complete = async (prompt: string): Promise<string> => {
@@ -243,7 +256,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
     };
   })();
 
-  const prompt = buildRecoveryPrompt({ scope: req.scope, bundle: req.bundle, nowIso: deps.nowIso, contextRecords: deps.contextRecords });
+  const prompt = buildRecoveryPrompt({ scope: req.scope, bundle: req.bundle, nowIso: deps.nowIso, contextRecords: deps.context.records });
 
   // INV-E3 (S2-H-04): measure the ACTUAL serialized payload and gate it BEFORE
   // the paid boundary — a prompt whose real bytes exceed the cap (graph
@@ -493,7 +506,7 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
       anchorsTotal += 1;
       let citation: ResolvedCitation;
       try {
-        citation = resolveCitation(deps.contextRecords, claim);
+        citation = resolveCitation(deps.context, claim);
       } catch (e) {
         anchorsFailed += 1;
         const code = e instanceof TrustCitationError ? e.code : 'citation_refused';

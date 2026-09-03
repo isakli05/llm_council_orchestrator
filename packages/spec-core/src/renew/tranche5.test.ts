@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runRecovery } from './recovery/pipeline';
-import { assignContextRecords, type ContextRecord } from './trust/evidence';
+import { sealContextBundle } from './trust/evidence';
 import { singleRoutePlan } from '../llm/plan';
 import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 import type { AnalysisRecord } from './recovery/schemas';
@@ -58,26 +58,28 @@ describe('pipeline usage and persist arms', () => {
     writeFileSync(join(target, 'src', 'a.ts'), 'export const a = 1;\n');
     return { target, hash: sha('export const a = 1;\n') };
   };
-  // S3-H-01: server-assigned context records for the bundle's slices.
-  const recordsFor = (bundle: ContextBundle) =>
-    assignContextRecords(
-      bundle.items
+  /** S4-H-02: seal the bundle's slices under the analysis snapshot identity. */
+  const sealedFor = (bundle: ContextBundle) =>
+    sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-deadbeefdeadbeef',
+      slices: bundle.items
         .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
         .map((i) => ({
           path: i.path,
-          whole_file_hash: i.content_hash,
           start_line: i.start_line,
           end_line: i.end_line,
-          slice_text_hash: i.slice_text_hash ?? sha(i.text),
+          text: i.text,
+          whole_file_hash: i.content_hash,
           file_line_count: i.file_line_count ?? i.end_line,
           ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
         })),
-    );
-  const depsFor = (adapter: LlmAdapter, target: string, persist: (r: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string }, contextRecords: readonly ContextRecord[] = []) => ({
+    });
+  const depsFor = (adapter: LlmAdapter, target: string, persist: (r: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string }, context = sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', slices: [] })) => ({
     llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
     nowIso: 't',
     targetRoot: target,
-    contextRecords,
+    context,
     persist,
   });
 
@@ -103,7 +105,7 @@ describe('pipeline usage and persist arms', () => {
     let saved: AnalysisRecord | undefined;
     const outcome = await runRecovery(
       { analysisId: 'AN-0001', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
-      { ...depsFor(adapter, target, (r) => { saved = r; return { ok: true as const }; }, recordsFor(bundle)) },
+      { ...depsFor(adapter, target, (r) => { saved = r; return { ok: true as const }; }, sealedFor(bundle)) },
     );
     expect(outcome.ok).toBe(true);
     expect(saved!.usage).toMatchObject({

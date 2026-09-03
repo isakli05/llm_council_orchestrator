@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runRecovery, RECOVERY_PROMPT_PROTOCOL } from './pipeline';
-import { assignContextRecords, type ContextRecord } from '../trust/evidence';
+import { sealContextBundle, type SealedContext } from '../trust/evidence';
 import type { AnalysisRecord } from './schemas';
 import { singleRoutePlan } from '../../llm/plan';
 import type { LlmAdapter, LlmResponse } from '../../eval/llm/adapter';
@@ -92,20 +92,22 @@ function makeBundle(hashes: { pricing: string; orders: string }): ContextBundle 
  * CTX-0001 = first file_slice, CTX-0002 = second (bundle item order,
  * deduped by path|hash|window). The model cites these ids; nothing else.
  */
-function recordsFor(bundle: ContextBundle): ContextRecord[] {
-  return assignContextRecords(
-    bundle.items
+function sealedFor(bundle: ContextBundle): SealedContext {
+  return sealContextBundle({
+    projectName: 'legacy-renewal',
+    snapshotId: 'RSN-deadbeefdeadbeef',
+    slices: bundle.items
       .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
       .map((i) => ({
         path: i.path,
-        whole_file_hash: i.content_hash,
         start_line: i.start_line,
         end_line: i.end_line,
-        slice_text_hash: i.slice_text_hash ?? sha(i.text),
+        text: i.text,
+        whole_file_hash: i.content_hash,
         file_line_count: i.file_line_count ?? i.end_line,
         ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
       })),
-  );
+  });
 }
 
 /** Bind a supply-time node onto the pricing slice (context records carry the binding). */
@@ -174,7 +176,7 @@ const validOutput = (): string =>
     coverage_notes: ['tax rounding behavior was not covered by the sliced context'],
   });
 
-function depsFor(adapter: LlmAdapter, budget?: ReturnType<typeof createBudgetLedger>, contextRecords: readonly ContextRecord[] = []) {
+function depsFor(adapter: LlmAdapter, budget?: ReturnType<typeof createBudgetLedger>, context: SealedContext = sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', slices: [] })) {
   persisted = [];
   persistShouldFail = false;
   return {
@@ -182,7 +184,7 @@ function depsFor(adapter: LlmAdapter, budget?: ReturnType<typeof createBudgetLed
     budget,
     nowIso: '2026-09-02T12:00:00.000Z',
     targetRoot,
-    contextRecords,
+    context,
     persist: (record: AnalysisRecord) => {
       if (persistShouldFail) return { ok: false as const, code: 'already_exists' as const, message: 'exists' };
       persisted.push(record);
@@ -203,7 +205,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter } = scripted([validOutput()]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     const rec = outcome.record;
@@ -231,7 +233,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter } = scripted(['{not json', validOutput()]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.validation.retry_used).toBe(true);
@@ -242,7 +244,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter } = scripted(['garbage one', 'garbage two']);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.code).toBe('blocked_schema');
@@ -269,7 +271,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
       coverage_notes: [],
     });
     const { adapter } = scripted([ghost]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
@@ -302,7 +304,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
       coverage_notes: [],
     });
     const { adapter } = scripted([stale]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
@@ -313,7 +315,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter } = scripted([new Error('connection reset')]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.code).toBe('transport_failed');
@@ -330,7 +332,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const { adapter } = scripted(['{bad', validOutput()]);
     const ledger = createBudgetLedger({ maxAttempts: 1 }, {});
     await expect(
-      runRecovery(requestFor(bundle), depsFor(adapter, ledger, recordsFor(bundle))),
+      runRecovery(requestFor(bundle), depsFor(adapter, ledger, sealedFor(bundle))),
     ).rejects.toBeInstanceOf(BudgetExceededError);
     expect(persisted).toHaveLength(0);
   });
@@ -345,7 +347,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
         return { text: validOutput() }; // NO usage field
       },
     };
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.usage.usage_known).toBe(false);
@@ -357,7 +359,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter, prompts } = scripted([validOutput()]);
-    await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     const prompt = prompts[0];
     const start = prompt.indexOf('UNTRUSTED SOURCE DATA START');
     const end = prompt.indexOf('UNTRUSTED SOURCE DATA END');
@@ -375,7 +377,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter } = scripted([validOutput()]);
-    const deps = depsFor(adapter, undefined, recordsFor(bundle));
+    const deps = depsFor(adapter, undefined, sealedFor(bundle));
     persistShouldFail = true;
     const outcome = await runRecovery(requestFor(bundle), deps);
     expect(outcome.ok).toBe(false);
@@ -387,7 +389,7 @@ describe('runRecovery (gated stage: schema → one retry → anchor verification
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter, prompts } = scripted([validOutput()]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.input.item_count).toBe(bundle.items.length);
@@ -424,7 +426,7 @@ describe('citation containment (S3-H-01 / T3-1)', () => {
     const hashes = setupTarget();
     const bundle = makeBundle(hashes); // CTX-0001 window is lines 1-3
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0001', start_line: 10, end_line: 10 })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
@@ -435,7 +437,7 @@ describe('citation containment (S3-H-01 / T3-1)', () => {
     const hashes = setupTarget();
     const bundle = makeBundle(hashes);
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-9999' })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
@@ -467,8 +469,8 @@ describe('citation containment (S3-H-01 / T3-1)', () => {
     };
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0003' })]);
     // The id IS real in the foreign set — just not in THIS one.
-    expect(recordsFor(foreignBundle).map((r) => r.context_id)).toContain('CTX-0003');
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    expect(sealedFor(foreignBundle).records.map((r) => r.context_id)).toContain('CTX-0003');
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
@@ -507,7 +509,7 @@ describe('anchor evidence trust (C-03)', () => {
     const bundle = makeBundle(hashes);
     // Records as if ONLY the pricing slice had been supplied: CTX-0002 was
     // never assigned in this analysis.
-    const recordsWithoutOrders = recordsFor({
+    const recordsWithoutOrders = sealedFor({
       ...bundle,
       items: bundle.items.filter((i) => !(i.kind === 'file_slice' && i.path === 'src/orders.ts')),
     });
@@ -525,7 +527,7 @@ describe('anchor evidence trust (C-03)', () => {
     // the resolved citation's node provenance cannot be checked ⇒ refused.
     const bundle = withPricingNodeBound(hashes, 'totally_fabricated_graph_node');
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0001' })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
@@ -552,7 +554,7 @@ describe('anchor evidence trust (C-03)', () => {
       ],
     };
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0001' })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/node_path_mismatch/);
@@ -565,7 +567,7 @@ describe('anchor evidence trust (C-03)', () => {
     // disk-range coherence must.
     const bundle = withPricingWindowBeyondFile(hashes);
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0001', start_line: 1, end_line: 9999 })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/invalid_range/);
@@ -583,7 +585,7 @@ describe('anchor evidence trust (C-03)', () => {
       ),
     };
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0001', start_line: 1, end_line: 1 })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/invalid_range/);
@@ -608,7 +610,7 @@ describe('anchor evidence trust (C-03)', () => {
         coverage_notes: [],
       }),
     ]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);
@@ -620,7 +622,7 @@ describe('anchor evidence trust (C-03)', () => {
     const bundle = makeBundle(hashes);
     writeFileSync(join(targetRoot, 'src', 'pricing.ts'), `${PRICING}\n// mutation\n`);
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0001' })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsFor(bundle)));
+    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, sealedFor(bundle)));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.rejected[0]!.reasons.join(' ')).toMatch(/hash_mismatch/);

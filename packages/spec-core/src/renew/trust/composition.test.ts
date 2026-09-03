@@ -13,7 +13,7 @@ import {
   bumpStateRevisionTrusted,
 } from './state';
 import { authorizedRead } from './fs';
-import { assignContextRecords, resolveCitation, assertSupportPolicy } from './evidence';
+import { sealContextBundle, resolveCitation, assertSupportPolicy } from './evidence';
 import { createHash } from 'node:crypto';
 import { buildRenewalApprovalRecord, validateRenewalApproval } from './authority';
 
@@ -117,17 +117,21 @@ describe('Composition B — EvidenceCitation + AuthorityGrant', () => {
   it('unvalidated provenance cannot become destructive authority', async () => {
     const { project } = await freshProject();
     const state = loadActiveState(project);
-    const records = assignContextRecords([
-      {
-        path: 'src/orders.ts',
-        whole_file_hash: 'sha256:' + 'a'.repeat(64),
-        start_line: 1,
-        end_line: 5,
-        slice_text_hash: 'sha256:' + 'b'.repeat(64),
-        file_line_count: 200,
-      },
-    ]);
-    const citation = resolveCitation(records, { context_id: 'CTX-0001' });
+    const ctx = sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-deadbeefdeadbeef',
+      slices: [
+        {
+          path: 'src/orders.ts',
+          whole_file_hash: 'sha256:' + 'a'.repeat(64),
+          start_line: 1,
+          end_line: 5,
+          text: 'order bytes',
+          file_line_count: 200,
+        },
+      ],
+    });
+    const citation = resolveCitation(ctx, { context_id: 'CTX-0001' });
     expect(citation.scope).toBe('range'); // provenance resolved…
     // …but support is unvalidated: it cannot authorize a destructive rationale
     expect(() => assertSupportPolicy('destructive_rationale', 'unvalidated', 'PAR-0001 drop rationale')).toThrow();
@@ -173,17 +177,21 @@ describe('Composition B — EvidenceCitation + AuthorityGrant', () => {
 describe('Composition C — EvidenceCitation + Planner policy', () => {
   it('a provenance-only hypothesis cannot masquerade as confirmed business fact', () => {
     // resolveCitation proves provenance; the support axis gates load-bearing use.
-    const records = assignContextRecords([
-      {
-        path: 'src/pricing.ts',
-        whole_file_hash: 'sha256:' + 'd'.repeat(64),
-        start_line: 1,
-        end_line: 8,
-        slice_text_hash: 'sha256:' + 'e'.repeat(64),
-        file_line_count: 8,
-      },
-    ]);
-    const c = resolveCitation(records, { context_id: 'CTX-0001' });
+    const ctx = sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-deadbeefdeadbeef',
+      slices: [
+        {
+          path: 'src/pricing.ts',
+          whole_file_hash: 'sha256:' + 'd'.repeat(64),
+          start_line: 1,
+          end_line: 8,
+          text: 'pricing',
+          file_line_count: 8,
+        },
+      ],
+    });
+    const c = resolveCitation(ctx, { context_id: 'CTX-0001' });
     expect(c.scope).toBe('whole_file');
     expect(() => assertSupportPolicy('planning_input', 'unvalidated', 'pricing hypothesis')).toThrow();
     expect(() => assertSupportPolicy('hypothesis', 'unvalidated', 'pricing hypothesis')).not.toThrow();

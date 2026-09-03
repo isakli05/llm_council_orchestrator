@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sha256Content, domainDigest } from './canonical';
 import { TrustCitationError } from './errors';
 
 /**
@@ -37,18 +38,151 @@ import { TrustCitationError } from './errors';
  * LOAD-BEARING for planning/destructive use instead of decorative.
  */
 
-/** A server-created, immutable record of EXACTLY what was supplied. */
+/**
+ * A server-created, immutable record of EXACTLY what was supplied. S4-H-02:
+ * the record is IDENTITY-BOUND — project, snapshot, and the sealed context
+ * bundle it belongs to. A record from another project/snapshot/request can
+ * never resolve: the joins are enforced by resolveCitation against the
+ * ACTIVE bundle, not trusted from the record's own fields.
+ */
 export interface ContextRecord {
   context_id: string; // CTX-0001… (stable, per analysis run)
+  /** The renewal project this record was supplied under (S4-H-02 join). */
+  project_name: string;
+  /** The snapshot the supplied bytes were verified against (S4-H-02 join). */
+  snapshot_id: string;
+  /** The sealed bundle this record belongs to (S4-H-02 join). */
+  bundle_id: string;
   path: string; // repo-relative POSIX path of the source file
   whole_file_hash: string; // sha256 of the whole file (as verified on disk)
   start_line: number; // supplied window start (1-based, inclusive)
   end_line: number; // supplied window end (1-based, inclusive)
-  slice_text_hash: string; // sha256 of the supplied slice text itself
+  /** sha256 of the supplied slice text — RECOMPUTED at seal time from the
+   *  server-owned rendered bytes, never accepted from the caller. */
+  slice_text_hash: string;
   /** True only when the supplied window covers the ENTIRE file. */
   whole_file_supplied: boolean;
   /** Node bound at supply time (its source_file matched the slice path). */
   node_id?: string;
+}
+
+/** The identity of the EXACT context supplied to one paid operation (S4-H-02). */
+export interface ContextBundleIdentity {
+  schema_version: 1;
+  project_name: string;
+  snapshot_id: string;
+  /** domainDigest('LCO:PAID_CONTEXT', 1, …) over the ordered records' slice
+   *  facts — substituting, splicing, or editing any record changes it. */
+  bundle_id: `sha256:${string}`;
+  /** The structural epoch the supplied graph/node context came from (when
+   *  graph context participated in the bundle). */
+  structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` };
+}
+
+/** A SEALED context bundle: identity + the immutable records it covers. */
+export interface SealedContext {
+  identity: ContextBundleIdentity;
+  records: readonly ContextRecord[];
+}
+
+/** One server-owned supplied slice — the rendered text IS the authority. */
+export interface SuppliedContextSlice {
+  path: string;
+  start_line: number;
+  end_line: number;
+  /** The EXACT rendered text the model will see (post-redaction) — the
+   *  slice hash is recomputed from these bytes; a caller-supplied
+   *  slice_text_hash is never accepted. */
+  text: string;
+  whole_file_hash: string;
+  file_line_count: number;
+  node_id?: string;
+}
+
+/** The slice facts a bundle digest covers (everything but bundle_id itself). */
+function bundleDigestPayload(
+  identity: { project_name: string; snapshot_id: string; structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` } },
+  records: ReadonlyArray<Omit<ContextRecord, 'bundle_id'>>,
+): { project_name: string; snapshot_id: string; structural: unknown; records: unknown[] } {
+  return {
+    project_name: identity.project_name,
+    snapshot_id: identity.snapshot_id,
+    structural: identity.structural ?? null,
+    records: records.map((r) => ({
+      context_id: r.context_id,
+      path: r.path,
+      whole_file_hash: r.whole_file_hash,
+      start_line: r.start_line,
+      end_line: r.end_line,
+      slice_text_hash: r.slice_text_hash,
+      whole_file_supplied: r.whole_file_supplied,
+      ...(r.node_id !== undefined ? { node_id: r.node_id } : {}),
+    })),
+  };
+}
+
+/**
+ * THE context-bundle constructor (S4-H-02). Assigns context ids, RECOMPUTES
+ * every slice hash from the server-owned rendered text (a caller's hash
+ * field is data, never authority), derives the bundle identity as a
+ * domain-separated canonical digest, and stamps each record with it. The
+ * returned records are frozen. A hand-edited or foreign record set cannot
+ * carry a valid bundle_id — resolveCitation recomputes it.
+ */
+export function sealContextBundle(args: {
+  projectName: string;
+  snapshotId: string;
+  slices: ReadonlyArray<SuppliedContextSlice>;
+  structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` };
+}): SealedContext {
+  const base: Omit<ContextRecord, 'bundle_id'>[] = [];
+  const seen = new Map<string, number>();
+  let n = 0;
+  for (const s of args.slices) {
+    const key = `${s.path}|${s.whole_file_hash}|${s.start_line}|${s.end_line}`;
+    const existingIdx = seen.get(key);
+    if (existingIdx !== undefined) {
+      // same window: bind the node id if this supply carried one
+      const existing = base[existingIdx]!;
+      if (s.node_id !== undefined && existing.node_id === undefined) existing.node_id = s.node_id;
+      continue;
+    }
+    n += 1;
+    base.push({
+      context_id: `CTX-${String(n).padStart(4, '0')}`,
+      project_name: args.projectName,
+      snapshot_id: args.snapshotId,
+      path: s.path,
+      whole_file_hash: s.whole_file_hash,
+      start_line: s.start_line,
+      end_line: s.end_line,
+      slice_text_hash: sha256Content(s.text),
+      whole_file_supplied: s.start_line === 1 && s.end_line >= s.file_line_count,
+      ...(s.node_id !== undefined ? { node_id: s.node_id } : {}),
+    });
+    seen.set(key, base.length - 1);
+  }
+  const bundle_id = domainDigest('LCO:PAID_CONTEXT', 1, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base));
+  const records: ContextRecord[] = base.map((r) => Object.freeze({ ...r, bundle_id }));
+  return Object.freeze({
+    identity: Object.freeze({
+      schema_version: 1 as const,
+      project_name: args.projectName,
+      snapshot_id: args.snapshotId,
+      bundle_id,
+      ...(args.structural !== undefined ? { structural: Object.freeze({ ...args.structural }) } : {}),
+    }),
+    records: Object.freeze(records),
+  });
+}
+
+/**
+ * Recompute a sealed bundle's digest from its records — the membership
+ * proof. A record set that was spliced, substituted, or edited (including
+ * its slice hashes) no longer recomputes to the identity's bundle_id.
+ */
+export function contextBundleDigest(bundle: SealedContext): `sha256:${string}` {
+  return domainDigest('LCO:PAID_CONTEXT', 1, bundleDigestPayload(bundle.identity, bundle.records));
 }
 
 /** The server-computed trusted anchor payload (path/hash/range/node shape
@@ -88,65 +222,52 @@ export interface ResolvedCitation {
 }
 
 /**
- * Assign context ids to supplied slices (pure; deterministic ordering).
- * Input: the slice facts the context provider assembled. Duplicate paths
- * with identical windows dedup to one record; different windows of the
- * same file are distinct records.
+ * THE trusted-anchor constructor (S4-H-02 contract). Operates ONLY under an
+ * authoritative ACTIVE context bundle — the record list alone is no longer
+ * an acceptable input, because it cannot prove project/snapshot/request
+ * identity. Joins enforced, in order:
+ *
+ *   1. context_id ∈ the bundle's records              (unknown_context)
+ *   2. the record's project === the bundle's project  (context_project_mismatch)
+ *   3. the record's snapshot === the bundle's snapshot(context_snapshot_mismatch)
+ *   4. the record's bundle_id === the identity's bundle_id AND the record
+ *      set recomputes to that bundle_id               (context_bundle_mismatch)
+ *   5. claimed subrange ⊆ the EXACT supplied window   (range_outside_context — T3-1)
+ *
+ * The slice hash was recomputed from the server-owned rendered bytes at
+ * SEAL time; a substituted or hand-edited record set fails join 4.
  */
-export function assignContextRecords(
-  slices: ReadonlyArray<{
-    path: string;
-    whole_file_hash: string;
-    start_line: number;
-    end_line: number;
-    slice_text_hash: string;
-    file_line_count: number;
-    node_id?: string;
-  }>,
-): ContextRecord[] {
-  const records: ContextRecord[] = [];
-  const seen = new Map<string, ContextRecord>();
-  let n = 0;
-  for (const s of slices) {
-    const key = `${s.path}|${s.whole_file_hash}|${s.start_line}|${s.end_line}`;
-    const existing = seen.get(key);
-    if (existing) {
-      // same window: bind the node id if this supply carried one
-      if (s.node_id !== undefined && existing.node_id === undefined) existing.node_id = s.node_id;
-      continue;
-    }
-    n += 1;
-    const rec: ContextRecord = {
-      context_id: `CTX-${String(n).padStart(4, '0')}`,
-      path: s.path,
-      whole_file_hash: s.whole_file_hash,
-      start_line: s.start_line,
-      end_line: s.end_line,
-      slice_text_hash: s.slice_text_hash,
-      whole_file_supplied: s.start_line === 1 && s.end_line >= s.file_line_count,
-      node_id: s.node_id,
-    };
-    seen.set(key, rec);
-    records.push(rec);
-  }
-  return records;
-}
-
-/**
- * THE trusted-anchor constructor. Pure; throws typed refusals:
- *   - unknown_context        — the cited id is not in this record set
- *   - range_outside_context  — claimed lines escape the supplied window
- *   - not_whole_file         — a whole-file citation on a slice record
- *   - invalid_range          — start>end / non-positive
- * Any refusal means the anchor is NOT constructed — there is no fallback.
- */
-export function resolveCitation(records: ReadonlyArray<ContextRecord>, claim: CitationClaim): ResolvedCitation {
-  const record = records.find((r) => r.context_id === claim.context_id);
+export function resolveCitation(active: SealedContext, claim: CitationClaim): ResolvedCitation {
+  const record = active.records.find((r) => r.context_id === claim.context_id);
   if (record === undefined) {
     throw new TrustCitationError(
       'unknown_context',
       `cited context ${claim.context_id} was not supplied to this analysis — anchors may only cite ` +
         `server-supplied context items exactly`,
+      claim.context_id,
+    );
+  }
+  if (record.project_name !== active.identity.project_name) {
+    throw new TrustCitationError(
+      'context_project_mismatch',
+      `cited context ${claim.context_id} belongs to project '${record.project_name}' but the active ` +
+        `analysis runs under '${active.identity.project_name}' — a foreign context record cannot resolve`,
+      claim.context_id,
+    );
+  }
+  if (record.snapshot_id !== active.identity.snapshot_id) {
+    throw new TrustCitationError(
+      'context_snapshot_mismatch',
+      `cited context ${claim.context_id} was supplied under snapshot ${record.snapshot_id} but the active ` +
+        `snapshot is ${active.identity.snapshot_id} — a stale context record cannot resolve (refresh re-supplies)`,
+      claim.context_id,
+    );
+  }
+  if (record.bundle_id !== active.identity.bundle_id || contextBundleDigest(active) !== active.identity.bundle_id) {
+    throw new TrustCitationError(
+      'context_bundle_mismatch',
+      `the active context bundle does not recomputably own context ${claim.context_id} — the record set ` +
+        `was substituted, spliced, or edited after sealing`,
       claim.context_id,
     );
   }
@@ -162,7 +283,7 @@ export function resolveCitation(records: ReadonlyArray<ContextRecord>, claim: Ci
         record.context_id,
       );
     }
-    // THE containment invariant (S3-H-01): the claimed subrange must lie
+    // THE containment invariant (S3-H-01/T3-1): the claimed subrange must lie
     // within the EXACT window the server supplied — never merely "somewhere
     // in the file".
     if (start < record.start_line || end > record.end_line) {

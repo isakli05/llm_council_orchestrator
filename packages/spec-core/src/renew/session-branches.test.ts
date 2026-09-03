@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createRenewalClarifySession } from './clarify/session';
 import { makeRenewalDriver } from './clarify/distiller';
 import { buildRenewalApprovalRecord, renewalApprovalDigest } from './clarify/approvals';
-import { assignContextRecords } from './trust/evidence';
+import { sealContextBundle } from './trust/evidence';
 import { runRecovery } from './recovery/pipeline';
 import { singleRoutePlan } from '../llm/plan';
 import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
@@ -145,20 +145,23 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
     warnings: [],
   });
   // S3-H-01: server-assigned context records for the bundle's single slice.
-  const recordsFor = (bundle: ContextBundle) =>
-    assignContextRecords(
-      bundle.items
+    /** S4-H-02: seal the bundle's slices under the analysis snapshot identity. */
+  const sealedFor = (bundle: ContextBundle) =>
+    sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-deadbeefdeadbeef',
+      slices: bundle.items
         .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
         .map((i) => ({
           path: i.path,
-          whole_file_hash: i.content_hash,
           start_line: i.start_line,
           end_line: i.end_line,
-          slice_text_hash: i.slice_text_hash ?? sha(i.text),
+          text: i.text,
+          whole_file_hash: i.content_hash,
           file_line_count: i.file_line_count ?? i.end_line,
           ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
         })),
-    );
+    });
 
   it('first response invalid + source mutates before the retry → blocked_stale with retry_used', async () => {
     const target = freshDir('lco-pipe-');
@@ -192,7 +195,7 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
         llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
         nowIso: 't',
         targetRoot: target,
-        contextRecords: recordsFor(bundle),
+        context: sealedFor(bundle),
         recheckFreshness: recheck,
         persist: (record) => { persisted.push(record); return { ok: true as const }; },
       },
@@ -222,7 +225,7 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
         llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
         nowIso: 't',
         targetRoot: target,
-        contextRecords: recordsFor(bundle),
+        context: sealedFor(bundle),
         recheckFreshness: () => ({ ok: true as const }),
         persist: () => ({ ok: true as const }),
       },

@@ -61,7 +61,7 @@ import { emptyParity,
 import { verifyAnchor } from './anchors/verifier';
 import { distillRenewalQuestions } from './clarify/distiller';
 import { buildRecoveryPrompt } from './recovery/prompts';
-import { assignContextRecords } from './trust/evidence';
+import { sealContextBundle } from './trust/evidence';
 import type { ContextBundle } from './context/bundle';
 const tmpDirs: string[] = [];
 function freshDir(prefix: string): string {
@@ -667,20 +667,23 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     }),
   });
   /** S3-H-01: server-assigned context records for a hand-built bundle. */
-  const recordsFor = (bundle: ContextBundle) =>
-    assignContextRecords(
-      bundle.items
+    /** S4-H-02: seal the bundle's slices under the analysis snapshot identity. */
+  const sealedFor = (bundle: ContextBundle) =>
+    sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-0123456789abcdef',
+      slices: bundle.items
         .filter((i): i is Extract<ContextBundle['items'][number], { kind: 'file_slice' }> => i.kind === 'file_slice')
         .map((i) => ({
           path: i.path,
-          whole_file_hash: i.content_hash,
           start_line: i.start_line,
           end_line: i.end_line,
-          slice_text_hash: i.slice_text_hash ?? sha(i.text),
+          text: i.text,
+          whole_file_hash: i.content_hash,
           file_line_count: i.file_line_count ?? i.end_line,
           ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
         })),
-    );
+    });
   it('S2-H-04: a serialized prompt over the byte cap blocks BEFORE any call (zero spend)', async () => {
     const target = makeTarget();
     let calls = 0;
@@ -734,7 +737,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
         llm: singleRoutePlan(llm),
         nowIso: '2026-09-02T00:00:00Z',
         targetRoot: target,
-        contextRecords: [], // blocked BEFORE any citation resolution
+        context: sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', slices: [] }), // blocked BEFORE any citation resolution
         persist: (record) => {
           persisted.push(record.analysis_id);
           return { ok: true };
@@ -777,7 +780,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
         budget: createBudgetLedger({ maxAttempts: 1 }, { nowMs: () => 0 }),
         nowIso: '2026-09-02T00:00:00Z',
         targetRoot: target,
-        contextRecords: recordsFor(bundle),
+        context: sealedFor(bundle),
         persist: () => {
           persistedReports++;
           return { ok: true };
@@ -813,7 +816,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
           budget: spent,
           nowIso: '2026-09-02T00:00:00Z',
           targetRoot: target,
-          contextRecords: recordsFor(bundle),
+          context: sealedFor(bundle),
           persist: () => {
             persistedSpent++;
             return { ok: true };
@@ -864,7 +867,7 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
         llm: singleRoutePlan(llm),
         nowIso: '2026-09-02T00:00:00Z',
         targetRoot: target,
-        contextRecords: recordsFor(bundle),
+        context: sealedFor(bundle),
         persist: (record) => {
           seen = record;
           return { ok: true };

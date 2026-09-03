@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { runRecovery } from '../recovery/pipeline';
 import { singleRoutePlan } from '../../llm/plan';
 import type { LlmAdapter, LlmResponse } from '../../eval/llm/adapter';
-import { assignContextRecords } from './evidence';
+import { sealContextBundle } from './evidence';
 import { TrustPaidError } from './errors';
 import { sha256Content } from './canonical';
 import type { ContextBundle } from '../context/bundle';
@@ -46,9 +46,11 @@ describe('D-3: wire-cap refusals are budget blocks, never transport failures', (
     llm: singleRoutePlan(adapter, { gateway: 'scripted', providerKind: 'openai-compatible' as const, requestedModel: 'm' }),
     nowIso: '2026-09-03T00:00:00Z',
     targetRoot: '/nonexistent',
-    contextRecords: assignContextRecords([
-      { path: 'src/orders.ts', whole_file_hash: sha256Content('fixture-bytes'), start_line: 1, end_line: 5, slice_text_hash: sha256Content('x'), file_line_count: 5 },
-    ]),
+    context: sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-0123456789abcdef',
+      slices: [{ path: 'src/orders.ts', whole_file_hash: sha256Content('fixture-bytes'), start_line: 1, end_line: 5, text: 'x', file_line_count: 5 }],
+    }),
     persist: (r: unknown) => {
       records.push(r);
       return { ok: true as const };
@@ -116,9 +118,11 @@ describe('D-1: transport failure persists the LEDGER truth, not zeros', () => {
         nowIso: '2026-09-03T00:00:00Z',
         targetRoot: '/nonexistent',
         budget: ledger as never,
-        contextRecords: assignContextRecords([
-          { path: 'src/orders.ts', whole_file_hash: sha256Content('fixture-bytes'), start_line: 1, end_line: 5, slice_text_hash: sha256Content('x'), file_line_count: 5 },
-        ]),
+        context: sealContextBundle({
+          projectName: 'legacy-renewal',
+          snapshotId: 'RSN-0123456789abcdef',
+          slices: [{ path: 'src/orders.ts', whole_file_hash: sha256Content('fixture-bytes'), start_line: 1, end_line: 5, text: 'x', file_line_count: 5 }],
+        }),
         persist: (r: never) => {
           records.push(r);
           return { ok: true as const };

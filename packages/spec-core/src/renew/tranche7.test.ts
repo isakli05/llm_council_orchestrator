@@ -244,7 +244,7 @@ describe('buffer arms (variance margin)', () => {
 describe('prompt envelope item coverage (all four kinds render)', () => {
   it('file slices, bare nodes, bare edges, and facts all appear in the JSON document', async () => {
     const { buildRecoveryPrompt } = await import('./recovery/prompts');
-    const { assignContextRecords } = await import('./trust/evidence');
+    const { sealContextBundle } = await import('./trust/evidence');
     const bundle: import('./context/bundle').ContextBundle = {
       scope: {},
       items: [
@@ -258,16 +258,20 @@ describe('prompt envelope item coverage (all four kinds render)', () => {
       warnings: [],
     };
     // S3-H-01: the citable surface is the server-assigned context records.
-    const records = assignContextRecords([
-      {
-        path: 'a.ts',
-        whole_file_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
-        start_line: 1,
-        end_line: 2,
-        slice_text_hash: sha('code'),
-        file_line_count: 2,
-      },
-    ]);
+    const records = sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-aaaaaaaaaaaaaaaa',
+      slices: [
+        {
+          path: 'a.ts',
+          whole_file_hash: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+          start_line: 1,
+          end_line: 2,
+          text: 'code',
+          file_line_count: 2,
+        },
+      ],
+    }).records;
     const prompt = buildRecoveryPrompt({ scope: { type: 'whole' }, nowIso: 't', bundle, contextRecords: records });
     const doc = prompt.slice(prompt.indexOf('UNTRUSTED SOURCE DATA START'), prompt.lastIndexOf('UNTRUSTED SOURCE DATA END'));
     const parsed = JSON.parse(doc.slice(doc.indexOf('{'), doc.lastIndexOf('}') + 1)) as {

@@ -5,7 +5,7 @@ import {
   countEgressRedactions,
   serializeSourceDocumentSafe,
 } from './prompts';
-import { assignContextRecords } from '../trust/evidence';
+import { sealContextBundle } from '../trust/evidence';
 import type { ContextBundle } from '../context/bundle';
 
 const sha = (s: string) => `sha256:${s.length === 64 ? s : 'a'.repeat(64)}`;
@@ -81,16 +81,20 @@ describe('buildRecoveryPrompt (untrusted-data delimiting)', () => {
   it('exposes the citable-contexts table (context ids, supplied windows, whole-file hashes)', () => {
     // S3-H-01: the citable surface is the server-assigned CONTEXT RECORDS —
     // the model cites context ids and may only narrow inside the window.
-    const records = assignContextRecords([
-      {
-        path: 'src/pricing.ts',
-        whole_file_hash: sha('x'),
-        start_line: 17,
-        end_line: 50,
-        slice_text_hash: sha('slice'),
-        file_line_count: 60,
-      },
-    ]);
+    const records = sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-deadbeefdeadbeef',
+      slices: [
+        {
+          path: 'src/pricing.ts',
+          whole_file_hash: sha('x'),
+          start_line: 17,
+          end_line: 50,
+          text: 'slice',
+          file_line_count: 60,
+        },
+      ],
+    }).records;
     const withRecords = buildRecoveryPrompt({ scope: bundle.scope, bundle, nowIso: '2026-09-02T00:00:00Z', contextRecords: records });
     expect(withRecords).toMatch(/CITABLE CONTEXTS \(context_id → path, supplied line window, whole-file hash\)/);
     expect(withRecords).toContain('CTX-0001 → src/pricing.ts lines 17-50');

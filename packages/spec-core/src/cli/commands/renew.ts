@@ -55,8 +55,7 @@ import {
 } from '../../renew/trust/fs';
 import { validateRenewalApproval, verifyStrategyAuthority } from '../../renew/trust/authority';
 import { structuralIdentity } from '../../renew/trust/structural';
-import { sha256Content } from '../../compiler/hash';
-import { assignContextRecords } from '../../renew/trust/evidence';
+import { sealContextBundle } from '../../renew/trust/evidence';
 import { specDirFiles } from './write-spec';
 import { cmdFreeze } from './freeze';
 import { renderRenewalReport } from '../../renew/project/export';
@@ -537,20 +536,6 @@ export async function analyzeWithFresh(
   // S3-H-01 (trust kernel): assign the immutable server-owned context records
   // for EXACTLY the slices supplied — the model will cite these ids, and
   // resolution can never cover bytes outside the supplied windows.
-  const contextRecords = assignContextRecords(
-    bundle.items
-      .filter((i): i is Extract<typeof bundle.items[number], { kind: 'file_slice' }> => i.kind === 'file_slice')
-      .map((i) => ({
-        path: i.path,
-        whole_file_hash: i.content_hash,
-        start_line: i.start_line,
-        end_line: i.end_line,
-        // Verifier C-6: never a placeholder — derive the supplied-text hash.
-        slice_text_hash: i.slice_text_hash ?? sha256Content(i.text),
-        file_line_count: i.file_line_count ?? i.end_line,
-        ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
-      })),
-  );
 
   const llm = caps.llm?.();
   if (llm === undefined) {
@@ -596,6 +581,31 @@ export async function analyzeWithFresh(
   const existingRecords = [...beginState.analyses.active, ...beginState.analyses.historical];
   const analysisId = nextAnalysisId(existingRecords.map((r) => r.analysis_id));
   const activeSnapshot = beginState.identity.snapshotId;
+
+  // S4-H-02 (trust kernel): seal the context bundle under the ACTIVE
+  // project/snapshot/structural identity. The slice hashes are recomputed
+  // from the exact rendered bytes the server supplied — the bundle is the
+  // ONLY material citations may cover, and its digest binds project,
+  // snapshot, every window, and the structural epoch.
+  const sealedContext = sealContextBundle({
+    projectName: beginState.identity.projectName,
+    snapshotId: activeSnapshot,
+    slices: bundle.items
+      .filter((i): i is Extract<typeof bundle.items[number], { kind: 'file_slice' }> => i.kind === 'file_slice')
+      .map((i) => ({
+        path: i.path,
+        start_line: i.start_line,
+        end_line: i.end_line,
+        text: i.text,
+        whole_file_hash: i.content_hash,
+        file_line_count: i.file_line_count ?? i.end_line,
+        ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
+      })),
+    structural: {
+      manifest_digest: beginState.snapshot.graph.manifest_digest as `sha256:${string}`,
+      graph_digest: beginState.snapshot.graph.graph_digest as `sha256:${string}`,
+    },
+  });
 
   // C-06 + B4: existing stores load OR the operation stops. A corrupt store
   // is NEVER replaced with an empty one; a cross-snapshot store is refused
@@ -654,7 +664,7 @@ export async function analyzeWithFresh(
       nowIso: caps.nowIso(),
       targetRoot,
       recheckFreshness,
-      contextRecords,
+      context: sealedContext,
       persist: (record) => {
         // UX preflight re-run: this persist can happen DURING the paid call
         // (transport-failure trail); the per-write authorization inside
