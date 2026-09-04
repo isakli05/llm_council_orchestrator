@@ -1878,9 +1878,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/planner/plan.ts": {
-    "mtime": 1788358087.2244077,
-    "seen": 1788358236.82871,
-    "ast_hash": "a5f56be9526c52afd155e8d7dd180681",
+    "mtime": 1788531764.9545155,
+    "seen": 1788531930.9424798,
+    "ast_hash": "0654f729c4c3eb1cc7c6966e1eff71e7",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/planner/strategy.test.ts": {
@@ -2100,9 +2100,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/architecture.test.ts": {
-    "mtime": 1788465906.5989652,
-    "seen": 1788466026.1619155,
-    "ast_hash": "201803be2bfffe781b9381804e66dcb0",
+    "mtime": 1788532845.1839159,
+    "seen": 1788532871.6140864,
+    "ast_hash": "6d601fe7a431d48b06da99785c57d101",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/authority.test.ts": {
@@ -2124,9 +2124,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/canonical.ts": {
-    "mtime": 1788458959.7895162,
-    "seen": 1788459146.966659,
-    "ast_hash": "27a2e93790fcec72aec04a9974b24b63",
+    "mtime": 1788531744.876802,
+    "seen": 1788531930.9425018,
+    "ast_hash": "1e47b62bf5f69a57c4b057f2f720b74a",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/composition.test.ts": {
@@ -2214,9 +2214,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/state.ts": {
-    "mtime": 1788475571.5862558,
-    "seen": 1788476183.2554812,
-    "ast_hash": "467e83a6344d33bf83bec0f1936189ac",
+    "mtime": 1788533079.4742131,
+    "seen": 1788533200.391974,
+    "ast_hash": "996569686a6ca6f98df567d9b177baa2",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/structural.test.ts": {
@@ -2256,9 +2256,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/transaction-atomicity.test.ts": {
-    "mtime": 1788475802.1509707,
-    "seen": 1788476183.255486,
-    "ast_hash": "b0a0a2ec1266858542b6bedb104c2d54",
+    "mtime": 1788533096.6788774,
+    "seen": 1788533200.3919792,
+    "ast_hash": "80356a21d5fa8cbe011b5c70c905e722",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/paid-immutability.test.ts": {
