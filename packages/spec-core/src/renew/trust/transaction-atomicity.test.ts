@@ -34,9 +34,19 @@ vi.mock('./fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./fs')>();
   type Fault = { failOnWrite?: number; seen?: number; failed?: boolean; failOnRestore?: number; restoreSeen?: number };
   type Interleave = { onWrite: number; commit: () => void; only?: boolean };
+  type JournalCapture = { armed: boolean; bytes?: string };
+  type RemoveFault = { path?: string };
   return {
     ...actual,
     authorizedWrite: (args: Parameters<typeof actual.authorizedWrite>[0]) => {
+      // S5-H-01 regression seam (dormant unless armed): capture the REAL
+      // journal bytes the kernel writes, so tests can reconstitute the exact
+      // post-commit crash persistence state (durable R+1 + journal(base R))
+      // without hand-building a journal.
+      const capture = (globalThis as { __txJournalCapture?: JournalCapture }).__txJournalCapture;
+      if (capture !== undefined && capture.armed && args.path.endsWith('tx-journal.json')) {
+        capture.bytes = args.content;
+      }
       const fault = (globalThis as { __txFault?: Fault & { interleaveAndFail?: Interleave } }).__txFault;
       if (fault !== undefined) {
         if (fault.interleaveAndFail !== undefined) {
@@ -77,6 +87,15 @@ vi.mock('./fs', async (importOriginal) => {
       }
       return actual.authorizedWrite(args);
     },
+    authorizedRemoveTree: (args: Parameters<typeof actual.authorizedRemoveTree>[0]) => {
+      // S5-H-01 regression seam (dormant unless armed): fail the removal of
+      // one exact path — used for the journal-RETIRE-failure arm.
+      const rf = (globalThis as { __txRemoveFault?: RemoveFault }).__txRemoveFault;
+      if (rf !== undefined && rf.path !== undefined && args.path === rf.path) {
+        throw new Error(`injected removal failure (${args.path})`);
+      }
+      return actual.authorizedRemoveTree(args);
+    },
   };
 });
 
@@ -85,6 +104,8 @@ afterEach(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
   tmpDirs.length = 0;
   delete (globalThis as { __txFault?: unknown }).__txFault;
+  delete (globalThis as { __txJournalCapture?: unknown }).__txJournalCapture;
+  delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
 });
 
 const FIXTURE_SRC = join(__dirname, '..', '..', '..', 'fixtures', 'legacy-app');
@@ -1262,5 +1283,210 @@ describe('S4-H-01: V1-re-verifier H1 — post-fence abort preserves a concurrent
     const after = loadActiveState(project); // auto-recovery (journal ours)
     expect(snapshotTrustedBytes(project)).toEqual(beforeBytes);
     expect(after.identity.revision).toBe(begin2.identity.revision);
+  });
+});
+
+describe('S5-H-01: post-commit journal recovery — the journal↔revision join', () => {
+  /**
+   * Fifth-Audit release blocker: a journal survives not only an interrupted
+   * commit but also a SUCCESSFUL one — the window between the durable
+   * revision write (the commit point) and removeJournal's unlink. Recovery
+   * never compared journal.base_revision with the current durable revision,
+   * so the genuine, integrity-valid, non-superseded leftover was used as
+   * ROLLBACK AUTHORITY and silently reverted the committed revision (and
+   * DELETED newly-created stores such as strategy.json) while reads stayed
+   * "healthy". The same missing join made any older journal reintroduced on
+   * disk (backup restore / cp -r / rsync) a replayable rollback authority.
+   *
+   * Every test below reconstitutes the crash persistence state from the REAL
+   * journal bytes the kernel itself wrote (captured at the authorizedWrite
+   * seam) AFTER a fully-completed commit — so no test can pass merely
+   * because cleanup happens earlier.
+   */
+
+  /** Commit a HUMAN strategy decision (the plan-command write shape). */
+  async function commitHumanStrategy(project: string): Promise<void> {
+    const begin = loadActiveState(project);
+    await runRenewalStateTx({
+      projectDir: project,
+      nowIso: '2026-09-04T00:00:01Z',
+      expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+      policy: 'strict',
+      work: () => undefined,
+      plan: (fresh) => ({
+        mutation: {
+          strategy: {
+            schema_version: 1,
+            strategy: 'strangler',
+            rationale: 'S5-H-01 regression: human-selected strategy committed at the crash boundary',
+            selected_by: 'human',
+            selected_via: 'flag',
+            selected_at: '2026-09-04T00:00:01Z',
+            snapshot_id: fresh.identity.snapshotId,
+          },
+        },
+        result: undefined,
+      }),
+    });
+  }
+
+  /** Run fn with journal-byte capture armed; returns the kernel's real journal bytes. */
+  async function withJournalCapture(project: string, fn: () => Promise<void>): Promise<string> {
+    const capture: { armed: boolean; bytes?: string } = { armed: true };
+    (globalThis as { __txJournalCapture?: { armed: boolean; bytes?: string } }).__txJournalCapture = capture;
+    try {
+      await fn();
+    } finally {
+      delete (globalThis as { __txJournalCapture?: unknown }).__txJournalCapture;
+    }
+    if (capture.bytes === undefined) throw new Error('journal capture failed — no journal write observed');
+    return capture.bytes;
+  }
+
+  it('THE MISSING CELL — a journal left by a COMMITTED transaction (base = current − 1) never rolls the commit back; the human strategy SURVIVES', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const R = readRevision(project);
+    // Complete the strategy commit for real; capture the kernel's own journal bytes.
+    const journalBytes = await withJournalCapture(project, () => commitHumanStrategy(project));
+    expect(readRevision(project)).toBe(R + 1); // committed
+    expect(existsSync(paths.journal)).toBe(false); // cleanup ran
+    const journal = JSON.parse(journalBytes) as { base_revision: number };
+    expect(journal.base_revision).toBe(R); // the leftover describes the PRE-commit base
+    // Reconstitute the exact crash persistence state: durable R+1 + journal(base R).
+    writeFileSync(paths.journal, journalBytes);
+    // The next trusted read: the committed revision and its stores SURVIVE;
+    // the journal is retired; NO recovery_required; reads stay healthy.
+    const state = loadActiveState(project);
+    expect(state.identity.revision).toBe(R + 1);
+    expect(state.strategy.ok).toBe(true);
+    if (state.strategy.ok) expect(state.strategy.store.strategy).toBe('strangler');
+    expect(existsSync(paths.journal)).toBe(false);
+    // Recovery is IDEMPOTENT — repeated trusted reads stay at R+1, journal gone.
+    const again = loadActiveState(project);
+    expect(again.identity.revision).toBe(R + 1);
+    expect(again.strategy.ok).toBe(true);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('an OLDER journal reintroduced onto newer committed state (replay: base = current − 2) can never regain rollback authority', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const R = readRevision(project);
+    // Capture the FIRST commit's journal (base R), then commit again (R+2).
+    const oldJournalBytes = await withJournalCapture(project, () => commitHumanStrategy(project));
+    await runAnalyzeStyleTx(project);
+    expect(readRevision(project)).toBe(R + 2);
+    // A backup restore / cp -r of .lco/ reintroduces the older valid journal.
+    writeFileSync(paths.journal, oldJournalBytes);
+    const state = loadActiveState(project);
+    expect(state.identity.revision).toBe(R + 2); // the NEWEST committed revision survives
+    if (!state.strategy.ok) throw new Error(`strategy lost: ${state.strategy.code}`);
+    expect(state.strategy.store.strategy).toBe('strangler');
+    expect(existsSync(paths.journal)).toBe(false); // stale journal retired, never applied
+  });
+
+  it('a journal whose base is AHEAD of the durable revision fails closed (recovery_required, retained, nothing rolled)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const R = readRevision(project);
+    const overlayBefore = readFileSync(paths.overlay, 'utf8');
+    // Integrity-valid journal claiming base R+5 over durable state R —
+    // unexplained (restore of an older state.json under a newer journal).
+    const holder = { pid: -424242, acquiredAt: '2026-09-04T00:00:00Z' };
+    const entries = [{ kind: 'file', path: paths.overlay, oldContent: overlayBefore }] as never;
+    const integrity = domainDigest('LCO:STATE_TX', 1, { base_revision: R + 5, holder, entries });
+    writeFileSync(
+      paths.journal,
+      `${JSON.stringify({ schema_version: 1, holder, base_revision: R + 5, integrity, entries }, null, 2)}\n`,
+    );
+    expect(() => loadActiveState(project)).toThrowError(TrustStateError);
+    try {
+      loadActiveState(project);
+      throw new Error('should have refused');
+    } catch (e) {
+      expect((e as TrustStateError).code).toBe('recovery_required');
+      expect((e as TrustStateError).message).toMatch(/ahead|AHEAD/);
+    }
+    expect(existsSync(paths.journal)).toBe(true); // retained — no guessing forward or backward
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(overlayBefore); // nothing was rolled
+  });
+
+  it('Case B retire failure is typed, retains the journal, and leaves the committed bytes untouched (retry heals)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const R = readRevision(project);
+    const journalBytes = await withJournalCapture(project, () => commitHumanStrategy(project));
+    writeFileSync(paths.journal, journalBytes); // post-commit leftover (C = B + 1)
+    const committed = snapshotTrustedBytes(project);
+    (globalThis as { __txRemoveFault?: { path: string } }).__txRemoveFault = { path: paths.journal };
+    try {
+      expect(() => loadActiveState(project)).toThrowError(TrustStateError);
+      try {
+        loadActiveState(project);
+        throw new Error('should have refused');
+      } catch (e) {
+        expect((e as TrustStateError).code).toBe('recovery_required');
+      }
+      expect(existsSync(paths.journal)).toBe(true); // retained for the retry
+      expect(snapshotTrustedBytes(project)).toEqual(committed); // committed state untouched
+    } finally {
+      delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
+    }
+    // after the transient removal fault clears, the next read retires the
+    // journal and observes the committed revision, healthy
+    const healed = loadActiveState(project);
+    expect(healed.identity.revision).toBe(R + 1);
+    expect(healed.strategy.ok).toBe(true);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('a TAMPERED post-commit journal is refused by the integrity gate BEFORE the revision join (ordering proof)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const journalBytes = await withJournalCapture(project, () => commitHumanStrategy(project));
+    writeFileSync(paths.journal, journalBytes); // post-commit leftover
+    const journal = JSON.parse(readFileSync(paths.journal, 'utf8')) as { entries: { oldContent: string | null }[] };
+    // Tamper: flip an old-bytes payload WITHOUT recomputing the integrity digest.
+    journal.entries[0].oldContent = journal.entries[0].oldContent === null ? 'tampered' : null;
+    writeFileSync(paths.journal, JSON.stringify(journal, null, 2));
+    try {
+      loadActiveState(project);
+      throw new Error('should have refused');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TrustStateError);
+      expect((e as TrustStateError).code).toBe('recovery_required');
+      expect((e as TrustStateError).message).toMatch(/integrity|tampered/);
+    }
+    expect(existsSync(paths.journal)).toBe(true); // retained — a tampered leftover is evidence, not trash
+  });
+
+  it('E2E — strategy commit R+1 → death before journal cleanup → fresh trusted read recovers R+1 healthy → strict writer commits R+2', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const R = readRevision(project);
+    const journalBytes = await withJournalCapture(project, () => commitHumanStrategy(project));
+    writeFileSync(paths.journal, journalBytes); // the crash state: committed, cleanup lost
+    // new trusted reader / restart
+    const recovered = loadActiveState(project);
+    expect(recovered.identity.revision).toBe(R + 1);
+    if (!recovered.strategy.ok) throw new Error(`strategy lost after recovery: ${recovered.strategy.code}`);
+    expect(recovered.strategy.store.strategy).toBe('strangler');
+    expect(existsSync(paths.journal)).toBe(false);
+    // a STRICT writer holding the recovered revision is accepted — the state
+    // is genuinely R+1, and the leftover journal has no rollback power left
+    await runRenewalStateTx({
+      projectDir: project,
+      nowIso: '2026-09-04T00:00:02Z',
+      expected: { snapshotId: recovered.identity.snapshotId, revision: recovered.identity.revision },
+      policy: 'strict',
+      work: () => undefined,
+      plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+    });
+    expect(readRevision(project)).toBe(R + 2);
+    const final = loadActiveState(project);
+    expect(final.identity.revision).toBe(R + 2);
+    if (!final.strategy.ok) throw new Error(`strategy lost after strict commit: ${final.strategy.code}`);
+    expect(final.strategy.store.strategy).toBe('strangler'); // human authority survived everything
   });
 });

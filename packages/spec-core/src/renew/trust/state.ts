@@ -924,6 +924,56 @@ function recoverTxJournal(projectDir: string, paths: ReturnType<typeof renewalPa
           `newer revision; inspect the state and the journal after review, then remove the journal.`,
       );
     }
+    // S5-H-01 (Fifth Audit): JOIN the journal to the durable revision before
+    // granting it rollback authority. The commit point is the durable revision
+    // write itself, and applyStateMutation performs it BEFORE removeJournal —
+    // so a journal whose base_revision is BEHIND the current revision proves
+    // its transaction REACHED the commit point (a completed commit whose
+    // cleanup unlink was lost to process death) or is an older journal
+    // reintroduced onto disk (restore/copy). Either way the durable state is
+    // newer and complete; reverse-applying the journal would silently revert
+    // committed trusted state (and DELETE stores the commit created). Retire
+    // it instead — never roll back through it.
+    let currentRevision: number | undefined;
+    try {
+      currentRevision = readRevisionUnlocked(projectDir);
+    } catch {
+      // Indeterminate current revision (unreadable/corrupt state.json). The
+      // revision write is atomic (staging+fsync+rename), so a COMMITTED
+      // revision file is never torn — this is not the post-commit window.
+      // The journal's own recorded old bytes are the pre-existing recovery
+      // authority for the revision file; fall through to the unchanged
+      // rollback semantics for that repair.
+      currentRevision = undefined;
+    }
+    if (currentRevision !== undefined && currentRevision > journal.base_revision) {
+      // Completed-transaction leftover / stale replay: preserve the current
+      // trusted revision and its full write set; retire the journal through
+      // the ownership-conditioned recovery removal (the authorized primitive
+      // — never a new raw filesystem path).
+      try {
+        removeJournal(projectDir, paths, undefined, { recoveryOwns: true });
+      } catch (e) {
+        throw new TrustStateError(
+          'recovery_required',
+          `a completed transaction's journal (base revision ${journal.base_revision}, current revision ` +
+            `${currentRevision}) could not be retired (${(e as Error).message}) — the journal is retained and the ` +
+            `committed state is untouched; retry the read after the fault clears`,
+        );
+      }
+      return; // the trusted read proceeds at the current (committed) revision
+    }
+    if (currentRevision !== undefined && currentRevision < journal.base_revision) {
+      // The journal claims a base AHEAD of the durable state — unexplained
+      // (an older state.json restored beneath a newer journal, or tampering).
+      // Fail closed: recovery refuses to guess forward or backward.
+      throw new TrustStateError(
+        'recovery_required',
+        `the transaction journal claims base revision ${journal.base_revision} but the durable revision is ` +
+          `${currentRevision} — the journal is AHEAD of the state it would restore (older state.json restored, or ` +
+          `tampering). Recovery refuses to guess; inspect ${paths.journal} after review`,
+      );
+    }
     try {
       rollbackJournal(projectDir, paths, journal);
     } catch (e) {
