@@ -180,11 +180,14 @@ function adHocDigestViolations(rel: string, text: string): string[] {
     const window = lines
       .slice(i, i + WINDOW)
       .filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//'))
-      .map((l) => l.replace(/\/\/.*$/, '')) // trailing comments don't break the idiom's adjacency
+      // Verifier-C hardening: single-line /* … */ block comments (inline or
+      // whole-line) and trailing // comments don't break the idiom's adjacency
+      .map((l) => l.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/, ''))
       .join('\n');
+    // Verifier-C hardening: tolerate a split member access (JSON\n.stringify)
     const banned =
-      /sha256Content\(\s*JSON\.stringify\(/.test(window) ||
-      /createHash\([^)]*\)\s*\.\s*update\(\s*JSON\.stringify\(/.test(window);
+      /sha256Content\(\s*JSON\s*\.\s*stringify\(/.test(window) ||
+      /createHash\([^)]*\)\s*\.\s*update\(\s*JSON\s*\.\s*stringify\(/.test(window);
     if (banned) out.push(`${rel}:${i + 1}: ad-hoc digest framing (multiline-aware)`);
   });
   return out;
@@ -281,9 +284,12 @@ describe('architecture: dependency direction + canonical ownership (S4-M-02)', (
     const multiline = 'const fp = sha256Content(\n  JSON.stringify({\n    a: 1,\n    b: 2,\n  }),\n);';
     const createHashSplit = "const d = createHash('sha256').update(\n  JSON.stringify(payload)\n).digest('hex');";
     const adjacentComment = 'const fp = sha256Content( // framing\n  JSON.stringify(cfg),\n);';
+    const blockCommentWholeLine = 'const fp = sha256Content(\n  /* framing */\n  JSON.stringify(cfg),\n);';
+    const blockCommentInline = 'const fp = sha256Content(/* x */ JSON.stringify(cfg));';
+    const memberSplit = 'const fp = sha256Content(\n  JSON\n  .stringify(cfg),\n);';
     const innocent = 'const h = sha256Content(canonicalJson(payload));';
     const innocentCreateHash = "const h = createHash('sha256').update(content, 'utf8').digest('hex');";
-    for (const banned of [oneLine, splitTwoLine, multiline, createHashSplit, adjacentComment]) {
+    for (const banned of [oneLine, splitTwoLine, multiline, createHashSplit, adjacentComment, blockCommentWholeLine, blockCommentInline, memberSplit]) {
       expect(adHocDigestViolations('synthetic.ts', banned), `must flag: ${banned}`).toHaveLength(1);
     }
     for (const ok of [innocent, innocentCreateHash]) {
