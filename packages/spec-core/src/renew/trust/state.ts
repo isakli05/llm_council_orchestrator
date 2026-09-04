@@ -937,14 +937,20 @@ function recoverTxJournal(projectDir: string, paths: ReturnType<typeof renewalPa
     let currentRevision: number | undefined;
     try {
       currentRevision = readRevisionUnlocked(projectDir);
-    } catch {
+    } catch (e) {
       // Indeterminate current revision (unreadable/corrupt state.json). The
-      // revision write is atomic (staging+fsync+rename), so a COMMITTED
-      // revision file is never torn — this is not the post-commit window.
-      // The journal's own recorded old bytes are the pre-existing recovery
-      // authority for the revision file; fall through to the unchanged
-      // rollback semantics for that repair.
-      currentRevision = undefined;
+      // revision write is atomic (staging+fsync+rename), so a torn revision
+      // file is unreachable by the protocol itself — an unreadable one is
+      // external corruption, and the join this fix depends on CANNOT be
+      // performed. Granting the journal rollback authority over committed
+      // state on an unperformable comparison is exactly the guess recovery
+      // refuses (verifier-A residual closure): fail closed, retain both.
+      throw new TrustStateError(
+        'recovery_required',
+        `the durable revision is unreadable (${(e as Error).message}) while a transaction journal exists — ` +
+          `the journal↔revision join cannot be performed, so recovery refuses to guess whether the journal ` +
+          `describes an interrupted or a completed transaction. Inspect state.json and ${paths.journal} after review`,
+      );
     }
     if (currentRevision !== undefined && currentRevision > journal.base_revision) {
       // Completed-transaction leftover / stale replay: preserve the current

@@ -1441,6 +1441,29 @@ describe('S5-H-01: post-commit journal recovery — the journal↔revision join'
     expect(existsSync(paths.journal)).toBe(false);
   });
 
+  it('an UNREADABLE revision file with a base-behind journal fails closed — the join is unperformable, rollback is not guessed (verifier-A residual closure)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const journalBytes = await withJournalCapture(project, () => commitHumanStrategy(project));
+    writeFileSync(paths.journal, journalBytes); // post-commit leftover (C = B + 1)
+    const committed = snapshotTrustedBytes(project);
+    // external corruption of the revision file (a torn write is unreachable —
+    // authorizedWrite is staging+fsync+atomic rename)
+    writeFileSync(paths.state, '{corrupt', 'utf8');
+    try {
+      loadActiveState(project);
+      throw new Error('should have refused');
+    } catch (e) {
+      expect(e).toBeInstanceOf(TrustStateError);
+      expect((e as TrustStateError).code).toBe('recovery_required');
+      expect((e as TrustStateError).message).toMatch(/unreadable|join/i);
+    }
+    expect(existsSync(paths.journal)).toBe(true); // retained — never guessed through
+    // committed stores are untouched: no rollback fired
+    expect(readFileSync(paths.strategy, 'utf8')).toBe(committed[paths.strategy]);
+    expect(readFileSync(paths.overlay, 'utf8')).toBe(committed[paths.overlay]);
+  });
+
   it('a TAMPERED post-commit journal is refused by the integrity gate BEFORE the revision join (ordering proof)', async () => {
     const { project } = await freshProject();
     const paths = renewalPaths(project);
