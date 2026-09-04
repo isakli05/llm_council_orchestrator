@@ -61,14 +61,26 @@ function canonicalReplacer(_key: string, value: unknown): unknown {
  *  primitive — snapshot identity (snapshot-record), authority v3, all consent
  *  digests (MCP check/generate + renewal route + final renew consent), the
  *  paid context bundle identity, the state-transaction journal integrity, and
- *  the LCO StructuralBinding (S4-H-04). No decorative domains. */
+ *  the LCO StructuralBinding (S4-H-04). No decorative domains.
+ *
+ *  S5-M-03 (Fifth Audit): the canonical layer owns the COMPLETE inventory of
+ *  identity-framing digests — the honest claim is "zero UNDECLARED ad-hoc
+ *  trust digests": every persisted digest that frames structured identity is
+ *  a domainDigest over a declared domain/version here, except the explicitly
+ *  owned structural document content hashes (`trust/structural.ts`, blessed
+ *  in the closure plan) and byte-exact content hashes that carry no identity
+ *  framing (e.g. evidence `hash: sha256Content(text)`). */
 export type DigestDomain =
   | 'LCO:SNAPSHOT'
   | 'LCO:AUTHORITY'
   | 'LCO:CONSENT'
   | 'LCO:PAID_CONTEXT'
   | 'LCO:STATE_TX'
-  | 'LCO:STRUCTURE';
+  | 'LCO:STRUCTURE'
+  /** v1 — planner `council_run.config_fingerprint`: the persisted identity of
+   *  the planning configuration (snapshot id + selected strategy + parity
+   *  record-id set) inside the planned SpecBundle's manifest. */
+  | 'LCO:COUNCIL_RUN';
 
 /**
  * A domain-separated digest over the CANONICAL form of `payload`:

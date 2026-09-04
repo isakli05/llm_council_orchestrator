@@ -14,6 +14,7 @@
  */
 import { SPEC_SCHEMA_VERSION, SpecBundleSchema, type SpecBundle } from '../../schemas';
 import { sha256Content } from '../../compiler/hash';
+import { domainDigest } from '../trust/canonical';
 import { lintBundle } from '../../lint/engine';
 import type { ProjectSnapshot } from '../snapshot/snapshot';
 import type { ArchitectureView } from '../archview/architecture-view';
@@ -429,9 +430,16 @@ export function buildModernizationPlan(inputs: PlanInputs): PlanOutcome {
       state: 'draft',
       council_run: {
         run_id: `renewal-${inputs.snapshot.snapshot_id}`,
-        config_fingerprint: sha256Content(
-          JSON.stringify({ snapshot: inputs.snapshot.snapshot_id, strategy: inputs.strategy.strategy, parity: inputs.parity.records.map((r) => r.id) }),
-        ),
+        // S5-M-03 (Fifth Audit): a PERSISTED trust-bearing identity digest —
+        // declared on the canonical layer with an explicit domain and schema
+        // version, not ad-hoc sha256(JSON.stringify(...)) framing (which the
+        // architecture guard exists to ban). Payload schema (v1):
+        // { snapshot: RSN id, strategy: selected strategy, parity: record-id set }.
+        config_fingerprint: domainDigest('LCO:COUNCIL_RUN', 1, {
+          snapshot: inputs.snapshot.snapshot_id,
+          strategy: inputs.strategy.strategy,
+          parity: inputs.parity.records.map((r) => r.id),
+        }),
       },
       artifact_hashes: {},
       unresolved_count: 0,

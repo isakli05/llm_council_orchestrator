@@ -163,6 +163,33 @@ describe('architecture: paid transport only through ResolvedPaidOperation discip
   });
 });
 
+/** S5-M-03 (Fifth Audit): newline-insensitive ad-hoc digest-idiom detector.
+ *  The per-line form was evaded by splitting `sha256Content(` and
+ *  `JSON.stringify(` across physical lines; this detector matches over a
+ *  bounded window of adjacent code lines (comment lines excluded from the
+ *  window), so a trivial multiline reformulation of the banned framing still
+ *  trips it. The framing must be ADJACENT (only whitespace between the hash
+ *  call and the stringify) — unrelated distant tokens never match. */
+function adHocDigestViolations(rel: string, text: string): string[] {
+  const lines = text.split('\n');
+  const WINDOW = 4; // covers call-open → argument spans up to 3 lines down
+  const out: string[] = [];
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (t.startsWith('*') || t.startsWith('//')) return; // doc mentions are prose
+    const window = lines
+      .slice(i, i + WINDOW)
+      .filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//'))
+      .map((l) => l.replace(/\/\/.*$/, '')) // trailing comments don't break the idiom's adjacency
+      .join('\n');
+    const banned =
+      /sha256Content\(\s*JSON\.stringify\(/.test(window) ||
+      /createHash\([^)]*\)\s*\.\s*update\(\s*JSON\.stringify\(/.test(window);
+    if (banned) out.push(`${rel}:${i + 1}: ad-hoc digest framing (multiline-aware)`);
+  });
+  return out;
+}
+
 describe('architecture: dependency direction + canonical ownership (S4-M-02)', () => {
   /** Extract static import specifiers from a source file. */
   function importSpecifiers(text: string): string[] {
@@ -239,17 +266,29 @@ describe('architecture: dependency direction + canonical ownership (S4-M-02)', (
     const violations: string[] = [];
     for (const file of productionFiles(join(PKG, 'src'))) {
       if (allow.has(REL(file))) continue;
-      const text = readFileSync(file, 'utf8');
-      text.split('\n').forEach((line, i) => {
-        const t = line.trim();
-        if (t.startsWith('*') || t.startsWith('//')) return; // doc mentions are prose
-        const isSha = line.includes('sha256Content(') || (line.includes('createHash(') && line.includes('.update('));
-        if (isSha && line.includes('JSON.stringify(')) {
-          violations.push(`${REL(file)}:${i + 1}: ad-hoc digest framing`);
-        }
-      });
+      violations.push(...adHocDigestViolations(REL(file), readFileSync(file, 'utf8')));
     }
     expect(violations, violations.join('\n')).toEqual([]);
+  });
+
+  it('S5-M-03: the ad-hoc digest guard is NEWLINE-INSENSITIVE — the one-line and split/multiline reformulations both fail', () => {
+    // The Fifth Audit proved the per-line matcher evadable: the planner's
+    // config_fingerprint split `sha256Content(` and `JSON.stringify(` across
+    // two physical lines and passed untouched. The detector must catch the
+    // same idiom regardless of where the line breaks fall.
+    const oneLine = 'const fp = sha256Content(JSON.stringify(cfg));';
+    const splitTwoLine = 'const fp = sha256Content(\n  JSON.stringify(cfg),\n);';
+    const multiline = 'const fp = sha256Content(\n  JSON.stringify({\n    a: 1,\n    b: 2,\n  }),\n);';
+    const createHashSplit = "const d = createHash('sha256').update(\n  JSON.stringify(payload)\n).digest('hex');";
+    const adjacentComment = 'const fp = sha256Content( // framing\n  JSON.stringify(cfg),\n);';
+    const innocent = 'const h = sha256Content(canonicalJson(payload));';
+    const innocentCreateHash = "const h = createHash('sha256').update(content, 'utf8').digest('hex');";
+    for (const banned of [oneLine, splitTwoLine, multiline, createHashSplit, adjacentComment]) {
+      expect(adHocDigestViolations('synthetic.ts', banned), `must flag: ${banned}`).toHaveLength(1);
+    }
+    for (const ok of [innocent, innocentCreateHash]) {
+      expect(adHocDigestViolations('synthetic.ts', ok), `must NOT flag: ${ok}`).toHaveLength(0);
+    }
   });
 });
 
