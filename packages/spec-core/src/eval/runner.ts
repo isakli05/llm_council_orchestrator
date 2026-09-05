@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { redactSecrets } from '../renew/context/redact';
 import { SpecBundleSchema, ComplexityProfileSchema } from '../schemas';
 import type { SpecBundle } from '../schemas';
 import { lintBundle } from '../lint/engine';
@@ -8,6 +9,12 @@ import type { EvalTask } from './tasks';
 import type { LlmAdapter } from './llm/adapter';
 import type { BudgetLedger } from './budget';
 import { classifySingle, propose, proposeB, proposeBDegraded, classifyAndProposeSingle } from './prompts';
+import { PROMPT_PROTOCOL_VERSION, withUserAnswers } from './prompts-v4';
+import type { UserAnswerForPrompt } from './prompts-v4';
+import { singleRoutePlan, isLlmPlan } from '../llm/plan';
+import type { LlmPlan, LlmRole } from '../llm/plan';
+import type { CouncilTopology } from './budget';
+import { runDecomposedCouncil } from './council';
 
 /**
  * Evidence-gate pipeline runner (Task 10 binding).
@@ -30,6 +37,46 @@ import { classifySingle, propose, proposeB, proposeBDegraded, classifyAndPropose
  */
 
 export type PipelineVariant = 'single' | 'council';
+
+/**
+ * §10/§11 — one UNRESOLVED decision surfaced as a user-facing question.
+ * Distilled ONLY from a schema-validated (and lifecycle-valid) bundle: the
+ * question text is the decision's own `decision` wording (v4 prompts phrase
+ * it as a domain/behavior question a non-engineer can answer), alternatives
+ * are the answer options. Malformed model output can never become a
+ * clarification — only a bundle the validator accepted can.
+ */
+export interface ClarificationQuestion {
+  claimId: string;
+  question: string;
+  impact: string;
+  alternatives: { option: string; rejected_because: string }[];
+}
+
+/**
+ * Distill clarification questions from a blocked run's last INSPECTABLE
+ * bundle. All conditions binding (§11): a schema+lifecycle-valid candidate
+ * must exist, and the block reasons must include per-decision L08 findings —
+ * i.e. UNRESOLVED decisions caused the block. Anything else (schema failure,
+ * lifecycle violation, classifier-monotonic block without unresolved
+ * material, RESOLUTION_MISSING rejections) yields NO clarifications.
+ */
+export function clarificationsFromBundle(
+  bundle: SpecBundle | undefined,
+  reasons: string[],
+): ClarificationQuestion[] {
+  if (bundle === undefined) return [];
+  const blockedByUnresolvedDecisions = reasons.some((r) => r.startsWith('L08_UNRESOLVED_LEAK [DEC-'));
+  if (!blockedByUnresolvedDecisions) return [];
+  return bundle.decisions
+    .filter((d) => d.status === 'UNRESOLVED')
+    .map((d) => ({
+      claimId: d.claim_id,
+      question: d.decision,
+      impact: d.impact,
+      alternatives: d.alternatives.map((a) => ({ option: a.option, rejected_because: a.rejected_because })),
+    }));
+}
 
 /**
  * Accounting accumulated across the variant's complete() calls (UX-001/T11):
@@ -57,6 +104,40 @@ export interface PipelineUsage {
    * included); this counter makes that repetition visible instead of guessed.
    */
   promptBytes: number;
+  /**
+   * Per-role accounting (multi-provider council, §13): present once at least
+   * one completion ran, keyed by pipeline role. Same honesty rules as the
+   * totals: `usageKnown` false per role when any of ITS responses lacked
+   * provider usage; `resolvedModels` lists the models the provider REPORTED
+   * as serving (unique) — absent when nothing was reported.
+   */
+  byRole?: Partial<Record<LlmRole, RoleUsage>>;
+}
+
+/** Per-role slice of the run accounting (see PipelineUsage.byRole). */
+export interface RoleUsage {
+  gateway: string;
+  requestedModel: string;
+  calls: number;
+  attempts: number;
+  in: number;
+  out: number;
+  usageKnown: boolean;
+  promptBytes: number;
+  /** Unique provider-REPORTED resolved models for this role, when reported. */
+  resolvedModels?: string[];
+  /**
+   * Sum of PROVIDER-REPORTED monetary cost for this role, when any was
+   * reported (OpenRouter reports credits). Absent = no provider reported
+   * cost — unknown, never zero, never estimated.
+   */
+  providerCost?: { amount: number; currency: string };
+  /**
+   * The provider reported costs in MORE THAN ONE currency for this role: no
+   * single honest sum exists, so `providerCost` is unset and cost renders as
+   * unknown-mixed (review F2 — never a silent partial sum).
+   */
+  costMixed?: boolean;
 }
 
 /**
@@ -72,11 +153,49 @@ export interface PipelineUsage {
  * output cannot present a single-model-shaped run as a full council.
  */
 export type PipelineOutcome =
-  | { kind: 'spec'; variant: PipelineVariant; bundle: SpecBundle; usage: PipelineUsage; councilDegraded?: true }
-  | { kind: 'blocked'; variant: PipelineVariant; reasons: string[]; usage: PipelineUsage; councilDegraded?: true };
+  | { kind: 'spec'; variant: PipelineVariant; bundle: SpecBundle; usage: PipelineUsage; councilDegraded?: true; degradedRoles?: LlmRole[]; promptProtocol?: string }
+  | {
+      kind: 'blocked';
+      variant: PipelineVariant;
+      reasons: string[];
+      usage: PipelineUsage;
+      councilDegraded?: true;
+      degradedRoles?: LlmRole[];
+      promptProtocol?: string;
+      /**
+       * §11 SAFE IN-MEMORY clarification questions: present only when a
+       * schema+lifecycle-valid candidate was blocked by UNRESOLVED decisions.
+       * NEVER persisted — the blocked run writes nothing; the CLI renders it
+       * as "Questions to resolve" so the product owner can answer and re-run.
+       */
+      clarifications?: ClarificationQuestion[];
+    };
+
+/**
+ * Optional pipeline behavior beyond the historical contract (all defaults
+ * preserve the historical single/fused-council semantics exactly):
+ *  - topology: council-only. 'fused' (default) is the historical 3-call
+ *    topology; 'decomposed' runs the 4-stage v4 topology (council.ts).
+ *  - answers: clarification-loop user evidence (§12), wrapped verbatim into
+ *    every prompt; runs with answers record their prompt protocol.
+ */
+export interface PipelineOptions {
+  topology?: CouncilTopology;
+  answers?: UserAnswerForPrompt[];
+  /**
+   * Interactive-session prompt wrap (clarification workspace): applied INSIDE
+   * wrap() AFTER the user-answers appendix, so every prompt of the run (all
+   * stages, retries included) carries the caller's appendix verbatim.
+   * Undefined for every historical caller — single/fused/decomposed behavior
+   * and prompt bytes are unchanged without it. Used by the review change-set
+   * channel (lco-clarify/review-changes-v1); never a second spec engine: the
+   * wrap only APPENDS authoritative user evidence around the same templates.
+   */
+  extraPromptWrap?: (prompt: string) => string;
+}
 
 /** Classifier verdict shape (council call 1). */
-const ClassifierOutputSchema = z.object({
+export const ClassifierOutputSchema = z.object({
   profile: ComplexityProfileSchema,
   must_be_blocked: z.boolean(),
 });
@@ -94,8 +213,11 @@ function firstIssues(issues: readonly z.ZodIssue[], max = 3): string {
     .join('; ');
 }
 
-function parseJsonOrBlock(text: string, schema: z.ZodTypeAny, reasonPrefix: string):
-  { ok: true; value: unknown } | { ok: false; reason: string } {
+export function parseJsonOrBlock(
+  text: string,
+  schema: z.ZodTypeAny,
+  reasonPrefix: string,
+): { ok: true; value: unknown } | { ok: false; reason: string } {
   let raw: unknown;
   try {
     raw = JSON.parse(stripJsonFences(text));
@@ -137,7 +259,10 @@ export function buildValidationRetryPrompt(originalPrompt: string, issues: strin
     '',
     'RETRY REQUEST (your previous output was rejected):',
     'The validator reported these EXACT problems:',
-    issues.map((s) => `- ${s}`).join('\n'),
+    // S3-C-03 (trust kernel): issue strings may echo model- or repository-
+    // controlled text back onto the WIRE — redact like every other outbound
+    // string before they re-enter a paid request.
+    issues.map((s) => `- ${redactSecrets(s).text}`).join('\n'),
     'Output the corrected FULL bundle again — same rules as before: only a single JSON value, no prose, no fences. Fix ONLY the validator-listed problems.',
     'Unresolved material is out of bounds for this retry: every item that was UNRESOLVED must remain UNRESOLVED with the same claim_id, and the manifest counters must not be cleared — silently resolving, renaming, re-id-ing, or dropping unresolved material will be rejected.',
   ].join('\n');
@@ -237,10 +362,21 @@ export type PipelineTask = Pick<EvalTask, 'intent' | 'profile'>;
 export async function runPipeline(
   task: PipelineTask,
   variant: PipelineVariant,
-  llm: LlmAdapter,
+  llm: LlmAdapter | LlmPlan,
   nowIso: string,
   budget?: BudgetLedger,
+  opts?: PipelineOptions,
 ): Promise<PipelineOutcome> {
+  // §3: a plain adapter normalizes to "the same route for every role" — the
+  // historical single-model topology, byte-identical behavior. A plan routes
+  // each ROLE to its own adapter/gateway/model; the runner never sees
+  // provider mechanics beyond the route identity used for accounting.
+  const plan = isLlmPlan(llm) ? llm : singleRoutePlan(llm);
+  // byRole accounting exists only on plan-driven runs: a plain adapter has no
+  // role identity to attribute ('unknown'/'unknown' slices are noise), and the
+  // plain-adapter outcome keeps its exact historical shape.
+  const trackRoles = isLlmPlan(llm);
+
   const usage: PipelineUsage = {
     in: 0,
     out: 0,
@@ -250,6 +386,7 @@ export async function runPipeline(
     usageKnown: true,
     promptBytes: 0,
   };
+  const byRole: Partial<Record<LlmRole, RoleUsage>> = {};
 
   // UX-001: one completion = one logical call; transport attempts are the
   // adapter's real count when it self-reports (budget-aware adapters charge
@@ -259,16 +396,18 @@ export async function runPipeline(
   // BudgetExceededError out of this wrapper — the pipeline is strictly
   // sequential, so the abort propagates cleanly with no later completion
   // ever starting.
-  const complete = async (prompt: string): Promise<string> => {
+  const complete = async (prompt: string, role: LlmRole): Promise<string> => {
+    const route = plan.forRole(role);
     budget?.checkWall();
     budget?.ensureAttemptAdmissible();
-    const res = await llm.complete(prompt);
+    const res = await route.adapter.complete(prompt);
     const attempts = res.attempts ?? 1;
     if (res.attempts === undefined) {
       budget?.chargeAttempts(1);
     }
+    const promptBytes = new TextEncoder().encode(prompt).length;
     usage.calls += 1;
-    usage.promptBytes += new TextEncoder().encode(prompt).length;
+    usage.promptBytes += promptBytes;
     usage.attempts += attempts;
     if (res.usage) {
       usage.in += res.usage.in_tokens;
@@ -278,6 +417,53 @@ export async function runPipeline(
       usage.callsWithoutUsage += 1;
       usage.usageKnown = false;
     }
+
+    // §13 per-role slice: same honesty rules as the totals (unknown ≠ zero).
+    if (trackRoles) {
+      const ru: RoleUsage = byRole[role] ?? {
+        gateway: route.identity.gateway,
+        requestedModel: route.identity.requestedModel,
+        calls: 0,
+        attempts: 0,
+        in: 0,
+        out: 0,
+        usageKnown: true,
+        promptBytes: 0,
+      };
+      ru.calls += 1;
+      ru.attempts += attempts;
+      ru.promptBytes += promptBytes;
+      if (res.usage) {
+        ru.in += res.usage.in_tokens;
+        ru.out += res.usage.out_tokens;
+      } else {
+        ru.usageKnown = false;
+      }
+      const resolved = res.provenance?.resolvedModel;
+      if (resolved !== undefined) {
+        ru.resolvedModels = [...(ru.resolvedModels ?? []), resolved].filter(
+          (m, i, arr) => arr.indexOf(m) === i,
+        );
+      }
+      const cost = res.provenance?.cost;
+      if (cost !== undefined) {
+        // Same-currency accumulation per role. A currency MIX is sticky and
+        // un-summed: no honest single number exists, so the role's cost
+        // renders as unknown-mixed instead of a silent partial sum (F2).
+        if (ru.costMixed === true) {
+          // already unrepresentable — nothing to accumulate
+        } else if (ru.providerCost === undefined) {
+          ru.providerCost = cost;
+        } else if (ru.providerCost.currency === cost.currency) {
+          ru.providerCost = { amount: ru.providerCost.amount + cost.amount, currency: cost.currency };
+        } else {
+          ru.providerCost = undefined;
+          ru.costMixed = true;
+        }
+      }
+      byRole[role] = ru;
+    }
+
     return res.text;
   };
 
@@ -289,18 +475,41 @@ export async function runPipeline(
     callsWithoutUsage: usage.callsWithoutUsage,
     usageKnown: usage.usageKnown,
     promptBytes: usage.promptBytes,
+    ...(Object.keys(byRole).length > 0 ? { byRole: { ...byRole } } : {}),
   });
 
-  const blocked = (reasons: string[], degraded = false): PipelineOutcome => ({
+  const blocked = (
+    reasons: string[],
+    degraded = false,
+    degradedRoles?: LlmRole[],
+    clarifications?: ClarificationQuestion[],
+  ): PipelineOutcome => ({
     kind: 'blocked',
     variant,
     reasons,
     usage: usageSnapshot(),
+    promptProtocol,
     ...(degraded ? { councilDegraded: true as const } : {}),
+    ...(degradedRoles !== undefined ? { degradedRoles } : {}),
+    ...(clarifications !== undefined && clarifications.length > 0 ? { clarifications } : {}),
   });
 
   // nowIso is the run's only time source; it grounds the model, never the gate.
   const context = `[pipeline context] current time (ISO 8601): ${nowIso}\n\n`;
+
+  // §12 answers wrap every prompt of the run (verbatim user evidence); the
+  // protocol identity records which prompt lineage produced the outcome — a
+  // future experiment freezes on this string, and old results can never be
+  // silently re-scored under new prompts.
+  const answers = opts?.answers ?? [];
+  const wrap = (p: string): string =>
+    opts?.extraPromptWrap !== undefined ? opts.extraPromptWrap(withUserAnswers(p, answers)) : withUserAnswers(p, answers);
+  const promptProtocol =
+    variant === 'council' && opts?.topology === 'decomposed'
+      ? PROMPT_PROTOCOL_VERSION
+      : answers.length > 0
+        ? 'lco-prompts/v3+answers-v1'
+        : 'lco-prompts/v3';
 
   const bundleFromText = (
     text: string,
@@ -312,13 +521,16 @@ export async function runPipeline(
   /** One gated bundle attempt chain: schema → (schema retry) → lifecycle →
    * lint → (non-L08 lint retry). The lifecycle (generation contract) check
    * precedes lint so an output that is not a fresh draft is refused with the
-   * transition named, not with whichever content lint happens to hit first. */
-  const gatedBundle = async (prompt: string): Promise<
-    { ok: true; bundle: SpecBundle } | { ok: false; reason: string; reasons?: string[] }
+   * transition named, not with whichever content lint happens to hit first.
+   * `role` attributes every completion inside the chain (single: 'single';
+   * council's fused merger/judge: 'judge'). */
+  const gatedBundle = async (prompt: string, role: LlmRole): Promise<
+    | { ok: true; bundle: SpecBundle }
+    | { ok: false; reason: string; reasons?: string[]; inspect?: SpecBundle }
   > => {
-    let attempt = bundleFromText(await complete(prompt));
+    let attempt = bundleFromText(await complete(prompt, role));
     if (!attempt.ok) {
-      attempt = bundleFromText(await complete(buildValidationRetryPrompt(prompt, [attempt.reason])));
+      attempt = bundleFromText(await complete(buildValidationRetryPrompt(prompt, [attempt.reason]), role));
       if (!attempt.ok) return attempt;
     }
 
@@ -341,7 +553,7 @@ export async function runPipeline(
     if (fixable.length > 0) {
       const preRetryBundle = attempt.bundle; // BACK-001 (b): unresolved evidence snapshot
       const retried = bundleFromText(
-        await complete(buildValidationRetryPrompt(prompt, fixable.map(lintReason))),
+        await complete(buildValidationRetryPrompt(prompt, fixable.map(lintReason)), role),
       );
       if (retried.ok) {
         // BACK-001 (b): the retry is accepted ONLY if it preserved every piece
@@ -357,7 +569,16 @@ export async function runPipeline(
     }
 
     if (lint.errors.length > 0) {
-      return { ok: false, reason: lint.errors.map(lintReason).join('; '), reasons: lint.errors.map(lintReason) };
+      // §11: this bundle passed schema AND lifecycle — it is INSPECTABLE.
+      // When L08 (unresolved material) is among the errors, the blocked
+      // outcome may carry its UNRESOLVED decisions as clarification
+      // questions (distilled by clarificationsFromBundle; in-memory only).
+      return {
+        ok: false,
+        reason: lint.errors.map(lintReason).join('; '),
+        reasons: lint.errors.map(lintReason),
+        inspect: attempt.bundle,
+      };
     }
 
     // The retry above replaced the bundle — the generation contract is
@@ -369,15 +590,45 @@ export async function runPipeline(
   };
 
   if (variant === 'single') {
-    const result = await gatedBundle(context + classifyAndProposeSingle(task.intent, task.profile));
-    if (!result.ok) return blocked(result.reasons ?? [result.reason]);
-    return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot() };
+    const result = await gatedBundle(
+      context + wrap(classifyAndProposeSingle(task.intent, task.profile)),
+      'single',
+    );
+    if (!result.ok) {
+      return blocked(
+        result.reasons ?? [result.reason],
+        false,
+        undefined,
+        clarificationsFromBundle(result.inspect, result.reasons ?? [result.reason]),
+      );
+    }
+    return { kind: 'spec', variant, bundle: result.bundle, usage: usageSnapshot(), promptProtocol };
   }
 
-  // Council: classifier, then proposal A (schema-validated on EVERY attempt —
-  // BACK-008), then the fused proposeB+judge call whose output goes through
-  // the full gated chain.
-  const classifierText = await complete(context + classifySingle(task.intent, task.profile));
+  // Decomposed council (owner spec §2): its own module, same shared
+  // machinery (complete/budget usage/gated chain), v4 prompts.
+  if (opts?.topology === 'decomposed') {
+    return runDecomposedCouncil({
+      task,
+      variant,
+      nowIso,
+      answers,
+      complete,
+      bundleFromText,
+      gatedBundle,
+      blocked: (reasons, degradedRoles, clarifications) =>
+        blocked(reasons, false, degradedRoles, clarifications),
+      usageSnapshot,
+    });
+  }
+
+  // Council (fused, historical): classifier, then proposal A (schema-validated
+  // on EVERY attempt — BACK-008), then the fused proposeB+judge call whose
+  // output goes through the full gated chain.
+  const classifierText = await complete(
+    context + wrap(classifySingle(task.intent, task.profile)),
+    'classifier',
+  );
   const verdict = parseJsonOrBlock(
     classifierText,
     ClassifierOutputSchema,
@@ -389,19 +640,23 @@ export async function runPipeline(
   // BACK-008: proposal A is schema-validated on both attempts. A retry that
   // still fails schema validation DEGRADES the council leg: the unvalidated
   // text never reaches the merger — the judge drafts the final bundle alone.
-  const aPrompt = context + propose(task.intent, task.profile);
-  let proposalAText = await complete(aPrompt);
+  const aPrompt = context + wrap(propose(task.intent, task.profile));
+  let proposalAText = await complete(aPrompt, 'proposal_a');
   let aParsed = bundleFromText(proposalAText);
   if (!aParsed.ok) {
-    proposalAText = await complete(buildValidationRetryPrompt(aPrompt, [aParsed.reason]));
+    proposalAText = await complete(
+      buildValidationRetryPrompt(aPrompt, [aParsed.reason]),
+      'proposal_a',
+    );
     aParsed = bundleFromText(proposalAText); // revalidated — never passed through on trust
   }
   const councilDegraded = !aParsed.ok;
 
   const finalResult = await gatedBundle(
     councilDegraded
-      ? context + proposeBDegraded(task.intent, task.profile)
-      : context + proposeB(task.intent, task.profile, proposalAText),
+      ? context + wrap(proposeBDegraded(task.intent, task.profile))
+      : context + wrap(proposeB(task.intent, task.profile, proposalAText)),
+    'judge',
   );
 
   // BACK-001 (a): blocking evidence is MONOTONIC at the gate. The chain above
@@ -424,7 +679,13 @@ export async function runPipeline(
     : [];
 
   if (!finalResult.ok) {
-    return blocked([...classifierEvidence, ...(finalResult.reasons ?? [finalResult.reason])], councilDegraded);
+    const reasons = [...classifierEvidence, ...(finalResult.reasons ?? [finalResult.reason])];
+    return blocked(
+      reasons,
+      councilDegraded,
+      undefined,
+      clarificationsFromBundle(finalResult.inspect, reasons),
+    );
   }
   if (classifierEvidence.length > 0) {
     return blocked(classifierEvidence, councilDegraded);
@@ -434,6 +695,7 @@ export async function runPipeline(
     variant,
     bundle: finalResult.bundle,
     usage: usageSnapshot(),
+    promptProtocol,
     ...(councilDegraded ? { councilDegraded: true as const } : {}),
   };
 }

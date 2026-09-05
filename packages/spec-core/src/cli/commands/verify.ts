@@ -21,7 +21,9 @@ export async function cmdVerify(dir: string): Promise<VerifyResult> {
     return { code: 2, output: compileFailedOutput(result.errors) };
   }
 
-  const verification = verifyFrozen(result.bundle);
+  // INV-H1: pass the RAW (file-order) sections so pre-v2 freezes verify
+  // against the bytes their freezing build saw, not this build's zod order.
+  const verification = verifyFrozen(result.bundle, result.rawSections);
   if (verification.notFrozen) {
     return { code: 1, output: 'verify FAILED: manifest.state is not frozen' };
   }

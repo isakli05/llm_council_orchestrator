@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecBundle } from '../../schemas';
 import { acquireSpecRootLock, createDirAtomically } from '../../storage/revision';
@@ -44,6 +44,14 @@ const SECTION_KEYS = [
  * as environment failures (exit 2), matching init's write-error contract.
  * `nowIso` is injected per the interface contract (lock holder identity).
  */
+/** The staged section files for a bundle (single safe name segments). */
+export function specDirFiles(bundle: SpecBundle): { name: string; content: unknown }[] {
+  return [
+    ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: bundle[key] })),
+    ...(bundle.legacy !== undefined ? [{ name: 'legacy.json', content: bundle.legacy }] : []),
+  ];
+}
+
 export function writeSpecDir(dir: string, bundle: SpecBundle, nowIso: string): void {
   const specDir = join(dir, 'spec');
   // SEC-003: lstat catches a DANGLING spec symlink the existsSync no-clobber
@@ -52,17 +60,29 @@ export function writeSpecDir(dir: string, bundle: SpecBundle, nowIso: string): v
   if (existsSync(specDir)) {
     throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
   }
-  mkdirSync(dir, { recursive: true });
   const lock = acquireSpecRootLock(dir, nowIso);
   try {
-    if (existsSync(specDir)) {
-      throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
-    }
-    createDirAtomically(specDir, [
-      ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: bundle[key] })),
-      ...(bundle.legacy !== undefined ? [{ name: 'legacy.json', content: bundle.legacy }] : []),
-    ]);
+    stageSpecDir(dir, bundle);
   } finally {
     lock.release();
   }
+}
+
+/**
+ * The staging core (no lock): re-check no-clobber, then land the whole tree
+ * atomically. Exported for the RENEWAL plan path, which writes its spec
+ * INSIDE the renewal state transaction (under the renewal writer lock — a
+ * different, tx-owned critical section that already serializes trusted
+ * renewal mutations); non-renewal callers use the locked wrapper above.
+ */
+export function stageSpecDir(dir: string, bundle: SpecBundle): void {
+  const specDir = join(dir, 'spec');
+  assertNotSymlink(specDir, 'generate write target spec/');
+  if (existsSync(specDir)) {
+    throw new Error(`refusing to overwrite existing spec/ at ${specDir}`);
+  }
+  createDirAtomically(specDir, [
+    ...SECTION_KEYS.map((key) => ({ name: `${key}.json`, content: bundle[key] })),
+    ...(bundle.legacy !== undefined ? [{ name: 'legacy.json', content: bundle.legacy }] : []),
+  ]);
 }

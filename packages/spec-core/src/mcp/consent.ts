@@ -4,6 +4,7 @@ import { execInProcessGroup, type Executor } from '../check/runner';
 import { loadBundleAtLevel } from '../compiler/validation';
 import { verifyFrozen } from '../compiler/verify';
 import { sha256Content } from '../compiler/hash';
+import { domainDigest } from '../renew/trust/canonical';
 import { isInside } from '../storage/paths';
 import type { SpecBundle } from '../schemas';
 
@@ -127,16 +128,20 @@ export function mcpExecBoundary(env: NodeJS.ProcessEnv): ExecBoundary {
  * (sections that never execute would break consent on unrelated drift) and
  * under-communicates (it would not say WHAT runs).
  */
-export function checkPreviewDigest(b: SpecBundle, task?: string): `sha256:${string}` {
+export function checkPreviewDigest(b: SpecBundle, task?: string, effectualDir?: string): `sha256:${string}` {
   const selected = task ? b.tasks.filter((t) => t.task_id === task) : b.tasks;
   const payload = {
     spec_version: b.manifest.spec_version,
+    // S3-H-10 (trust kernel): the EFFECTUAL execution directory is part of
+    // what the operator consents to — the same commands under a different
+    // root are a different authorization.
+    ...(effectualDir !== undefined ? { effectualDir } : {}),
     tasks: selected.map((t) => ({
       task_id: t.task_id,
       verification: t.verification.map((v) => ({ command: v.command, expect: v.expect })),
     })),
   };
-  return sha256Content(JSON.stringify(payload, null, 2));
+  return domainDigest('LCO:CONSENT', 1, payload);
 }
 
 // --- environment scrubbing ----------------------------------------------------------
@@ -222,6 +227,7 @@ export function authorizeExecution(
   task: string | undefined,
   consentDigest: string,
   execRoot?: string,
+  rawSections?: Record<string, unknown>,
 ): ExecAuthorization {
   if (execRoot !== undefined) {
     // SEC-003: REAL containment — both sides resolved with realpath before
@@ -266,7 +272,10 @@ export function authorizeExecution(
     }
   }
 
-  const verification = verifyFrozen(bundle);
+  // INV-H1: legacy-compatible verification — pre-hash_version-2 artifacts are
+  // hashed over their own file key order (rawSections), never the current
+  // zod output order.
+  const verification = verifyFrozen(bundle, rawSections);
   if (verification.notFrozen) {
     return {
       ok: false,
@@ -290,7 +299,10 @@ export function authorizeExecution(
     };
   }
 
-  const expected = checkPreviewDigest(bundle, task);
+  // S3-H-10: `dir` here is the EFFECTUAL execution directory (the server
+  // resolves it through checkMcpDir before calling); the preview and the
+  // authorization must bind the same value.
+  const expected = checkPreviewDigest(bundle, task, dir);
   if (expected !== consentDigest) {
     return {
       ok: false,
@@ -347,10 +359,10 @@ export function consentDigestLine(digest: `sha256:${string}`): string {
  */
 export async function loadCheckBundle(
   dir: string,
-): Promise<{ ok: true; bundle: SpecBundle } | { ok: false; code: 2; output: string }> {
+): Promise<{ ok: true; bundle: SpecBundle; rawSections?: Record<string, unknown> } | { ok: false; code: 2; output: string }> {
   const loaded = await loadBundleAtLevel(dir, 'lint-clean');
   if (!loaded.ok) return loaded;
-  return { ok: true, bundle: loaded.bundle };
+  return { ok: true, bundle: loaded.bundle, ...(loaded.rawSections !== undefined ? { rawSections: loaded.rawSections } : {}) };
 }
 
 // =====================================================================================
@@ -404,7 +416,7 @@ export type GenerateVariant = 'single' | 'council';
 /**
  * Digest of EXACTLY what a generation request sends to the LLM:
  *
- *   sha256Content(JSON.stringify({ intent, profile, variant }, null, 2))
+ *   sha256Content(JSON.stringify({ intent, profile, variant, llmProfile? }, null, 2))
  *
  * - `intent` — the full prompt text; consenting to one intent is never
  *   consenting to another.
@@ -412,6 +424,12 @@ export type GenerateVariant = 'single' | 'council';
  * - `variant` — the cost axis of the call (single is the default and the
  *   cheap path — up to 3 completions / 12 HTTP attempts worst case; council
  *   is explicit and up to 6 / 24; see eval/budget.ts).
+ * - `llmProfile` (multi-provider §17) — the NAMED lco.config.json profile
+ *   selecting gateways/models (possibly a heterogeneous council). Included
+ *   ONLY when present: JSON.stringify drops undefined, so requests without
+ *   llmProfile keep their historical digest bytes exactly — old consents
+ *   stay valid for old content, and no consent can cross over to a
+ *   different provider/model composition.
  *
  * Computed over the RESOLVED values (defaults applied): a request omitting
  * `variant` and one sending `variant:'single'` carry identical effectual
@@ -420,12 +438,83 @@ export type GenerateVariant = 'single' | 'council';
  * impossible by construction: the payload shape differs from
  * checkPreviewDigest's, so no check digest can ever equal a generate digest.
  */
+/**
+ * Paid renewal analysis consent digest: binds the resolved {dir, scope,
+ * llmProfile?} — deliberately a DIFFERENT payload shape from generate/check,
+ * so no cross-tool digest replay is possible by construction.
+ */
+/**
+ * H-10 — the paid Renewal consent digest binds the EFFECTUAL operation, not
+ * just its name: tool protocol, normalized project root, the ACTIVE snapshot
+ * and graph identity, scope, prompt protocol, profile fingerprint, resolved
+ * model, and the budget envelope. Changing the source (snapshot), the
+ * profile routing, the model, the budget, or any protocol invalidates prior
+ * consent — a stale digest can never authorize a different paid call.
+ */
+export interface RenewConsentInputs {
+  dir: string;
+  scope: string;
+  /** Active snapshot id (RSN-…). */
+  snapshotId?: string;
+  /** sha256 of the structural graph (identity of the analyzed source). */
+  graphDigest?: string;
+  /** Named profile routing this call. */
+  llmProfile?: string;
+  /** Fingerprint of the resolved profile (config digest). */
+  profileFingerprint?: string;
+  /** Resolved gateway/model actually serving the role. */
+  resolvedModel?: string;
+  /** The recovery prompt protocol version the call will speak (S2-H-02). */
+  promptProtocol?: string;
+  /** Budget envelope (serialized canonically). */
+  budget?: { maxAttempts?: number; maxTokens?: number; maxWallMs?: number };
+  /** S3-H-07 (trust kernel): canonical digest of the RESOLVED legacy-env
+   *  route — base URL, model, max tokens, extra body, budget envelope —
+   *  computed via trust/paid.resolveLegacyEnvRoute + resolvedRouteDigest.
+   *  Binding the model alone left every other effectual field free to drift
+   *  after consent. */
+  routeDigest?: string;
+}
+
+/** Protocol version of the renewal consent binding itself. */
+export const RENEW_CONSENT_PROTOCOL = 'lco-renew/consent-v2';
+
+export function renewConsentDigest(args: RenewConsentInputs): `sha256:${string}` {
+  const dir = args.dir === '' ? '' : args.dir.replace(/\/+$/, '');
+  return domainDigest('LCO:CONSENT', 1, {
+    renew: 'analyze',
+    consentProtocol: RENEW_CONSENT_PROTOCOL,
+    dir,
+    scope: args.scope,
+    ...(args.snapshotId !== undefined ? { snapshotId: args.snapshotId } : {}),
+    ...(args.graphDigest !== undefined ? { graphDigest: args.graphDigest } : {}),
+    ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
+    ...(args.profileFingerprint !== undefined ? { profileFingerprint: args.profileFingerprint } : {}),
+    ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
+    ...(args.routeDigest !== undefined ? { routeDigest: args.routeDigest } : {}),
+    ...(args.promptProtocol !== undefined ? { promptProtocol: args.promptProtocol } : {}),
+    ...(args.budget !== undefined ? { budget: args.budget } : {}),
+  });
+}
+
 export function generateConsentDigest(
   intent: string,
   profile: GenerateProfile,
   variant: GenerateVariant,
+  llmProfile?: string,
+  /** S3-H-10 (trust kernel): fingerprint of the RESOLVED profile — routing
+   *  mode, per-role gateway/model, topology, budget envelope — computed
+   *  BEFORE the digest so consent authorizes what will actually run, never
+   *  a name that resolves elsewhere. */
+  resolvedProfileFingerprint?: string,
 ): `sha256:${string}` {
-  return sha256Content(JSON.stringify({ intent, profile, variant }, null, 2));
+  return domainDigest('LCO:CONSENT', 1, {
+    intent,
+    profile,
+    variant,
+    ...(llmProfile !== undefined ? { llmProfile } : {}),
+    ...(resolvedProfileFingerprint !== undefined ? { resolvedProfileFingerprint } : {}),
+  });
 }
 
 /**

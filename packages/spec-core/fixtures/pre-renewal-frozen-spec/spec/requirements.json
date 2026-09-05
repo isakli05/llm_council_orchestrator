@@ -1,0 +1,28 @@
+[
+  {
+    "id": "REQ-0001",
+    "statement": "EXAMPLE requirement — replace with your own",
+    "priority": "must",
+    "evidence": [
+      "E-0001"
+    ],
+    "acceptance_refs": [
+      "TST-0001"
+    ],
+    "terms_used": [
+      "ExampleTerm"
+    ]
+  },
+  {
+    "id": "OPS-0001",
+    "statement": "NFR: response p95 under 300ms (EXAMPLE — replace)",
+    "priority": "must",
+    "evidence": [
+      "E-0001"
+    ],
+    "acceptance_refs": [
+      "TST-0001"
+    ],
+    "terms_used": []
+  }
+]

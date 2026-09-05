@@ -67,6 +67,7 @@ const BASE_OPTS: DoctorOptions = {
 const CHECK_NAMES = [
   'node',
   'provider-env',
+  'llm-config',
   'mcp-flags',
   'budget-env',
   'write',
@@ -74,6 +75,7 @@ const CHECK_NAMES = [
   'spec',
   'bins',
   'schema',
+  'graphify',
 ] as const;
 
 /** The exact check order the human/JSON surfaces emit (pinned contract). */
@@ -92,7 +94,7 @@ describe('cmdDoctor: full flow', () => {
     expect(result.output).toContain('[provider-env] warn:');
     // ...and the exit contract holds: 0 = no FAIL, warn does not fail.
     expect(result.output).not.toContain(' fail:');
-    expect(result.output).toMatch(/doctor: 9 checks — /);
+    expect(result.output).toMatch(/doctor: 11 checks — /);
   });
 
   it('json mode -> exactly one parseable {checks, healthy} object, same order', async () => {
@@ -731,5 +733,64 @@ describe('doctor output hygiene', () => {
     expect(result.code).toBe(0);
     expect(result.output).toContain('[spec] ok:');
     expect(readdirSync(root).sort()).toEqual(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// llm-config check (§7/§24): names + presence only, never values
+// ---------------------------------------------------------------------------
+
+import { checkLlmConfig } from './doctor';
+
+describe('checkLlmConfig', () => {
+  const CFG = JSON.stringify({
+    llm: {
+      providers: {
+        or: { type: 'openrouter', apiKeyEnv: 'DOCTOR_TEST_OR_KEY' },
+        rl: { type: 'routellm', apiKeyEnv: 'DOCTOR_TEST_RL_KEY' },
+      },
+      profiles: { p1: { variant: 'single', roles: { single: { provider: 'or', model: 'm' } } } },
+    },
+  });
+
+  it('absent config → ok with the legacy note', () => {
+    const r = checkLlmConfig('/nope', {}, (p) => {
+      throw new Error(`ENOENT: ${p}`);
+    });
+    expect(r.status).toBe('ok');
+    expect(r.detail).toContain('no lco.config.json');
+  });
+
+  it('valid config, all keys set → ok listing NAMES only', () => {
+    const r = checkLlmConfig('.', { DOCTOR_TEST_OR_KEY: 'x', DOCTOR_TEST_RL_KEY: 'y' }, () => CFG);
+    expect(r.status).toBe('ok');
+    expect(r.detail).toContain('or, rl');
+    expect(r.detail).toContain('p1');
+    expect(r.detail).not.toContain('x');
+    expect(r.detail).not.toContain('DOCTOR_TEST_OR_KEY=x');
+  });
+
+  it('valid config, missing key env → warn naming the env var (presence only)', () => {
+    const r = checkLlmConfig('.', { DOCTOR_TEST_RL_KEY: 'y' }, () => CFG);
+    expect(r.status).toBe('warn');
+    expect(r.detail).toContain('or→DOCTOR_TEST_OR_KEY');
+  });
+
+  it('malformed config → fail with the parse error, never values', () => {
+    const r = checkLlmConfig('.', {}, () => '{broken');
+    expect(r.status).toBe('fail');
+    expect(r.detail).toMatch(/not valid JSON/);
+  });
+
+  it('secret-shaped apiKeyEnv value in config → fail (parse rejects it)', () => {
+    const bad = JSON.stringify({
+      llm: {
+        providers: { x: { type: 'openrouter', apiKeyEnv: 'sk-or-v1-not-a-name' } },
+        profiles: { p: { variant: 'single', roles: { single: { provider: 'x', model: 'm' } } } },
+      },
+    });
+    const r = checkLlmConfig('.', {}, () => bad);
+    expect(r.status).toBe('fail');
+    expect(r.detail).toMatch(/apiKeyEnv/);
   });
 });

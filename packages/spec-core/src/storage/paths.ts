@@ -1,5 +1,5 @@
-import { lstatSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /**
  * Path safety for the spec tree (SEC-003, binding).
@@ -180,6 +180,203 @@ export function assertWritableSpecDir(root: string, fileNames: readonly string[]
   for (const name of fileNames) {
     assertNoSymlinkBelow(root, ['spec', name]);
   }
+}
+
+// --- Renewal trust-domain authorization (second audit INV-A / S2-C-01) ----------------
+
+/** The verdict of {@link authorizeRenewalPaths}: the state domain is real-dir contained, or a refusal naming the link. */
+export type RenewalPathAuth = { ok: true } | { ok: false; message: string };
+
+/**
+ * INV-A (second audit S2-C-01): every Renewal state destination — read OR
+ * write — must live under a REAL-directory chain below the resolved project
+ * root. Root disjointness (`assertDisjointRealRoots`) is necessary but not
+ * sufficient: a pre-existing symlink at `<project>/.lco`, `.lco/renewal`,
+ * `analyses`, `approvals`, `spec`, or any intermediate component redirects
+ * trusted state IO (including the atomic tmp+rename siblings) out of the
+ * project domain — historically straight into the read-only analyzed target.
+ *
+ * The walk is NO-FOLLOW per component (`assertNoSymlinkBelow`, dangling links
+ * included): every existing component of every destination, final component
+ * included, must be a real file/directory. A destination outside the resolved
+ * project root refuses outright. TOCTOU is the documented spec-write residual
+ * (check-then-write; a racing local writer is outside the threat model) — the
+ * check deliberately runs immediately before the first write of each command.
+ *
+ * A project root that does not exist yet authorizes trivially: nothing can be
+ * pre-planted below a nonexistent root, and creation happens underneath it.
+ */
+export function authorizeRenewalPaths(args: { projectDir: string; destinations: readonly string[] }): RenewalPathAuth {
+  let real: string | undefined;
+  try {
+    real = tryRealpath(args.projectDir);
+  } catch (err) {
+    return { ok: false, message: `cannot resolve the renewal project root ${args.projectDir}: ${(err as Error).message}` };
+  }
+  if (real === undefined) return { ok: true };
+  for (const dest of args.destinations) {
+    // Containment compares the RESOLVED destination (existing ancestors
+    // through their symlinks — a legitimately symlinked project ROOT works,
+    // while a state-chain link resolving into the target or anywhere else
+    // outside the real root refuses). The no-follow walk below still names
+    // the offending link precisely for the common attack shapes.
+    let resolved: string;
+    try {
+      resolved = resolveNearestExisting(dest);
+    } catch (err) {
+      return { ok: false, message: `cannot resolve renewal state destination ${dest}: ${(err as Error).message}` };
+    }
+    const rel = relative(real, resolved);
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      return {
+        ok: false,
+        message:
+          `renewal state destination ${dest} resolves to ${resolved}, outside the resolved project root ` +
+          `${real} — refusing`,
+      };
+    }
+    const segments = rel.split(sep);
+    try {
+      assertNoSymlinkBelow(real, segments);
+    } catch (err) {
+      if (err instanceof PathEscapeError) {
+        return {
+          ok: false,
+          message:
+            `renewal state domain refused: ${err.message} — renewal never reads or writes trusted state ` +
+            `through a symlink (remove the link, or point the project at a clean directory)`,
+        };
+      }
+      throw err;
+    }
+  }
+  return { ok: true };
+}
+
+// --- Renewal project/target disjointness (release audit C-01) -------------------------
+
+/**
+ * The verdict of {@link assertDisjointRealRoots}: both roots resolved and
+ * provably in disjoint real-path domains, or a refusal naming the overlap.
+ */
+export type DisjointRootsCheck =
+  | { ok: true; projectReal: string; targetReal: string }
+  | { ok: false; message: string };
+
+/**
+ * The Renewal path-domain invariant: the LCO project root and the analyzed
+ * target root must be DISJOINT — never equal, neither an ancestor of the
+ * other, through ANY aliasing (symlinks, `..`, relative vs absolute forms).
+ *
+ * Both sides resolve through `resolveNearestExisting` (symlinked ancestors
+ * are resolved; a not-yet-existing project dir resolves via its nearest
+ * existing ancestor, so `renew init` can gate BEFORE creating anything).
+ * Containment is path-component aware (`isInside`, never string prefixes).
+ * This is the ONE canonical check; every Renewal entry point that pairs a
+ * project dir with a target root must pass through it before any write.
+ */
+export function assertDisjointRealRoots(projectDir: string, targetDir: string): DisjointRootsCheck {
+  let projectReal: string;
+  let targetReal: string;
+  try {
+    projectReal = resolveNearestExisting(projectDir);
+    targetReal = resolveNearestExisting(targetDir);
+  } catch (err) {
+    return { ok: false, message: `cannot resolve project/target roots: ${(err as Error).message}` };
+  }
+  if (projectReal === targetReal) {
+    return {
+      ok: false,
+      message:
+        `the LCO renewal project directory and the analyzed target are the SAME directory ` +
+        `(${projectReal}) — renewal writes .lco/ and approvals/ state, which would mutate the ` +
+        `read-only analyzed target. Use a separate project directory outside the target.`,
+    };
+  }
+  if (isInside(targetReal, projectReal)) {
+    return {
+      ok: false,
+      message:
+        `the LCO project directory (${projectReal}) resolves INSIDE the analyzed target ` +
+        `(${targetReal}) — renewal state (.lco/, approvals/) must never be written into the target. ` +
+        `Choose a project directory outside the target tree.`,
+    };
+  }
+  if (isInside(projectReal, targetReal)) {
+    return {
+      ok: false,
+      message:
+        `the analyzed target (${targetReal}) resolves INSIDE the LCO project directory ` +
+        `(${projectReal}) — the guarded copy and snapshot walk would sweep renewal's own state ` +
+        `and the target would not stay disjoint from the project. Point --target at a tree ` +
+        `outside the project directory.`,
+    };
+  }
+  return { ok: true, projectReal, targetReal };
+}
+
+/** The verdict of {@link resolveContainedOutputPath}. */
+export type ContainedOutputCheck =
+  | { ok: true; path: string }
+  | { ok: false; message: string };
+
+/**
+ * Contained, no-clobber output resolution for Renewal export (release audit
+ * C-02). The candidate `out` path must land strictly INSIDE the existing
+ * project root (realpath containment — symlink escapes refuse), must not be
+ * the project root itself, must not resolve inside the analyzed target
+ * (defense in depth on top of disjointness), and must not already exist
+ * (no accidental overwrite; V1 has no force-overwrite escape hatch).
+ */
+export function resolveContainedOutputPath(args: {
+  projectDir: string;
+  targetReal?: string;
+  out: string;
+}): ContainedOutputCheck {
+  let projectReal: string;
+  try {
+    projectReal = realpathSync(args.projectDir);
+  } catch (err) {
+    return { ok: false, message: `cannot resolve project root ${args.projectDir}: ${(err as Error).message}` };
+  }
+  let resolved: string;
+  try {
+    resolved = resolveNearestExisting(args.out);
+  } catch (err) {
+    return { ok: false, message: `cannot resolve output path ${args.out}: ${(err as Error).message}` };
+  }
+  if (resolved === projectReal || !isInside(projectReal, resolved)) {
+    return {
+      ok: false,
+      message:
+        `export output must live inside the renewal project root — ${args.out} resolves to ` +
+        `${resolved}, outside ${projectReal}. Refusing to write outside the project ` +
+        `(the analyzed target is read-only; arbitrary overwrite is blocked).`,
+    };
+  }
+  if (args.targetReal !== undefined && isInside(args.targetReal, resolved)) {
+    return {
+      ok: false,
+      message: `export output ${args.out} resolves inside the analyzed target (${args.targetReal}) — the target is read-only.`,
+    };
+  }
+  // No-follow: every component between the project root and the output must
+  // be a real file/directory chain (a symlink component refuses the write).
+  const relSegments = resolved.slice(projectReal.length + 1).split(/[\\/]/);
+  try {
+    assertNoSymlinkBelow(projectReal, relSegments);
+  } catch (err) {
+    return { ok: false, message: (err as Error).message };
+  }
+  if (existsSync(resolved)) {
+    return {
+      ok: false,
+      message:
+        `export output ${args.out} already exists — export never overwrites (move it aside, or ` +
+        `choose a fresh path under the project root).`,
+    };
+  }
+  return { ok: true, path: resolved };
 }
 
 // --- MCP allowed-root policy (SEC-003 residual: MANDATORY effective root) ------------

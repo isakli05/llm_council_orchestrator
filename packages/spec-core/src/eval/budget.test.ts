@@ -265,3 +265,31 @@ function makeLlm(responses: string[]): { llm: LlmAdapter; calls: () => number } 
   };
   return { llm, calls: () => n };
 }
+
+// --- topology-aware envelopes (multi-provider council) ---------------------------
+
+describe('topology-aware budget envelopes', () => {
+  it('decomposed council gets its own, larger completion/attempt/wall ceilings', async () => {
+    const { maxCompletions } = await import('./budget');
+    expect(maxCompletions('single')).toBe(3);
+    expect(maxCompletions('single', 'decomposed')).toBe(3); // topology is council-only
+    expect(maxCompletions('council')).toBe(6); // fused default (legacy call shape)
+    expect(maxCompletions('council', 'fused')).toBe(6);
+    expect(maxCompletions('council', 'decomposed')).toBe(8); // 1+2+2+3
+    expect(worstCaseAttempts('council', 'decomposed')).toBe(8 * HTTP_MAX_ATTEMPTS_PER_COMPLETION);
+    expect(worstCaseWallMs('council', 'decomposed')).toBe(
+      8 * (HTTP_MAX_ATTEMPTS_PER_COMPLETION * HTTP_REQUEST_TIMEOUT_MS + HTTP_BACKOFF_TOTAL_MS),
+    );
+  });
+
+  it('resolveRunBudget accepts an optional topology; legacy calls keep fused numbers', () => {
+    const legacy = resolveRunBudget('council', { hasClock: false });
+    const fused = resolveRunBudget('council', { hasClock: false }, 'fused');
+    expect(legacy).toEqual(fused);
+    const decomposed = resolveRunBudget('council', { hasClock: false }, 'decomposed');
+    expect(decomposed.maxAttempts).toBe(8 * HTTP_MAX_ATTEMPTS_PER_COMPLETION);
+    // explicit overrides still win over the topology default
+    const pinned = resolveRunBudget('council', { hasClock: false, overrides: { maxAttempts: 4 } }, 'decomposed');
+    expect(pinned.maxAttempts).toBe(4);
+  });
+});

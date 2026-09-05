@@ -33,7 +33,7 @@ export const VALIDATION_LEVELS = ['compile', 'lint-clean'] as const;
 export type ValidationLevel = (typeof VALIDATION_LEVELS)[number];
 
 export type LevelLoadResult =
-  | { ok: true; bundle: SpecBundle; lint: LintResult }
+  | { ok: true; bundle: SpecBundle; lint: LintResult; rawSections?: Record<string, unknown> }
   | { ok: false; code: 2; output: string };
 
 /** The actionable lint refusal text shared by every lint-clean consumer. */
@@ -74,5 +74,8 @@ export async function loadBundleAtLevel(
     return { ok: false, code: 2, output: lintRefusal(lint, dir) };
   }
 
-  return { ok: true, bundle: compiled.bundle, lint };
+  // INV-H1: raw sections travel with the bundle so hash-verification
+  // consumers (consent) can apply the legacy-compatibility rule over the
+  // file's own key order instead of zod's output order.
+  return { ok: true, bundle: compiled.bundle, lint, ...(compiled.rawSections !== undefined ? { rawSections: compiled.rawSections } : {}) };
 }

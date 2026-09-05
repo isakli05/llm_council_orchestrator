@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs';
+import { authorizedRead } from '../renew/trust/fs';
+import { structuralIdentity } from '../renew/trust/structural';
+import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { cmdCompile } from '../cli/commands/compile';
 import { cmdLint } from '../cli/commands/lint';
 import { cmdFreeze } from '../cli/commands/freeze';
@@ -15,7 +20,7 @@ import {
 } from '../cli/commands/generate';
 import { cmdChange } from '../cli/commands/change';
 import type { ChangeSet } from '../compiler/changeset';
-import { checkMcpDir, effectiveMcpRoot } from '../storage/paths';
+import { checkMcpDir, effectiveMcpRoot, isInside, tryRealpath, type EffectiveMcpRoot } from '../storage/paths';
 import {
   authorizeExecution,
   checkPreviewDigest,
@@ -35,6 +40,25 @@ import {
   type GenerateVariant,
 } from './consent';
 import type { LlmAdapter } from '../eval/llm/adapter';
+import { cmdRenewStatus, cmdRenewExport, cmdRenewAnalyze, type RenewCapabilities } from '../cli/commands/renew';
+import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
+import { renewalPaths, loadRenewalProject } from '../renew/project/project';
+import { readPackageVersion } from '../release/version';
+import { singleRoutePlan } from '../llm/plan';
+import {
+  MAX_RECOVERY_WIRE_BYTES,
+  createPaidOperation,
+  resolveLegacyEnvRoute,
+  routeFromConfig,
+  resolvedRouteDigest,
+} from '../renew/trust/paid';
+import { renewConsentDigest } from './consent';
+import { domainDigest } from '../renew/trust/canonical';
+import { RECOVERY_PROMPT_PROTOCOL } from '../renew/recovery/prompts';
+import { createBudgetLedger } from '../eval/budget';
+import { execFileSync } from 'node:child_process';
+import { parseLlmConfig, resolveProfile } from '../config/llm-config';
+import type { LlmConfig, ResolvedProfile } from '../config/llm-config';
 
 /**
  * `lco-mcp` — a minimal MCP server over line-delimited JSON-RPC 2.0 on stdio,
@@ -72,7 +96,12 @@ import type { LlmAdapter } from '../eval/llm/adapter';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'lco-mcp';
-const SERVER_VERSION = '0.1.0';
+// The server's OWN release identity — the package.json version, read once at
+// module load (single authority, shared with `lco --version`: see
+// ../release/version). Never a hand-kept literal: a bump follows the package
+// automatically. A malformed package fails fast at bin startup rather than
+// advertising a stale version.
+const SERVER_VERSION = readPackageVersion();
 
 // --- tool surface ----------------------------------------------------------------
 
@@ -81,6 +110,8 @@ interface ToolInput {
   dir: string;
   task?: string;
   json?: boolean;
+  /** Legacy Renewal analysis scope (lco_renew_analyze; 'whole' in V1). */
+  scope?: string;
   /** SEC-002 execution consent / PROD-004 paid-call consent: { digest }. */
   consent?: { digest: string };
   /** PROD-004 lco_init/lco_generate: the CLI profile contract. */
@@ -91,6 +122,12 @@ interface ToolInput {
   intent?: string;
   /** PROD-004 lco_generate: the cost axis (single default; council explicit — see generate.ts). */
   variant?: GenerateVariant;
+  /**
+   * Multi-provider (§17): the NAME of a profile from the operator-configured
+   * lco.config.json — the ONLY way a request can influence gateway/model
+   * selection. Never a raw key, URL, or header: those are unknown arguments.
+   */
+  llmProfile?: string;
   /** PROD-004 lco_change: the inline CLI change envelope (plain object at the
    *  parse layer; the authoritative strict check is ChangeSetSchema in the core). */
   changeset?: ChangeSet;
@@ -122,6 +159,16 @@ interface CallContext extends ExecBoundary {
   /** Mock adapter injected by tests/library callers; production leaves it
    *  unset and cmdGenerate resolves createHttpLlm() fail-closed. */
   llm?: LlmAdapter;
+  /**
+   * Resolve a NAMED llm profile against the operator's lco.config.json
+   * (§17). Built once per tool call at the boundary from (in precedence):
+   * options.llmConfigText (tests) → env LCO_LLM_CONFIG path →
+   * <effectiveMcpRoot>/lco.config.json. A request can only select a NAME
+   * this resolver already knows — there is no request-controlled gateway.
+   */
+  resolveLlmProfile: (name: string) =>
+    | { ok: true; profile: { name: string; resolved: ResolvedProfile } }
+    | { ok: false; output: string };
 }
 
 interface ToolDef {
@@ -160,6 +207,206 @@ const CONSENT_PROPERTY = (description: string) => ({
   required: ['digest'],
   additionalProperties: false,
 });
+
+const RENEW_DIR_PROPERTY = {
+  type: 'string',
+  description: 'path to the LCO renewal project directory (contains .lco/renewal/; created by `lco renew init`)',
+} as const;
+
+/**
+ * H-05: the default Renewal budget envelope — a paid Renewal call is NEVER
+ * unbounded. The pipeline makes at most 2 logical calls (initial + one
+ * validation-informed retry); each may retry at the HTTP layer, so the
+ * attempt ceiling is bounded above that, and the wall ceiling bounds the
+ * whole paid stage.
+ */
+export function defaultRenewalBudget(): { maxAttempts: number; maxWallMs: number } {
+  return { maxAttempts: 8, maxWallMs: 15 * 60_000 };
+}
+
+/**
+ * H-10 + S2-H-02 (INV-F2): the read-only state the paid consent digest binds:
+ * the normalized project root, the ACTIVE snapshot id, the structural graph
+ * digest, AND the EFFECTUAL LLM route — when a named profile routes the call
+ * its config fingerprint and the resolved renew_recover model are resolved
+ * BEFORE the digest (different model configs under one profile name must
+ * advertise different digests); the legacy-env route binds the env-resolved
+ * model when present. The digest additionally binds the recovery prompt
+ * protocol and the budget envelope at the call site.
+ */
+async function renewalConsentState(
+  dir: string,
+  opts?: { llmProfile?: string; resolveProfile?: (name: string) => { ok: true; profile: { name: string; resolved: ResolvedProfile } } | { ok: false; output: string } },
+): Promise<{
+  dirReal: string;
+  snapshotId?: string;
+  graphDigest?: string;
+  profileFingerprint?: string;
+  resolvedModel?: string;
+  routeDigest?: `sha256:${string}`;
+}> {
+  const dirReal = realpathSync(dir);
+  let snapshotId: string | undefined;
+  let graphDigest: string | undefined;
+  try {
+    const { loadSnapshotFile } = await import('../renew/project/project');
+    const p = loadRenewalProject(dir);
+    if (p.ok) {
+      const snap = loadSnapshotFile(dir);
+      if (snap.ok) snapshotId = snap.snapshot.snapshot_id;
+      // Verifier F-7/E-L-01: the consent graph digest goes through the SAME
+      // authorized read + kernel identity as every other graph consumer —
+      // one implementation, byte-identical semantics (structuralIdentity
+      // digests the decoded text exactly as the strict kernel contract).
+      const graphPath = join(renewalPaths(dir).workspace, 'graphify-out', 'graph.json');
+      const manifestPath = join(renewalPaths(dir).workspace, 'graphify-out', 'manifest.json');
+      try {
+        const graphText = authorizedRead({ projectDir: dir, path: graphPath });
+        const manifestText = existsSync(manifestPath) ? authorizedRead({ projectDir: dir, path: manifestPath }) : undefined;
+        const ident = structuralIdentity({ manifestText, graphText });
+        graphDigest = ident.ok ? ident.identity.graph_digest : undefined;
+      } catch {
+        graphDigest = undefined;
+      }
+    }
+  } catch {
+    // unresolvable state digests without it — consent stays root-bound only.
+  }
+  let profileFingerprint: string | undefined;
+  let resolvedModel: string | undefined;
+  let legacyRouteDigest: `sha256:${string}` | undefined;
+  if (opts?.llmProfile !== undefined && opts.resolveProfile !== undefined) {
+    const resolved = opts.resolveProfile(opts.llmProfile);
+    if (resolved.ok) {
+      const profile = resolved.profile.resolved;
+      const role = (profile.roles as Record<string, { gateway: string; model: string } | undefined>)['renew_recover'];
+      if (role !== undefined) {
+        // Fingerprint of the profile's ROUTING CONTENT (name + mode + every
+        // role's gateway/model) — any effectual routing change re-digests.
+        // S4-M-02 (B4 closure): profile fingerprints are canonical domain
+        // digests — no ad-hoc sha256(JSON.stringify(...)) framing.
+        profileFingerprint = domainDigest('LCO:CONSENT', 1, {
+          name: resolved.profile.name,
+          routingMode: profile.routingMode,
+          roles: profile.roles,
+        });
+        resolvedModel = role.model;
+        // S4-H-03 closure: named-profile consent binds the ROUTE DIGEST of the
+        // SAME operation the tool call will construct (resolve → routeFromConfig
+        // → resolvedRouteDigest) — consent no longer reconstructs an
+        // equivalent-looking identity from profile parts.
+        try {
+          const fullRole = (profile.roles as Record<string, import('../config/llm-config').ResolvedRole | undefined>)['renew_recover'];
+          if (fullRole !== undefined) {
+            const { resolveRoleConfig } = await import('../llm/providers');
+            const { config } = resolveRoleConfig(fullRole, process.env, { routingMode: profile.routingMode });
+            const { routeFromConfig, resolvedRouteDigest } = await import('../renew/trust/paid');
+            const rb = defaultRenewalBudget();
+            legacyRouteDigest = resolvedRouteDigest(
+              routeFromConfig({
+                config,
+                origin: 'named-profile',
+                profileName: opts.llmProfile,
+                routingMode: profile.routingMode,
+                apiKeyEnvName: fullRole.apiKeyEnv,
+                budget: { maxAttempts: rb.maxAttempts ?? 8, ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}) },
+              }),
+            );
+          }
+        } catch {
+          // unresolvable route (missing key env etc.): nothing to bind — the
+          // tool call refuses before any adapter exists (zero spend)
+        }
+      }
+    }
+    // An unresolvable profile leaves the fields unbound here — the
+    // post-consent resolution refuses it before any call (zero spend), so an
+    // unbound digest can never authorize a paid request.
+  } else {
+    // Legacy-env route (S3-H-07, trust kernel): resolve EVERY effectual
+    // field — base URL, model, max tokens, extra body — and bind the
+    // CANONICAL ROUTE DIGEST, not the model alone.
+    resolvedModel = process.env.LCO_LLM_MODEL;
+    try {
+      // S4-H-03 (V3 verifier): the consent-time route resolves with the SAME
+      // budget shape (maxAttempts AND wallMs) as the transported operation —
+      // the digests must be equal by construction, never incidentally.
+      const rb = defaultRenewalBudget();
+      legacyRouteDigest = resolvedRouteDigest(
+        resolveLegacyEnvRoute(process.env, {
+          maxAttempts: rb.maxAttempts ?? 8,
+          ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}),
+        }),
+      );
+    } catch {
+      // unconfigured env: nothing to bind — post-consent resolution refuses
+      // before any adapter exists (zero spend), same as before.
+    }
+  }
+  return {
+    dirReal,
+    snapshotId,
+    graphDigest,
+    ...(profileFingerprint !== undefined ? { profileFingerprint } : {}),
+    ...(resolvedModel !== undefined ? { resolvedModel } : {}),
+    ...(legacyRouteDigest !== undefined ? { routeDigest: legacyRouteDigest } : {}),
+  };
+}
+
+/**
+ * S2-M-04 (INV-A, MCP facet): containing request.dir inside the pinned root
+ * is NOT sufficient for Renewal — the tool's TRANSITIVE roots (the recorded
+ * target the project reads/hashes, the graph workspace) must also resolve
+ * inside the pin. A project inside the pin pointing at a sibling target
+ * outside it is a containment escape by proxy.
+ */
+function transitiveRenewalRootCheck(dir: string, allowed: EffectiveMcpRoot): { ok: true } | { ok: false; message: string } {
+  const pinReal = tryRealpath(allowed.root);
+  if (pinReal === undefined) {
+    return { ok: false, message: `cannot resolve this server's allowed root ${allowed.root} — failing the renewal call closed` };
+  }
+  const p = loadRenewalProject(dir);
+  if (!p.ok) return { ok: true }; // not a project yet — dir containment already enforced
+  const targetReal = tryRealpath(p.project.target_path);
+  if (targetReal !== undefined && !isInside(pinReal, targetReal)) {
+    return {
+      ok: false,
+      message:
+        `renewal target ${targetReal} resolves OUTSIDE this server's allowed root ${pinReal} — a renewal project ` +
+        `inside the pinned root must not read or hash a target outside it (transitive containment)`,
+    };
+  }
+  const workspaceReal = tryRealpath(renewalPaths(dir).workspace);
+  if (workspaceReal !== undefined && !isInside(pinReal, workspaceReal)) {
+    return {
+      ok: false,
+      message: `renewal graph workspace ${workspaceReal} resolves OUTSIDE this server's allowed root ${pinReal} (transitive containment)`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Boundary capabilities for renewal tools: clock, GraphifyAdapter, git. */
+function renewCaps(dir: string, nowIso: string): RenewCapabilities {  return {
+    nowIso: () => nowIso,
+    provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(dir).workspace, projectDir: dir }),
+    gitCommit: (root) => {
+      try {
+        // S2-L-02: mirror the CLI's QUIET probe — a plain (non-Git) target
+        // produces structured repo_kind:'plain' in the snapshot, never raw
+        // Git fatal stderr leaking into the MCP stdio surface.
+        return execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: root,
+          encoding: 'utf8',
+          timeout: 5000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
 
 const TOOLS: readonly ToolDef[] = [
   {
@@ -250,12 +497,15 @@ const TOOLS: readonly ToolDef[] = [
       // execution. A compile/lint refusal is T7's actionable output, verbatim.
       const loaded = await loadCheckBundle(input.dir);
       if (!loaded.ok) return { code: loaded.code, output: loaded.output };
-      const { bundle } = loaded;
+      const { bundle, rawSections } = loaded;
 
       // DRY PREVIEW (the default surface): the shared check core at yes:false
-      // plus the consent digest this server would require to execute.
+      // plus the consent digest this server would require to execute. S3-H-10
+      // (trust kernel): the digest binds the EFFECTUAL execution directory —
+      // the same commands under a different root are a different consent.
       if (input.consent === undefined) {
-        const digest = checkPreviewDigest(bundle, input.task);
+        const effectualDir = realpathSync(input.dir);
+        const digest = checkPreviewDigest(bundle, input.task, effectualDir);
         const dry = await cmdCheck(input.dir, {
           task: input.task,
           yes: false,
@@ -275,6 +525,7 @@ const TOOLS: readonly ToolDef[] = [
         input.task,
         input.consent.digest,
         boundary.execRoot,
+        rawSections,
       );
       if (!auth.ok) {
         return { code: auth.code, output: auth.output };
@@ -360,12 +611,20 @@ const TOOLS: readonly ToolDef[] = [
           type: 'string',
           enum: ['single', 'council'],
           description:
-            'single (default; up to 3 completions/12 HTTP attempts) or council (up to 6/24) — part of the consent digest',
+            'single (default; up to 3 completions/12 HTTP attempts) or council (up to 6/24 fused, 8/32 decomposed) — part of the consent digest',
         },
         profile: {
           type: 'string',
           enum: ['p-mini', 'p-standard'],
           description: 'complexity profile (default p-standard; part of the consent digest)',
+        },
+        llmProfile: {
+          type: 'string',
+          description:
+            'NAME of a profile from the operator-configured lco.config.json (providers + per-role models; ' +
+            'api keys live in environment variables, never in requests) — part of the consent digest. ' +
+            'The variant must agree with the profile. There is NO way to pass a raw key, base URL, or ' +
+            'header through a request: gateway selection is operator configuration only.',
         },
         consent: CONSENT_PROPERTY(
           'paid-call consent: { digest } — the "consent digest" value the refusal for the ' +
@@ -376,7 +635,7 @@ const TOOLS: readonly ToolDef[] = [
       required: ['dir', 'intent'],
       additionalProperties: false,
     },
-    args: ['intent', 'variant', 'profile', 'consent'],
+    args: ['intent', 'variant', 'profile', 'llmProfile', 'consent'],
     requiredArgs: ['intent'],
     run: async (input, nowIso, call) => {
       // PROD-004 consent chain — every refusal happens BEFORE any adapter is
@@ -385,7 +644,33 @@ const TOOLS: readonly ToolDef[] = [
       // conservative default (UX-001 ruling); council is explicit.
       const profile = input.profile ?? DEFAULT_GENERATE_PROFILE;
       const variant = input.variant ?? DEFAULT_GENERATE_VARIANT;
-      const expected = generateConsentDigest(input.intent!, profile, variant);
+      // S3-H-10 (trust kernel): RESOLVE BEFORE DIGEST — when a named profile
+      // is requested, its effectual routing content (variant agreement,
+      // routing mode, per-role gateway/model) resolves FIRST and its
+      // fingerprint binds into the digest, so consent authorizes what will
+      // actually run — never a NAME that could resolve elsewhere afterwards.
+      let preResolvedProfile: { name: string; resolved: ResolvedProfile } | undefined;
+      let resolvedFingerprint: string | undefined;
+      if (input.llmProfile !== undefined) {
+        const resolved = call.resolveLlmProfile(input.llmProfile);
+        if (!resolved.ok) {
+          return { code: 2, output: resolved.output };
+        }
+        if (resolved.profile.resolved.variant !== variant) {
+          return {
+            code: 2,
+            output:
+              `generation refused: llm profile '${resolved.profile.name}' declares variant ` +
+              `'${resolved.profile.resolved.variant}' but the request says variant '${variant}' — ` +
+              'they must agree; re-send with a matching variant/profile pair (the consent digest covers both)',
+          };
+        }
+        preResolvedProfile = resolved.profile;
+        const rp = resolved.profile.resolved;
+        // S4-M-02 (B4 closure): canonical domain digest.
+        resolvedFingerprint = domainDigest('LCO:CONSENT', 1, { name: resolved.profile.name, routingMode: rp.routingMode, roles: rp.roles });
+      }
+      const expected = generateConsentDigest(input.intent!, profile, variant, input.llmProfile, resolvedFingerprint);
 
       // 1. No consent: the actionable refusal IS the preview — it carries
       //    this request's digest (there is no dry-run work worth exit 0).
@@ -400,9 +685,14 @@ const TOOLS: readonly ToolDef[] = [
       if (input.consent.digest !== expected) {
         return { code: 2, output: refuseGenerateDigestMismatch(input.consent.digest, expected) };
       }
+      // 4. §17 named-profile resolution — already resolved BEFORE the digest
+      //    above (S3-H-10); reuse that resolution. Unknown names and variant
+      //    disagreements refused before any digest or adapter existed.
+      const llmProfile = preResolvedProfile;
       // Full chain: the shared generate core. call.llm is the boundary-injected
       // (test/library) adapter; when unset cmdGenerate resolves createHttpLlm()
-      // itself and throws fail-closed without LCO_LLM_* env (never invents keys).
+      // itself (or the named profile's per-role adapters) and throws
+      // fail-closed without the required env (never invents keys).
       return cmdGenerate(input.dir, {
         intent: input.intent!,
         variant,
@@ -410,6 +700,7 @@ const TOOLS: readonly ToolDef[] = [
         nowIso,
         llm: call.llm,
         nowMs: call.nowMs,
+        ...(llmProfile !== undefined ? { llmProfile } : {}),
       });
     },
   },
@@ -448,6 +739,224 @@ const TOOLS: readonly ToolDef[] = [
             ? `${r.summary}\n${r.details.map((d) => `  ${d}`).join('\n')}`
             : r.summary,
       };
+    },
+  },
+  {
+    name: 'lco_renew_status',
+    description:
+      'Legacy Renewal status (DETERMINISTIC, read-only, no LLM): snapshot freshness, ' +
+      'graph state, analyses, open questions, overlay/parity state, strategy, plan.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dir: RENEW_DIR_PROPERTY,
+        json: { type: 'boolean', description: 'emit machine-readable JSON' },
+      },
+      required: ['dir'],
+      additionalProperties: false,
+    },
+    args: ['json'],
+    run: (input, nowIso) => cmdRenewStatus({ dir: input.dir, json: input.json ?? false }, renewCaps(input.dir, nowIso)),
+  },
+  {
+    name: 'lco_renew_export',
+    description:
+      'Legacy Renewal report (DETERMINISTIC, read-only, no LLM): renders the validated ' +
+      'modernization state as markdown and RETURNS it as tool content; this tool never ' +
+      'writes files (use the CLI `lco renew export --out` for a contained file export).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dir: RENEW_DIR_PROPERTY,
+      },
+      required: ['dir'],
+      additionalProperties: false,
+    },
+    args: [],
+    run: (input, nowIso) => cmdRenewExport({ dir: input.dir }, renewCaps(input.dir, nowIso)),
+  },
+  {
+    name: 'lco_renew_analyze',
+    description:
+      'Legacy Renewal analysis (PAID — makes LLM calls). Requires the renewal snapshot to be ' +
+      'fresh and Graphify present. Consent chain: LCO_MCP_ALLOW_GENERATE=1 AND consent.digest = ' +
+      'the advertised renewConsentDigest — the digest binds the tool protocol, project root, ' +
+      'ACTIVE snapshot + graph identity, scope, prompt protocol, resolved profile/model, and ' +
+      'the budget envelope; every refusal happens BEFORE any LLM adapter exists (ZERO calls).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dir: RENEW_DIR_PROPERTY,
+        scope: { type: 'string', description: "'whole' (V1)" },
+        llmProfile: {
+          type: 'string',
+          description: 'named profile from the operator config (variant: renewal — routes renew_recover)',
+        },
+        consent: CONSENT_PROPERTY(
+          'paid-analysis consent: { digest } — the consent digest this tool advertised for the SAME effectual operation (snapshot, profile, model, budget)',
+        ),
+      },
+      required: ['dir'],
+      additionalProperties: false,
+    },
+    args: ['scope', 'llmProfile', 'consent'],
+    run: async (input, nowIso, call) => {
+      const scope = (input.scope as string | undefined) ?? 'whole';
+
+      // H-10 + S2-H-02 (INV-F2): compute the digest from the EFFECTUAL
+      // operation state — the active snapshot + graph identity of THIS project
+      // right now (read-only), AND the resolved profile/model route (resolved
+      // BEFORE the digest — a different model config under the same profile
+      // name must advertise a DIFFERENT digest), AND the recovery prompt
+      // protocol, AND the budget envelope.
+      const consentState = await renewalConsentState(input.dir, {
+        ...(input.llmProfile !== undefined ? { llmProfile: input.llmProfile } : {}),
+        ...(input.llmProfile !== undefined ? { resolveProfile: call.resolveLlmProfile } : {}),
+      });
+      const budget = defaultRenewalBudget();
+      const expected = renewConsentDigest({
+        dir: consentState.dirReal,
+        scope,
+        ...(consentState.snapshotId !== undefined ? { snapshotId: consentState.snapshotId } : {}),
+        ...(consentState.graphDigest !== undefined ? { graphDigest: consentState.graphDigest } : {}),
+        ...(input.llmProfile !== undefined ? { llmProfile: input.llmProfile } : {}),
+        ...(consentState.profileFingerprint !== undefined ? { profileFingerprint: consentState.profileFingerprint } : {}),
+        ...(consentState.resolvedModel !== undefined ? { resolvedModel: consentState.resolvedModel } : {}),
+        ...(consentState.routeDigest !== undefined ? { routeDigest: consentState.routeDigest } : {}),
+        promptProtocol: RECOVERY_PROMPT_PROTOCOL,
+        budget,
+      });
+      if (input.consent === undefined) {
+        return {
+          code: 2,
+          output:
+            `renewal analysis is a PAID operation and was NOT performed (zero LLM calls).\n` +
+            `Consent digest for this exact request (binds snapshot ${consentState.snapshotId ?? 'unknown'}, scope, profile/model, budget):\n  ${expected}\n` +
+            'Re-send with consent: { digest } and the server started with LCO_MCP_ALLOW_GENERATE=1.',
+        };
+      }
+      if (!call.allowGenerate) {
+        return {
+          code: 2,
+          output:
+            'renewal analysis refused: this server was not started with LCO_MCP_ALLOW_GENERATE=1 ' +
+            '(zero LLM calls were made).',
+        };
+      }
+      if (input.consent.digest !== expected) {
+        return {
+          code: 2,
+          output:
+            `renewal analysis refused: consent digest mismatch (got ${input.consent.digest}, expected ${expected}). ` +
+            'The digest binds the protocol, root, ACTIVE snapshot/graph identity, profile routing, resolved model, and budget — zero LLM calls were made.',
+        };
+      }
+      // LLM resolution (after the gate): test-injected adapter, a VALIDATED
+      // renewal-variant named profile (no casts — H-04), or the legacy env
+      // (fail-closed, no invented keys). S3-H-06 (trust kernel): ONE ledger
+      // per operation — the SAME instance charges the transport and the
+      // pipeline accounting (two instances was exactly how spend went
+      // uncounted). S3-H-05: adapters measure/cap the exact serialized wire
+      // request before transport.
+      const caps = renewCaps(input.dir, nowIso);
+      // S4-H-03 closure: every renewal route (named profile AND legacy env)
+      // resolves into ONE immutable PaidOperation — deep-cloned frozen route,
+      // digest over the exact transported state, and a ledger OWNED by the
+      // operation and derived from the digest-bound budget. There is no
+      // independently constructible ledger here anymore: a route budgeting 1
+      // attempt cannot be paired with a ledger budgeting more.
+      let op: ReturnType<typeof createPaidOperation> | undefined;
+      let injectedPlan;
+      if (call.llm !== undefined) {
+        injectedPlan = singleRoutePlan(call.llm);
+      } else if (input.llmProfile !== undefined) {
+        const resolved = call.resolveLlmProfile(input.llmProfile);
+        if (!resolved.ok) return { code: 2, output: resolved.output };
+        const { resolved: profile } = resolved.profile;
+        if (profile.variant !== 'renewal') {
+          return {
+            code: 2,
+            output: `renewal analysis refused: llm profile '${resolved.profile.name}' has variant '${profile.variant}' — Renewal requires a variant 'renewal' profile (exactly the renew_recover role); zero LLM calls were made`,
+          };
+        }
+        const role = profile.roles['renew_recover'];
+        if (role === undefined) {
+          return {
+            code: 2,
+            output: `renewal analysis refused: llm profile '${resolved.profile.name}' has no route for role 'renew_recover' (zero LLM calls)`,
+          };
+        }
+        try {
+          const { resolveRoleConfig } = await import('../llm/providers');
+          const { config, apiKey } = resolveRoleConfig(role, process.env, { routingMode: profile.routingMode });
+          op = createPaidOperation({
+            route: routeFromConfig({
+              config,
+              origin: 'named-profile',
+              profileName: input.llmProfile,
+              routingMode: profile.routingMode,
+              apiKeyEnvName: role.apiKeyEnv,
+              budget: { maxAttempts: budget.maxAttempts ?? 8, ...(budget.maxWallMs !== undefined ? { wallMs: budget.maxWallMs } : {}) },
+            }),
+            apiKey,
+            wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+            nowMs: Date.now,
+          });
+        } catch (e) {
+          return { code: 2, output: `renewal analysis refused: no LLM route (${(e as Error).message}) — zero calls were made` };
+        }
+      } else {
+        // Legacy env via the paid kernel: the FULL route (base URL, model,
+        // max tokens, extra body) resolves once, fails closed, and the ledger
+        // is the operation's own (S3-H-07 + S4-H-03).
+        try {
+          const route = resolveLegacyEnvRoute(process.env, {
+            maxAttempts: budget.maxAttempts ?? 8,
+            ...(budget.maxWallMs !== undefined ? { wallMs: budget.maxWallMs } : {}),
+          });
+          const apiKey = process.env.LCO_LLM_API_KEY?.trim();
+          if (apiKey === undefined || apiKey === '') {
+            throw new Error('LLM env incomplete: LCO_LLM_API_KEY must be set with LCO_LLM_BASE_URL and LCO_LLM_MODEL');
+          }
+          op = createPaidOperation({ route, apiKey, wireByteCap: MAX_RECOVERY_WIRE_BYTES, nowMs: Date.now });
+        } catch (e) {
+          return { code: 2, output: `renewal analysis refused: no LLM route (${(e as Error).message}) — zero calls were made` };
+        }
+      }
+      const llmPlan =
+        injectedPlan !== undefined
+          ? injectedPlan
+          : op !== undefined
+            ? {
+                forRole: () => ({
+                  adapter: op!.adapter,
+                  identity: {
+                    gateway: op!.route.gateway,
+                    providerKind: 'openai-compatible' as const,
+                    requestedModel: op!.route.model,
+                  },
+                }),
+              }
+            : undefined;
+      // S4-H-03/V6 verifier closure: the constructed operation IS the
+      // consented operation — assert the digests are equal instead of
+      // relying on twin resolutions staying in sync. A mismatch refuses with
+      // zero transports.
+      if (op !== undefined && consentState.routeDigest !== undefined && op.routeDigest !== consentState.routeDigest) {
+        return {
+          code: 1,
+          output:
+            `renewal analysis refused: the resolved LLM route no longer matches the consented route digest ` +
+            `(consented ${consentState.routeDigest.slice(0, 19)}…, resolved ${op.routeDigest.slice(0, 19)}…) — ` +
+            `re-consent to the current route; zero LLM calls were made`,
+        };
+      }
+      const capsWithLlm: RenewCapabilities = {
+        ...caps,
+        ...(llmPlan !== undefined ? { llm: () => llmPlan } : {}),
+        ...(op !== undefined ? { budget: () => op.ledger } : {}),
+      };
+      return cmdRenewAnalyze({ dir: input.dir, scope: 'whole' }, capsWithLlm);
     },
   },
 ];
@@ -598,6 +1107,13 @@ export interface HandleRpcOptions {
   llm?: LlmAdapter;
   /** Wall-clock provider override (UX-001); default `() => Date.now()` at the boundary. */
   nowMs?: () => number;
+  /**
+   * lco.config.json TEXT for the named-profile resolver (tests/library
+   * callers). Production resolves the path itself: env LCO_LLM_CONFIG →
+   * <effectiveMcpRoot>/lco.config.json. Absent everywhere ⇒ llmProfile
+   * requests are refused (named profiles unavailable).
+   */
+  llmConfigText?: string;
 }
 
 /**
@@ -722,6 +1238,18 @@ async function handleToolsCall(
     // UX-001: same boundary-clock contract as nowIso — the wall budget's
     // time source, injected once per tool call (tests override via options).
     nowMs: options?.nowMs ?? (() => Date.now()),
+    // §17 named-profile resolver, built once per tool call: the config comes
+    // from the OPERATOR (options.llmConfigText for tests → env
+    // LCO_LLM_CONFIG path → <effectiveMcpRoot>/lco.config.json), never from
+    // request arguments. Without operator configuration llmProfile requests
+    // are refused — there is no request-controlled gateway.
+    resolveLlmProfile: (name: string) => {
+      const loaded = loadLlmConfigForProfiles(options);
+      if (!loaded.ok) return { ok: false as const, output: loaded.output };
+      const resolved = resolveProfile(loaded.config, name);
+      if (!resolved.ok) return { ok: false as const, output: `generation refused: ${resolved.error}` };
+      return { ok: true as const, profile: { name, resolved: resolved.resolved } };
+    },
   };
 
   // DIR POLICY (SEC-003, MANDATORY allowed-root): the tool's `dir` is
@@ -741,6 +1269,16 @@ async function handleToolsCall(
     return errorResponse(id, -32602, dirCheck.message);
   }
   input.value.dir = dirCheck.dir;
+
+  // S2-M-04 (INV-A, MCP facet): for Renewal tools, containing request.dir is
+  // not containment of the OPERATION — the recorded target and graph
+  // workspace the tool reads/hashes must also resolve inside the pin.
+  if (tool.name.startsWith('lco_renew_')) {
+    const transitive = transitiveRenewalRootCheck(input.value.dir, effectiveMcpRoot(call.execRoot));
+    if (!transitive.ok) {
+      return errorResponse(id, -32602, transitive.message);
+    }
+  }
 
   let result: CoreResult;
   try {
@@ -770,16 +1308,76 @@ async function handleToolsCall(
 // unknown keys, and missing required arguments are all -32602 refusals at
 // THIS layer — the command cores only ever see normalized input.
 
+/**
+ * Load the operator's lco.config.json for named-profile selection (§17).
+ * Precedence: options.llmConfigText (tests/library) → env LCO_LLM_CONFIG
+ * path → <effectiveMcpRoot>/lco.config.json. All sources are OPERATOR-owned;
+ * a request never supplies config content. Memoized per options object so
+ * repeated resolves in one call read at most once.
+ */
+function loadLlmConfigForProfiles(
+  options: HandleRpcOptions | undefined,
+): { ok: true; config: LlmConfig } | { ok: false; output: string } {
+  const cache = configLoadCache.get(options ?? NULL_OPTIONS_KEY);
+  if (cache !== undefined) return cache;
+  const result = (() => {
+    if (options?.llmConfigText !== undefined) {
+      const parsed = parseLlmConfig(options.llmConfigText);
+      return parsed.ok
+        ? { ok: true as const, config: parsed.config }
+        : { ok: false as const, output: `generation refused: ${parsed.error}` };
+    }
+    const path = options?.env?.LCO_LLM_CONFIG ?? process.env.LCO_LLM_CONFIG;
+    const candidates: string[] =
+      path !== undefined && path !== ''
+        ? [path]
+        : [join(process.cwd(), 'lco.config.json')];
+    for (const candidate of candidates) {
+      let text: string;
+      try {
+        text = readFileSync(candidate, 'utf8');
+      } catch {
+        continue;
+      }
+      const parsed = parseLlmConfig(text);
+      return parsed.ok
+        ? { ok: true as const, config: parsed.config }
+        : { ok: false as const, output: `generation refused: lco.config.json at ${candidate} is invalid: ${parsed.error}` };
+    }
+    return {
+      ok: false as const,
+      output:
+        'generation refused: no lco.config.json is configured for this server (looked for ' +
+        `${candidates[0]}${path === undefined ? ' and LCO_LLM_CONFIG is unset' : ''}) — named llmProfile ` +
+        'selection requires the OPERATOR to provide lco.config.json at the server boundary; ' +
+        'raw keys/URLs are never accepted in requests',
+    };
+  })();
+  // Cache SUCCESSFUL loads only (F6): a failed read (missing/invalid config)
+  // must not pin a permanent refusal for the process lifetime — the operator
+  // who adds or fixes lco.config.json gets picked up on the next call.
+  if (result.ok) {
+    configLoadCache.set(options ?? NULL_OPTIONS_KEY, result);
+  }
+  return result;
+}
+
+const NULL_OPTIONS_KEY = {} as const;
+const configLoadCache = new WeakMap<object, ReturnType<typeof loadLlmConfigForProfiles>>();
+
 /** Every argument name any tool accepts beyond `dir`. */
 type ArgName =
   | 'task'
   | 'json'
+  | 'out'
+  | 'scope'
   | 'consent'
   | 'profile'
   | 'variant'
   | 'name'
   | 'intent'
-  | 'changeset';
+  | 'changeset'
+  | 'llmProfile';
 
 /**
  * Validate one argument: returns the NORMALIZED value, or a per-argument
@@ -803,6 +1401,14 @@ const ARG_SPECS: Record<ArgName, ArgValidator> = {
     typeof arg === 'boolean'
       ? { ok: true, value: arg }
       : { ok: false, message: "'json' must be a boolean" },
+  out: (arg) =>
+    typeof arg === 'string' && arg.trim() !== ''
+      ? { ok: true, value: arg }
+      : { ok: false, message: "'out' must be a non-empty string (report file path)" },
+  scope: (arg) =>
+    arg === 'whole'
+      ? { ok: true, value: arg }
+      : { ok: false, message: "'scope' must be 'whole' (V1 analyzes the whole guarded graph)" },
   consent: (arg) => {
     if (!isPlainObject(arg)) return { ok: false, message: "'consent' must be an object: { digest: string }" };
     const keys = Object.keys(arg);
@@ -822,6 +1428,10 @@ const ARG_SPECS: Record<ArgName, ArgValidator> = {
     arg === 'single' || arg === 'council'
       ? { ok: true, value: arg }
       : { ok: false, message: "'variant' must be single or council" },
+  llmProfile: (arg) =>
+    typeof arg === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(arg)
+      ? { ok: true, value: arg }
+      : { ok: false, message: "'llmProfile' must be a profile NAME (letters, digits, . _ -) from the operator's lco.config.json" },
   name: (arg) =>
     typeof arg === 'string' && arg.trim() !== ''
       ? { ok: true, value: arg }
@@ -885,6 +1495,25 @@ function parseToolInput(
         return invalid(
           `unknown argument '${key}': capability/trust state is set by the OPERATOR at the ` +
             `server boundary (env flags / injected adapter), never by a request argument`,
+        );
+      }
+      // §17 credential/gateway-shaped keys: a request must NEVER carry a raw
+      // API key, an arbitrary base URL, or arbitrary headers — that is an
+      // SSRF + credential-injection + spend-control bypass. Gateway and model
+      // selection is a NAMED profile from operator configuration only.
+      if (
+        key === 'apiKey' ||
+        key === 'api_key' ||
+        key === 'baseUrl' ||
+        key === 'base_url' ||
+        key === 'headers' ||
+        key === 'authorization' ||
+        key === 'providerCredentials'
+      ) {
+        return invalid(
+          `unknown argument '${key}': raw credentials, base URLs, and headers are never request ` +
+            `arguments — select llmProfile (a NAME the operator preconfigured in lco.config.json) ` +
+            `instead; keys live only in the server process environment`,
         );
       }
       return invalid(`unknown argument '${key}'`);

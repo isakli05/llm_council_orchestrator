@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cmdCompile } from './commands/compile';
 import { cmdLint } from './commands/lint';
@@ -11,9 +12,32 @@ import { cmdPlan } from './commands/plan';
 import { cmdInit } from './commands/init';
 import { cmdCheck } from './commands/check';
 import { cmdDoctor, parseEnginesFloor } from './commands/doctor';
+import { cmdModels } from './commands/models';
 import { cmdGenerate, normalizeFileIntent } from './commands/generate';
-import { parseArgs, commandHelp, USAGE } from './args';
-import type { RunBudgetSpec } from '../eval/budget';
+import {
+  cmdRenewInit,
+  cmdRenewRefresh,
+  cmdRenewStatus,
+  cmdRenewAnalyze,
+  cmdRenewReview,
+  cmdRenewPlan,
+  cmdRenewExport,
+  type RenewCapabilities,
+} from './commands/renew';
+import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
+import { renewalPaths } from '../renew/project/project';
+import { readPackageVersion } from '../release/version';
+import { singleRoutePlan, type LlmPlan, type LlmRoute } from '../llm/plan';
+import { MAX_RECOVERY_WIRE_BYTES, createPaidOperation, resolveLegacyEnvRoute, routeFromConfig } from '../renew/trust/paid';
+import { resolveRoleConfig } from '../llm/providers';
+import { execFileSync, spawn } from 'node:child_process';
+import { cmdGenerateInteractive } from './commands/generate-interactive';
+import { parseArgs, commandHelp, renewSubHelp, USAGE } from './args';
+import { createBudgetLedger, type RunBudgetSpec } from '../eval/budget';
+import { parseLlmConfig, resolveProfile } from '../config/llm-config';
+import type { ResolvedProfile } from '../config/llm-config';
+import { parseAnswersFile } from '../eval/answers';
+import type { UserAnswerForPrompt } from '../eval/prompts-v4';
 
 /**
  * Thin CLI entry (split from the old monolith, T23): the pure parsing/usage
@@ -22,22 +46,6 @@ import type { RunBudgetSpec } from '../eval/budget';
  * and error wrapping. The bin surface (`lco` -> dist/cli/index.js) and the
  * exported runCli are unchanged.
  */
-
-/**
- * Reads the version from the package's own package.json at RUN TIME — never
- * hardcoded, so a version bump needs no CLI change. src/cli and dist/cli sit
- * at the same depth under the package root, so the relative path holds both
- * for the repo build/test and for a packed install (npm always ships
- * package.json next to dist/).
- */
-async function readVersion(): Promise<string> {
-  const raw = await readFile(join(__dirname, '../../package.json'), 'utf8');
-  const version = (JSON.parse(raw) as { version?: unknown }).version;
-  if (typeof version !== 'string' || version === '') {
-    throw new Error('package.json has no usable version field');
-  }
-  return version;
-}
 
 /**
  * UX-001: env-var budget overrides for generate (LCO_GENERATE_MAX_ATTEMPTS /
@@ -102,7 +110,14 @@ export async function runCli(argv: string[]): Promise<number> {
     return 0;
   }
   if ('version' in parsed) {
-    console.log(await readVersion());
+    // Runtime read of the package's own package.json — never hardcoded, so a
+    // version bump needs no CLI change (single authority in ../release/version,
+    // shared with the MCP server's serverInfo.version).
+    console.log(readPackageVersion());
+    return 0;
+  }
+  if ('renewSubHelp' in parsed) {
+    console.log(renewSubHelp(parsed.renewSubHelp));
     return 0;
   }
   if ('commandHelp' in parsed) {
@@ -238,6 +253,257 @@ export async function runCli(argv: string[]): Promise<number> {
       console.log(result.output);
       return result.code;
     }
+    case 'models': {
+      // Catalog discovery (§16): the FREE models endpoint only — one GET,
+      // no completions, no retry. Built-in providers (openrouter/routellm)
+      // need no config; a named provider resolves from lco.config.json
+      // (--config path, default ./lco.config.json).
+      let configText: string | undefined;
+      if (parsed.provider !== 'openrouter' && parsed.provider !== 'routellm') {
+        const configPath = parsed.configPath ?? 'lco.config.json';
+        try {
+          configText = await readFile(configPath, 'utf8');
+        } catch (err) {
+          console.error(
+            `lco: --provider ${parsed.provider} needs ${configPath}: ${(err as Error).message}`,
+          );
+          return 2;
+        }
+      }
+      let result;
+      try {
+        result = await cmdModels({
+          ...(parsed.provider === 'openrouter' || parsed.provider === 'routellm'
+            ? { builtin: parsed.provider }
+            : { providerName: parsed.provider, ...(configText !== undefined ? { configText } : {}) }),
+          env: { ...process.env },
+          ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
+        });
+      } catch (err) {
+        console.error(`lco: models failed: ${(err as Error).message}`);
+        return 2;
+      }
+      if (parsed.json) {
+        console.log(JSON.stringify({ entries: result.entries ?? [], code: result.code }));
+      } else {
+        console.log(result.output);
+      }
+      return result.code;
+    }
+    case 'renew': {
+      // Legacy Renewal V1 (analysis + planning, NO execution). The boundary
+      // owns ALL env/file/clock/subprocess access; cores stay pure.
+      const r = parsed.renew;
+      const caps: RenewCapabilities = {
+        nowIso: () => new Date().toISOString(),
+        provider: () => new GraphifyAdapter({ workspaceRoot: renewalPaths(r.dir).workspace, projectDir: r.dir }),
+        // L-02: a QUIET, single-purpose probe — non-Git targets produce a
+        // structured repo_kind:'plain' in the snapshot, never raw Git fatal
+        // stderr noise on the operator's terminal.
+        gitCommit: (root) => {
+          try {
+            return execFileSync('git', ['rev-parse', 'HEAD'], {
+              cwd: root,
+              encoding: 'utf8',
+              timeout: 5000,
+              stdio: ['ignore', 'pipe', 'ignore'],
+            }).trim();
+          } catch {
+            return undefined;
+          }
+        },
+        ...(r.sub === 'analyze'
+          ? (() => {
+              // INV-F1 (S2-H-01): ONE budget envelope and ONE accounting
+              // lineage per paid operation — the SAME ledger instance charges
+              // the transport (HTTP attempts) and the pipeline (logical calls,
+              // validation retry, tokens, wall). Separate transport/profile/
+              // pipeline ledgers are exactly how maxAttempts=1 accepted
+              // attempts=2 while a disconnected counter stayed at 0.
+              let sharedLedger: ReturnType<typeof createBudgetLedger> | undefined;
+              const renewalBudget = () => ({
+                maxAttempts: r.budget?.maxAttempts ?? 8,
+                ...(r.budget?.maxTokens !== undefined ? { maxTokens: r.budget.maxTokens } : {}),
+                // The documented 15-minute default wall cap applies when the
+                // operator did not override it (the audit found the default
+                // existed only in prose).
+                maxWallMs: r.budget?.maxWallMs ?? 15 * 60_000,
+              });
+              const oneLedger = () => {
+                if (sharedLedger === undefined) {
+                  sharedLedger = createBudgetLedger(renewalBudget(), { nowMs: Date.now });
+                }
+                return sharedLedger;
+              };
+              return {
+                // H-05: a paid Renewal call is never unbounded — explicit CLI
+                // flags win over the documented defaults (8 attempts / 15 min).
+                budget: oneLedger,
+                llm: () => {
+                  // Named profile (must route renew_recover) or the legacy env —
+                  // both fail closed; keys are never invented here. Both routes
+                  // share the ONE ledger above.
+                  if (r.llmProfile !== undefined) {
+                    let text: string;
+                  try {
+                    text = require('node:fs').readFileSync(join(r.dir, 'lco.config.json'), 'utf8');
+                  } catch (err) {
+                    throw new Error(`--llm-profile needs ${join(r.dir, 'lco.config.json')}: ${(err as Error).message}`);
+                  }
+                  const parsedConfig = parseLlmConfig(text);
+                  if (!('config' in parsedConfig)) {
+                    throw new Error(parsedConfig.error);
+                  }
+                  const resolved = resolveProfile(parsedConfig.config, r.llmProfile);
+                  if (!('resolved' in resolved)) {
+                    throw new Error(resolved.error);
+                  }
+                  // H-04: typed resolution — a renewal-variant profile with
+                  // exactly the renew_recover role; no unsafe casts anywhere.
+                  if (resolved.resolved.variant !== 'renewal') {
+                    throw new Error(
+                      `llm profile '${r.llmProfile}' has variant '${resolved.resolved.variant}' — Renewal requires a variant 'renewal' profile (exactly the renew_recover role)`,
+                    );
+                  }
+                  const role = resolved.resolved.roles['renew_recover'];
+                  if (role === undefined) {
+                    throw new Error(`llm profile '${r.llmProfile}' has no route for role 'renew_recover' (analyze made zero calls)`);
+                  }
+                  // S3-H-05 (trust kernel): the adapter measures the EXACT
+                  // serialized wire request (envelope, model, extra body
+                  // included) and refuses over-cap BEFORE any transport —
+                  // the validation retry goes through the same adapter and
+                  // is capped again.
+                  // S4-H-03 (trust kernel closure): the named-profile renewal
+                  // route resolves through the SAME paid kernel as the legacy
+                  // route — one immutable operation (deep-cloned frozen route,
+                  // digest-bound, wire-capped) with an INTERNALLY owned
+                  // ledger derived from the digest-bound budget. There is no
+                  // parallel buildRoleAdapter reconstruction here anymore.
+                  const rb = renewalBudget();
+                  const { config, apiKey } = resolveRoleConfig(role, process.env, {
+                    routingMode: resolved.resolved.routingMode,
+                  });
+                  const op = createPaidOperation({
+                    route: routeFromConfig({
+                      config,
+                      origin: 'named-profile',
+                      profileName: r.llmProfile,
+                      routingMode: resolved.resolved.routingMode,
+                      apiKeyEnvName: role.apiKeyEnv,
+                      budget: { maxAttempts: rb.maxAttempts, ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}) },
+                    }),
+                    apiKey,
+                    wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+                    nowMs: Date.now,
+                  });
+                  // S4-H-03 (B5 closure): the operation OWNS the ledger — the
+                  // shared envelope the pipeline charges IS op.ledger (derived
+                  // from the digest-bound budget), never a second instance.
+                  sharedLedger = op.ledger;
+                  const plan: LlmPlan = {
+                    forRole: () => ({
+                      adapter: op.adapter,
+                      identity: {
+                        gateway: role.gateway,
+                        providerKind: 'openai-compatible' as LlmRoute['identity']['providerKind'],
+                        requestedModel: role.model,
+                      },
+                    }),
+                  };
+                  return plan;
+                }
+                // Legacy env route (S3-H-07, trust kernel): EVERY effectual
+                // field (base URL, model, max tokens, extra body, budget)
+                // resolves NOW into the immutable paid route — one ledger,
+                // wire-capped adapter, zero post-resolution drift.
+                const route = resolveLegacyEnvRoute(process.env, {
+                  maxAttempts: renewalBudget().maxAttempts,
+                  ...(renewalBudget().maxWallMs !== undefined ? { wallMs: renewalBudget().maxWallMs } : {}),
+                });
+                const apiKey = process.env.LCO_LLM_API_KEY?.trim();
+                if (apiKey === undefined || apiKey === '') {
+                  throw new Error('LLM env incomplete: LCO_LLM_API_KEY must be set with LCO_LLM_BASE_URL and LCO_LLM_MODEL (fail-closed; no default endpoint)');
+                }
+                const op = createPaidOperation({
+                  route,
+                  apiKey,
+                  wireByteCap: MAX_RECOVERY_WIRE_BYTES,
+                  nowMs: Date.now,
+                });
+                // S4-H-03 (B5 closure): one ledger lineage — the pipeline's
+                // envelope IS the operation's own ledger.
+                sharedLedger = op.ledger;
+                return singleRoutePlan(op.adapter);
+              },
+              };
+            })()
+          : {}),
+        ...(r.sub === 'review'
+          ? {
+              openBrowser: (url) => {
+                const cmd = process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+                const argv = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+                try {
+                  spawn(cmd, argv, { detached: true, stdio: 'ignore' }).unref();
+                } catch {
+                  /* URL is printed either way */
+                }
+              },
+            }
+          : {}),
+      };
+      let result;
+      switch (r.sub) {
+        case 'init':
+          result = await cmdRenewInit({ dir: r.dir, target: r.target, ...(r.name !== undefined ? { name: r.name } : {}) }, caps);
+          break;
+        case 'refresh':
+          result = await cmdRenewRefresh({ dir: r.dir }, caps);
+          break;
+        case 'status':
+          result = await cmdRenewStatus({ dir: r.dir, json: r.json }, caps);
+          break;
+        case 'analyze':
+          try {
+            result = await cmdRenewAnalyze({ dir: r.dir }, caps);
+          } catch (err) {
+            if (err instanceof Error && /^(LLM env|llm profile)/.test(err.message)) {
+              console.error(`lco: analyze failed: ${err.message}`);
+              return 2;
+            }
+            throw err;
+          }
+          break;
+        case 'review':
+          result = await cmdRenewReview(
+            {
+              dir: r.dir,
+              ...(r.answersFile !== undefined ? { answersPath: r.answersFile } : {}),
+              interactive: r.interactive,
+              noOpen: r.noOpen,
+            },
+            caps,
+          );
+          break;
+        case 'plan':
+          result = await cmdRenewPlan(
+            {
+              dir: r.dir,
+              ...(r.strategy !== undefined ? { strategy: r.strategy } : {}),
+              ...(r.strategyRationale !== undefined ? { strategyRationale: r.strategyRationale } : {}),
+              freeze: r.freeze,
+            },
+            caps,
+          );
+          break;
+        case 'export':
+          result = await cmdRenewExport({ dir: r.dir, ...(r.out !== undefined ? { out: r.out } : {}) }, caps);
+          break;
+      }
+      console.log(result.output);
+      return result.code;
+    }
     case 'generate': {
       // Wrapper edge: resolve --intent-file to the intent text HERE (IO stays
       // at the boundary); an unreadable or empty file is a usage error (2).
@@ -273,12 +539,109 @@ export async function runCli(argv: string[]): Promise<number> {
       }
       const budget: RunBudgetSpec = { ...envBudget, ...parsed.budget };
 
+      // §7 named-profile resolution (fail-closed, at the boundary): the flag
+      // names a profile from <dir>/lco.config.json; a missing/corrupt config,
+      // an unknown profile, or an unresolved reference is a usage error
+      // BEFORE any paid call. No flag → the legacy LCO_LLM_* path, unchanged.
+      let llmProfile: { name: string; resolved: ResolvedProfile } | undefined;
+      if (parsed.llmProfile !== undefined) {
+        const configPath = join(parsed.dir, 'lco.config.json');
+        let text: string;
+        try {
+          text = await readFile(configPath, 'utf8');
+        } catch (err) {
+          console.error(
+            `lco: --llm-profile ${parsed.llmProfile} needs ${configPath}: ${(err as Error).message}`,
+          );
+          return 2;
+        }
+        const parsedConfig = parseLlmConfig(text);
+        if (!parsedConfig.ok) {
+          console.error(`lco: ${parsedConfig.error}`);
+          return 2;
+        }
+        const resolved = resolveProfile(parsedConfig.config, parsed.llmProfile);
+        if (!resolved.ok) {
+          console.error(`lco: ${resolved.error}`);
+          return 2;
+        }
+        llmProfile = { name: parsed.llmProfile, resolved: resolved.resolved };
+      }
+
+      // §12 clarification answers: read + validate at the boundary; each
+      // answer becomes verbatim user_input evidence (hash computed locally).
+      let answers: UserAnswerForPrompt[] | undefined;
+      if (parsed.answersFile !== undefined) {
+        let raw: string;
+        try {
+          raw = await readFile(parsed.answersFile, 'utf8');
+        } catch (err) {
+          console.error(`lco: cannot read --answers ${parsed.answersFile}: ${(err as Error).message}`);
+          return 2;
+        }
+        const parsedAnswers = parseAnswersFile(raw, `answers:${parsed.answersFile}`);
+        if (!parsedAnswers.ok) {
+          console.error(`lco: ${parsedAnswers.error}`);
+          return 2;
+        }
+        answers = parsedAnswers.answers;
+      }
+
       // CLI boundary: the clock is read HERE only and injected (nowIso for
       // prompts, nowMs for the wall budget — the core never reads the clock
       // itself). cmdGenerate resolves createHttpLlm() itself and THROWS
       // fail-closed when LCO_LLM_* env is missing; a budget abort
       // (BudgetExceededError) lands here the same way: exit 2, nothing
       // written.
+      // §3/§43: --interactive routes to the browser clarification workspace —
+      // an EXPLICIT opt-in; the headless path above is unchanged. SIGINT cancels
+      // the session cleanly (nothing written) and exits 130.
+      if (parsed.interactive === true) {
+        let result;
+        let cancelSession: (() => void) | null = null;
+        const onSigint = (): void => {
+          cancelSession?.();
+          console.error('lco: interrupt — cancelling the clarification session; nothing was written');
+          process.exit(130);
+        };
+        process.on('SIGINT', onSigint);
+        try {
+          result = await cmdGenerateInteractive(parsed.dir, {
+            intent,
+            variant: parsed.variant,
+            profile: parsed.profile,
+            nowIso: () => new Date().toISOString(),
+            budget,
+            nowMs: () => Date.now(),
+            ...(llmProfile !== undefined ? { llmProfile } : {}),
+            ...(parsed.noOpen === true ? { noOpen: true } : {}),
+            onLine: (line) => console.log(line),
+            onReady: (info) => {
+              // the server handle is reachable through the ready callback's
+              // closure: cancel by API so the session state machine stays the
+              // single writer of CANCELLED
+              cancelSession = () => {
+                void fetch(`${info.origin}/api/${info.sessionId}/cancel`, {
+                  method: 'POST',
+                  headers: { 'x-lco-session': info.token, 'content-type': 'application/json' },
+                  body: '{}',
+                }).catch(() => {
+                  // best effort: server gone = session gone with it
+                });
+              };
+            },
+            onEvent: (line) => console.log(`  · ${line}`),
+          });
+        } catch (err) {
+          console.error(`lco: generate --interactive failed: ${(err as Error).message}`);
+          return 2;
+        } finally {
+          process.off('SIGINT', onSigint);
+        }
+        console.log(result.output);
+        return result.code;
+      }
+
       let result;
       try {
         result = await cmdGenerate(parsed.dir, {
@@ -288,6 +651,8 @@ export async function runCli(argv: string[]): Promise<number> {
           nowIso: new Date().toISOString(),
           budget,
           nowMs: () => Date.now(),
+          ...(llmProfile !== undefined ? { llmProfile } : {}),
+          ...(answers !== undefined ? { answers } : {}),
         });
       } catch (err) {
         console.error(`lco: generate failed: ${(err as Error).message}`);

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "outDir": "dist/browser",
+    "rootDir": "src/browser-client",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "noEmitOnError": true,
+    "types": []
+  },
+  "include": ["src/browser-client/**/*.ts"],
+  "exclude": ["src/browser-client/**/*.test.ts"]
+}

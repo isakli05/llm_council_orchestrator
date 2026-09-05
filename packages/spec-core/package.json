@@ -1,7 +1,7 @@
 {
   "name": "lco-spec",
-  "version": "0.1.0",
-  "description": "Turn natural-language intent into schema-validated, lintable, freezable application specs — with an LLM council or a single model.",
+  "version": "0.2.0",
+  "description": "Turn natural-language intent into schema-validated, lintable, freezable application specs \u2014 with an LLM council or a single model.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -24,13 +24,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node scripts/make-bins-executable.js && node dist/schemas/export-json-schema.js",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && tsc -p tsconfig.browser.json && node scripts/copy-browser-assets.js && node scripts/make-bins-executable.js && node dist/schemas/export-json-schema.js",
     "pretest": "pnpm run build",
     "test": "vitest run",
     "test:coverage": "pnpm run build && vitest run --coverage",
     "smoke:packed": "sh scripts/packed-install-smoke.sh",
     "test:watch": "vitest",
-    "lint": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
     "prepublishOnly": "pnpm run test && node scripts/prepublish-check.js"
   },
   "dependencies": {
@@ -39,6 +39,7 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@vitest/coverage-v8": "^2.1.9",
+    "jsdom": "^30.0.1",
     "typescript": "^5.3.3",
     "vitest": "^2.1.0",
     "zod-to-json-schema": "^3.23"

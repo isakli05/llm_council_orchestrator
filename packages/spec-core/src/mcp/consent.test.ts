@@ -278,13 +278,20 @@ describe('scrubbedExecutor', () => {
 // --- preview digest ----------------------------------------------------------------
 
 describe('checkPreviewDigest', () => {
-  it('is deterministic and matches the repo hashing idiom sha256(JSON.stringify(payload, null, 2))', async () => {
+  it('is deterministic and byte-pinned to the LCO:CONSENT canonical domain digest (S4-M-02)', async () => {
     const { bundle } = await loadedBundle(inlineConforming());
     const digest = checkPreviewDigest(bundle);
 
-    // The exact expected value, computed by hand with the same idiom the
-    // manifest artifact hashes use — pins BOTH the hash framing and the
-    // payload shape {spec_version, tasks:[{task_id, verification:[{command,expect}]}]}.
+    // The exact expected value under the domain-separated canonical envelope
+    // (hand-computed literal — pins BOTH the digest framing and the payload
+    // shape {spec_version, tasks:[{task_id, verification:[{command,expect}]}]}).
+    const expected = 'sha256:b5ac569179b11a84a086aecf63cf296cc25501e0a9482cad4ba6c03e4621d951';
+    expect(digest).toBe(expected);
+    expect(digest).toBe(checkPreviewDigest(bundle)); // deterministic
+
+    // S4-M-02 anti-regression: the consent digest must NOT be the old ad-hoc
+    // sha256(JSON.stringify(payload, null, 2)) idiom — consent digests are
+    // owned by the CanonicalDigest domain layer.
     const payload = {
       spec_version: 1,
       tasks: [
@@ -294,10 +301,9 @@ describe('checkPreviewDigest', () => {
         },
       ],
     };
-    const expected =
+    const adhoc =
       'sha256:' + createHash('sha256').update(JSON.stringify(payload, null, 2), 'utf8').digest('hex');
-    expect(digest).toBe(expected);
-    expect(digest).toBe(checkPreviewDigest(bundle)); // deterministic
+    expect(digest).not.toBe(adhoc);
   });
 
   it('the digest binds the SELECTION CONTENT: filtering changes it when the selected commands differ', async () => {
@@ -367,13 +373,13 @@ describe('authorizeExecution', () => {
     if (!auth.ok) {
       expect(auth.output).toContain('digest mismatch');
       expect(auth.output).toContain(carried);
-      expect(auth.output).toContain(checkPreviewDigest(bundle));
+      expect(auth.output).toContain(checkPreviewDigest(bundle, undefined, root));
     }
   });
 
   it('frozen+verified+matching digest -> ok, echoing the expected digest', async () => {
     const { root, bundle } = await frozenLoadedBundle(inlineConforming());
-    const digest = checkPreviewDigest(bundle);
+    const digest = checkPreviewDigest(bundle, undefined, root);
 
     const auth = authorizeExecution(bundle, root, undefined, digest);
     expect(auth).toEqual({ ok: true, digest });
@@ -390,7 +396,7 @@ describe('authorizeExecution', () => {
 
   it('execRoot pin: dirs outside the pinned workspace are refused; inside passes', async () => {
     const { root, bundle } = await frozenLoadedBundle(inlineConforming());
-    const digest = checkPreviewDigest(bundle);
+    const digest = checkPreviewDigest(bundle, undefined, root);
 
     // A REAL outside dir (not just a nonexistent path): a second tmp tree the
     // pin does not cover. Realpath containment must refuse it.
@@ -412,7 +418,7 @@ describe('authorizeExecution', () => {
 
   it('execRoot pin is REALPATH containment: a dir under the pin via an escaping symlink is refused (SEC-003)', async () => {
     const { root, bundle } = await frozenLoadedBundle(inlineConforming());
-    const digest = checkPreviewDigest(bundle);
+    const digest = checkPreviewDigest(bundle, undefined, root);
     const pin = mkdtempSync(join(tmpdir(), 'spec-core-consent-pin-'));
     tmpDirs.push(pin);
     const movedRoot = join(pin, 'work');
@@ -430,8 +436,10 @@ describe('authorizeExecution', () => {
       expect(escaped.output).toContain('symlink'); // the refusal names the mechanism
     }
 
-    // And the honest inside case still passes.
-    const inside = authorizeExecution(bundle, movedRoot, undefined, digest, pin);
+    // And the honest inside case still passes (S3-H-10: the digest binds the
+    // EFFECTUAL execution directory, so it is recomputed for movedRoot).
+    const movedDigest = checkPreviewDigest(bundle, undefined, movedRoot);
+    const inside = authorizeExecution(bundle, movedRoot, undefined, movedDigest, pin);
     expect(inside.ok).toBe(true);
   });
 });
@@ -461,22 +469,26 @@ describe('generateOptInFromEnv', () => {
 });
 
 describe('generateConsentDigest', () => {
-  it('deterministic, repo idiom sha256(JSON.stringify({intent, profile, variant}, null, 2)) — byte-pinned', () => {
+  it('deterministic, byte-pinned to the LCO:CONSENT canonical domain digest (S4-M-02)', () => {
     const digest = generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council');
 
-    // Hand-computed with the same framing the manifest artifact hashes use —
-    // pins BOTH the hash idiom and the payload shape.
+    // Hand-computed literal under the domain-separated canonical envelope —
+    // pins BOTH the digest framing and the payload shape.
+    const expected = 'sha256:5c06874fd2ffe124e20825fcdc248c01fc30069274cfb6552cb493c2cd308d1e';
+    expect(digest).toBe(expected);
+    expect(generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council')).toBe(
+      digest,
+    );
+
+    // S4-M-02 anti-regression: the old ad-hoc idiom must NOT reproduce the digest.
     const payload = {
       intent: 'build a small pet clinic scheduler',
       profile: 'p-mini',
       variant: 'council',
     };
-    const expected =
+    const adhoc =
       'sha256:' + createHash('sha256').update(JSON.stringify(payload, null, 2), 'utf8').digest('hex');
-    expect(digest).toBe(expected);
-    expect(generateConsentDigest('build a small pet clinic scheduler', 'p-mini', 'council')).toBe(
-      digest,
-    );
+    expect(digest).not.toBe(adhoc);
   });
 
   it('binds EVERY effectual component: intent, profile, or variant change → different digest', () => {

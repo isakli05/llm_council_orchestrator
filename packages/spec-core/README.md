@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (1329 test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
+pnpm --filter ./packages/spec-core test    # vitest (2200+ test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -519,12 +519,290 @@ lco generate <dir> --intent "<metin>" | --intent-file <path> \
 - **Başarı:** `spec/` bölüm dosyaları yazılır (`state: draft`) ve çıktı sıradaki
   adımı önerir: `run lco lint/lco freeze next`.
 
+## Multi-Provider LLM Architecture (gateways, profiles, heterogeneous councils)
+
+**Status framing (binding):** `single` remains the DEFAULT generation variant.
+`council` remains **EXPERIMENTAL**, in every topology. The closed PROD-003
+live experiment did **NOT substantiate** a council advantage (pre-registered
+criterion NOT MET — see `audit-output/eval/LIVE-EVAL-RESULT-2026-08-30.md`);
+nothing here changes that. Heterogeneous councils are equally EXPERIMENTAL
+and carry **no accuracy claim** — any future claim requires a NEW
+pre-registered experiment.
+
+### Gateways
+
+One reusable OpenAI-compatible transport (`src/llm/openai-compatible.ts`)
+serves every gateway. No vendor SDKs. Three provider kinds:
+
+| kind | base URL | key env (name in config) | notes |
+|---|---|---|---|
+| `openai-compatible` | your `baseUrl` (required — LCO never defaults an endpoint) | any env name | the legacy `LCO_LLM_*` path's kin; `extraBody` escape hatch |
+| `openrouter` | `https://openrouter.ai/api/v1` (overridable) | e.g. `OPENROUTER_API_KEY` | routing modes below; provider-reported cost (credits) recorded |
+| `routellm` | `https://routellm.abacus.ai/v1` (overridable) | e.g. `ABACUS_ROUTELLM_API_KEY` | explicit model ids; upstream provider NOT reported → recorded unknown |
+
+**Secrets never live in `lco.config.json`** — providers carry `apiKeyEnv`, the
+NAME of an environment variable. A raw key pasted where the name belongs fails
+validation (and `doctor` fails the config). API-key values stay in the process
+environment, exactly like `LCO_LLM_API_KEY` today.
+
+### `lco.config.json` and named profiles
+
+Put `lco.config.json` in the project directory (the `<dir>` you pass to
+`generate`). A complete, commented example — including a **same-model
+decomposed council** and the frontier heterogeneous EXAMPLE profile — ships at
+`examples/lco.config.example.json`. Shape:
+
+```jsonc
+{
+  "llm": {
+    "providers": {
+      "openrouter": { "type": "openrouter", "apiKeyEnv": "OPENROUTER_API_KEY" }
+    },
+    "profiles": {
+      "frontier-heterogeneous-openrouter": {
+        "variant": "council",
+        "topology": "decomposed",
+        "routingMode": "evaluation",
+        "roles": {
+          "classifier": { "provider": "openrouter", "model": "google/gemini-3.7-flash" },
+          "proposal_a": { "provider": "openrouter", "model": "anthropic/claude-opus-5" },
+          "proposal_b": { "provider": "openrouter", "model": "x-ai/grok-4.6" },
+          "judge":     { "provider": "openrouter", "model": "openai/gpt-5.6-sol" }
+        }
+      }
+    }
+  }
+}
+```
+
+That frontier profile is an **EXAMPLE composition, not a proven optimum** —
+role behavior matters more than vendor branding. The four slugs were verified
+against the live OpenRouter catalogue on 2026-08-30; catalogues change, so
+check current ids with `lco models` (below) rather than trusting any doc.
+
+Usage — one named choice, not fifteen model flags:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...   # the value lives in the ENV, never in config
+lco generate app --intent "..." --variant council --llm-profile frontier-heterogeneous-openrouter
+```
+
+Without `--llm-profile` the legacy `LCO_LLM_*` path runs **unchanged**
+(zero-config, single model, fail-closed). A profile and `--variant` must
+agree. Validation is strict and fail-closed: unknown keys, secret-shaped
+`apiKeyEnv` values, dangling references, and wrong role sets are all refused
+before any paid call.
+
+### Council topologies (under `--variant council`)
+
+```
+single     one configured model (default; unchanged)
+
+council
+  fused        HISTORICAL topology (PROD-003 ran under it):
+               classifier -> proposal A -> fused proposal-B + judge   (3 stages)
+  decomposed   NEW (v4 protocol): classifier -> proposal A ∥ proposal B -> judge
+               over BOTH validated proposals                         (4 stages)
+```
+
+`--variant council` alone still means the **fused** topology — existing
+invocations keep their exact meaning. The decomposed topology is selected by
+a profile (`"topology": "decomposed"`); proposal B is generated **without ever
+seeing proposal A** (independence by construction), and the judge receives
+**only schema-validated proposal content** — a leg that fails validation
+twice is DEGRADED, its unvalidated text is withheld, the outcome carries
+`degraded: [roles]`, and a degraded run is never presented as a full council.
+Blocking evidence stays monotonic and validation retries still cannot erase
+unresolved material.
+
+A decomposed council may use the **same model in all four roles** (see
+`glm-council-decomposed` in the example config) — that is deliberate: a future
+same-topology comparison of same-model vs heterogeneous deliberation requires
+equivalent prompt structure (infrastructure only; **no such experiment is
+running**).
+
+### Routing modes (product vs evaluation)
+
+- **`product` (default / reliability):** gateway defaults — OpenRouter may
+  fall back across upstream providers serving the SAME model for reliability;
+  resolved identity (model, upstream provider, fallback-observed) is recorded
+  from the response's router metadata.
+- **`evaluation` (reproducible):** `provider.allow_fallbacks: false` (no
+  silent upstream substitution), optional upstream restriction via the official
+  `provider.only` (restrictive in both modes) / `provider.order` (exhaustive
+  here because fallbacks are off), `require_parameters` when
+  structured output is requested, and gateway **auto-routers are prohibited**
+  (RouteLLM's `route-llm` is rejected in evaluation profiles — an auto router
+  must never be part of a scientific comparison). Requested model, resolved
+  model, gateway, routing settings, and the prompt protocol are recorded with
+  the run output.
+
+If a gateway cannot report enough information to pin an upstream (RouteLLM
+does not report the serving provider), that is recorded as **unknown — never
+fabricated**.
+
+### Model discovery (`lco models`)
+
+```bash
+lco models --provider openrouter            # built-in; OPENROUTER_API_KEY
+lco models --provider routellm              # built-in; ABACUS_ROUTELLM_API_KEY
+lco models --provider glm --config lco.config.json --limit 20
+lco models --provider openrouter --json     # machine-readable
+```
+
+One GET to the provider's **free** models endpoint — no completion, no
+retries, 10s timeout. Prints exact API ids (display names are never API ids),
+per-token pricing and context **as reported**; `Unknown` means not reported
+(never `0`). The catalogue changes over time — especially RouteLLM's, whose
+doc-page list lags; use the live listing, not screenshots.
+
+### Usage, cost, and provenance accounting
+
+Every council run reports per-role accounting (gateway, requested model,
+resolved model when the provider reports it, calls vs transport attempts,
+tokens or `unknown`, prompt bytes, provider-reported cost when available) plus
+the run total. Honesty rules: **unknown is never zero** — a provider that
+reports no usage renders `tokens unknown`, a gateway that reports no cost has
+no cost line. LCO ships **no price catalogue and never estimates**; the only
+monetary figures shown are provider-**reported** (OpenRouter credits).
+
+Budget caps (attempts/tokens/wall) are LCO-enforced per run and unchanged;
+the decomposed envelope is 8 completions / 32 attempts worst case. **Monetary
+caps are not simulated:** LCO learns a request's exact cost only after the
+provider completes it, so a genuine hard spend ceiling belongs at the
+provider's API-key settings; LCO's role is honest observed-cost accounting.
+
+### Clarification UX (no silent high-impact gaps)
+
+Generation may block on UNRESOLVED product decisions — by design (models may
+reason about missing information; they may not silently invent the answer).
+When a blocked run carries a schema-valid candidate whose UNRESOLVED decisions
+caused the block, the CLI surfaces them as **plain-language, domain/behavior
+questions** (the v4 prompt protocol instructs models to phrase decisions for
+a non-engineer product owner; engineering mechanics stay in `rationale` or as
+recorded assumptions):
+
+```
+GENERATION BLOCKED — USER DECISIONS REQUIRED
+Questions to resolve:
+  DEC-0004 [impact: high]
+    If two customers try to complete the remaining quantity for the same fabric at the same time, what should the system do — accept both orders, or give priority to the first confirmed one?
+    options:
+      - first confirmed order gets priority (the other customer sees an out-of-stock message)
+Answer with an answers file — {"DEC-0004": "your answer", …} — and re-run with --answers <file>.
+```
+
+Nothing is written on block (unchanged). The answers loop is **one
+deterministic round per invocation** (no hidden LLM loop):
+
+```bash
+lco generate app --intent "..." --answers answers.json
+```
+
+Each answer becomes verbatim `user_input` evidence (hash-verified) for the
+next run, resolves **only the decision it names**, and unanswered UNRESOLVED
+decisions must remain unresolved — a run that succeeds carries exactly the
+decisions the evidence supports, surfaced or resolved, never silently
+dropped. (Limitation, stated honestly: question identity across runs is
+prompt-bound claim_ids — LCO keeps clarifications in-memory by design, so
+cross-run persistence of unanswered questions is not mechanically enforced;
+the new run re-surfaces whatever remains unresolved.)
+
+### Future metric extension point: SILENT CRITICAL GAP RATE
+
+The target product behavior is "no important uncertainty disappears silently".
+The architecture now supports scoring a future pre-registered metric for it:
+**SILENT CRITICAL GAP RATE** — the share of production-relevant HIGH/CRITICAL
+issues found by an independent reviewer that a generated spec neither
+resolved, nor declared as an assumption, nor represented as an UNRESOLVED
+decision (i.e., never surfaced at all). A longer spec is NOT a better spec;
+this metric counts disappearances, not requirements. The ingredients exist:
+UNRESOLVED decisions + assumptions are first-class bundle sections, the
+clarification channel records what was asked, and run metadata carries the
+prompt protocol. No such experiment is running and no result is claimed —
+any use requires a NEW pre-registration (the closed PROD-003 criterion and
+its NOT-MET conclusion stand untouched).
+
+### MCP surface
+
+`lco_generate` accepts an optional `llmProfile` — a **NAME** from the
+operator-configured `lco.config.json` (server start: `LCO_LLM_CONFIG` path or
+`lco.config.json` at the server root). The consent digest binds
+`{intent, profile, variant, llmProfile?}`. Requests can NEVER carry raw API
+keys, base URLs, or headers — those argument shapes are refused by name
+(SSRF/credential/spend control); gateway selection is operator configuration.
+
+## Interactive Clarification Workspace (browser, `--interactive`)
+
+`lco generate <dir> --intent "…" --interactive` açtığınız yerel tarayıcıda
+işletilen **İş Netleştirme Çalışma Alanı**'dır: kanıt kapısı bir iş kararının
+eksik olduğunu tespit ettiğinde uydurmak yerine sorar — önerilen seçenekler,
+anlık sonuç önizlemeleri, kendi kuralınız (Other), her turdan sonra yeniden
+doğrulama; sonra iş dilinde bir **Davranış Değerlendirmesi**, üzerinde
+değişiklik isteyebileceğiniz karar blokları ve yalnızca açık onayınızda yazılan
+spec/ + onaysız `approvals/APPR-NNNN.json` revizyon kayıtları. Sunucu
+**yalnızca 127.0.0.1**'e bağlanır; oturum anahtarı URL fragment'ında taşınır
+(sunucuya asla gönderilmez); iptal/terk durumunda hiçbir şey yazılmaz.
+`--answers` akışı değişmeden durur (iki ayrı cevap kanalı — bayraklar birlikte
+verilemez). Tam kılavuz: [docs/clarification-workspace.md](../../docs/clarification-workspace.md).
+
+## Legacy Renewal V1 (`lco renew`) — evidence-backed analysis & planning
+
+Legacy Renewal V1 turns a legacy repository into a validated, evidence-anchored
+**modernization spec** — analysis + planning only, **no execution** (no source
+modification, no patches, no shell against the target, no deployment; those are
+separate future programs). It is best described as *evidence-backed legacy
+application analysis and modernization planning* — not automated modernization.
+
+### Prerequisite (renewal only)
+
+[Graphify](https://github.com/Graphify-Labs/graphify) — an external, pinned,
+unmodified tool (supported range `>=0.9.50 <0.10.0`, audited against 0.9.50).
+Install it separately; `lco renew` probes it and fails closed with install
+instructions when absent or unsupported. **Every other `lco` command works
+without Graphify** (`lco doctor` reports it as an informational warn).
+
+### Commands (`lco renew <sub> <lco-project-dir>`)
+
+| command | cost | what it does |
+| --- | --- | --- |
+| `init <dir> --target <repo> [--name n]` | offline | snapshot + guarded workspace copy + graph build; the analyzed repo is NEVER written |
+| `refresh <dir>` | offline | re-snapshot + graph rebuild (the staleness remedy) |
+| `status <dir> [--json]` | offline | snapshot freshness w/ reasons, graph, analyses, open questions, overlay/parity, strategy, plan |
+| `analyze <dir> [--llm-profile n]` | **PAID** | recovery pipeline: schema-gated LLM hypotheses anchored to verified file hashes; hallucinated paths/stale hashes are rejected, never promoted |
+| `review <dir> --answers f \| --interactive` | free | human decisions in the browser clarification workspace (reused as-is) or headless; approvals are immutable `APPR-NNNN` records |
+| `plan <dir> [--strategy s --strategy-rationale t] [--freeze]` | offline | deterministic migration plan on TaskContract semantics; refuses stale state, missing human strategy, or unresolved parity; `--freeze` → frozen spec revision |
+| `export <dir> [--out f]` | offline | markdown report of validated state only |
+
+Strategy selection and every preserve/change/drop parity ruling are **human
+acts** (workspace or explicit flags — modeled as data, never autonomous).
+
+### Artifacts (LCO project dir; target repo untouched)
+
+```
+<lco-project>/spec/                  modernization spec (existing artifact spine)
+            approvals/APPR-NNNN.json immutable renewal approvals (0600)
+            .lco/renewal/{project,snapshot,overlay,parity,strategy}.json
+            .lco/renewal/analyses/AN-NNNN.json   immutable LLM analysis records
+            .lco/renewal/graph-workspace/        guarded copy + Graphify graph
+```
+
+### Trust model (short version)
+
+Deterministic structural facts come from the pinned Graphify graph; the target
+repo is untrusted input (default-deny ingest: `.env*`/keys never read, archives
+never expanded, size caps, symlink refusal, secret redaction before any prompt,
+all reads realpath-contained). Evidence hashes are RECOMPUTED — an evidence kind
+`code_anchor` verifies against the live tree or the claim is rejected. Analyze
+and plan refuse on stale snapshots with the `refresh` remedy. Paid MCP analysis
+requires the consent digest and makes **zero** LLM calls without it.
+
 ## `lco-mcp`: MCP Sunucusu
 
 `lco-mcp` (bin: `dist/mcp/server.js`), motoru Model Context Protocol istemcilerine
 açan minimal bir stdio sunucusudur: satır-ayrılmış JSON-RPC 2.0. CLI komutlarının saf
 çekirdeklerini (yazdırma yapmayan, yapılandırılmış sonuç döndüren) yeniden kullanır —
-davranış CLI ile birebir aynıdır. 10 araç:
+davranış CLI ile birebir aynıdır. 13 araç (10 motor + 3 yenileme):
 
 | araç | girdi | işlev |
 | --- | --- | --- |
@@ -538,6 +816,9 @@ davranış CLI ile birebir aynıdır. 10 araç:
 | `lco_init` | `{dir, profile?, name?}` | WORKING EXAMPLE spec/ iskeleti (draft/v1) — NO-CLOBBER: `dir/spec` varsa reddeder, diske dokunmaz; `lco init` çekirdeği |
 | `lco_generate` | `{dir, intent, variant?, profile?, consent?}` | intent → spec/ taslağı (ÜCRETLİ LLM çağrısı) — bkz. Ücretli Çağrı Rızası; `lco generate` çekirdeği + T4 kapıları |
 | `lco_change` | `{dir, changeset}` | changeset (CLI zarfı, satır içi nesne) uygula: önce-tam-aday-doğrula sonra-atomik-yaz; lint-invalid → reddetme, disk bayt-bayt aynı; `lco change` çekirdeği |
+| `lco_renew_status` | `{dir, json?}` | Yenileme durumu (DETERMINİSTİK, salt-okunur, LLM YOK) |
+| `lco_renew_export` | `{dir}` | Modernizasyon raporu (deterministik; yeni analiz yapmaz; içerik olarak döner — dosya YAZMAZ; dosya çıktısı yalnızca CLI `lco renew export --out`) |
+| `lco_renew_analyze` | `{dir, scope?, llmProfile?, consent?}` | Yenileme analizi (ÜCRETLİ LLM çağrısı) — `LCO_MCP_ALLOW_GENERATE=1` + `consent.digest` = `renewConsentDigest(dir, scope, llmProfile?)`; rıza yoksa sıfır çağrı |
 
 Claude Code'a kaydetmek için (mutlak yol ile):
 
@@ -591,7 +872,7 @@ Notlar:
   `env` gibi yetenek-şekilli anahtarlar da isimle reddedilir (request kendi yetenisini
   kendi veremez — bunlar operatörün sunucu-sınırı durumudur).
 - El smoke'u (gerçek stdio): `initialize` → `serverInfo {name: "lco-mcp", version:
-  "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 10 araç;
+  "0.1.0"}`, `protocolVersion 2025-06-18`; `tools/list` → yukarıdaki 13 araç;
   `tools/call lco_check {dir}` → `isError: false`, ilk satır `DRY RUN — no commands
   executed; pass --yes to execute`. **id'siz** geçerli bildirimler sessizdir; id TAŞIYAN
   her geçerli istek yanıt alır (`notifications/*` bile — bilinen hiçbir işleyicisi
@@ -1178,7 +1459,7 @@ birlikte yaşar (bkz. "Yayın ve Sahiplik").
   `signTest()` kararının üç tekrarın üzerinden hesaplanması. Ön-kayıt güncellendi:
   model `glm-5.3` (GLM Coding Plan OpenAI-uyumlu uç), 3 tekrar × 20 görev × 2
   varyant, koşum komutları ve anonim rapor kuralı dahil. Yayımlanan hiçbir yüzey
-  kaynak belgeyi, iş adlarını veya kişisel ayrıntıyı içermez — 1329 test.
+  kaynak belgeyi, iş adlarını veya kişisel ayrıntıyı içermez — 2200+ test.
 - **2026-08-27 — dış-denetim kalıntı kapanış programı:** SEC-003 — MCP izinli-kök
   politikası BAĞLAYICI hale geldi: etkin kök = realpath(`LCO_MCP_EXEC_ROOT`) ya da
   (pin yoksa) realpath(sunucu çalışma dizini); "politika yok" modu kaldırıldı,

@@ -263,7 +263,7 @@ describe('McpStdioServer: in-flight cap and busy errors (OPS-001)', () => {
     const parseError = responses.find((r) => r.id === null)!;
     expect(parseError.error.code).toBe(-32700); // parse error, NOT -32000 busy
     const listRes = responses.find((r) => r.id === 1)!;
-    expect(listRes.result.tools.length).toBe(10);
+    expect(listRes.result.tools.length).toBe(13);
     expect(responses.every((r) => r.error?.code !== -32000)).toBe(true);
   });
 });

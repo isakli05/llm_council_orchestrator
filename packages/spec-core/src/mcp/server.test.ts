@@ -21,6 +21,17 @@ import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 
 const FIXTURES = join(__dirname, '../../fixtures');
 
+/**
+ * The package's own release version, read here INDEPENDENTLY of the server
+ * (same bump-proof pattern as cli.test.ts's --version assertion): initialize
+ * must advertise exactly this, so a package.json bump that the server does
+ * NOT automatically follow fails these tests instead of shipping a stale
+ * serverInfo.version (the v0.2.0 release blocker).
+ */
+const PKG_VERSION = (
+  JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as { version: string }
+).version;
+
 /** Section files written under spec/ (mirrors cli.test.ts / check.test.ts). */
 const SECTION_FILES = [
   'manifest',
@@ -121,6 +132,8 @@ async function rpc(
     allowGenerate?: boolean;
     env?: NodeJS.ProcessEnv;
     llm?: unknown;
+    /** §17 named-profile config text (tests inject the operator's config). */
+    llmConfigText?: string;
   },
 ): Promise<Record<string, any>> {
   const raw = await handleRpcLine(line, options);
@@ -132,7 +145,7 @@ async function rpc(
 async function callTool(
   name: string,
   args: Record<string, unknown>,
-  options?: { allowExec?: boolean; allowGenerate?: boolean; env?: NodeJS.ProcessEnv; llm?: unknown },
+  options?: { allowExec?: boolean; allowGenerate?: boolean; env?: NodeJS.ProcessEnv; llm?: unknown; llmConfigText?: string },
 ): Promise<Record<string, any>> {
   return rpc(
     `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"${name}","arguments":${JSON.stringify(
@@ -243,7 +256,7 @@ describe('handleRpcLine: initialize', () => {
     expect(res.result).toEqual({
       protocolVersion: '2025-06-18',
       capabilities: { tools: {} },
-      serverInfo: { name: 'lco-mcp', version: '0.1.0' },
+      serverInfo: { name: 'lco-mcp', version: PKG_VERSION },
     });
   });
 });
@@ -261,7 +274,7 @@ describe('handleRpcLine: notifications', () => {
 // --- tools/list ----------------------------------------------------------------
 
 describe('handleRpcLine: tools/list', () => {
-  it('returns exactly the 10 engine tools, dir required on each, additionalProperties:false everywhere', async () => {
+  it('returns exactly the 13 engine tools, dir required on each, additionalProperties:false everywhere', async () => {
     const res = await rpc('{"jsonrpc":"2.0","id":9,"method":"tools/list"}');
 
     const names = (res.result.tools as Array<Record<string, any>>).map((t) => t.name);
@@ -276,6 +289,9 @@ describe('handleRpcLine: tools/list', () => {
       'lco_init',
       'lco_generate',
       'lco_change',
+      'lco_renew_status',
+      'lco_renew_export',
+      'lco_renew_analyze',
     ]);
     const requiredByName: Record<string, string[]> = {
       lco_compile: ['dir'],
@@ -288,6 +304,9 @@ describe('handleRpcLine: tools/list', () => {
       lco_init: ['dir'],
       lco_generate: ['dir', 'intent'],
       lco_change: ['dir', 'changeset'],
+      lco_renew_status: ['dir'],
+      lco_renew_export: ['dir'],
+      lco_renew_analyze: ['dir'],
     };
     for (const tool of res.result.tools as Array<Record<string, any>>) {
       expect(typeof tool.description).toBe('string');
@@ -313,7 +332,7 @@ describe('handleRpcLine: tools/list', () => {
     // lco_generate never advertises `yes` or any adapter/env parameter.
     expect(Object.keys(byName.get('lco_init')!)).toEqual(['dir', 'profile', 'name']);
     const genProps = byName.get('lco_generate')!;
-    expect(Object.keys(genProps)).toEqual(['dir', 'intent', 'variant', 'profile', 'consent']);
+    expect(Object.keys(genProps)).toEqual(['dir', 'intent', 'variant', 'profile', 'llmProfile', 'consent']);
     expect(genProps.consent.required).toEqual(['digest']);
     expect(JSON.stringify(genProps)).not.toContain('"yes"');
     expect(Object.keys(byName.get('lco_change')!)).toEqual(['dir', 'changeset']);
@@ -1170,7 +1189,7 @@ describe('PROD-004 e2e: intent → draft → frozen → change, without a shell'
     const init = await rpc('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
     expect(init.result.serverInfo.name).toBe('lco-mcp');
     const listed = await rpc('{"jsonrpc":"2.0","id":2,"method":"tools/list"}');
-    expect((listed.result.tools as unknown[]).length).toBe(10);
+    expect((listed.result.tools as unknown[]).length).toBe(13);
 
     const root = freshRoot('spec-core-mcp-e2e-init-');
     const scaffolded = await callTool('lco_init', { dir: root, profile: 'p-mini', name: 'e2e-project' });
@@ -1322,9 +1341,9 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       expect(responses).toHaveLength(11);
       const byId = new Map(responses.map((r) => [r.id, r]));
 
-      expect(byId.get(1)!.result.serverInfo).toEqual({ name: 'lco-mcp', version: '0.1.0' });
+      expect(byId.get(1)!.result.serverInfo).toEqual({ name: 'lco-mcp', version: PKG_VERSION });
       const toolNames = (byId.get(2)!.result.tools as Array<{ name: string }>).map((t) => t.name);
-      expect(toolNames).toHaveLength(10);
+      expect(toolNames).toHaveLength(13);
       expect(new Set(toolNames)).toEqual(
         new Set([
           'lco_compile',
@@ -1337,6 +1356,9 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
           'lco_init',
           'lco_generate',
           'lco_change',
+          'lco_renew_status',
+          'lco_renew_export',
+          'lco_renew_analyze',
         ]),
       );
       expect(byId.get(3)!.result.isError).toBe(false);
@@ -2136,5 +2158,304 @@ describe('tools/call: MCP dir policy (SEC-003)', () => {
 
     const check = await callTool('lco_check', { dir: root, execRoot: '/' });
     expect(check.error.code).toBe(-32602);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lco_generate llmProfile — named, operator-configured profiles only (§17)
+// ---------------------------------------------------------------------------
+
+const PROFILE_CFG = JSON.stringify({
+  llm: {
+    providers: { or: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY' } },
+    profiles: {
+      'single-x': { variant: 'single', roles: { single: { provider: 'or', model: 'm1' } } },
+    },
+  },
+});
+
+describe('lco_generate llmProfile (§17 named profiles only)', () => {
+  const INTENT2 = 'profile intent';
+
+  /** The -32602 message of an error response (parse-layer refusals). */
+  function errMessage(res: Record<string, any>): string {
+    return String(res.error?.message ?? '');
+  }
+
+  it('the digest includes llmProfile when present; without it, historical bytes', () => {
+    const without = generateConsentDigest(INTENT2, 'p-mini', 'single');
+    const withProfile = generateConsentDigest(INTENT2, 'p-mini', 'single', 'single-x');
+    expect(without).not.toBe(withProfile);
+    expect(generateConsentDigest(INTENT2, 'p-mini', 'single', undefined)).toBe(without);
+  });
+
+  it('consent-missing refusal advertises the RESOLVED-profile-bound digest (S3-H-10: resolve before digest)', async () => {
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, llmProfile: 'single-x' },
+      { llmConfigText: PROFILE_CFG },
+    );
+    const advertised = /sha256:[0-9a-f]{64}/.exec(text(res))?.[0];
+    expect(advertised).toMatch(/^sha256:/);
+    // The digest binds the RESOLVED routing content, not just the name: it
+    // must differ from the name-only digest of the same request.
+    expect(advertised).not.toBe(generateConsentDigest(INTENT2, 'p-standard', 'single', 'single-x'));
+  });
+
+  it('unknown profile name → structured refusal, ZERO LLM calls', async () => {
+    const digest = generateConsentDigest(INTENT2, 'p-standard', 'single', 'ghost');
+    const llm = vi.fn();
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, llmProfile: 'ghost', consent: { digest } },
+      { allowGenerate: true, llmConfigText: PROFILE_CFG, llm: llm as never },
+    );
+    expect(text(res)).toMatch(/unknown llm profile 'ghost'/);
+    expect(llm).not.toHaveBeenCalled();
+  });
+
+  it('no operator config configured → llmProfile refused; ZERO LLM calls', async () => {
+    const digest = generateConsentDigest(INTENT2, 'p-standard', 'single', 'single-x');
+    const llm = vi.fn();
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llm: llm as never, env: {} as NodeJS.ProcessEnv },
+    );
+    expect(text(res)).toMatch(/no lco\.config\.json is configured/);
+    expect(llm).not.toHaveBeenCalled();
+  });
+
+  it('profile/variant disagreement → refusal naming both', async () => {
+    const digest = generateConsentDigest(INTENT2, 'p-standard', 'council', 'single-x');
+    const res = await callTool(
+      'lco_generate',
+      { dir: '.', intent: INTENT2, variant: 'council', llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llmConfigText: PROFILE_CFG },
+    );
+    expect(text(res)).toMatch(/declares variant 'single' but the request says variant 'council'/);
+  });
+
+  it('credential/gateway-shaped request arguments get the NAMED refusal (SSRF/credential/spend)', async () => {
+    for (const key of ['apiKey', 'base_url', 'headers', 'authorization']) {
+      const res = await callTool('lco_generate', { dir: '.', intent: 'x', [key]: 'https://evil.example' }, {});
+      expect(errMessage(res)).toMatch(new RegExp(`unknown argument '${key}'`));
+      expect(errMessage(res)).toMatch(/never request/);
+    }
+  });
+
+  it('happy path: named profile reaches cmdGenerate (injected mock adapter wins, profile recorded)', async () => {
+    const root = freshRoot('spec-core-mcp-profile-ok-');
+    const { llm } = makeLlm([JSON.stringify(inlineConforming())]);
+    // S3-H-10: the digest is computed over the RESOLVED profile — obtain it
+    // from the consent-missing preview (the operator flow), then consent.
+    const preview = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT2, profile: 'p-mini', llmProfile: 'single-x' },
+      { llmConfigText: PROFILE_CFG },
+    );
+    const digest = /sha256:[0-9a-f]{64}/.exec(text(preview))?.[0];
+    expect(digest).toMatch(/^sha256:/);
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: INTENT2, profile: 'p-mini', llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llmConfigText: PROFILE_CFG, llm },
+    );
+    expect(text(res)).toContain('generated spec/');
+    expect(text(res)).toContain('llm profile single-x');
+  });
+});
+
+describe('lco_generate llmProfile — the REAL per-role plan path (no injected adapter)', () => {
+  it('builds per-role adapters from the named profile; keys resolve from env by NAME', async () => {
+    const root = freshRoot('spec-core-mcp-realplan-');
+    const multiCfg = JSON.stringify({
+      llm: {
+        providers: { or: { type: 'openrouter', apiKeyEnv: 'MCP_REALPLAN_OR_KEY' } },
+        profiles: {
+          'single-x': { variant: 'single', roles: { single: { provider: 'or', model: 'realplan-model' } } },
+        },
+      },
+    });
+    vi.stubEnv('MCP_REALPLAN_OR_KEY', 'realplan-key');
+    const seenModels: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        // cmdGenerate drives the transport; read the model off the captured body
+        const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls as unknown as [
+          string,
+          RequestInit,
+        ][];
+        const last = calls[calls.length - 1];
+        const body = JSON.parse(last[1].body as string) as { model: string };
+        seenModels.push(body.model);
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(inlineConforming()) } }],
+            usage: { prompt_tokens: 1, completion_tokens: 1 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    );
+
+    // S3-H-10: resolve-before-digest — take the digest from the preview.
+    const preview = await callTool(
+      'lco_generate',
+      { dir: root, intent: 'realplan intent', profile: 'p-mini', llmProfile: 'single-x' },
+      { llmConfigText: multiCfg },
+    );
+    const digest = /sha256:[0-9a-f]{64}/.exec(text(preview))?.[0];
+    expect(digest).toMatch(/^sha256:/);
+    const res = await callTool(
+      'lco_generate',
+      { dir: root, intent: 'realplan intent', profile: 'p-mini', llmProfile: 'single-x', consent: { digest } },
+      { allowGenerate: true, llmConfigText: multiCfg },
+    );
+    expect(text(res)).toContain('generated spec/');
+    expect(text(res)).toContain('llm profile single-x');
+    expect(seenModels).toEqual(['realplan-model']);
+  });
+});
+
+
+// --- lco_renew_* tools: read-only + PAID consent (STEP 11) ----------------------
+
+describe('renew MCP tools', () => {
+  it('status on a non-project fails closed with an actionable message', async () => {
+    const res = await callTool('lco_renew_status', { dir: freshRoot('renew-nonproject') });
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/not a renewal project|renew init/);
+  });
+
+  it('export is READ-ONLY: an out argument is a -32602 schema refusal (C-02)', async () => {
+    const res = await callTool('lco_renew_export', { dir: freshRoot('renew-out'), out: '/etc/pwned.txt' });
+    expect(res.error?.code ?? res.result?.isError).toBeTruthy();
+    // additionalProperties:false → the unknown `out` is rejected at the schema.
+    expect(res.error?.code === -32602 || /out/.test(text(res))).toBe(true);
+    expect(existsSync('/etc/pwned.txt')).toBe(false);
+  });
+
+  it('export on a real project RETURNS content and writes NOTHING (read-only contract)', async () => {
+    // Initialize a renewal project via the pure command core (fixture graph
+    // provider — no graphify needed; cmdRenewExport only READS the graph file).
+    const { cmdRenewInit } = await import('../cli/commands/renew');
+    const { StaticGraphProvider } = await import('../renew/intel/fixture-provider');
+    const { parseGraphText } = await import('../renew/intel/graph-reader');
+    const { createHash } = await import('node:crypto');
+    const { lstatSync, readlinkSync } = await import('node:fs');
+
+    const project = freshRoot('renew-ro-project-');
+    // S2-M-04: the recorded target must resolve INSIDE the pinned root — a
+    // sibling in os.tmpdir() would be refused by transitive containment before
+    // this read-only contract is even exercised.
+    const target = freshRoot('lco-renew-ro-target-');
+    mkdirSync(join(target, 'src'), { recursive: true });
+    writeFileSync(join(target, 'src', 'app.ts'), 'export const x = 1;\n');
+    const graphParsed = parseGraphText(
+      readFileSync(join(FIXTURES, 'legacy-app', 'graph-fixture.json'), 'utf8'),
+    );
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    const init = await cmdRenewInit(
+      { dir: project, target, name: 'ro' },
+      {
+        nowIso: () => '2026-09-02T12:00:00.000Z',
+        provider: () => new StaticGraphProvider(graphParsed.graph, '0.9.50'),
+        gitCommit: () => undefined,
+      },
+    );
+    expect(init.code).toBe(0);
+
+    const hashTree = (root: string): string => {
+      const h = createHash('sha256');
+      const walk = (abs: string, rel: string): void => {
+        for (const ent of readdirSync(abs, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+          const rel2 = rel === '' ? ent.name : `${rel}/${ent.name}`;
+          const abs2 = join(abs, ent.name);
+          const st = lstatSync(abs2);
+          h.update(`E:${rel2}:${st.mode.toString(8)}\n`);
+          if (ent.isDirectory()) walk(abs2, rel2);
+          else if (ent.isSymbolicLink()) h.update(`L:${readlinkSync(abs2)}\n`);
+          else h.update(`F:${createHash('sha256').update(readFileSync(abs2)).digest('hex')}\n`);
+        }
+      };
+      walk(root, '');
+      return h.digest('hex');
+    };
+
+    const before = hashTree(project);
+    const targetBefore = hashTree(target);
+    const res = await callTool('lco_renew_export', { dir: project });
+    expect(res.result.isError).toBe(false);
+    expect(text(res).length).toBeGreaterThan(0);
+    expect(hashTree(project)).toBe(before);
+    expect(hashTree(target)).toBe(targetBefore);
+  });
+
+  it('PAID analyze: missing consent → ZERO LLM calls, digest advertised', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    const dir = freshRoot('renew-consent');
+    const res = await callTool('lco_renew_analyze', { dir }, { llm, allowGenerate: true });
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/PAID operation and was NOT performed/);
+    expect(text(res)).toMatch(/sha256:[0-9a-f]{64}/);
+    expect(calls).toBe(0);
+  });
+
+  it('PAID analyze: wrong digest → ZERO LLM calls', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    const dir = freshRoot('renew-consent2');
+    const res = await callTool(
+      'lco_renew_analyze',
+      { dir, consent: { digest: `sha256:${'0'.repeat(64)}` } },
+      { llm, allowGenerate: true },
+    );
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/digest mismatch/);
+    expect(calls).toBe(0);
+  });
+
+  it('H-10: the consent digest BINDS the active snapshot — a root-only digest no longer matches', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    // A REAL renewal project: the server-side digest now binds its snapshot id.
+    const { cmdRenewInit } = await import('../cli/commands/renew');
+    const { StaticGraphProvider } = await import('../renew/intel/fixture-provider');
+    const { parseGraphText } = await import('../renew/intel/graph-reader');
+    const project = freshRoot('renew-consent-bind-');
+    // Inside the pin (S2-M-04) so the refusal under test is the DIGEST, not
+    // transitive containment.
+    const target = freshRoot('lco-consent-target-');
+    mkdirSync(join(target, 'src'), { recursive: true });
+    writeFileSync(join(target, 'src', 'app.ts'), 'export const x = 1;\n');
+    const graphParsed = parseGraphText(readFileSync(join(FIXTURES, 'legacy-app', 'graph-fixture.json'), 'utf8'));
+    if (!graphParsed.ok) throw new Error(graphParsed.message);
+    await cmdRenewInit({ dir: project, target, name: 'consent' }, {
+      nowIso: () => '2026-09-02T12:00:00.000Z',
+      provider: () => new StaticGraphProvider(graphParsed.graph, '0.9.50'),
+      gitCommit: () => undefined,
+    });
+    // The OLD (root+scope only) digest must NOT authorize the call anymore.
+    const { renewConsentDigest } = await import('./consent');
+    const staleDigest = renewConsentDigest({ dir: project, scope: 'whole' });
+    const res = await callTool('lco_renew_analyze', { dir: project, consent: { digest: staleDigest } }, { allowGenerate: true, llm });
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/digest mismatch/);
+    expect(calls).toBe(0);
+  });
+
+  it('PAID analyze: server not opted in → ZERO LLM calls even WITH a valid digest', async () => {
+    let calls = 0;
+    const llm = { complete: async () => { calls++; throw new Error('must not be called'); } };
+    const dir = freshRoot('renew-consent3');
+    const { renewConsentDigest } = await import('./consent');
+    const digest = renewConsentDigest({ dir, scope: 'whole' });
+    const res = await callTool('lco_renew_analyze', { dir, consent: { digest } }, { llm }); // no allowGenerate
+    expect(res.result.isError).toBe(true);
+    expect(text(res)).toMatch(/LCO_MCP_ALLOW_GENERATE=1/);
+    expect(calls).toBe(0);
   });
 });
