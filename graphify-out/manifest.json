@@ -2388,15 +2388,15 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/release/version.test.ts": {
-    "mtime": 1788629808.9037242,
-    "seen": 1788630103.58804,
-    "ast_hash": "f82ee21eadfbdfd37894bf3f231354b4",
+    "mtime": 1788631034.3234615,
+    "seen": 1788631106.5871582,
+    "ast_hash": "edb7cffc19994cd7ab8d2fe253d3abff",
     "semantic_hash": ""
   },
   "packages/spec-core/src/release/version.ts": {
-    "mtime": 1788629800.7128508,
-    "seen": 1788630103.5880413,
-    "ast_hash": "27ae699a25f997cc341d5ddcbddf51c9",
+    "mtime": 1788631028.0835962,
+    "seen": 1788631106.5871594,
+    "ast_hash": "91195fc992d441a480b39b8904761b20",
     "semantic_hash": ""
   }
 }
