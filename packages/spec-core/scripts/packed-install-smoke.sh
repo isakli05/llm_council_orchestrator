@@ -17,7 +17,10 @@
 #       package.json's version (never empty, never hardcoded in the bin)
 #   5. installed `lco-mcp` — one JSON-RPC initialize line on stdin, exit 0,
 #      exactly one JSON-RPC response line on stdout with serverInfo lco-mcp
-#      (envelope shape per src/mcp/server.test.ts)
+#      (envelope shape per src/mcp/server.test.ts) AND serverInfo.version
+#      equal to the INSTALLED package.json's version — the release-identity
+#      invariant (v0.2.0 blocker): a packed server advertising a stale
+#      version fails the smoke
 #
 # Usage: pnpm --filter ./packages/spec-core smoke:packed   (or: sh scripts/packed-install-smoke.sh)
 set -eu
@@ -144,7 +147,9 @@ printf '%s\n%s\n%s\n' \
   '{"id":7, broken json' | run "$LCO_MCP" > "$MCP_OUT"
 # The server must exit 0 on stdin EOF (set -e already aborts otherwise) and
 # answer with exactly two parseable JSON-RPC responses: the initialize result
-# carrying our serverInfo, and the parse error with id null.
+# carrying our serverInfo, and the parse error with id null. serverInfo.version
+# must equal the INSTALLED package.json's version (argv[2] — read back in
+# phase 4b), pinning the release-identity invariant through the packed bin.
 node -e '
 const lines = require("node:fs")
   .readFileSync(process.argv[1], "utf8")
@@ -159,13 +164,17 @@ if (res.id !== 1 || res.jsonrpc !== "2.0" || !res.result || res.result.serverInf
   console.error("smoke: bad initialize response: " + lines[0]);
   process.exit(1);
 }
+if (res.result.serverInfo?.version !== process.argv[2]) {
+  console.error("smoke: serverInfo.version is " + res.result.serverInfo?.version + " but the installed package.json says " + process.argv[2] + " — release-identity drift in the packed server");
+  process.exit(1);
+}
 const err = JSON.parse(lines[1]);
 if (err.id !== null || err.error?.code !== -32700) {
   console.error("smoke: bad parse-error response: " + lines[1]);
   process.exit(1);
 }
-console.log("smoke: initialize ok: serverInfo=" + JSON.stringify(res.result.serverInfo) + "; notification silent; parse error -32700 id null");
-' "$MCP_OUT"
+console.log("smoke: initialize ok: serverInfo=" + JSON.stringify(res.result.serverInfo) + " (matches installed package.json " + process.argv[2] + "); notification silent; parse error -32700 id null");
+' "$MCP_OUT" "$EXPECTED_VERSION"
 
 # --- 6. installed browser clarification workspace, OFFLINE (owner spec 2026-09-01 §35) ----
 say "== phase 6: interactive clarification workspace from the installed tarball (offline mock LLM) =="

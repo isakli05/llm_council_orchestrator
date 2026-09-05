@@ -26,6 +26,7 @@ import {
 } from './commands/renew';
 import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
 import { renewalPaths } from '../renew/project/project';
+import { readPackageVersion } from '../release/version';
 import { singleRoutePlan, type LlmPlan, type LlmRoute } from '../llm/plan';
 import { MAX_RECOVERY_WIRE_BYTES, createPaidOperation, resolveLegacyEnvRoute, routeFromConfig } from '../renew/trust/paid';
 import { resolveRoleConfig } from '../llm/providers';
@@ -45,22 +46,6 @@ import type { UserAnswerForPrompt } from '../eval/prompts-v4';
  * and error wrapping. The bin surface (`lco` -> dist/cli/index.js) and the
  * exported runCli are unchanged.
  */
-
-/**
- * Reads the version from the package's own package.json at RUN TIME — never
- * hardcoded, so a version bump needs no CLI change. src/cli and dist/cli sit
- * at the same depth under the package root, so the relative path holds both
- * for the repo build/test and for a packed install (npm always ships
- * package.json next to dist/).
- */
-async function readVersion(): Promise<string> {
-  const raw = await readFile(join(__dirname, '../../package.json'), 'utf8');
-  const version = (JSON.parse(raw) as { version?: unknown }).version;
-  if (typeof version !== 'string' || version === '') {
-    throw new Error('package.json has no usable version field');
-  }
-  return version;
-}
 
 /**
  * UX-001: env-var budget overrides for generate (LCO_GENERATE_MAX_ATTEMPTS /
@@ -125,7 +110,10 @@ export async function runCli(argv: string[]): Promise<number> {
     return 0;
   }
   if ('version' in parsed) {
-    console.log(await readVersion());
+    // Runtime read of the package's own package.json — never hardcoded, so a
+    // version bump needs no CLI change (single authority in ../release/version,
+    // shared with the MCP server's serverInfo.version).
+    console.log(readPackageVersion());
     return 0;
   }
   if ('renewSubHelp' in parsed) {

@@ -43,6 +43,7 @@ import type { LlmAdapter } from '../eval/llm/adapter';
 import { cmdRenewStatus, cmdRenewExport, cmdRenewAnalyze, type RenewCapabilities } from '../cli/commands/renew';
 import { GraphifyAdapter } from '../renew/intel/graphify-adapter';
 import { renewalPaths, loadRenewalProject } from '../renew/project/project';
+import { readPackageVersion } from '../release/version';
 import { singleRoutePlan } from '../llm/plan';
 import {
   MAX_RECOVERY_WIRE_BYTES,
@@ -95,7 +96,12 @@ import type { LlmConfig, ResolvedProfile } from '../config/llm-config';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'lco-mcp';
-const SERVER_VERSION = '0.1.0';
+// The server's OWN release identity — the package.json version, read once at
+// module load (single authority, shared with `lco --version`: see
+// ../release/version). Never a hand-kept literal: a bump follows the package
+// automatically. A malformed package fails fast at bin startup rather than
+// advertising a stale version.
+const SERVER_VERSION = readPackageVersion();
 
 // --- tool surface ----------------------------------------------------------------
 

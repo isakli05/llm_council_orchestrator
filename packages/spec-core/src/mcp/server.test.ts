@@ -21,6 +21,17 @@ import type { LlmAdapter, LlmResponse } from '../eval/llm/adapter';
 
 const FIXTURES = join(__dirname, '../../fixtures');
 
+/**
+ * The package's own release version, read here INDEPENDENTLY of the server
+ * (same bump-proof pattern as cli.test.ts's --version assertion): initialize
+ * must advertise exactly this, so a package.json bump that the server does
+ * NOT automatically follow fails these tests instead of shipping a stale
+ * serverInfo.version (the v0.2.0 release blocker).
+ */
+const PKG_VERSION = (
+  JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as { version: string }
+).version;
+
 /** Section files written under spec/ (mirrors cli.test.ts / check.test.ts). */
 const SECTION_FILES = [
   'manifest',
@@ -245,7 +256,7 @@ describe('handleRpcLine: initialize', () => {
     expect(res.result).toEqual({
       protocolVersion: '2025-06-18',
       capabilities: { tools: {} },
-      serverInfo: { name: 'lco-mcp', version: '0.1.0' },
+      serverInfo: { name: 'lco-mcp', version: PKG_VERSION },
     });
   });
 });
@@ -1330,7 +1341,7 @@ describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
       expect(responses).toHaveLength(11);
       const byId = new Map(responses.map((r) => [r.id, r]));
 
-      expect(byId.get(1)!.result.serverInfo).toEqual({ name: 'lco-mcp', version: '0.1.0' });
+      expect(byId.get(1)!.result.serverInfo).toEqual({ name: 'lco-mcp', version: PKG_VERSION });
       const toolNames = (byId.get(2)!.result.tools as Array<{ name: string }>).map((t) => t.name);
       expect(toolNames).toHaveLength(13);
       expect(new Set(toolNames)).toEqual(
