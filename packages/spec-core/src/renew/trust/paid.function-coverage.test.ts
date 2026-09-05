@@ -14,8 +14,10 @@ import { createPaidOperation, resolveLegacyEnvRoute } from './paid';
 describe('createPaidOperation — derived ledger with the DEFAULT boundary clock', () => {
   it('constructs with no injected nowMs, reads the default clock for the wall budget, and completes a wire-capped transport', async () => {
     let fetches = 0;
-    const fetchImpl = (async () => {
+    const seenBodies: string[] = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
       fetches += 1;
+      seenBodies.push(String(init?.body));
       return new Response(
         JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
         { status: 200 },
@@ -36,7 +38,9 @@ describe('createPaidOperation — derived ledger with the DEFAULT boundary clock
     const res = await op.adapter.complete('hello');
     expect(res.text).toBe('ok');
     expect(fetches).toBe(1);
-    // the serialized wire was measured and stayed under the cap
-    expect(op.lastWireBytes()).toBeGreaterThan(0);
+    // the serialized wire was measured EXACTLY — the measurement contract
+    // (lastWireBytes is the byte length of the transported body)
+    expect(op.lastWireBytes()).toBe(Buffer.byteLength(seenBodies[0]!, 'utf8'));
+    expect(op.lastWireBytes()!).toBeGreaterThan(0);
   });
 });

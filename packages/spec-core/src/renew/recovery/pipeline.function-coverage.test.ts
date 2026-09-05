@@ -141,10 +141,12 @@ describe('runRecovery — schema-invalid-but-parseable responses (the zod issues
 
     // TWO calls: the initial attempt plus exactly ONE validation-informed retry.
     expect(prompts).toHaveLength(2);
-    // The retry prompt carries the FORMATTED zod issues (`path: message`),
-    // not raw error dumps — the validation-informed retry contract.
+    // The retry prompt carries the FORMATTED zod issues embedded as issue
+    // lines — `path: message` (verifier-B mutation check: bare `message`
+    // formatting must fail here; the path is what tells the model WHICH
+    // field to fix).
     expect(prompts[1]).not.toEqual(prompts[0]);
-    expect(prompts[1]).toMatch(/Required|Unrecognized|Invalid/);
+    expect(prompts[1]).toMatch(/- [^\n]+: (Required|Unrecognized|Invalid)/);
     // the failure record was persisted honestly
     expect(persisted).toHaveLength(1);
   });

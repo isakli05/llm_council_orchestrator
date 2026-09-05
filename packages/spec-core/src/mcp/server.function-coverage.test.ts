@@ -97,8 +97,8 @@ describe('lco_trace tool (read-only traceability report)', () => {
     expect(res.error).toBeUndefined();
     const out = text(res);
     expect(out).toContain('exit code: 0');
-    // the report renders the fixture's own requirement identities
+    // the report renders the fixture's own requirement AND task identities
     expect(out).toMatch(/REQ-0001/);
-    expect(out.length).toBeGreaterThan(100);
+    expect(out).toMatch(/TASK-/);
   });
 });
