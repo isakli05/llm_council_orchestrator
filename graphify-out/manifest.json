@@ -2338,5 +2338,53 @@
     "seen": 1788590913.835969,
     "ast_hash": "e550704d51b67eaff8b0d2b8d5f512ce",
     "semantic_hash": ""
+  },
+  "packages/spec-core/src/eval/report.function-coverage.test.ts": {
+    "mtime": 1788610864.5914133,
+    "seen": 1788611309.1773214,
+    "ast_hash": "f2c74f5461a887cac0b759c9fcfddde1",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/mcp/server.function-coverage.test.ts": {
+    "mtime": 1788611106.7695346,
+    "seen": 1788611309.1774015,
+    "ast_hash": "f44145618b0fcccaf28f47cafb27822e",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/mcp/stdio.function-coverage.test.ts": {
+    "mtime": 1788610855.072605,
+    "seen": 1788611309.1774046,
+    "ast_hash": "928adc6d55cb50840f161ee44ad8e525",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/renew/project/project.function-coverage.test.ts": {
+    "mtime": 1788611094.1117895,
+    "seen": 1788611309.1774623,
+    "ast_hash": "ddcb64f2e581367ded292accf0d7ad2d",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/renew/recovery/pipeline.function-coverage.test.ts": {
+    "mtime": 1788610935.7659793,
+    "seen": 1788611309.177466,
+    "ast_hash": "a8e7c3378489b1e1aad0703dd1b810ea",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/renew/trust/fs.function-coverage.test.ts": {
+    "mtime": 1788610837.142966,
+    "seen": 1788611309.177496,
+    "ast_hash": "f3fb674b7350c3a8b14297d32f6649ea",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/renew/trust/paid.function-coverage.test.ts": {
+    "mtime": 1788610868.7853286,
+    "seen": 1788611309.1775005,
+    "ast_hash": "77fcfeec0f6088d49f2fbdc7d4fa794d",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/storage/paths.function-coverage.test.ts": {
+    "mtime": 1788611142.7138104,
+    "seen": 1788611309.1775465,
+    "ast_hash": "dbace71ab0d53ca15b17afb29c777136",
+    "semantic_hash": ""
   }
 }
