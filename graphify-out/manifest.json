@@ -2346,9 +2346,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/mcp/server.function-coverage.test.ts": {
-    "mtime": 1788611106.7695346,
-    "seen": 1788611309.1774015,
-    "ast_hash": "f44145618b0fcccaf28f47cafb27822e",
+    "mtime": 1788612392.2376385,
+    "seen": 1788612431.0769355,
+    "ast_hash": "b31edc3b8d56cf30fd10665ecee7a068",
     "semantic_hash": ""
   },
   "packages/spec-core/src/mcp/stdio.function-coverage.test.ts": {
@@ -2364,9 +2364,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/recovery/pipeline.function-coverage.test.ts": {
-    "mtime": 1788610935.7659793,
-    "seen": 1788611309.177466,
-    "ast_hash": "a8e7c3378489b1e1aad0703dd1b810ea",
+    "mtime": 1788612387.9187255,
+    "seen": 1788612431.0770106,
+    "ast_hash": "eea91a3579a523b614700e669c0551ce",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/fs.function-coverage.test.ts": {
@@ -2376,9 +2376,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/paid.function-coverage.test.ts": {
-    "mtime": 1788610868.7853286,
-    "seen": 1788611309.1775005,
-    "ast_hash": "77fcfeec0f6088d49f2fbdc7d4fa794d",
+    "mtime": 1788612391.2916577,
+    "seen": 1788612431.0770535,
+    "ast_hash": "fdb44548d2c5b2ed28cbe8fd499e03b8",
     "semantic_hash": ""
   },
   "packages/spec-core/src/storage/paths.function-coverage.test.ts": {
