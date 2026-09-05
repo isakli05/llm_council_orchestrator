@@ -27,7 +27,7 @@ describe('readPackageVersion (single release-version authority)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'lco-version-notstring-'));
     try {
       const path = join(dir, 'package.json');
-      writeFileSync(path, '{"version":42}');
+      writeFileSync(path, '{"name":"lco-spec","version":42}');
       expect(() => readPackageVersion(path)).toThrow('package.json has no usable version field');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -38,8 +38,24 @@ describe('readPackageVersion (single release-version authority)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'lco-version-empty-'));
     try {
       const path = join(dir, 'package.json');
-      writeFileSync(path, '{"version":""}');
+      writeFileSync(path, '{"name":"lco-spec","version":""}');
       expect(() => readPackageVersion(path)).toThrow('package.json has no usable version field');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a FOREIGN manifest (vendored dist/ adopting another package.json)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lco-version-foreign-'));
+    try {
+      const path = join(dir, 'package.json');
+      // A consumer app's manifest sitting where a relocated dist/'s
+      // ../../package.json would land (verifier B F1): must refuse loudly,
+      // never report the consumer's version as lco-spec's release identity.
+      writeFileSync(path, '{"name":"some-consumer-app","version":"1.0.0"}');
+      expect(() => readPackageVersion(path)).toThrow(
+        /is not the lco-spec package manifest/,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

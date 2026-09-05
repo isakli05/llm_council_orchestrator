@@ -27,7 +27,16 @@ export function readPackageVersion(
   packageJsonPath: string = join(__dirname, '../../package.json'),
 ): string {
   const raw = readFileSync(packageJsonPath, 'utf8');
-  const version = (JSON.parse(raw) as { version?: unknown }).version;
+  const pkg = JSON.parse(raw) as { name?: unknown; version?: unknown };
+  // Identity guard (verifier-B hardening): a relocated/vendored dist/ whose
+  // ../../package.json is some OTHER package's manifest must fail loudly,
+  // not silently adopt that package's version as our release identity.
+  if (pkg.name !== 'lco-spec') {
+    throw new Error(
+      `${packageJsonPath} is not the lco-spec package manifest (found name ${JSON.stringify(pkg.name ?? null)})`,
+    );
+  }
+  const version = pkg.version;
   if (typeof version !== 'string' || version === '') {
     throw new Error('package.json has no usable version field');
   }
