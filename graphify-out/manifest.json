@@ -2278,5 +2278,65 @@
     "seen": 1788476183.255461,
     "ast_hash": "1829aed01793c4426b36856ccc130c48",
     "semantic_hash": ""
+  },
+  "packages/spec-core/src/check/runner.branch-coverage.test.ts": {
+    "mtime": 1788589756.1000347,
+    "seen": 1788590913.8357103,
+    "ast_hash": "d3db585a41fcad8679ebf79b482194c3",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/clarify/model.branch-coverage.test.ts": {
+    "mtime": 1788589250.9438047,
+    "seen": 1788590913.8357167,
+    "ast_hash": "d3be288ec6788f34f3a75380c54ae87c",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/clarify/session/orchestrator.branch-coverage.test.ts": {
+    "mtime": 1788589297.7047143,
+    "seen": 1788590913.8357227,
+    "ast_hash": "daa37c7b8bfb8bade313b821858bf40d",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/cli/args.branch-coverage.test.ts": {
+    "mtime": 1788589311.4283943,
+    "seen": 1788590913.8357275,
+    "ast_hash": "72d7062084940b9b36d242f20550656a",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/config/llm-config.branch-coverage.test.ts": {
+    "mtime": 1788589602.197619,
+    "seen": 1788590913.8357809,
+    "ast_hash": "52d673d65b0a7e7d3348702af98c5f99",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/eval/live-experiment.branch-coverage.test.ts": {
+    "mtime": 1788589951.9441063,
+    "seen": 1788590913.8357978,
+    "ast_hash": "bd83b434845bd5207e0669fad671dda3",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/llm/openai-compatible.branch-coverage.test.ts": {
+    "mtime": 1788589558.665633,
+    "seen": 1788590913.8358448,
+    "ast_hash": "2c945eee99c74d49aa1d9f3c55282f35",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/server/http-branch-coverage.test.ts": {
+    "mtime": 1788589417.7429163,
+    "seen": 1788590913.8359635,
+    "ast_hash": "3c4f18b6d1810648fcdba5b78a17e18d",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/storage/paths.branch-coverage.test.ts": {
+    "mtime": 1788589498.9950233,
+    "seen": 1788590913.8359663,
+    "ast_hash": "0ffa6dcde8092f77fd89102b19f9e37c",
+    "semantic_hash": ""
+  },
+  "packages/spec-core/src/storage/revision.branch-coverage.test.ts": {
+    "mtime": 1788589596.227758,
+    "seen": 1788590913.835969,
+    "ast_hash": "e550704d51b67eaff8b0d2b8d5f512ce",
+    "semantic_hash": ""
   }
 }
