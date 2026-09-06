@@ -546,6 +546,12 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
   }
   activeJournalDir = projectDir;
   let performed = 0; // count of completed forward steps (V1-verifier V2/V3)
+  // Pre-v0.2.1 (INFO-A closure): set the moment the revision bump lands —
+  // the revision write is the LAST store write, so revisionBumped ⇒ every
+  // store of this commit is on disk and the only remaining step is journal
+  // cleanup. The abort disclosure uses this to distinguish "our own commit
+  // landed, cleanup faulted" from "a concurrent writer moved the revision".
+  let revisionBumped = false;
   try {
     // Canonical order (matches planJournalEntries' construction exactly).
     // Every step is ownership-fenced (zombie-write closure): a stale-broken
@@ -585,6 +591,7 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
     const next = journal.base_revision + 1;
     persistTrustedJson({ projectDir, path: paths.state, value: { schema_version: 1, revision: next } });
     performed += 1;
+    revisionBumped = true;
     removeJournal(projectDir, paths, holder);
   } catch (err) {
     const cause = err as Error;
@@ -641,6 +648,17 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
             `SUPERSEDED-MARKER RACE: the marker was NOT written — a concurrent writer's journal occupied the path and its ` +
               `rollback authority was PRESERVED (the marker refuses to clobber it); manually inspect the trusted state before any re-run`,
           );
+        } else if (marker.failed === 'debris') {
+          disclosures.push(
+            `SUPERSEDED-MARKER DEBRIS: the marker was NOT written — OUR OWN partial marker (left by a failed write attempt whose ` +
+              `cleanup unlink also failed) occupied the journal path; this is NOT a concurrent writer; reads fail closed until the ` +
+              `debris is manually cleared; manually inspect the trusted state before any re-run`,
+          );
+        } else if (marker.failed === 'cleanup') {
+          disclosures.push(
+            `SUPERSEDED-MARKER CLEANUP FAILURE: our own journal could NOT be removed before marking superseded (${marker.reason}) — ` +
+              `the journal itself is retained unmarked and the next trusted read will retire it automatically; no rollback authority was lost`,
+          );
         } else {
           disclosures.push(
             `PERSISTENT superseded-marker failure: the journal path could NOT be marked superseded after ${marker.attempts} attempts — ` +
@@ -651,11 +669,29 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       const retention =
         marker !== undefined && marker.landed
           ? 'the journal is retained as a superseded marker'
-          : sidecar !== undefined && sidecar.landed
-            ? 'the concurrent writer owns the journal path (abort evidence retained separately)'
-            : marker !== undefined || sidecar !== undefined
-              ? 'NO durable evidence of this abort could be retained'
-              : 'no in-flight writes were performed (nothing to evidence)';
+          : marker !== undefined && marker.failed === 'cleanup'
+            ? 'the journal itself is retained unmarked — the next trusted read will retire it automatically (the revision has already advanced past its base)'
+            : sidecar !== undefined && sidecar.landed
+              ? 'the concurrent writer owns the journal path (abort evidence retained separately)'
+              : marker !== undefined || sidecar !== undefined
+                ? 'NO durable evidence of this abort could be retained'
+                : 'no in-flight writes were performed (nothing to evidence)';
+      // Pre-v0.2.1 (INFO-A closure): when OUR OWN revision bump had already
+      // landed, the commit itself completed — every store plus the revision
+      // are on disk and only journal cleanup faulted. The generic arm below
+      // would claim "commit failed / a concurrent writer committed / state
+      // may combine both writers" — all three factually false here, and a
+      // fresh reader would be fail-closed into needless manual recovery.
+      if (revisionBumped && ours) {
+        throw new TrustStateError(
+          'recovery_required',
+          `trusted-state commit LANDED completely (all stores written and the revision advanced) — the failure (${cause.message}) ` +
+            `was in post-commit journal cleanup, not in the commit; no concurrent writer is implied; ` +
+            `${retention}; ` +
+            `inspect the journal path after review before re-running.` +
+            (disclosures.length > 0 ? ` CRITICAL: ${disclosures.join(' · ')}.` : ''),
+        );
+      }
       throw new TrustStateError(
         'recovery_required',
         `trusted-state commit failed (${cause.message}) AND the revision advanced past this commit's base — ` +
@@ -745,8 +781,20 @@ type MarkerWriteOutcome = { landed: true } | { landed: false; failed: 'persisten
 /** Post-PR5 L5 (RC1): the superseded marker's outcome additionally includes
  *  the CAS-race loss — a concurrent writer's journal occupied the path, so
  *  the marker was NOT written and the racer's rollback authority is
- *  PRESERVED (disclosed, never clobbered). */
-type SupersededMarkerOutcome = MarkerWriteOutcome | { landed: false; failed: 'race' };
+ *  PRESERVED (disclosed, never clobbered).
+ *
+ *  Pre-v0.2.1 hardening adds two distinct fail-closed outcomes so the
+ *  disclosure can never misattribute CAUSE (the L7 truthfulness contract):
+ *  - 'debris' (E-3): our own partial marker (from a failed create) occupied
+ *    the path after its cleanup unlink ALSO failed — NOT a concurrent writer;
+ *  - 'cleanup' (E-1): our own journal could not be removed at all — the
+ *    journal stays on disk unmarked and the next trusted read auto-retires
+ *    it (the revision has advanced past its base). */
+type SupersededMarkerOutcome =
+  | MarkerWriteOutcome
+  | { landed: false; failed: 'race' }
+  | { landed: false; failed: 'debris' }
+  | { landed: false; failed: 'cleanup'; reason: string };
 
 /** Bounded-retry sidecar write (closing-verify hardening): the evidence
  *  channel must survive a TRANSIENT single I/O fault at exactly this write
@@ -785,21 +833,47 @@ function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof rene
   const supersededJournal: TxJournalFile = { ...journal, superseded: true };
   supersededJournal.integrity = txJournalIntegrity(supersededJournal);
   // Post-PR5 L5 (RC1) CAS fence: the marker may never destructively replace
-  // bytes it has not PROVED are its own or absent. Our own journal is removed
-  // first (ownership-conditioned inside removeJournal); the superseded marker
-  // is then CREATED with O_EXCL — a concurrent writer parking its journal in
-  // the historical check→write window can no longer be clobbered: the create
-  // fails atomically (record_exists), the racer wins, and its rollback
-  // authority survives. Bytes match the historical persistTrustedJson format.
-  if (ours) removeJournal(projectDir, paths, journal.holder);
+  // bytes it has not PROVED are its own at check time. Our own journal is
+  // removed first (ownership-conditioned inside removeJournal); the
+  // superseded marker is then CREATED with O_EXCL — a concurrent writer
+  // parking its journal in the historical check→write window can no longer
+  // be clobbered: the create fails atomically (record_exists), the racer
+  // wins, and its rollback authority survives. Bytes match the historical
+  // persistTrustedJson format.
+  //
+  // E-2 (pre-v0.2.1) — accepted boundary: the ownership proof inside
+  // removeJournal is check-then-act (read journal bytes → prove ours →
+  // unlink). An OUT-OF-PROTOCOL writer landing a journal in that
+  // microsecond window can still be unlinked (schedule S10 pins this
+  // deterministically). Every in-protocol journal write serializes on the
+  // renewal writer lock this aborter still holds, so the window is
+  // reachable only by writers already violating the protocol; no global
+  // lock or second authority store is added for it.
+  if (ours) {
+    try {
+      removeJournal(projectDir, paths, journal.holder);
+    } catch (err) {
+      // E-1 (pre-v0.2.1): a persistent unlink fault must not escape as a
+      // raw fs error replacing the typed disclosure. The journal itself
+      // stays on disk unmarked — fail-safe: the next trusted read retires
+      // it (the revision has advanced past its base).
+      return { landed: false, failed: 'cleanup', reason: (err as Error).message };
+    }
+  }
   const content = `${JSON.stringify(supersededJournal, null, 2)}\n`;
+  let debrisCleanupFailed = false;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       authorizedCreateExclusive({ projectDir, path: paths.journal, content, mode: 0o600 });
       return { landed: true };
     } catch (err) {
       if (err instanceof TrustFsError && err.code === 'record_exists') {
-        return { landed: false, failed: 'race' };
+        // E-3 (pre-v0.2.1): distinguish OUR OWN debris from a REAL racer.
+        // A prior attempt's partial marker whose cleanup unlink also failed
+        // must not be attributed to a "concurrent writer … PRESERVED".
+        return debrisCleanupFailed
+          ? { landed: false, failed: 'debris' }
+          : { landed: false, failed: 'race' };
       }
       // V-B finding: a mid-write fault (ENOSPC/EIO) can leave OUR OWN
       // TRUNCATED partial file at the path — the next attempt would EEXIST
@@ -808,9 +882,12 @@ function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof rene
       // concurrent writer.
       try {
         authorizedRemoveTree({ projectDir, path: paths.journal });
+        debrisCleanupFailed = false;
       } catch {
         // best-effort: if this also fails, the bounded retry keeps the
-        // fail-closed outcome (worst case: EEXIST → race disclosure)
+        // fail-closed outcome; a subsequent EEXIST is classified as OUR OWN
+        // debris ('debris') — never a false concurrent-writer claim.
+        debrisCleanupFailed = true;
       }
     }
   }

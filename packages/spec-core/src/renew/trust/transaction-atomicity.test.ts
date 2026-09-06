@@ -35,7 +35,11 @@ vi.mock('./fs', async (importOriginal) => {
   type Fault = { failOnWrite?: number; seen?: number; failed?: boolean; failOnRestore?: number; restoreSeen?: number };
   type Interleave = { onWrite: number; commit: () => void; only?: boolean };
   type JournalCapture = { armed: boolean; bytes?: string };
-  type RemoveFault = { path?: string };
+  // Pre-v0.2.1 (E-1/E-3/INFO-A): remove faults are SCHEDULABLE — once fires
+  // on the first matching hit only (transient), fromHit skips earlier hits
+  // (e.g. let the ours-remove succeed, fail only the debris cleanup).
+  type RemoveFault = { path?: string; once?: boolean; fromHit?: number; hits?: number };
+  type RemoveWindow = { armed: boolean; fired?: boolean; bytes: string };
   return {
     ...actual,
     authorizedWrite: (args: Parameters<typeof actual.authorizedWrite>[0]) => {
@@ -121,11 +125,24 @@ vi.mock('./fs', async (importOriginal) => {
       return actual.authorizedCreateExclusive(args);
     },
     authorizedRemoveTree: (args: Parameters<typeof actual.authorizedRemoveTree>[0]) => {
+      // E-2 (pre-v0.2.1) boundary seam: park an out-of-protocol racer's
+      // journal bytes at the path INSIDE the read→unlink window (after the
+      // ownership proof at state.ts, before the real removal) — schedule S10.
+      const win = (globalThis as { __txRemoveWindow?: RemoveWindow }).__txRemoveWindow;
+      if (win !== undefined && win.armed && !win.fired && args.path.endsWith('tx-journal.json')) {
+        win.fired = true;
+        writeFileSync(args.path, win.bytes);
+      }
       // S5-H-01 regression seam (dormant unless armed): fail the removal of
-      // one exact path — used for the journal-RETIRE-failure arm.
+      // one exact path — used for the journal-RETIRE-failure arm; now also
+      // schedulable (once/fromHit) for the E-1/E-3 cleanup-fault schedules.
       const rf = (globalThis as { __txRemoveFault?: RemoveFault }).__txRemoveFault;
       if (rf !== undefined && rf.path !== undefined && args.path === rf.path) {
-        throw new Error(`injected removal failure (${args.path})`);
+        rf.hits = (rf.hits ?? 0) + 1;
+        const fire = (rf.once !== true || rf.hits === 1) && (rf.fromHit === undefined || rf.hits >= rf.fromHit);
+        if (fire) {
+          throw new Error(`injected removal failure (${args.path})`);
+        }
       }
       return actual.authorizedRemoveTree(args);
     },
@@ -2332,6 +2349,233 @@ describe('L5: marker-write CAS fence (journal-clobber TOCTOU closed)', () => {
     }
     expect(rejectionB!.code).toBe('recovery_required');
     expect(JSON.parse(readFileSync(pathsB.journal, 'utf8')).superseded).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pre-v0.2.1 evidence-cleanup hardening: E-1 (persistent unlink fault in the
+// marker flow must stay TYPED), E-3 (our own debris must never be attributed
+// to a concurrent writer), INFO-A (a fault after our own revision bump must
+// not claim "commit failed / a concurrent writer committed"), E-2 (the
+// check-then-unlink micro-window is an ACCEPTED, deterministically pinned
+// out-of-protocol boundary).
+// ---------------------------------------------------------------------------
+describe('pre-v0.2.1: cleanup-failure typing, debris attribution, landed-commit arm (E-1/E-2/E-3)', () => {
+  // The ours+revisionMoved abort arm: a concurrent revision bump mid-writes
+  // (our journal stays ours on the path) — same deterministic interleave the
+  // L5 race cell uses; the V6 fence then aborts us with revisionMoved.
+  const armFenceAbort = (paths: ReturnType<typeof renewalPaths>, baseRevision: number) => {
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: baseRevision + 1 }, null, 2));
+        },
+      },
+    };
+  };
+
+  it('S8 (E-1): a persistent unlink fault in the marker flow stays TYPED with a truthful retention clause; the fresh reader auto-retires', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    armFenceAbort(paths, begin.identity.revision);
+    (globalThis as { __txRemoveFault?: { path: string } }).__txRemoveFault = { path: paths.journal };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-06T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
+    }
+    // TYPED — pre-fix this escaped as a raw untyped fs Error with no code.
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    expect(rejection!.message).toMatch(/SUPERSEDED-MARKER CLEANUP FAILURE/i);
+    expect(rejection!.message).toMatch(/injected removal failure/); // the real fs cause is preserved
+    // retention is TRUTHFUL: the journal itself IS on disk (unmarked) — it
+    // must not claim "NO durable evidence … could be retained".
+    expect(rejection!.message).toMatch(/journal itself is retained unmarked/i);
+    expect(rejection!.message).toMatch(/retire it automatically/i);
+    expect(rejection!.message).not.toMatch(/NO durable evidence of this abort could be retained/i);
+    const onDisk = JSON.parse(readFileSync(paths.journal, 'utf8')) as { superseded?: boolean };
+    expect(onDisk.superseded).not.toBe(true); // retained UNSUPERSEDED — auto-retire shape
+    // fail-safe: a fresh process/reader retires the unmarked journal (C>B)
+    // and reads the healthy concurrent commit.
+    expect(readRevision(project)).toBe(begin.identity.revision + 1);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('S8b-1 (INFO-A): a persistent cleanup fault AFTER our own revision bump discloses LANDED-completely — never "a concurrent writer committed"', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    // No interleave: OUR commit completes fully (revision bump included);
+    // only the post-commit journal cleanup unlink fails, persistently.
+    (globalThis as { __txRemoveFault?: { path: string } }).__txRemoveFault = { path: paths.journal };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-06T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    // pre-fix all three of these claims were FALSE in this corner
+    expect(rejection!.message).toMatch(/LANDED completely/i);
+    expect(rejection!.message).toMatch(/post-commit journal cleanup/i);
+    expect(rejection!.message).toMatch(/no concurrent writer is implied/i);
+    expect(rejection!.message).not.toMatch(/a concurrent writer committed/i);
+    expect(rejection!.message).not.toMatch(/commit failed/i);
+    expect(rejection!.message).toMatch(/SUPERSEDED-MARKER CLEANUP FAILURE/i);
+    // disk truth: the commit really did land — every store + revision R+1
+    // stand, and the fresh reader auto-retires the unmarked journal.
+    expect(readRevision(project)).toBe(begin.identity.revision + 1);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('S8b-2 (INFO-A transient): cleanup fault then successful marker retry — LANDED arm with superseded-marker retention', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    // ONE-SHOT: the commit-cleanup unlink faults, the marker flow's retry
+    // remove succeeds, and the superseded marker lands.
+    (globalThis as { __txRemoveFault?: { path: string; once: boolean } }).__txRemoveFault = {
+      path: paths.journal,
+      once: true,
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-06T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    expect(rejection!.message).toMatch(/LANDED completely/i);
+    expect(rejection!.message).not.toMatch(/a concurrent writer committed/i);
+    // the marker DID land → the superseded-marker retention wording is the
+    // truthful one for this arm.
+    expect(rejection!.message).toMatch(/journal is retained as a superseded marker/i);
+    expect(JSON.parse(readFileSync(paths.journal, 'utf8')).superseded).toBe(true);
+  });
+
+  it('S9 (E-3): debris + cleanup-unlink double fault is DEBRIS, never a false "concurrent writer … PRESERVED"; the reader fails closed', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    armFenceAbort(paths, begin.identity.revision);
+    // attempt-1 create leaves OUR truncated debris; the debris-cleanup unlink
+    // (the SECOND journal-path removal — after the ours-remove) also fails.
+    (globalThis as { __txMarkerPartial?: { armed: boolean; fired?: boolean } }).__txMarkerPartial = { armed: true };
+    (globalThis as { __txRemoveFault?: { path: string; fromHit: number } }).__txRemoveFault = {
+      path: paths.journal,
+      fromHit: 2,
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-06T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txMarkerPartial?: unknown }).__txMarkerPartial;
+      delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    // OUR OWN debris — never misattributed to a concurrent writer
+    expect(rejection!.message).toMatch(/SUPERSEDED-MARKER DEBRIS/i);
+    expect(rejection!.message).toMatch(/NOT a concurrent writer/i);
+    expect(rejection!.message).not.toMatch(/SUPERSEDED-MARKER RACE/i);
+    expect(rejection!.message).not.toMatch(/rollback authority was PRESERVED/i);
+    // retention stays fail-closed-truthful (marker did not land, ours arm)
+    expect(rejection!.message).toMatch(/NO durable evidence of this abort could be retained/i);
+    // disk truth: the truncated debris holds the journal path…
+    expect(readFileSync(paths.journal, 'utf8')).toBe('{"schema_version":1,"holder"');
+    // …and a fresh reader fails CLOSED on it (typed unreadable-journal
+    // refusal — never interprets debris as authority).
+    expect(() => readRevision(project)).toThrow(/journal is unreadable/i);
+  });
+
+  it('S10 (E-2 accepted boundary): an out-of-protocol racer landing in the read→unlink window IS unlinked — pinned deterministically; committed authority stands', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    // A valid-shaped FOREIGN journal (uncommitted racer) that lands at the
+    // journal path AFTER the ownership proof read but BEFORE the unlink.
+    const bHolder = { pid: -777010, acquiredAt: '2026-09-06T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+    const racerBytes = `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`;
+    armFenceAbort(paths, begin.identity.revision);
+    (globalThis as { __txRemoveWindow?: { armed: boolean; fired?: boolean; bytes: string } }).__txRemoveWindow = {
+      armed: true,
+      bytes: racerBytes,
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-06T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txRemoveWindow?: unknown }).__txRemoveWindow;
+    }
+    // The accepted E-2 boundary, mechanically demonstrated: the uncommitted
+    // racer's journal WAS deleted inside the microsecond window (the path
+    // now holds our superseded marker, not the racer's bytes). Reachable
+    // only by writers that already violate the writer-lock protocol; the
+    // fence/ownership check itself remains load-bearing (mutation M-E2).
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    expect(readFileSync(paths.journal, 'utf8')).not.toBe(racerBytes);
+    expect(JSON.parse(readFileSync(paths.journal, 'utf8')).superseded).toBe(true);
+    // Committed human authority is untouched: the concurrent commit's
+    // revision stands on disk.
+    expect(JSON.parse(readFileSync(paths.state, 'utf8')).revision).toBe(begin.identity.revision + 1);
   });
 });
 
