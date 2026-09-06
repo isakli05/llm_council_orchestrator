@@ -622,6 +622,9 @@ export async function analyzeWithFresh(
   // from the exact rendered bytes the server supplied — the bundle is the
   // ONLY material citations may cover, and its digest binds project,
   // snapshot, every window, and the structural epoch.
+  // S5-M-01: the FULL item list (nodes/edges/facts included) is sealed too —
+  // the identity covers the entire model-visible payload, and the pipeline
+  // entry join refuses a request whose items diverge from the seal.
   const sealedContext = sealContextBundle({
     projectName: beginState.identity.projectName,
     snapshotId: activeSnapshot,
@@ -637,6 +640,7 @@ export async function analyzeWithFresh(
         file_line_count: i.file_line_count ?? Number.POSITIVE_INFINITY,
         ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
       })),
+    items: bundle.items,
     structural: {
       manifest_digest: beginState.snapshot.graph.manifest_digest as `sha256:${string}`,
       graph_digest: beginState.snapshot.graph.graph_digest as `sha256:${string}`,
