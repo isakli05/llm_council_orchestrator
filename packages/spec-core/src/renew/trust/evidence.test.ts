@@ -353,3 +353,46 @@ describe('evidence: support policy is load-bearing', () => {
     expect(() => assertSupportPolicy('destructive_rationale', 'human_confirmed', 'x')).not.toThrow();
   });
 });
+
+describe('evidence: seal digests the SAME frozen clone it exposes (post-PR5 I2)', () => {
+  it('a getter-equipped item cannot split the identity from the exposed bytes', () => {
+    let accesses = 0;
+    const dynamic = {
+      kind: 'file_slice',
+      path: 'src/a.ts',
+      start_line: 1,
+      end_line: 2,
+      get text() {
+        accesses += 1;
+        return accesses === 1 ? 'FIRST-ACCESS\n' : 'LATER-ACCESS\n';
+      },
+      content_hash: 'sha256:cc',
+    };
+    const sealed = sealContextBundle({
+      projectName: PROJECT,
+      snapshotId: SNAP,
+      slices: slices(),
+      items: [dynamic] as never,
+    });
+    // The clone materializes the accessor ONCE (access #1) and the digest is
+    // computed over that same frozen clone — pre-fix the digest read the raw
+    // caller item (access #1) while the exposed clone carried access #2,
+    // splitting identity from exposed bytes.
+    expect(accesses).toBe(1);
+    expect((sealed.items[0] as unknown as { text: string }).text).toBe('FIRST-ACCESS\n');
+    expect(Object.isFrozen(sealed.items[0])).toBe(true);
+    // Load-bearing invariant: membership proof over the EXPOSED value holds.
+    expect(contextBundleDigest(sealed)).toBe(sealed.identity.bundle_id);
+  });
+
+  it('static items keep byte-identical digests after the reorder (stability)', () => {
+    const items = [
+      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 2, text: 'line1\nline2\n', content_hash: 'sha256:aa' },
+      { kind: 'node', node_id: 'N-1', label: 'x', source_file: 'src/a.ts' },
+    ] as never[];
+    const a = sealContextBundle({ projectName: PROJECT, snapshotId: SNAP, slices: slices(), items });
+    const b = sealContextBundle({ projectName: PROJECT, snapshotId: SNAP, slices: slices(), items });
+    expect(a.identity.bundle_id).toBe(b.identity.bundle_id);
+    expect(contextBundleDigest(a)).toBe(a.identity.bundle_id);
+  });
+});

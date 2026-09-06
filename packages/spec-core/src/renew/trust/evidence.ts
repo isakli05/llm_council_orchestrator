@@ -145,6 +145,12 @@ function bundleDigestPayload(
  * domain-separated canonical digest, and stamps each record with it. The
  * returned records are frozen. A hand-edited or foreign record set cannot
  * carry a valid bundle_id — resolveCitation recomputes it.
+ *
+ * Post-PR5 I3: the seal treats `slices` (records) and `items` as two
+ * independently identity-bound lists BY DESIGN; their semantic coherence
+ * (each file_slice item corresponds to its record) is owned by the CALLER —
+ * the sole production site derives both sides from one array, an invariant
+ * pinned by the architecture guard in architecture.test.ts.
  */
 export function sealContextBundle(args: {
   projectName: string;
@@ -187,9 +193,16 @@ export function sealContextBundle(args: {
     });
     seen.set(key, base.length - 1);
   }
-  const bundle_id = domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base, args.items));
-  const records: ContextRecord[] = base.map((r) => Object.freeze({ ...r, bundle_id }));
+  // Post-PR5 I2: clone+freeze FIRST, then digest the same frozen clone the
+  // seal exposes — the identity can never diverge from the exposed items (a
+  // getter-equipped item previously presented access #1 to the digest and
+  // access #2 to the clone). For static items digest(clone) ===
+  // digest(original) — canonical key-sorting normalizes insertion order, and
+  // proxies/functions already threw at clone time — so every ordinary digest
+  // is byte-unchanged.
   const frozenItems: ContextItem[] = args.items.map((item) => deepFreezeItem(structuredClone(item)));
+  const bundle_id = domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base, frozenItems));
+  const records: ContextRecord[] = base.map((r) => Object.freeze({ ...r, bundle_id }));
   return Object.freeze({
     identity: Object.freeze({
       schema_version: 2 as const,
