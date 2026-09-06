@@ -216,6 +216,35 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
     // nothing persisted yet: approval is the only write (§31)
     expect(existsSync(join(dir, 'spec'))).toBe(false);
   }, 20000);
+
+  it('C5 (pre-v0.2.1): a deterministically DELAYED transport still passes — no fixed sleep determines correctness', async () => {
+    // Every round-trip is delayed 300ms past any historical settle window;
+    // the flow must complete purely on observable-state gates. This is the
+    // H-1 regression shape: a fixed-wait version of this test would flake.
+    const origin = handle.origin;
+    const realFetch = globalThis.fetch.bind(globalThis);
+    (window as unknown as { fetch: typeof fetch }).fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' && input.startsWith('/') ? `${origin}${input}` : input;
+      return new Promise<Response>((resolve, reject) => {
+        setTimeout(() => {
+          realFetch(url as string, init).then(resolve, reject);
+        }, 300);
+      });
+    }) as typeof fetch;
+    llm.queue([JSON.stringify(bundle())]);
+    await bootApp();
+    const other = (await waitFor(() => document.getElementById('other-DEC-0004'), 100)) as HTMLInputElement;
+    other.checked = true;
+    other.dispatchEvent(new Event('change', { bubbles: true }));
+    const area = document.getElementById('other-text-DEC-0004') as HTMLTextAreaElement;
+    area.value = 'The dealer with the longest relationship gets the last fabric, always.';
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+    ([...document.querySelectorAll('button')].find((b) => /Submit 1 answer/.test(b.textContent ?? '')) as HTMLButtonElement).click();
+    // 300ms-delayed POST + regeneration — only the observable gate passes it
+    const reviewTitle = await waitFor(() => document.querySelector('.review-title'), 100);
+    expect(reviewTitle).toBeTruthy();
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+  }, 20000);
 });
 
 async function waitFor(fn: () => Element | null, tries = 40): Promise<Element | null> {
