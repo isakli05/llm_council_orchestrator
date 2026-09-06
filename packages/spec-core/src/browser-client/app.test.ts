@@ -160,6 +160,9 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
     // a pending change request on one segment — await the observable panel,
     // never a null-tolerant conditional that silently skips half the test
     (document.querySelector('[data-segment-id="SEG-REQ-0001"] .change-trigger') as HTMLButtonElement).click();
+    // (the window.lcoApp debug-exposure harness hook stays asserted — a prior
+    // edit dropped this line; verifier observation restored it)
+    expect((window as unknown as { lcoApp: unknown }).lcoApp).toBeTruthy();
     const area = (await waitFor(() => document.getElementById('change-instruction'))) as HTMLTextAreaElement;
     area.value = 'Show live stock levels in the catalogue.';
     ([...document.querySelectorAll('.change-panel .btn.primary')].find((b) => b.textContent === 'Add change request') as HTMLButtonElement).click();
@@ -244,6 +247,14 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
     const reviewTitle = await waitFor(() => document.querySelector('.review-title'), 100);
     expect(reviewTitle).toBeTruthy();
     expect(existsSync(join(dir, 'spec'))).toBe(false);
+    // verifier hygiene note: restore the standard (undelayed) per-test shim so
+    // nothing after this cell observes the delayed wrapper.
+    const pristine = globalThis.fetch.bind(globalThis);
+    const liveOrigin = origin;
+    (window as unknown as { fetch: typeof fetch }).fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' && input.startsWith('/') ? `${liveOrigin}${input}` : input;
+      return pristine(url as string, init);
+    }) as typeof fetch;
   }, 20000);
 });
 

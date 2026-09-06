@@ -706,7 +706,7 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
         throw new TrustStateError(
           'recovery_required',
           `trusted-state commit LANDED completely (all stores written and the revision advanced) — the failure (${cause.message}) ` +
-            `was in post-commit journal cleanup, not in the commit; no concurrent writer is implied; ` +
+            `was in post-commit journal cleanup, not in the commit; no concurrent writer is implied (the journal still being ours); ` +
             `${retention}; ` +
             `inspect the journal path after review before re-running.` +
             (disclosures.length > 0 ? ` CRITICAL: ${disclosures.join(' · ')}.` : ''),
@@ -1253,7 +1253,21 @@ function recoverTxJournal(projectDir: string, paths: ReturnType<typeof renewalPa
           `inspect it after review and recover manually`,
       );
     }
-    removeJournal(projectDir, paths, undefined, { recoveryOwns: true });
+    // N-B1 (pre-v0.2.1, found by fresh verification — pre-existing at base):
+    // the post-rollback journal removal is the same typed-failure surface as
+    // the retire arm above; a raw fs error here escaped recovery untyped
+    // through readRevision. The rollback is idempotent, so a retained
+    // journal simply retries on the next read.
+    try {
+      removeJournal(projectDir, paths, undefined, { recoveryOwns: true });
+    } catch (e) {
+      throw new TrustStateError(
+        'recovery_required',
+        `journal rollback COMPLETED but the journal could not be removed (${(e as Error).message}) — ` +
+          `the journal is retained and the rolled-back state stands; recovery is idempotent, ` +
+          `retry the read after the fault clears`,
+      );
+    }
   } finally {
     lock.release();
   }

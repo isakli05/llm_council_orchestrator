@@ -170,6 +170,10 @@ afterEach(() => {
   delete (globalThis as { __txMarkerFault?: unknown }).__txMarkerFault;
   delete (globalThis as { __txMarkerRace?: unknown }).__txMarkerRace;
   delete (globalThis as { __txMarkerPartial?: unknown }).__txMarkerPartial;
+  // pre-v0.2.1 seams (verifier hygiene note): deleted here too, so a future
+  // arming outside try/finally cannot leak across tests.
+  delete (globalThis as { __txRemoveWindow?: unknown }).__txRemoveWindow;
+  delete (globalThis as { __txPostStatePark?: unknown }).__txPostStatePark;
 });
 
 const FIXTURE_SRC = join(__dirname, '..', '..', '..', 'fixtures', 'legacy-app');
@@ -2486,7 +2490,7 @@ describe('pre-v0.2.1: cleanup-failure typing, debris attribution, landed-commit 
     // pre-fix all three of these claims were FALSE in this corner
     expect(rejection!.message).toMatch(/LANDED completely/i);
     expect(rejection!.message).toMatch(/post-commit journal cleanup/i);
-    expect(rejection!.message).toMatch(/no concurrent writer is implied/i);
+    expect(rejection!.message).toMatch(/no concurrent writer is implied \(the journal still being ours\)/i);
     expect(rejection!.message).not.toMatch(/a concurrent writer committed/i);
     expect(rejection!.message).not.toMatch(/commit failed/i);
     expect(rejection!.message).toMatch(/SUPERSEDED-MARKER CLEANUP FAILURE/i);
@@ -2614,6 +2618,39 @@ describe('pre-v0.2.1: cleanup-failure typing, debris attribution, landed-commit 
     // fresh reader: the racer's journal (base R) at revision R+1 → C>B RETIRE
     // — deterministic recovery, committed authority intact
     expect(readRevision(project)).toBe(begin.identity.revision + 1);
+    expect(existsSync(paths.journal)).toBe(false);
+  });
+
+  it('S11 (N-B1): a post-rollback journal-removal fault refuses TYPED, keeps the rolled-back state, and recovery retries idempotently', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    // a crash-left journal at C==B (base R, revision R): rollback authority valid
+    const bHolder = { pid: -777012, acquiredAt: '2026-09-06T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+    writeFileSync(
+      paths.journal,
+      `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`,
+    );
+    // the removal faults AFTER the rollback applied — pre-fix this escaped
+    // recovery as a raw fs error through readRevision.
+    (globalThis as { __txRemoveFault?: { path: string } }).__txRemoveFault = { path: paths.journal };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      readRevision(project);
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required'); // TYPED — pre-fix raw, no code
+    expect(rejection!.message).toMatch(/rollback COMPLETED/i);
+    expect(rejection!.message).toMatch(/retry the read/i);
+    expect(existsSync(paths.journal)).toBe(true); // journal retained for the idempotent retry
+    // fault cleared: the retry rolls back (idempotently) and completes
+    expect(readRevision(project)).toBe(begin.identity.revision);
     expect(existsSync(paths.journal)).toBe(false);
   });
 
@@ -2787,6 +2824,7 @@ describe('L6: persistent evidence-channel physics boundary (ACCEPTED, contract-p
       eaccesHolds = true;
     }
     if (!eaccesHolds) {
+      chmodSync(root, 0o755); // restore before exiting (verifier hygiene note)
       if (process.getuid?.() === 0) return; // root never gets EACCES from mode bits
       throw new Error('eacces does not hold on this filesystem — cannot pin the dead channel deterministically');
     }

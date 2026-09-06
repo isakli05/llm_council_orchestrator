@@ -69,6 +69,15 @@ vi.mock('./fs', async (importOriginal) => {
 
 import { loadActiveState, readRevision, runRenewalStateTx } from './state';
 
+// H-2 companion (verifier note): C2/C3 skip when the compiled renew state is
+// absent — inside CI that absence must be RED, not a silent skip.
+const DIST_COMPILED_PRESENT = existsSync(join(__dirname, '..', '..', '..', 'dist', 'renew', 'trust', 'state.js'));
+const IN_CI = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
+it('inside CI the compiled renew state MUST be present — skipping is a CI bug', () => {
+  if (!IN_CI) return;
+  expect(DIST_COMPILED_PRESENT).toBe(true);
+});
+
 afterEach(() => {
   delete (globalThis as { __v021Interleave?: unknown }).__v021Interleave;
   delete (globalThis as { __v021RemoveFault?: unknown }).__v021RemoveFault;

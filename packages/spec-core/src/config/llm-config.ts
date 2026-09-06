@@ -169,8 +169,14 @@ const ProfileSchema = z
     // NF-1 (pre-v0.2.1): role keys get the same loud own-key refusal as
     // providers/profiles — zod's output construction silently strips an own
     // "__proto__" a plain z.string() key accepted, leaving a role the
-    // operator believes is live but never resolves.
-    roles: z.record(NoProtoKeySchema, RoleSchema),
+    // operator believes is live but never resolves. N-1 (verifier-found):
+    // the old key schema's min(1) is preserved too — an EMPTY-STRING role
+    // key is refused at parse (it can never resolve against the closed set),
+    // instead of failing later with a vague "got [none]".
+    roles: z.record(
+      NoProtoKeySchema.refine((k) => k.length > 0, 'role keys must be non-empty (a role name from the closed set)'),
+      RoleSchema,
+    ),
   })
   .strict();
 

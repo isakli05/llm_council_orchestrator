@@ -440,6 +440,21 @@ describe('record-key + own-property resolution hardening (pre-v0.2.1 NF-1/NF-2)'
     if (!r.ok) expect(r.error).toMatch(/__proto__/);
   });
 
+  it("an EMPTY-STRING role key is refused at parse — non-empty preserved from the old schema (N-1)", () => {
+    // verifier-found: swapping the key schema to NoProtoKeySchema alone
+    // dropped the old z.string().min(1) — "" parsed and only failed at
+    // resolve time with a vague "got [none]". Parse-time pointed refusal.
+    const doc = JSON.stringify({
+      llm: {
+        providers: { x: { type: 'openrouter', apiKeyEnv: 'A' } },
+        profiles: { p: { variant: 'single', roles: JSON.parse('{"":{"provider":"x","model":"m"}}') } },
+      },
+    });
+    const r = parseLlmConfig(doc);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/non-empty/);
+  });
+
   it("profile resolution requires an OWN key — inherited names refuse typed, never a raw TypeError (NF-2)", () => {
     const doc = JSON.stringify({
       llm: { ...BASE, profiles: { p: { variant: 'single', roles: { single: { provider: 'x', model: 'm' } } } } },
