@@ -3,14 +3,27 @@
 Prepared for a FRESH independent auditor. This program does not issue its own
 audit verdict; the residual-closure confirmation belongs to you.
 
+> **Provenance correction (2026-09-06, docs-only):** the committed version of
+> this section carried placeholders (`<see git log …>`) where the final SHAs
+> belong and mischaracterized the tail as two commits. Corrected below with
+> exact identities re-derived from git. No runtime/test/CI change accompanies
+> this correction.
+
 ## 1. Identities
 
 ```
-base (program branch point) = origin/main = 602a51122831c62dc4b6f62e2213054c3201c492 (tree 2f1a702ec2e4c62e05112dfeeef760d7995984d9)
-plan commit                 = 4507409b3d2cd78d6a8c3de641416bb64402a46c
-final implementation HEAD   = (see §10 — the verifier-finding fixes commit; one commit after e46d574)
-v0.2.0 (immutable)          = e7dedf034e92fc57616124dbdd7fe6ebffda8620  — UNTOUCHED
+branch                         = fix/post-pr5-full-residual-hardening
+base (program branch point)    = origin/main = 602a51122831c62dc4b6f62e2213054c3201c492 (tree 2f1a702ec2e4c62e05112dfeeef760d7995984d9)
+plan commit                    = 4507409b3d2cd78d6a8c3de641416bb64402a46c
+final production implementation = e47c4489ec0126cc0b7356056f75dd47ef84b485 (tree 9e3663345af5a3ebb2f1515768a9c9b33e93b347)
+independently audited candidate = 0063ce37d9154352bbaf2bd7c7f87fbe3d4436f5 (tree cf4b736c04b5777a7daf1378ff6f3d0e7a4865b4)
+v0.2.0 (immutable)             = e7dedf034e92fc57616124dbdd7fe6ebffda8620  — UNTOUCHED
+commit counts                  = 16 (base..e47c448) · 17 (base..0063ce3)
 ```
+
+Tail provenance: `e47c448 → 0063ce3` is ONE Graphify/generated-only commit
+(6 files, all under `graphify-out/`);
+`git diff e47c448..0063ce3 -- packages/ .github/` is EMPTY.
 
 ## 2. What this program is
 
@@ -29,10 +42,11 @@ remains 0.2.0 on the branch).
    03–16 (per-residual investigation: every claim freshly reproduced with
    commands and observed output), then 22 (final disposition table — one row
    per residual, none omitted).
-2. Production diff: `git diff 4507409..HEAD -- packages/spec-core/src` (12
-   production files + 21 test files; §10 has the exact list and commit map).
-   Reports 17–21 hold the composition, protected-regression, mutation, full-
-   gate, and independent-verifier evidence.
+2. Production diff: `git diff 4507409..e47c448 -- packages/spec-core/src` (12
+   production files + 21 test files; report 23 has the exact corrected list,
+   §10 the commit map). Reports 17–21 hold the composition,
+   protected-regression, mutation, full-gate, and independent-verifier
+   evidence.
 3. Suggested independent re-audit probes (fresh falsification, not re-reading):
    - L1/I1: construct an own-`__proto__` divergence through ANY validated or
      env path (verifier V-A enumerated the transport arms; try to find one more).
@@ -103,8 +117,38 @@ no verifier disagreement on any trust-bearing conclusion.
 4507409 plan+reports → 7710c49 L1+I1 → 62c49d9 I2+I3 → 275c2de L3+L4 →
 0c017c0 I4 → 6b29d77 guard hardening → 9736c25 L2 → c7f81b8 L7+I5 → 30aae75
 I6+NEW-F-01 → 3b62a43 L5 → 76bad08 L6 → e5b2398 I7 → 2079620 compositions →
-ec6fc68 guard-key fix → e46d574 graphify → **<see git log: the verifier-findings
-commit (doctor parity, record-key refines, marker debris cleanup, probe
-placement, their tests) + the final docs commit = final implementation HEAD>**
-(the exact SHAs are in git log e46d574..HEAD; this report and the disposition
-table are committed with them).
+ec6fc68 guard-key fix → e46d574 graphify → **e47c448** (ONE combined commit:
+the four verifier-found Low fixes — doctor parity, record-key refines, marker
+debris cleanup, probe placement, their tests — PLUS the final reports 17–24;
+= final production implementation) → **0063ce3** (Graphify-only refresh of
+e47c448; = independently audited candidate). There is NO separate "final docs
+commit" — e47c448 carries fixes and reports together.
+
+## 11. Post-audit evidence-trace cleanup (integration instructions)
+
+A fresh independent targeted re-audit (2026-09-06) VERIFIED the runtime/trust
+candidate `0063ce3` but returned
+**REQUIRES_NON_RUNTIME_CLEANUP_BEFORE_INTEGRATION** because the committed
+evidence trace (reports 00/23/24/19-convention) was stale or carried
+placeholders. The commit carrying these corrections IS that cleanup: it is
+documentation-only and is NOT itself independently runtime-audited.
+
+Terminology after the cleanup:
+
+- final production implementation = `e47c448…` (runtime code authority)
+- independently audited runtime candidate = `0063ce3…` (tree `cf4b736c…`)
+- post-audit evidence-cleanup HEAD = the branch HEAD after this commit —
+  obtain it live via `git rev-parse HEAD` (its SHA is deliberately not
+  self-embedded in the documents it corrects).
+
+The integration operator MUST, before any PR:
+
+```bash
+git rev-parse HEAD                                            # the cleanup HEAD
+git diff 0063ce3..HEAD --name-only                            # expect ONLY
+#   audit-output/post-pr5-full-residual-hardening-2026-09-06/*.md
+git diff 0063ce3..HEAD -- packages/ .github/ plans/ graphify-out/   # expect EMPTY
+git diff e47c448..HEAD -- packages/ .github/                   # expect EMPTY
+```
+
+If any of those expectations fails, the cleanup is void — do not integrate.

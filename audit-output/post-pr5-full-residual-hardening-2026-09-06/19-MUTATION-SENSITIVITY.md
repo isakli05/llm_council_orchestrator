@@ -43,3 +43,25 @@ the mutation check exposed them (this is the mutation discipline working):
 
 **Summary: 14 semantic mutations attempted, 14 caught (3 after test/guard
 strengthening that the mutation run itself forced). 0 known uncaught.**
+
+### Counting-convention clarification (added 2026-09-06, docs-only)
+
+The 14 above is THIS implementation ledger's own convention. Two distinctions
+matter when comparing ledgers:
+
+- Row 10 (NEW-F-01) is explicitly a **pre-fix reproduction**, not a strict
+  post-fix mutation (the concurrency test failed exactly this way before the
+  fix; row 10 says so in-line). Under a strict "post-fix independent semantic
+  mutation" counting rule, the implementation-side count is **13**
+  (14 rows − the pre-fix reproduction row). The "14 attempted" framing counts
+  it and is internally consistent as written.
+- The **fresh independent re-audit** (2026-09-06, report 20 of
+  `audit-output/post-pr5-full-residual-targeted-independent-reaudit-2026-09-06/`)
+  executed its OWN mutation ledger at candidate `0063ce3`:
+  **15 semantic mutations, 15 caught, 0 uncaught** (clean-tree control
+  330/330), including the NEW-F-01 revert mutation this implementation
+  program never ran (row 10 above reproduces the pre-fix failure instead of
+  reverting the fix).
+
+Neither number contradicts the other: 14 (implementation convention, incl. 1
+pre-fix reproduction) vs 15 (independent audit convention, incl. the fix-revert).
