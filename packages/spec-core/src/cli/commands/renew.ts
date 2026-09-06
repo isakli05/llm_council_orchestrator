@@ -26,7 +26,7 @@ import { GraphContextProvider } from '../../renew/context/context-provider';
 import { buildArchitectureView } from '../../renew/archview/architecture-view';
 import { runRecovery } from '../../renew/recovery/pipeline';
 import { nextAnalysisId, persistAnalysisRecord } from '../../renew/recovery/analysis-store';
-import { addOverlayRecord, emptyOverlay } from '../../renew/overlay/overlay';
+import { addOverlayRecord, emptyOverlay, markSuperseded } from '../../renew/overlay/overlay';
 import { addParityEntry, applyApprovalToParity, emptyParity } from '../../renew/parity/ledger';
 import { makeRenewalDriver, STRATEGY_CLAIM_ID } from '../../renew/clarify/distiller';
 import { createRenewalClarifySession } from '../../renew/clarify/session';
@@ -819,16 +819,36 @@ export async function analyzeWithFresh(
         const parityStore = foldParity.store;
 
         for (const h of record.promoted.hypotheses) {
-          addOverlayRecord(overlayStore, {
-            relation: 'business_rule',
-            subject: { path: h.anchors[0]!.path, ...(h.anchors[0]?.node_id !== undefined ? { node_id: h.anchors[0].node_id } : {}) },
-            value: h.statement,
-            anchors: h.anchors.map((a) => ({ ...a })),
-            snapshot_id: record.snapshot_id,
-            confidence: h.confidence,
-            status: 'active',
-            lineage: { analysis_id: record.analysis_id },
-          });
+          // NEW-F-01 (exposed by the post-PR5 I6 write-boundary check): the
+          // fold is DEDUP-KEYED — at most one ACTIVE overlay record per
+          // (relation, subject), exactly the reader's M-02 uniqueness key. A
+          // re-analysis of the same behavior used to APPEND a second active
+          // record: schema-corrupt state that committed durably and failed
+          // typed on every later read. Now an existing same-key ACTIVE record
+          // with the same value stands untouched (idempotent by behavior,
+          // mirroring INV-D3 parity semantics); a changed statement supersedes
+          // the prior MACHINE record first. Human authority lives in parity
+          // and is never touched here.
+          const subject = { path: h.anchors[0]!.path, ...(h.anchors[0]?.node_id !== undefined ? { node_id: h.anchors[0].node_id } : {}) };
+          // the reader's M-02 uniqueness key (symbol is never set by this fold)
+          const dedupeKey = `business_rule|${subject.path}`;
+          const existingActive = overlayStore.records.filter(
+            (r) => r.status === 'active' && `${r.relation}|${r.subject.path}${r.subject.symbol ?? ''}` === dedupeKey,
+          );
+          const sameStatement = existingActive.length === 1 && existingActive[0]!.value === h.statement;
+          if (!sameStatement) {
+            for (const prior of existingActive) markSuperseded(overlayStore, prior.id, `re-analysis ${record.analysis_id}`);
+            addOverlayRecord(overlayStore, {
+              relation: 'business_rule',
+              subject,
+              value: h.statement,
+              anchors: h.anchors.map((a) => ({ ...a })),
+              snapshot_id: record.snapshot_id,
+              confidence: h.confidence,
+              status: 'active',
+              lineage: { analysis_id: record.analysis_id },
+            });
+          }
           // INV-D3: addParityEntry is idempotent BY BEHAVIOR (semantic identity) —
           // a re-analysis never duplicates an entry nor disturbs a human ruling.
           addParityEntry(parityStore, {

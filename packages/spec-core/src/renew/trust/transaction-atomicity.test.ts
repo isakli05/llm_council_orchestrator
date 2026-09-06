@@ -2097,3 +2097,83 @@ describe('I5: foreign-object diagnostics at the abort-evidence path', () => {
     expect(rejection!.message).toMatch(/any pre-existing object at that path still fail-closes reads/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Post-PR5 I6 (RD1): the durable write boundary validates with the same
+// schemas the reader will. An invalid payload is refused BEFORE the journal
+// write — revision unchanged, target bytes unchanged — instead of committing
+// durably and failing typed on the next read. Read-side store_corrupt stays
+// as the tampering backstop.
+// ---------------------------------------------------------------------------
+describe('I6: store write-boundary validation (refuse before any durable effect)', () => {
+  it('a poisoned overlay is refused with nothing written (revision and bytes unchanged)', async () => {
+    const { project } = await freshProject();
+    const before = snapshotTrustedBytes(project);
+    const begin = loadActiveState(project);
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({
+          mutation: {
+            ...(analyzeStyleMutation(fresh) as Record<string, unknown>),
+            overlay: { ...(analyzeStyleMutation(fresh).overlay as Record<string, unknown>), records: 'NOT_AN_ARRAY' },
+          },
+          result: undefined,
+        }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('commit_failed_without_state_change');
+    expect(rejection!.message).toMatch(/refusing to commit an invalid overlay payload/i);
+    // NOTHING durable: byte-identical trusted tree, same revision, no journal
+    expect(snapshotTrustedBytes(project)).toEqual(before);
+    expect(existsSync(renewalPaths(project).journal)).toBe(false);
+  });
+
+  it('a poisoned project / snapshot / strategy payload is refused at the same boundary', async () => {
+    const { project } = await freshProject();
+    const begin = loadActiveState(project);
+    const poisons: [string, Record<string, unknown>][] = [
+      ['project', { project: { schema_version: 'one', name: 42, target_path: 42, snapshot_id: [] } }],
+      ['snapshot', { snapshot: { schema_version: 1, garbage: true } }],
+      ['strategy', { strategy: { not: 'a strategy decision' } }],
+    ];
+    for (const [kind, extra] of poisons) {
+      let rejection: (Error & { code?: string }) | undefined;
+      try {
+        await runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: { ...(analyzeStyleMutation(fresh) as Record<string, unknown>), ...extra }, result: undefined }),
+        });
+      } catch (e) {
+        rejection = e as Error & { code?: string };
+      }
+      expect(rejection, kind).toBeDefined();
+      expect(rejection!.code, kind).toBe('commit_failed_without_state_change');
+      expect(rejection!.message, kind).toMatch(new RegExp(`refusing to commit an invalid ${kind} payload`, 'i'));
+      expect(existsSync(renewalPaths(project).journal), kind).toBe(false);
+    }
+    // positive control: the healthy mutation of the same shape still commits
+    const ok = await runRenewalStateTx({
+      projectDir: project,
+      nowIso: '2026-09-03T00:00:03Z',
+      expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+      policy: 'additive',
+      work: () => undefined,
+      plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+    });
+    void ok;
+    expect(readRevision(project)).toBe(begin.identity.revision + 1);
+  });
+});

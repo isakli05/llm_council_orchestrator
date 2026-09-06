@@ -490,6 +490,39 @@ function planJournalEntries(projectDir: string, paths: ReturnType<typeof renewal
 /** The identity of the writer lock this commit holds (V6 fence). */
 function applyStateMutation(projectDir: string, mutation: StateMutationPlan, lockIdentity: { pid: number; acquiredAt: string }): void {
   const paths = renewalPaths(projectDir);
+  // Post-PR5 I6 (RD1): the durable write boundary validates with the SAME
+  // schemas the reader will — no payload may commit that the read side would
+  // refuse as `store_corrupt`/`project_corrupt`. Runs BEFORE the journal
+  // write, so a refusal changes nothing on disk (typed
+  // commit_failed_without_state_change). Read-side validation remains as the
+  // backstop against external tampering (the write boundary cannot cover
+  // that). Objects are validated through the exact JSON value domain the
+  // durable bytes will carry (persistTrustedJson serializes the same value).
+  const refuseInvalid = (kind: string, why: string): never => {
+    throw new TrustStateError(
+      'commit_failed_without_state_change',
+      `refusing to commit an invalid ${kind} payload (${why}) — nothing was written`,
+    );
+  };
+  if (mutation.overlay !== undefined) {
+    const r = parseOverlayStore(JSON.stringify(mutation.overlay));
+    if (!r.ok) refuseInvalid('overlay', r.message);
+  }
+  if (mutation.parity !== undefined) {
+    const r = parseParityStore(JSON.stringify(mutation.parity));
+    if (!r.ok) refuseInvalid('parity', r.message);
+  }
+  if (mutation.project !== undefined && !RenewalProjectSchema.safeParse(mutation.project).success) {
+    refuseInvalid('project', 'renewal project schema validation failed');
+  }
+  if (mutation.snapshot !== undefined) {
+    const r = reloadSnapshot(JSON.stringify(mutation.snapshot));
+    if (!r.ok) refuseInvalid('snapshot', r.message);
+  }
+  if (mutation.strategy !== undefined) {
+    const r = parseStrategyDecision(JSON.stringify(mutation.strategy));
+    if (!r.ok) refuseInvalid('strategy', r.message);
+  }
   const entries = planJournalEntries(projectDir, paths, mutation);
   const holder = lockIdentity; // the REAL lock identity — the fence compares against it
   const journal: TxJournalFile = {

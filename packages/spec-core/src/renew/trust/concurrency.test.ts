@@ -183,6 +183,21 @@ describe('Phase 10 — deterministic interleavings (no silent lost updates)', ()
     expect(entry, 'the re-analysis fold landed').toBeDefined();
     expect(entry!.ruling).toBe('preserve'); // HUMAN RULING SURVIVED
     expect(entry!.support_status).toBe('human_confirmed');
+    // NEW-F-01 (post-PR5 I6 exposure): the folded overlay must stay READABLE
+    // and carry exactly one ACTIVE business_rule record per subject — the
+    // re-analysis fold is dedup-keyed (a second active record used to commit
+    // durably and fail typed on every later load).
+    if (!state.overlay.ok) throw new Error(`overlay must remain readable: ${state.overlay.message}`);
+    const activeRules = state.overlay.store.records.filter(
+      (r) => r.status === 'active' && r.relation === 'business_rule',
+    );
+    const seen = new Set<string>();
+    for (const r of activeRules) {
+      const key = `${r.relation}|${r.subject.path}${r.subject.symbol ?? ''}`;
+      expect(seen.has(key), `duplicate active overlay record for ${key}`).toBe(false);
+      seen.add(key);
+    }
+    expect(activeRules.length).toBeGreaterThan(0); // the fold landed in overlay too
   });
 
   it('plan ↔ human update: any trusted mutation during planning refuses the plan (typed, nothing written)', async () => {
