@@ -1269,6 +1269,15 @@ describe('PROD-004 e2e: intent → draft → frozen → change, without a shell'
 
 const DIST_PRESENT = existsSync(join(__dirname, '../../dist/mcp/server.js'));
 if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+
+// H-2 (pre-v0.2.1): inside CI the built dist MUST be present — a silent skip
+// there is a CI bug, not a pass (pretest/test:coverage build first; the
+// graphify-canary idiom). Local direct-vitest runs keep skip semantics.
+const IN_CI = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
+it('inside CI the built dist MUST be present — skipping is a CI bug', () => {
+  if (!IN_CI) return;
+  expect(DIST_PRESENT).toBe(true);
+});
 describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js (anti-F18)', () => {
   it(
     'a full session over stdio: every stdout line is valid JSON-RPC, clean exit',

@@ -79,6 +79,18 @@ const CHECK_NAMES = [
 ] as const;
 
 /** The exact check order the human/JSON surfaces emit (pinned contract). */
+// H-2 (pre-v0.2.1): dist presence for the pretest-built real-package cells —
+// notice on skip (sibling-suite consistency) + a CI canary that turns a
+// silent skip into a red gate inside CI (pretest builds first, so absence
+// there is a build bug).
+const DIST_PRESENT = existsSync(join(__dirname, '../../../dist/cli/index.js'));
+const IN_CI = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+it('inside CI the built dist MUST be present — skipping is a CI bug', () => {
+  if (!IN_CI) return;
+  expect(DIST_PRESENT).toBe(true);
+});
+
 describe('cmdDoctor: full flow', () => {
   it('healthy dir with unconfigured optional env -> exit 0 (warn is NOT a failure)', async () => {
     const root = tmpRoot('healthy');
@@ -635,7 +647,9 @@ describe('check: bin self-check (dist contract)', () => {
     return pkg;
   }
 
-  it.skipIf(!existsSync(join(__dirname, '../../../dist/cli/index.js')))('real package root (pretest-built dist) -> ok', () => {
+  // H-2 (pre-v0.2.1): named const + the skip notice the seven sibling
+  // dist-guarded suites already print (consistency), + the CI canary below.
+  it.skipIf(!DIST_PRESENT)('real package root (pretest-built dist) -> ok', () => {
     const check = checkBins(join(__dirname, '../../..'));
     expect(check.status).toBe('ok');
   });
