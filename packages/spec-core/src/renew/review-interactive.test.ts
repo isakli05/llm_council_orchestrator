@@ -128,7 +128,7 @@ async function waitForWorkspace(opened: string[], timeoutMs = 10_000): Promise<{
   };
 }
 
-const DIST_PRESENT = existsSync(join(__dirname, '../../../dist/browser/asset-manifest.json'));
+const DIST_PRESENT = existsSync(join(__dirname, '../../dist/browser/asset-manifest.json'));
 if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
 describe('renew review --interactive (real loopback workspace)', () => {
   it.skipIf(!DIST_PRESENT)('completes: answers via the workspace, approves, and folds parity + strategy (exit 0)', async () => {

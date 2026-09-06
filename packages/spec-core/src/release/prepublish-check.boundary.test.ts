@@ -17,7 +17,7 @@ import { join } from 'node:path';
  * boundary under test. pretest builds dist/ before the suite, so the
  * readiness module is present (same contract as every dist-dependent test).
  */
-const DIST_PRESENT = existsSync(join(__dirname, '../../../dist/cli/index.js'));
+const DIST_PRESENT = existsSync(join(__dirname, '../../dist/cli/index.js'));
 if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
 describe.skipIf(!DIST_PRESENT)('scripts/prepublish-check.js — spawn/exit-code boundary (T20)', () => {
   const tmpDirs: string[] = [];
