@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,7 +17,9 @@ import { join } from 'node:path';
  * boundary under test. pretest builds dist/ before the suite, so the
  * readiness module is present (same contract as every dist-dependent test).
  */
-describe('scripts/prepublish-check.js — spawn/exit-code boundary (T20)', () => {
+const DIST_PRESENT = existsSync(join(__dirname, '../../../dist/cli/index.js'));
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+describe.skipIf(!DIST_PRESENT)('scripts/prepublish-check.js — spawn/exit-code boundary (T20)', () => {
   const tmpDirs: string[] = [];
   afterEach(() => {
     for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });

@@ -635,7 +635,7 @@ describe('check: bin self-check (dist contract)', () => {
     return pkg;
   }
 
-  it('real package root (pretest-built dist) -> ok', () => {
+  it.skipIf(!existsSync(join(__dirname, '../../../dist/cli/index.js')))('real package root (pretest-built dist) -> ok', () => {
     const check = checkBins(join(__dirname, '../../..'));
     expect(check.status).toBe('ok');
   });

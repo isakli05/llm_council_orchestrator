@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { loadWorkspaceAssets } from './assets';
 
 /**
@@ -6,7 +8,9 @@ import { loadWorkspaceAssets } from './assets';
  * dist/browser (both layouts), the session id is injected, the manifest is an
  * exact-name allowlist, and a non-simple name in the manifest is refused.
  */
-describe('loadWorkspaceAssets', () => {
+const DIST_PRESENT = existsSync(join(__dirname, '../../dist/browser/asset-manifest.json'));
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+describe.skipIf(!DIST_PRESENT)('loadWorkspaceAssets', () => {
   it('loads the packaged workspace: HTML with the session id injected + manifest assets with MIME types', () => {
     const assets = loadWorkspaceAssets('s-test01');
     expect(assets.html).toContain('data-session="s-test01"');

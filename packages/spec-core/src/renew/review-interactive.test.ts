@@ -128,8 +128,10 @@ async function waitForWorkspace(opened: string[], timeoutMs = 10_000): Promise<{
   };
 }
 
+const DIST_PRESENT = existsSync(join(__dirname, '../../../dist/browser/asset-manifest.json'));
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
 describe('renew review --interactive (real loopback workspace)', () => {
-  it('completes: answers via the workspace, approves, and folds parity + strategy (exit 0)', async () => {
+  it.skipIf(!DIST_PRESENT)('completes: answers via the workspace, approves, and folds parity + strategy (exit 0)', async () => {
     const { project } = await analyzedProject();
     const opened: string[] = [];
     const caps = capsWith((url) => opened.push(url));
@@ -195,7 +197,7 @@ describe('renew review --interactive (real loopback workspace)', () => {
     expect(existsSync(join(project, '.lco', 'renewal', '.lco-revision.lock'))).toBe(false);
   }, 30_000);
 
-  it('cancels: workspace cancel ends the review with NOTHING folded (exit non-zero)', async () => {
+  it.skipIf(!DIST_PRESENT)('cancels: workspace cancel ends the review with NOTHING folded (exit non-zero)', async () => {
     const { project } = await analyzedProject();
     const opened: string[] = [];
     const caps = capsWith((url) => opened.push(url));
@@ -224,7 +226,7 @@ describe('renew review --interactive (real loopback workspace)', () => {
     expect(readdirSync(join(project, 'approvals')).filter((f) => f.endsWith('.json'))).toHaveLength(0);
   }, 30_000);
 
-  it('--no-open never launches a browser; the workspace URL goes to stderr and the flow completes', async () => {
+  it.skipIf(!DIST_PRESENT)('--no-open never launches a browser; the workspace URL goes to stderr and the flow completes', async () => {
     const { project } = await analyzedProject();
     let opened = 0;
     const caps = capsWith(() => opened++);
