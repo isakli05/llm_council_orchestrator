@@ -179,6 +179,7 @@ describe('Composition — V2 verifier finding regression: pipeline project join'
       projectName: 'other-project',
       snapshotId: 'RSN-0123456789abcdef', // coincident snapshot id
       slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      items: [],
     });
     let transports = 0;
     await expect(
@@ -199,6 +200,85 @@ describe('Composition — V2 verifier finding regression: pipeline project join'
       ),
     ).rejects.toMatchObject({ code: 'context_project_mismatch' });
     expect(transports).toBe(0);
+  });
+
+  it('S5-M-01: request bundle items diverging from the sealed items are refused at the pipeline entry (zero paid calls)', async () => {
+    const { runRecovery } = await import('../recovery/pipeline');
+    // The seal covers slice + node; the request bundle mutates the node label
+    // post-seal (identity-invisible pre-fix, refused now).
+    const sealed = sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-0123456789abcdef',
+      slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      items: [
+        { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 2, text: 'x\n', content_hash: 'sha256:aa', redactions: 0, provenance: 'file-read' },
+        { kind: 'node', node_id: 'n1', label: 'applyDiscount', provenance: 'graph' },
+      ],
+    });
+    const mutatedBundle = {
+      scope: {},
+      items: [
+        { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 2, text: 'x\n', content_hash: 'sha256:aa', redactions: 0, provenance: 'file-read' },
+        { kind: 'node', node_id: 'n1', label: 'applySurcharge', provenance: 'graph' },
+      ],
+      truncated: false,
+      total_chars: 10,
+      warnings: [],
+    } as never;
+    let transports = 0;
+    await expect(
+      runRecovery(
+        { analysisId: 'AN-0009', projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', scope: {}, bundle: mutatedBundle },
+        {
+          llm: {
+            forRole: () => ({
+              adapter: { complete: async () => { transports++; throw new Error('must not transport'); } } as never,
+              identity: { gateway: 'g', providerKind: 'openai-compatible' as const, requestedModel: 'm' },
+            }),
+          } as never,
+          nowIso: 't',
+          targetRoot: '/nonexistent',
+          context: sealed,
+          persist: () => ({ ok: true as const }),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'context_bundle_mismatch' });
+    expect(transports).toBe(0);
+  });
+
+  it('S5-M-01: the same request under the CORRECT seal (matching items) proceeds past the join', async () => {
+    const { runRecovery } = await import('../recovery/pipeline');
+    const items = [
+      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 2, text: 'x\n', content_hash: 'sha256:aa', redactions: 0, provenance: 'file-read' },
+      { kind: 'node', node_id: 'n1', label: 'applyDiscount', provenance: 'graph' },
+    ] as never;
+    const sealed = sealContextBundle({
+      projectName: 'legacy-renewal',
+      snapshotId: 'RSN-0123456789abcdef',
+      slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      items,
+    });
+    const bundle = { scope: {}, items, truncated: false, total_chars: 10, warnings: [] } as never;
+    // The adapter throws AFTER the join passes; the pipeline converts the
+    // transport failure into a blocked_prompt_budget OUTCOME (not a throw).
+    // Reaching that code proves the join admitted the matching pair — a join
+    // refusal would have thrown context_bundle_mismatch instead.
+    const out = await runRecovery(
+      { analysisId: 'AN-0010', projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', scope: {}, bundle },
+      {
+        llm: {
+          forRole: () => ({
+            adapter: { complete: async () => { throw new Error('post-join marker'); } } as never,
+            identity: { gateway: 'g', providerKind: 'openai-compatible' as const, requestedModel: 'm' },
+          }),
+        } as never,
+        nowIso: 't',
+        targetRoot: '/nonexistent',
+        context: sealed,
+        persist: () => ({ ok: true as const }),
+      },
+    );
+    expect(out).toMatchObject({ ok: false, code: 'transport_failed' });
   });
 });
 
@@ -252,6 +332,7 @@ describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', 
       projectName: 'p',
       snapshotId: 'RSN-deadbeefdeadbeef',
       slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      items: [],
       structural: { manifest_digest: ('sha256:' + '1'.repeat(64)) as `sha256:${string}`, graph_digest: ('sha256:' + '2'.repeat(64)) as `sha256:${string}` },
     });
     // …then the workspace is rebuilt (epoch B). The record set is presented
@@ -260,6 +341,7 @@ describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', 
     const laundered = {
       identity: { ...bundleA.identity, structural: { manifest_digest: ('sha256:' + '3'.repeat(64)) as `sha256:${string}`, graph_digest: ('sha256:' + '4'.repeat(64)) as `sha256:${string}` } },
       records: bundleA.records,
+      items: bundleA.items,
     };
     expect(() => resolveCitation(laundered, { context_id: 'CTX-0001' })).toThrowError();
     // and the honest epoch-A bundle resolves only under its own identity:
@@ -275,6 +357,7 @@ describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', 
       projectName: before.identity.projectName,
       snapshotId: before.identity.snapshotId,
       slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      items: [],
     });
     // …the source moves, a REAL refresh lands a new epoch…
     writeFileSync(join(target, 'src', 'new-file.ts'), 'export const changed = 1;\n');
@@ -413,6 +496,7 @@ describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', 
       projectName: 'p',
       snapshotId: 'RSN-deadbeefdeadbeef',
       slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      items: [],
       structural: { manifest_digest: ('sha256:' + '1'.repeat(64)) as `sha256:${string}`, graph_digest: ('sha256:' + '2'.repeat(64)) as `sha256:${string}` },
     });
     // …then the workspace is rebuilt (epoch B). The record set is presented
@@ -421,6 +505,7 @@ describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', 
     const laundered = {
       identity: { ...bundleA.identity, structural: { manifest_digest: ('sha256:' + '3'.repeat(64)) as `sha256:${string}`, graph_digest: ('sha256:' + '4'.repeat(64)) as `sha256:${string}` } },
       records: bundleA.records,
+      items: bundleA.items,
     };
     expect(() => resolveCitation(laundered, { context_id: 'CTX-0001' })).toThrowError();
     // and the honest epoch-A bundle resolves only under its own identity:
@@ -436,6 +521,7 @@ describe('Composition — StructuralIdentity × EvidenceCitation (S4 closure)', 
       projectName: before.identity.projectName,
       snapshotId: before.identity.snapshotId,
       slices: [{ path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'x\n', file_line_count: 5 }],
+      items: [],
     });
     // …the source moves, a REAL refresh lands a new epoch…
     writeFileSync(join(target, 'src', 'new-file.ts'), 'export const changed = 1;\n');

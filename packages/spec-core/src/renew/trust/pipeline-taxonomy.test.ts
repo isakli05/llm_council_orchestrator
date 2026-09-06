@@ -50,6 +50,7 @@ describe('D-3: wire-cap refusals are budget blocks, never transport failures', (
       projectName: 'legacy-renewal',
       snapshotId: 'RSN-0123456789abcdef',
       slices: [{ path: 'src/orders.ts', whole_file_hash: sha256Content('fixture-bytes'), start_line: 1, end_line: 5, text: 'x', file_line_count: 5 }],
+      items: oneSliceBundle().items,
     }),
     persist: (r: unknown) => {
       records.push(r);
@@ -122,6 +123,7 @@ describe('D-1: transport failure persists the LEDGER truth, not zeros', () => {
           projectName: 'legacy-renewal',
           snapshotId: 'RSN-0123456789abcdef',
           slices: [{ path: 'src/orders.ts', whole_file_hash: sha256Content('fixture-bytes'), start_line: 1, end_line: 5, text: 'x', file_line_count: 5 }],
+          items: oneSliceBundle().items,
         }),
         persist: (r: never) => {
           records.push(r);

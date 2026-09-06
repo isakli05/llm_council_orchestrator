@@ -14,6 +14,7 @@ import {
 } from './state';
 import { authorizedRead } from './fs';
 import { sealContextBundle, resolveCitation, assertSupportPolicy } from './evidence';
+import type { ContextBundle } from '../context/bundle';
 import { createHash } from 'node:crypto';
 import { buildRenewalApprovalRecord, validateRenewalApproval } from './authority';
 
@@ -130,6 +131,7 @@ describe('Composition B — EvidenceCitation + AuthorityGrant', () => {
           file_line_count: 200,
         },
       ],
+      items: [],
     });
     const citation = resolveCitation(ctx, { context_id: 'CTX-0001' });
     expect(citation.scope).toBe('range'); // provenance resolved…
@@ -190,6 +192,7 @@ describe('Composition C — EvidenceCitation + Planner policy', () => {
           file_line_count: 8,
         },
       ],
+      items: [],
     });
     const c = resolveCitation(ctx, { context_id: 'CTX-0001' });
     expect(c.scope).toBe('whole_file');
@@ -261,6 +264,141 @@ describe('Composition F — ResolvedPaidOperation + MCP consent', () => {
       expect(resolvedRouteDigest(resolveLegacyEnvRoute(env, { maxAttempts: 8 }))).not.toBe(digest);
     }
     expect(resolvedRouteDigest(resolveLegacyEnvRoute({ ...base }, { maxAttempts: 4 }))).not.toBe(digest); // budget changed
+  });
+
+  it('S5-M-02: changing configured headers invalidates the consent digest (headers are consent inputs)', async () => {
+    const { routeFromConfig, resolvedRouteDigest } = await import('./paid');
+    const mk = (headers: Record<string, string>) =>
+      routeFromConfig({
+        config: {
+          gateway: 'openrouter',
+          providerKind: 'openrouter' as const,
+          baseUrl: 'https://gw.example/v1',
+          apiKey: 'k',
+          model: 'm-1',
+          extraHeaders: headers,
+        },
+        origin: 'named-profile',
+        routingMode: 'product',
+        apiKeyEnvName: 'K',
+        budget: { maxAttempts: 1 },
+      });
+    const digest = resolvedRouteDigest(mk({ 'X-Title': 'v1' }));
+    expect(resolvedRouteDigest(mk({ 'X-Title': 'v2' }))).not.toBe(digest); // value changed
+    expect(resolvedRouteDigest(mk({ 'X-Title': 'v1', 'X-Extra': 'e' }))).not.toBe(digest); // set changed
+    expect(resolvedRouteDigest(mk({ 'X-Title': 'v1' }))).toBe(digest); // identical → identical (deterministic, what the MCP gate compares)
+  });
+});
+
+describe('Composition H — cross-residual trust (S5-M-01 × S5-M-02 × S5-M-04)', () => {
+  it('H1: paid-route consent and ContextBundle identity are DISTINCT authorities — each mutation moves exactly one', async () => {
+    const { routeFromConfig, resolvedRouteDigest } = await import('./paid');
+    const { sealContextBundle } = await import('./evidence');
+    const slices = [
+      { path: 'src/a.ts', whole_file_hash: 'sha256:aa', start_line: 1, end_line: 2, text: 'line1\nline2\n', file_line_count: 50 },
+    ];
+    const itemsA: ContextBundle['items'] = [
+      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 2, text: 'line1\nline2\n', content_hash: 'sha256:aa', redactions: 0, provenance: 'file-read' },
+      { kind: 'node', node_id: 'n1', label: 'applyDiscount', provenance: 'graph' },
+    ];
+    const itemsB: ContextBundle['items'] = [itemsA[0]!, { ...itemsA[1]!, label: 'applySurcharge' }];
+    const routeOf = (headers: Record<string, string>) =>
+      routeFromConfig({
+        config: { gateway: 'openrouter', providerKind: 'openrouter' as const, baseUrl: 'https://gw.example/v1', apiKey: 'k', model: 'm-1', extraHeaders: headers },
+        origin: 'named-profile',
+        routingMode: 'product',
+        apiKeyEnvName: 'K',
+        budget: { maxAttempts: 1 },
+      });
+    const sealOf = (items: ContextBundle['items']) => sealContextBundle({ projectName: 'p', snapshotId: 'RSN-deadbeefdeadbeef', slices, items });
+
+    const route1 = resolvedRouteDigest(routeOf({ 'X-Title': 'v1' }));
+    const route2 = resolvedRouteDigest(routeOf({ 'X-Title': 'v2' }));
+    const bundleA = sealOf(itemsA).identity.bundle_id;
+    const bundleB = sealOf(itemsB).identity.bundle_id;
+
+    // header mutation moves the CONSENT digest only...
+    expect(route1).not.toBe(route2);
+    // ...bundle mutation moves the CONTEXT identity only...
+    expect(bundleA).not.toBe(bundleB);
+    // ...and neither domain leaks into the other (no accidental identity merge).
+    const route1Again = resolvedRouteDigest(routeOf({ 'X-Title': 'v1' }));
+    const bundleAAgain = sealOf(itemsA).identity.bundle_id;
+    expect(route1Again).toBe(route1);
+    expect(bundleAAgain).toBe(bundleA);
+  });
+
+  it('H2: a header-bearing paid route failing at a controlled local fake transport — route immutable, no provider success, abort side fail-closed', async () => {
+    const { routeFromConfig, createPaidOperation, resolvedRouteDigest } = await import('./paid');
+    const { resolveRoleConfig } = await import('../../llm/providers');
+    const role = {
+      gateway: 'openrouter',
+      providerKind: 'openrouter' as const,
+      baseUrl: 'https://gw.example/v1',
+      apiKeyEnv: 'LCO_TEST_KEY',
+      model: 'm-1',
+      structuredOutput: 'off' as const,
+      headers: { 'HTTP-Referer': 'https://example.test', 'X-Title': 'lco-composition' },
+    };
+    const { config } = resolveRoleConfig(role, { LCO_TEST_KEY: 'k' }, { routingMode: 'product' });
+    const route = routeFromConfig({ config, origin: 'named-profile', routingMode: 'product', apiKeyEnvName: 'LCO_TEST_KEY', budget: { maxAttempts: 1 } });
+    const digestBefore = resolvedRouteDigest(route);
+    const wireHeaders: Array<Record<string, string>> = [];
+    const failing = (async (_u: unknown, init?: RequestInit) => {
+      wireHeaders.push({ ...((init?.headers ?? {}) as Record<string, string>) });
+      throw new Error('connection refused (controlled local failure)');
+    }) as unknown as typeof fetch;
+    const op = createPaidOperation({ route, apiKey: 'k', wireByteCap: 10_000, fetchImpl: failing });
+    await expect(op.adapter.complete('prompt')).rejects.toThrow(/connection refused|BUDGET_EXCEEDED/);
+    // the ATTEMPTED wire carried the consented headers; no provider call succeeded
+    expect(wireHeaders.length).toBeGreaterThanOrEqual(1);
+    expect(wireHeaders[0]!['HTTP-Referer']).toBe('https://example.test');
+    expect(op.ledger.spent().attempts).toBeGreaterThanOrEqual(1);
+    // the immutable operation survived the failure unchanged — the abort-side
+    // machinery (transaction-atomicity S5-M-04 matrix) aborts against exactly
+    // this frozen value; persistent evidence failure there stays fail-closed
+    // with disclosure (proven in the S5-M-04 cells).
+    expect(resolvedRouteDigest(op.route)).toBe(digestBefore);
+    expect(op.route.headers).toEqual({ 'X-OpenRouter-Metadata': 'enabled', 'HTTP-Referer': 'https://example.test', 'X-Title': 'lco-composition' });
+  });
+
+  it('H3: ContextBundle identity is deterministic ACROSS a state-transaction abort/restore cycle', async () => {
+    const { project, target } = await freshProject();
+    const { sealContextBundle } = await import('./evidence');
+    const before = loadActiveState(project);
+    const slices = [
+      { path: 'src/orders.ts', whole_file_hash: sha('orders'), start_line: 1, end_line: 3, text: 'const a = 1;\n', file_line_count: 3 },
+    ];
+    const items = [
+      { kind: 'file_slice' as const, path: 'src/orders.ts', start_line: 1, end_line: 3, text: 'const a = 1;\n', content_hash: sha('orders'), redactions: 0, provenance: 'file-read' as const },
+    ];
+    const sealedBefore = sealContextBundle({ projectName: before.identity.projectName, snapshotId: before.identity.snapshotId, slices, items });
+    // a strict transaction aborts deterministically (concurrent epoch change)
+    writeFileSync(join(target, 'src', 'drift.ts'), 'export const drift = 1;\n');
+    const graph = readFileSync(join(FIXTURE_SRC, 'graph-fixture.json'), 'utf8');
+    await expect(
+      runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:01Z',
+        expected: { snapshotId: before.identity.snapshotId, revision: before.identity.revision },
+        policy: 'strict',
+        work: async () => {
+          const init = await import('../../cli/commands/renew');
+          const r = await init.cmdRenewInit({ dir: project, target, force: true }, capsWith(graph, '2026-09-03T00:00:02Z' as never));
+          void r;
+        },
+        plan: () => {
+          throw new Error('must not commit');
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'snapshot_superseded' });
+    // after the abort, the same bundle items still seal to the same identity
+    // (abort/restore machinery never perturbs context identity), and the
+    // sealed membership proof still recomputes.
+    const { contextBundleDigest } = await import('./evidence');
+    const sealedAfter = sealContextBundle({ projectName: before.identity.projectName, snapshotId: before.identity.snapshotId, slices, items });
+    expect(sealedAfter.identity.bundle_id).toBe(sealedBefore.identity.bundle_id);
+    expect(contextBundleDigest(sealedAfter)).toBe(sealedAfter.identity.bundle_id);
   });
 });
 

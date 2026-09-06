@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { sha256Content, domainDigest } from './canonical';
 import { TrustCitationError } from './errors';
+import type { ContextItem } from '../context/bundle';
 
 /**
  * Trust Kernel — EvidenceCitation (third-audit S3-H-01, reopening C-03/S2-C-02).
@@ -68,21 +69,29 @@ export interface ContextRecord {
 
 /** The identity of the EXACT context supplied to one paid operation (S4-H-02). */
 export interface ContextBundleIdentity {
-  schema_version: 1;
+  /** 2 = S5-M-01: the digest payload now covers the FULL item list (every
+   *  model-visible field of every kind), not only the slice records. */
+  schema_version: 2;
   project_name: string;
   snapshot_id: string;
-  /** domainDigest('LCO:PAID_CONTEXT', 1, …) over the ordered records' slice
-   *  facts — substituting, splicing, or editing any record changes it. */
+  /** domainDigest('LCO:PAID_CONTEXT', 2, …) over the ordered records' slice
+   *  facts AND the full ordered item list — substituting, splicing, editing,
+   *  or reordering any record or item (node/edge/fact/file_slice) changes
+   *  it. The model-visible payload cannot change without changing it. */
   bundle_id: `sha256:${string}`;
   /** The structural epoch the supplied graph/node context came from (when
    *  graph context participated in the bundle). */
   structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` };
 }
 
-/** A SEALED context bundle: identity + the immutable records it covers. */
+/** A SEALED context bundle: identity + the immutable records and items it
+ *  covers. The items are carried so the digest is recomputable (S5-M-01:
+ *  membership proof over the ENTIRE model-visible payload). */
 export interface SealedContext {
   identity: ContextBundleIdentity;
   records: readonly ContextRecord[];
+  /** The full item list the digest covers (frozen at seal time). */
+  items: readonly ContextItem[];
 }
 
 /** One server-owned supplied slice — the rendered text IS the authority. */
@@ -99,11 +108,15 @@ export interface SuppliedContextSlice {
   node_id?: string;
 }
 
-/** The slice facts a bundle digest covers (everything but bundle_id itself). */
+/** The payload a bundle digest covers: the slice records AND the full item
+ *  list (S5-M-01 — nodes, edges, facts, and file_slice metadata like
+ *  redactions are model-visible and MUST be identity-bound). One domain,
+ *  one version, one payload schema (the canonical-layer contract). */
 function bundleDigestPayload(
   identity: { project_name: string; snapshot_id: string; structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` } },
   records: ReadonlyArray<Omit<ContextRecord, 'bundle_id'>>,
-): { project_name: string; snapshot_id: string; structural: unknown; records: unknown[] } {
+  items: ReadonlyArray<ContextItem>,
+): { project_name: string; snapshot_id: string; structural: unknown; records: unknown[]; items: unknown[] } {
   return {
     project_name: identity.project_name,
     snapshot_id: identity.snapshot_id,
@@ -118,6 +131,10 @@ function bundleDigestPayload(
       whole_file_supplied: r.whole_file_supplied,
       ...(r.node_id !== undefined ? { node_id: r.node_id } : {}),
     })),
+    // No defensive clone here: canonicalJson (the only consumer) never
+    // mutates, and the caller's frozen seal items arrive already isolated —
+    // cloning per payload assembly cost one full copy per citation resolution.
+    items: items as unknown[],
   };
 }
 
@@ -133,6 +150,14 @@ export function sealContextBundle(args: {
   projectName: string;
   snapshotId: string;
   slices: ReadonlyArray<SuppliedContextSlice>;
+  /**
+   * S5-M-01 (REQUIRED, fail-closed): the FULL item list of the bundle being
+   * sealed — every kind (file_slice, node, edge, structural_fact), in order.
+   * The bundle identity covers the entire model-visible payload; there is no
+   * way to seal a bundle whose items are not identity-bound. Items are
+   * deep-cloned then frozen here — caller mutation cannot reach the seal.
+   */
+  items: ReadonlyArray<ContextItem>;
   structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` };
 }): SealedContext {
   const base: Omit<ContextRecord, 'bundle_id'>[] = [];
@@ -162,27 +187,41 @@ export function sealContextBundle(args: {
     });
     seen.set(key, base.length - 1);
   }
-  const bundle_id = domainDigest('LCO:PAID_CONTEXT', 1, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base));
+  const bundle_id = domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base, args.items));
   const records: ContextRecord[] = base.map((r) => Object.freeze({ ...r, bundle_id }));
+  const frozenItems: ContextItem[] = args.items.map((item) => deepFreezeItem(structuredClone(item)));
   return Object.freeze({
     identity: Object.freeze({
-      schema_version: 1 as const,
+      schema_version: 2 as const,
       project_name: args.projectName,
       snapshot_id: args.snapshotId,
       bundle_id,
       ...(args.structural !== undefined ? { structural: Object.freeze({ ...args.structural }) } : {}),
     }),
     records: Object.freeze(records),
+    items: Object.freeze(frozenItems),
   });
 }
 
+/** Deep-freeze one cloned item (S5-M-01: the sealed items are immutable). */
+function deepFreezeItem<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      deepFreezeItem((value as Record<string, unknown>)[key]);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
 /**
- * Recompute a sealed bundle's digest from its records — the membership
- * proof. A record set that was spliced, substituted, or edited (including
- * its slice hashes) no longer recomputes to the identity's bundle_id.
+ * Recompute a sealed bundle's digest from its records AND items — the
+ * membership proof. A record set or item list that was spliced, substituted,
+ * edited, or reordered (including its slice hashes) no longer recomputes to
+ * the identity's bundle_id.
  */
 export function contextBundleDigest(bundle: SealedContext): `sha256:${string}` {
-  return domainDigest('LCO:PAID_CONTEXT', 1, bundleDigestPayload(bundle.identity, bundle.records));
+  return domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload(bundle.identity, bundle.records, bundle.items));
 }
 
 /** The server-computed trusted anchor payload (path/hash/range/node shape

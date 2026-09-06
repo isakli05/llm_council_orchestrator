@@ -125,6 +125,7 @@ describe('runRecovery — schema-invalid-but-parseable responses (the zod issues
               whole_file_hash: i.content_hash,
               file_line_count: i.file_line_count ?? i.end_line,
             })),
+          items: bundle.items,
         }),
         persist: (record) => {
           persisted.push(record);

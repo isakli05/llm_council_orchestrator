@@ -685,62 +685,66 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
           file_line_count: i.file_line_count ?? i.end_line,
           ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
         })),
+      items: bundle.items,
     });
   it('S2-H-04: a serialized prompt over the byte cap blocks BEFORE any call (zero spend)', async () => {
     const target = makeTarget();
     let calls = 0;
     const llm: LlmAdapter = { complete: async () => { calls++; return { text: '{}' }; } };
     const persisted: string[] = [];
+    const bigBundle: ContextBundle = {
+      scope: { type: 'whole' },
+      items: [
+        {
+          kind: 'file_slice',
+          path: 'src/big.ts',
+          start_line: 1,
+          end_line: 10,
+          text: 'x'.repeat(400_000),
+          content_hash: sha('big'),
+          redactions: 0,
+          provenance: 'file-read',
+        },
+        {
+          kind: 'file_slice',
+          path: 'src/big2.ts',
+          start_line: 1,
+          end_line: 10,
+          text: 'y'.repeat(400_000),
+          content_hash: sha('big2'),
+          redactions: 0,
+          provenance: 'file-read',
+        },
+        {
+          kind: 'file_slice',
+          path: 'src/big3.ts',
+          start_line: 1,
+          end_line: 10,
+          text: 'z'.repeat(400_000),
+          content_hash: sha('big3'),
+          redactions: 0,
+          provenance: 'file-read',
+        },
+      ],
+      truncated: false,
+      total_chars: 1_200_000,
+      warnings: [],
+    };
     const outcome = await runRecovery(
       {
         analysisId: 'AN-9999',
         projectName: 'legacy-renewal',
         snapshotId: 'RSN-0123456789abcdef',
         scope: { type: 'whole' },
-        bundle: {
-          scope: { type: 'whole' },
-          items: [
-            {
-              kind: 'file_slice',
-              path: 'src/big.ts',
-              start_line: 1,
-              end_line: 10,
-              text: 'x'.repeat(400_000),
-              content_hash: sha('big'),
-              redactions: 0,
-              provenance: 'file-read',
-            },
-            {
-              kind: 'file_slice',
-              path: 'src/big2.ts',
-              start_line: 1,
-              end_line: 10,
-              text: 'y'.repeat(400_000),
-              content_hash: sha('big2'),
-              redactions: 0,
-              provenance: 'file-read',
-            },
-            {
-              kind: 'file_slice',
-              path: 'src/big3.ts',
-              start_line: 1,
-              end_line: 10,
-              text: 'z'.repeat(400_000),
-              content_hash: sha('big3'),
-              redactions: 0,
-              provenance: 'file-read',
-            },
-          ],
-          truncated: false,
-          total_chars: 1_200_000,
-          warnings: [],
-        },
+        bundle: bigBundle,
       },
       {
         llm: singleRoutePlan(llm),
         nowIso: '2026-09-02T00:00:00Z',
         targetRoot: target,
-        context: sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-0123456789abcdef', slices: [] }), // blocked BEFORE any citation resolution
+        // S5-M-01: seal the same bundle (entry join) — blocked by the BYTE CAP
+        // before any citation resolution or paid call.
+        context: sealedFor(bigBundle),
         persist: (record) => {
           persisted.push(record.analysis_id);
           return { ok: true };

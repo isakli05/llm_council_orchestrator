@@ -107,6 +107,7 @@ function sealedFor(bundle: ContextBundle): SealedContext {
         file_line_count: i.file_line_count ?? i.end_line,
         ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
       })),
+    items: bundle.items,
   });
 }
 
@@ -176,7 +177,7 @@ const validOutput = (): string =>
     coverage_notes: ['tax rounding behavior was not covered by the sliced context'],
   });
 
-function depsFor(adapter: LlmAdapter, budget?: ReturnType<typeof createBudgetLedger>, context: SealedContext = sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', slices: [] })) {
+function depsFor(adapter: LlmAdapter, budget?: ReturnType<typeof createBudgetLedger>, context: SealedContext = sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', slices: [], items: [] })) {
   persisted = [];
   persistShouldFail = false;
   return {
@@ -509,13 +510,17 @@ describe('anchor evidence trust (C-03)', () => {
     writeFileSync(join(foreign, 'other', 'twin.ts'), PRICING);
     const bundle = makeBundle(hashes);
     // Records as if ONLY the pricing slice had been supplied: CTX-0002 was
-    // never assigned in this analysis.
-    const recordsWithoutOrders = sealedFor({
+    // never assigned in this analysis. S5-M-01: the seal and the REQUEST
+    // BUNDLE must agree (the pipeline entry join refuses divergence), so the
+    // reduced supply is the bundle itself — the model still guesses the next
+    // id and citation resolution must refuse it.
+    const reducedBundle = {
       ...bundle,
       items: bundle.items.filter((i) => !(i.kind === 'file_slice' && i.path === 'src/orders.ts')),
-    });
+    };
+    const recordsWithoutOrders = sealedFor(reducedBundle);
     const { adapter } = scripted([hypothesisWith({ context_id: 'CTX-0002' })]);
-    const outcome = await runRecovery(requestFor(bundle), depsFor(adapter, undefined, recordsWithoutOrders));
+    const outcome = await runRecovery(requestFor(reducedBundle), depsFor(adapter, undefined, recordsWithoutOrders));
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.record.promoted.hypotheses).toHaveLength(0);

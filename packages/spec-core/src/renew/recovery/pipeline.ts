@@ -17,7 +17,7 @@ import { accountCompletionAttempts } from '../trust/paid';
 import { TrustPaidError } from '../trust/errors';
 import { resolveCitation, type ResolvedCitation, type TrustedAnchorPayload, type SealedContext } from '../trust/evidence';
 import { TrustCitationError } from '../trust/errors';
-import { domainDigest } from '../trust/canonical';
+import { canonicalJson } from '../trust/canonical';
 import { stripJsonFences } from '../../eval/runner';
 import { BudgetExceededError, type BudgetLedger } from '../../eval/budget';
 import type { LlmPlan } from '../../llm/plan';
@@ -132,6 +132,21 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
         `analysis request runs under ${req.snapshotId} — re-supply the context for the active snapshot`,
     );
   }
+  // S5-M-01: the items this pipeline is about to RENDER (the model-visible
+  // payload) must be EXACTLY the items the sealed identity covers — a bundle
+  // mutated between seal and prompt-build cannot ride an older identity.
+  // Canonical-JSON equality: object key order is normalized (documented safe
+  // equivalence); item ORDER and every value are exact.
+  // Deliberately OUTSIDE this join (and the bundle identity): req.scope and
+  // nowIso — request framing rendered around the bundle, not bundle content;
+  // each run records them in the analysis record (scope, created_at).
+  if (canonicalJson(req.bundle.items) !== canonicalJson(deps.context.items)) {
+    throw new TrustCitationError(
+      'context_bundle_mismatch',
+      'the request bundle items diverge from the sealed context bundle — the model-visible payload ' +
+        'is not the identity-bound payload (re-seal the context for the current bundle)',
+    );
+  }
 
   const usage: UsageState = { calls: 0, attempts: 0, in_tokens: 0, out_tokens: 0, usage_known: true };
 
@@ -244,9 +259,11 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   const scrubDiagnostic = (text: string): string => redactSecrets(text).text;
 
   const input = {
-    // S4-M-02: the persisted context identity is a canonical domain digest
-    // (LCO:PAID_CONTEXT) — no ad-hoc JSON framing for trust-bearing digests.
-    context_digest: domainDigest('LCO:PAID_CONTEXT', 1, req.bundle),
+    // S4-M-02 + S5-M-01: the persisted context identity IS the verified
+    // bundle identity (LCO:PAID_CONTEXT v2 — records AND full items under
+    // one domain, one version, one payload schema; no ad-hoc JSON framing,
+    // no second unverified whole-bundle digest).
+    context_digest: deps.context.identity.bundle_id,
     item_count: req.bundle.items.length,
     slice_count: req.bundle.items.filter((i) => i.kind === 'file_slice').length,
     truncated: req.bundle.truncated,

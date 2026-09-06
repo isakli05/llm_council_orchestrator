@@ -271,6 +271,7 @@ describe('prompt envelope item coverage (all four kinds render)', () => {
           file_line_count: 2,
         },
       ],
+      items: bundle.items,
     }).records;
     const prompt = buildRecoveryPrompt({ scope: { type: 'whole' }, nowIso: 't', bundle, contextRecords: records });
     const doc = prompt.slice(prompt.indexOf('UNTRUSTED SOURCE DATA START'), prompt.lastIndexOf('UNTRUSTED SOURCE DATA END'));
