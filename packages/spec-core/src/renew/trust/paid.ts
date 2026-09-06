@@ -50,6 +50,13 @@ export interface ResolvedPaidRoute {
   model: string;
   maxTokens?: number;
   extraBody?: Record<string, unknown>;
+  /**
+   * Configured request headers (S5-M-02): operator trust input, same class as
+   * baseUrl — the schema layer refuses authorization/content-type and values
+   * enter the digest HASHED only, never logged. Part of the CONSENT preimage
+   * AND the wire (consent/wire equivalence: both or neither).
+   */
+  headers?: Record<string, string>;
   routingMode: string;
   /** Env var NAME the key was read from (diagnosis only). */
   apiKeyEnvName: string;
@@ -124,6 +131,8 @@ export function routeFromConfig(args: {
 }): ResolvedPaidRoute {
   // S4-H-03: DEEP-clone everything — the caller keeps its original objects
   // and any later mutation of them must not be able to reach this value.
+  // S5-M-02: configured headers join the route HERE — one resolution, one
+  // identity: whatever the kernel consents to is exactly what it transports.
   return deepFreezeRoute({
     origin: args.origin,
     ...(args.profileName !== undefined ? { profileName: args.profileName } : {}),
@@ -132,6 +141,9 @@ export function routeFromConfig(args: {
     model: args.config.model,
     ...(args.config.maxTokens !== undefined ? { maxTokens: args.config.maxTokens } : {}),
     ...(args.config.extraBody !== undefined ? { extraBody: structuredClone(args.config.extraBody) } : {}),
+    ...(Object.hasOwn(args.config, 'extraHeaders') && args.config.extraHeaders !== undefined
+      ? { headers: structuredClone(args.config.extraHeaders) }
+      : {}),
     routingMode: args.routingMode,
     apiKeyEnvName: args.apiKeyEnvName,
     budget: { maxAttempts: args.budget.maxAttempts, ...(args.budget.wallMs !== undefined ? { wallMs: args.budget.wallMs } : {}) },
@@ -175,6 +187,9 @@ export function resolvedRouteDigest(route: ResolvedPaidRoute): `sha256:${string}
     model: route.model,
     maxTokens: ownField<number>(route, 'maxTokens') ?? null,
     extraBody: ownField<Record<string, unknown>>(route, 'extraBody') ?? null,
+    // S5-M-02: headers are consent inputs — a header change after
+    // authorization changes the digest (consent/wire equivalence).
+    headers: ownField<Record<string, string>>(route, 'headers') ?? null,
     routingMode: route.routingMode,
     budget: route.budget,
   });
@@ -242,7 +257,9 @@ export function createPaidOperation(args: {
     // injected phantom cannot reach the wire or the digest.
     maxTokens: Object.hasOwn(wireRoute, 'maxTokens') ? wireRoute.maxTokens : undefined,
     extraBody: Object.hasOwn(wireRoute, 'extraBody') ? wireRoute.extraBody : undefined,
-    extraHeaders: undefined,
+    // S5-M-02: the consented headers reach the wire from the private frozen
+    // clone — the exact value the digest was computed over.
+    extraHeaders: Object.hasOwn(wireRoute, 'headers') ? wireRoute.headers : undefined,
     costExtractor: undefined,
     budget: ledger,
     fetchImpl: args.fetchImpl,
