@@ -1,7 +1,8 @@
 # 23 — Files and Commits
 
 Base origin/main 1b7fe6e (tree be5fe190) → final production implementation HEAD
-744a5a5 (after the verifier-response fixes).
+744a5a5 (tree 75f4113003219ae02aee92141b8355a0b06b58fe; after the
+verifier-response fixes).
 
 ## Commits (base..HEAD, in order)
 
@@ -19,15 +20,18 @@ Base origin/main 1b7fe6e (tree be5fe190) → final production implementation HEA
 | 1e73633 | test(evidence): pin the commit-cleanup ownership conditioning (S2a) |
 | 744a5a5 | fix(trust+config+tests): close verifier-found residuals from the fresh verification wave (N-B1 typed post-rollback removal; N-1 non-empty role keys; wording/hygiene) |
 
-Final production implementation = 744a5a5. Tail after it: docs(audit) final reports
-commit + chore(graphify) refresh (graphify-out/ only) — exact SHAs in git log; the
-handoff (report 24) records the tail description.
+Final production implementation = 744a5a5. Tail after it (exact, recorded in the
+evidence-cleanup commit): docs(audit) program reports 692f9eb
+(692f9eb83c6aba9abcccf35ba219688f77f86fab) → chore(graphify) refresh fc3ee96
+(fc3ee9650fcf1b0774473156a0f3aa178fb00b6e, tree 27c6646ea7eb5855c76c7555fe2bda113cdc8362
+— graphify-out/ only; this is the independently audited candidate) → the post-audit
+evidence-cleanup docs commit (this report set only; identity via `git rev-parse HEAD`).
 
 ## Changed files (base..1e73633) — 22 code/test files + 3 docs
 
 Production (4, unchanged by 744a5a5 in file set): config/llm-config.ts · cli/commands/models.ts · renew/trust/state.ts ·
 renew/core/store-records.ts (comment only).
-Tests (17): config/llm-config.test.ts · cli/commands/models.test.ts ·
+Tests (18): config/llm-config.test.ts · cli/commands/models.test.ts ·
 renew/trust/transaction-atomicity.test.ts · renew/trust/architecture.test.ts ·
 renew/trust/concurrency.test.ts · renew/trust/pre-v021-composition.test.ts (new) ·
 browser-client/app.test.ts · browser-client/app-errors.test.ts · server/http.test.ts ·
@@ -37,6 +41,11 @@ build/bin-contract.test.ts · cli/commands/init-concurrency.test.ts ·
 release/prepublish-check.boundary.test.ts · cli/commands/doctor.test.ts.
 Tests added in 744a5a5: S11 (transaction-atomicity), N-1 cell (llm-config),
 composition CI canary, browser/http hygiene cells.
+
+[Corrected in the evidence-cleanup commit: the label previously read "Tests (17)"
+over this same 18-file enumeration; Git-derived count base→744a5a5 is 18
+(`git diff --name-only 1b7fe6e..744a5a5 | grep '^packages/.*test\.ts$'`), and
+744a5a5 adds no file outside the enumerated set.]
 
 Docs: prior-program 13-I4 + 19-MUTATION corrections; program plan; this program's
 25-report set (audit-output/pre-v0.2.1-final-low-info-hardening-2026-09-06/).

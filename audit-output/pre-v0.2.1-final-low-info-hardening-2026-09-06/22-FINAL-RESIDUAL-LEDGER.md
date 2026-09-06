@@ -1,6 +1,7 @@
 # 22 — Final Residual Ledger
 
-Base origin/main 1b7fe6e → final production HEAD 744a5a5 (this program's last code
+Base origin/main 1b7fe6e → final production HEAD 744a5a5
+(tree 75f4113003219ae02aee92141b8355a0b06b58fe; this program's last code
 commit; report/graphify tail recorded in 24). Every original item carries its fresh-audit
 severity, reproduction, closure evidence, and final disposition. 27 rows exactly.
 
@@ -43,18 +44,24 @@ severity, reproduction, closure evidence, and final disposition. 27 rows exactly
 
 ## Disposition counts (original 27)
 
+[Corrected in the post-audit evidence-cleanup commit to equal the row-level
+authority above; the earlier block said TEST_HARDENING 6 / ACCEPTED 13 with a
+"3+6-1+…" adjustment — a summary-accounting error flagged as P2 by the fresh
+independent re-audit. No per-item disposition changed.]
+
 ```
 VERIFIED_CLOSED ..................... 3   (NF-1, NF-2, D-F-01)
-CLOSED_BY_TEST_HARDENING ............ 6   (F-L6-1, H-1, M-2, M-1, H-2, E-1→also diag)
-  [E-1 counted once as CLOSED_BY_DIAGNOSTIC_HARDENING below]
+CLOSED_BY_TEST_HARDENING ............ 5   (F-L6-1, H-1, H-2, M-1, M-2)
 CLOSED_BY_DIAGNOSTIC_HARDENING ...... 2   (E-1, E-3)
 CLOSED_BY_DOCUMENTATION_CORRECTION .. 2   (F-L7-1, H-3)
 CLOSED_BY_ARCHITECTURE_GUARD ........ 1   (B-2)
-ACCEPTED_INVARIANT_BOUNDARY ......... 13  (E-2 + 12 bounded Info)
+ACCEPTED_INVARIANT_BOUNDARY ......... 14  (E-2 + 13 bounded Info)
 NOT_REPRODUCIBLE .................... 0
 OPEN_REQUIRES_OWNER_DECISION ........ 0
 ```
-Total = 3+6-1+2+2+1+13 = 27 ✓ (E-1 listed under diagnostic hardening; the 6 test-hardening rows are F-L6-1, H-1, M-2, M-1, H-2 — 5 — plus E-1's dual classification counted once; see per-row table for the authoritative per-item disposition).
+Total = 3+5+2+2+1+14 = 27 ✓ (summary == per-row table: 13 items closed by
+code/tests/docs/guard — including all 8 Low — and 14 accepted invariant
+boundaries).
 
 **0 OPEN. 0 unresolved Critical/High/Medium. 0 actionable original Low remaining.
 0 actionable original Info remaining.**
@@ -64,20 +71,23 @@ Total = 3+6-1+2+2+1+13 = 27 ✓ (E-1 listed under diagnostic hardening; the 6 te
 | ID | Finding | Source | Severity | Disposition |
 |---|---|---|---|---|
 | N1 | third bare-bracket site: models.ts --provider prototype-chain lookup | INV-A investigation | Low-class | FIXED with NF-2 (68d3504) |
-| N2 | INFO-A corner: commit landed + cleanup fault → three false claims in typed message (observed BOUNDED at re-audit report 11 §5; not one of the 27) | INV-B investigation | Low-class | FIXED (3f7e732; S8b-1/2; M-INFOA caught); wording grounded (744a5a5) |
+| N2 | INFO-A corner: commit landed + cleanup fault → three false claims in typed message (observed BOUNDED at re-audit report 11 §5; not one of the 27) | INV-B investigation | Low-class | FIXED (3f7e732; S8b-1/2; M-INFOA caught) |
 | N3 | app.test.ts null-tolerance silently skipped half the change-request test | INV-E investigation | Info-class | FIXED under H-1 (616f4ed) |
 | N4 | app-errors.test.ts same-class fixed waits (1400ms poll, 120ms cancel) beyond audit census | INV-E investigation | Info-class | FIXED under H-1 (616f4ed) |
 | N5 | two server-side MASK waits (server.test.ts EPIPE flush; http.test.ts inactivity) | INV-E investigation | Info-class | FIXED (616f4ed) |
 | N-B1 | pre-existing untyped post-rollback journal removal in recovery (E-1 class, recovery path) | V-B verification | Low-class | FIXED (744a5a5; S11; M-NB1 caught) |
 | N-1V | roles key min(1) dropped in NF-1 change (empty-string key parse-widening) | V-A + V-C verification | Info-class | FIXED (744a5a5; cell; M-N1 caught) |
+| N-V5 | LANDED-arm wording precision — "no concurrent writer is implied" stated its inference without its ground (out-of-protocol corner) | V-E verification | Info-class | FIXED (744a5a5): grounding parenthetical "(the journal still being ours)" added; S8b-1 regex synced (detail: report 21; restored as its own row in the evidence-cleanup commit — the earlier table folded it into N2's row) |
 | N-V1/N-V2/N-V3/N-2C/lcoApp/http-4s | six test-hygiene observations | V-E/V-C/V-D | Info-class | FIXED (744a5a5) |
 | N-B2 | real racer after failed debris cleanup classified 'debris' (triple-fault, out-of-protocol microsecond window; diagnostics-only) | V-B verification | Info-class | ACCEPTED_INVARIANT_BOUNDARY — reopen: any in-protocol path to that corner |
 | N-B3 | own journal unreadable in ours-check→remove window → silent no-op → 'race' misattribution (fail-closed direction correct; pre-existing) | V-B verification | Info-class | ACCEPTED_INVARIANT_BOUNDARY — reopen: same |
 | B-2 residue | aliased-rename second seal call slips lexical guards | V-C (confirms documented limit) | Info-class | ACCEPTED (guard's disclaimed class; documented in-code) |
 
-New totals: 0 Critical, 0 High, 0 Medium; actionable new Low/Info all FIXED in-program
-(N1, N2, N3, N4, N5, N-B1, N-1V, six hygiene items); bounded new observations
-documented with reopen conditions (N-B2, N-B3, B-2 residue).
+New totals — 17 distinct findings (N-V5 counted as its own item, per report 21 and
+the 744a5a5 commit message; restored as its own row in the evidence-cleanup
+commit): 0 Critical, 0 High, 0 Medium; actionable new Low/Info all FIXED
+in-program (N1, N2, N3, N4, N5, N-B1, N-1V, N-V5, six hygiene items); bounded
+new observations documented with reopen conditions (N-B2, N-B3, B-2 residue).
 
 ## Remaining risk / reopen conditions
 

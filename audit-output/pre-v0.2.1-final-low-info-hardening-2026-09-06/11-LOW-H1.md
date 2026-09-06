@@ -21,6 +21,13 @@
     mcp/server.test.ts 300ms "first response flush" → await first stdout JSON-RPC line.
 - Retained (legitimate): 150ms slow-adapter fixture; waitFor poll intervals; negative-
   margin windows over fixture-defined timers (check/runner, subprocess).
+- Census total (made explicit in the post-audit evidence-cleanup commit): 616f4ed
+  mechanically removed/replaced 25 fixed waits — app.test.ts 10, app-errors.test.ts
+  13 (1400ms poll + 120ms cancel + 11 dead settles), server/http 400ms inactivity,
+  mcp/server 300ms flush; equivalently 23 settle-class waits + 2 setTimeout sites.
+  The fresh independent re-audit's mechanical census agrees (25) and confirms
+  0 arbitrary race-masking waits remain; a "24" figure appeared only in
+  uncommitted final-response prose and is superseded by this committed census.
 - Tests: C5 cell — deterministic 300ms-delayed transport passes purely on observable
   gates (H-1's mutation shape).
 - Mutation: M-H1b (fixed 120ms window restored on the delayed POST) CAUGHT (C5).

@@ -11,8 +11,8 @@ by the primary agent; load-bearing claims re-checked against source.
 | V-A | config/canonicalization/prototype semantics | 7 | ALL CONFIRM (6 closure claims + record sweep); new finding N-1 |
 | V-B | evidence/filesystem/recovery | 7 | ALL CONFIRM; protected contracts unharmed; no new in-protocol corner; residuals N-B1 (pre-existing untyped post-rollback removal), N-B2, N-B3 (out-of-protocol) |
 | V-C | consent/ContextBundle/protected contracts | 7 | ALL CONFIRM; production diff = exactly 4 files; consent preimages byte-identical; B-2 blind spot narrowed-not-closed; new finding N-1 (duplicate), N-2 (chmod restore) |
-| V-D | browser/tests/unsupported-value | 7 | ALL CONFIRM (incl. handler-chain proof that deleted settles were dead); 3 minor observations |
-| V-E | ledger completeness + digest inventory + new-finding sweep | 5 | Ledger COMPLETE 27/27; all claimed closures present in diff; digest 7/13/0 at BOTH refs (site list identical); guards additive-only; 5 observations |
+| V-D | browser/tests/unsupported-value | 7 | ALL CONFIRM (incl. handler-chain proof that deleted settles were dead); 2 minor observations (V-D obs 1: dropped window.lcoApp assertion; V-D obs 2: http inactivity deadline — both enumerated below; corrected from an earlier "3" in the evidence-cleanup commit: only these two exist in the record) |
+| V-E | ledger completeness + digest inventory + new-finding sweep | 5 | Ledger COMPLETE 27/27; all claimed closures present in diff; digest 7/13/0 at BOTH refs (site list identical); guards additive-only; observations as enumerated below: 4 test-hygiene findings (N-V1, N-V2, N-V3, N-V5) + 3 ledger/process observations (NF-4 plan-vs-commit delta, 12-Info re-adjudication timing, INFO-A ledger-externality) — the earlier bare "5" matched no enumeration of the committed table and is superseded |
 
 Total: 33/33 claims CONFIRMED, 0 REFUTED. Zero Critical/High/Medium new findings.
 

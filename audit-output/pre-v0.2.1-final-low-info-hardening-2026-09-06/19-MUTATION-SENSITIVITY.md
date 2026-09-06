@@ -36,4 +36,28 @@ reverted after each run; targeted vitest runs; compile errors never counted).
 - The first mutation pass had three invalid runs due to a vitest -t filter with
   parentheses matching nothing (suite skipped, exit 0); re-run with clean filters —
   the pnpm/vitest false-green trap applies to -t filters too, recorded here.
-- Totals: 12 semantic mutation checks executed, 12 CAUGHT, 0 uncaught.
+- Totals at this report's snapshot (HEAD 1e73633, one commit before final
+  production 744a5a5): 12 semantic mutation checks executed, 12 CAUGHT,
+  0 uncaught. The two later verifier-wave mutants (M-NB1, M-N1) run at 744a5a5 —
+  after this report was frozen — are reconciled in the addendum below.
+
+## Addendum — post-snapshot mutation evidence (added in the evidence-cleanup commit)
+
+This report was frozen at 1e73633. The final production commit 744a5a5
+(verifier-wave fixes) added two semantic mutants that were run AFTER the snapshot
+and documented in reports 21/22 rather than appended to the tables above:
+
+| Mutant | Semantic change | Catcher | Result |
+|---|---|---|---|
+| M-NB1 | post-rollback journal removal made untyped again (N-B1 regression) | S11 cell | CAUGHT |
+| M-N1 | roles-key min(1) refine dropped — empty-string role key parses (N-1V regression) | N-1V non-empty-refine cell | CAUGHT |
+
+Reconciliation across committed materials:
+
+- Report-19 snapshot: 12 checks (11 source mutants + 1 environment canary), 12 CAUGHT.
+- Late implementation evidence: 2 further semantic checks (M-NB1, M-N1) at 744a5a5.
+- Total implementation-documented semantic checks across committed materials: 14
+  (13 source mutants + 1 environment canary).
+- Fresh independent re-audit (2026-09-07), own campaign at fc3ee96: 15 distinct
+  checks, 15 CAUGHT, 0 uncaught, 0 invalid — a superset of the implementation's
+  set, including M-NB1 (its #4) and M-N1 (its #9, labeled M-NF1b there).
