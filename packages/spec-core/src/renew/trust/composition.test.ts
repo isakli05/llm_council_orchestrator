@@ -262,6 +262,29 @@ describe('Composition F — ResolvedPaidOperation + MCP consent', () => {
     }
     expect(resolvedRouteDigest(resolveLegacyEnvRoute({ ...base }, { maxAttempts: 4 }))).not.toBe(digest); // budget changed
   });
+
+  it('S5-M-02: changing configured headers invalidates the consent digest (headers are consent inputs)', async () => {
+    const { routeFromConfig, resolvedRouteDigest } = await import('./paid');
+    const mk = (headers: Record<string, string>) =>
+      routeFromConfig({
+        config: {
+          gateway: 'openrouter',
+          providerKind: 'openrouter' as const,
+          baseUrl: 'https://gw.example/v1',
+          apiKey: 'k',
+          model: 'm-1',
+          extraHeaders: headers,
+        },
+        origin: 'named-profile',
+        routingMode: 'product',
+        apiKeyEnvName: 'K',
+        budget: { maxAttempts: 1 },
+      });
+    const digest = resolvedRouteDigest(mk({ 'X-Title': 'v1' }));
+    expect(resolvedRouteDigest(mk({ 'X-Title': 'v2' }))).not.toBe(digest); // value changed
+    expect(resolvedRouteDigest(mk({ 'X-Title': 'v1', 'X-Extra': 'e' }))).not.toBe(digest); // set changed
+    expect(resolvedRouteDigest(mk({ 'X-Title': 'v1' }))).toBe(digest); // identical → identical (deterministic, what the MCP gate compares)
+  });
 });
 
 describe('Composition G — StateTransaction + Export/Status views', () => {
