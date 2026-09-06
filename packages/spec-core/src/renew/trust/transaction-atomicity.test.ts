@@ -94,6 +94,23 @@ vi.mock('./fs', async (importOriginal) => {
       }
       return actual.authorizedWrite(args);
     },
+    authorizedCreateExclusive: (args: Parameters<typeof actual.authorizedCreateExclusive>[0]) => {
+      // Post-PR5 L5: the superseded marker lands through the EXCLUSIVE create
+      // (CAS fence). The persistent marker-fault seam moved with it (same
+      // content rule), and the RACE seam parks a concurrent writer's journal
+      // at the path inside the create window — exactly the historical
+      // check→write TOCTOU window the fence closes.
+      const mkFault = (globalThis as { __txMarkerFault?: { hookArmed: boolean } }).__txMarkerFault;
+      if (mkFault !== undefined && mkFault.hookArmed && args.path.endsWith('tx-journal.json') && args.content.includes('"superseded"')) {
+        throw new Error('injected persistent superseded-marker failure');
+      }
+      const race = (globalThis as { __txMarkerRace?: { armed: boolean; parked?: boolean; bytes?: string } }).__txMarkerRace;
+      if (race !== undefined && race.armed && !race.parked && args.path.endsWith('tx-journal.json')) {
+        race.parked = true;
+        writeFileSync(args.path, race.bytes ?? '');
+      }
+      return actual.authorizedCreateExclusive(args);
+    },
     authorizedRemoveTree: (args: Parameters<typeof actual.authorizedRemoveTree>[0]) => {
       // S5-H-01 regression seam (dormant unless armed): fail the removal of
       // one exact path — used for the journal-RETIRE-failure arm.
@@ -115,6 +132,7 @@ afterEach(() => {
   delete (globalThis as { __txRemoveFault?: unknown }).__txRemoveFault;
   delete (globalThis as { __txEvidenceFault?: unknown }).__txEvidenceFault;
   delete (globalThis as { __txMarkerFault?: unknown }).__txMarkerFault;
+  delete (globalThis as { __txMarkerRace?: unknown }).__txMarkerRace;
 });
 
 const FIXTURE_SRC = join(__dirname, '..', '..', '..', 'fixtures', 'legacy-app');
@@ -1511,13 +1529,14 @@ describe('S4-H-01: V1-re-verifier H1 — post-fence abort preserves a concurrent
     expect(rejection?.code).toBe('recovery_required');
     // the disclosure for the MARKER channel (journal path), not the sidecar
     expect(rejection!.message).toMatch(/superseded-marker failure|journal path could NOT be marked superseded/i);
-    // physics: no marker landed — A's OWN journal remains on the path
-    // UNMARKED (superseded-stamp refused to write), and with the revision
-    // already advanced (C > journal base) the next read AUTO-RETIRES it
-    // instead of holding for manual recovery — the disclosed residual.
-    expect(existsSync(paths.journal)).toBe(true);
-    const jText = readFileSync(paths.journal, 'utf8');
-    expect(jText).not.toContain('"superseded"'); // the stamp never landed
+    // physics (post-PR5 L5 CAS): no marker landed — the ownership-conditioned
+    // remove takes A's OWN journal first and every exclusive-create attempt
+    // failed persistently, so the journal path is EMPTY. With the revision
+    // already advanced the next read is HEALTHY at R+1 deterministically
+    // (pre-CAS, the unmarked leftover journal auto-retired to the same
+    // outcome). The durable-evidence outcome is unchanged: the typed
+    // in-process disclosure only — the accepted S5-M-04 residual.
+    expect(existsSync(paths.journal)).toBe(false);
     expect(loadActiveState(project).identity.revision).toBe(begin.identity.revision + 1);
   });
 
@@ -2175,5 +2194,133 @@ describe('I6: store write-boundary validation (refuse before any durable effect)
     });
     void ok;
     expect(readRevision(project)).toBe(begin.identity.revision + 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-PR5 L5 (RC1): the superseded-marker write is CAS-fenced. A concurrent
+// writer parking its journal in the historical check→write window can no
+// longer be CLOBBERED — the O_EXCL create loses the race, the racer's
+// rollback authority survives, and the abort discloses the race truthfully.
+// ---------------------------------------------------------------------------
+describe('L5: marker-write CAS fence (journal-clobber TOCTOU closed)', () => {
+  it('a concurrent journal parked in the create window is PRESERVED byte-identically, the race disclosed, and the fresh reader auto-recovers', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const bHolder = { pid: -777005, acquiredAt: '2026-09-03T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+    const foreignJournalBytes = `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`;
+    // The abort shape: revision moves while OUR journal stays on the path
+    // (marker arm = ours), then the racer parks ITS journal at the path inside
+    // the remove→create window.
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: begin.identity.revision + 1 }, null, 2));
+        },
+      },
+    };
+    (globalThis as { __txMarkerRace?: { armed: boolean; parked?: boolean; bytes?: string } }).__txMarkerRace = {
+      armed: true,
+      bytes: foreignJournalBytes,
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txMarkerRace?: unknown }).__txMarkerRace;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    // the race is disclosed truthfully — and the racer's authority is preserved
+    expect(rejection!.message).toMatch(/SUPERSEDED-MARKER RACE/i);
+    expect(rejection!.message).toMatch(/rollback authority was PRESERVED/i);
+    // PRE-FIX THIS WAS THE CLOBBER: the racer's journal must stand byte-identical
+    expect(readFileSync(paths.journal, 'utf8')).toBe(foreignJournalBytes);
+    // retention tells the truth: the marker did NOT land
+    expect(rejection!.message).toMatch(/NO durable evidence of this abort could be retained/i);
+    // fresh reader: the racer's journal (base R) at revision R+1 → S5-H-01 C>B
+    // RETIRE arm — auto-recovery, NOT the pre-fix MANUAL superseded refusal
+    expect(readRevision(project)).toBe(begin.identity.revision + 1);
+    expect(existsSync(paths.journal)).toBe(false); // retired cleanly
+  });
+
+  it('negative cells: the marker still lands normally on an empty path and when the journal is ours', async () => {
+    // empty path (revision moved, our journal consumed) → create lands
+    const a = await freshProject();
+    const pathsA = renewalPaths(a.project);
+    const beginA = loadActiveState(a.project);
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(pathsA.state, JSON.stringify({ schema_version: 1, revision: beginA.identity.revision + 1 }, null, 2));
+        },
+      },
+    };
+    let rejectionA: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: a.project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: beginA.identity.snapshotId, revision: beginA.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejectionA = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    expect(rejectionA!.message).toMatch(/journal is retained as a superseded marker/i);
+    expect(JSON.parse(readFileSync(pathsA.journal, 'utf8')).superseded).toBe(true);
+
+    // ours: write fails AFTER the concurrent revision bump, our journal intact
+    // → removed then re-created as the marker through the CAS path
+    const b = await freshProject();
+    const pathsB = renewalPaths(b.project);
+    const beginB = loadActiveState(b.project);
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: false,
+        commit: () => {
+          writeFileSync(pathsB.state, JSON.stringify({ schema_version: 1, revision: beginB.identity.revision + 1 }, null, 2));
+        },
+      },
+    };
+    let rejectionB: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: b.project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: beginB.identity.snapshotId, revision: beginB.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejectionB = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    expect(rejectionB!.code).toBe('recovery_required');
+    expect(JSON.parse(readFileSync(pathsB.journal, 'utf8')).superseded).toBe(true);
   });
 });

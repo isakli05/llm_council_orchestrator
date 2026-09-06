@@ -8,8 +8,8 @@ import { parseOverlayStore, type OverlayStore } from '../core/store-records';
 import { parseParityStore, type ParityStore } from '../core/store-records';
 import { parseStrategyDecision, type StrategyDecision } from './authority';
 import { AnalysisRecordSchema, type AnalysisRecord } from '../recovery/schemas';
-import { authorizedRead, authorizedWrite, authorizeProjectDestination, authorizedRenameNoClobber, authorizedEnsureDir, authorizedRemoveTree, authorizedCreateDirAtomically } from './fs';
-import { TrustStateError } from './errors';
+import { authorizedRead, authorizedWrite, authorizeProjectDestination, authorizedRenameNoClobber, authorizedEnsureDir, authorizedRemoveTree, authorizedCreateDirAtomically, authorizedCreateExclusive } from './fs';
+import { TrustStateError, TrustFsError } from './errors';
 import { domainDigest } from './canonical';
 
 /**
@@ -609,14 +609,19 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       // means our bytes may sit over B's commit with NO surviving evidence.
       // The sidecar (a separate path) fail-closes reads past B's removal.
       let sidecar: MarkerWriteOutcome | undefined;
-      if (performed > 0 && !ours && journalOnDisk(projectDir, paths) !== undefined) {
+      // ONE journal-presence read drives BOTH evidence channels (post-PR5 L5:
+      // this was two separate reads; the check→write window between them and
+      // the marker write is now closed by the O_EXCL CAS inside
+      // markJournalSuperseded, not by read ordering).
+      const journalPresent = journalOnDisk(projectDir, paths) !== undefined;
+      if (performed > 0 && !ours && journalPresent) {
         sidecar = writeAbortEvidence(projectDir, journal, performed);
       }
       // The marker is evidence ONLY over our own journal (or an empty path);
       // a foreign journal belongs to the concurrent writer and stays theirs.
-      let marker: MarkerWriteOutcome | undefined;
-      if (ours || journalOnDisk(projectDir, paths) === undefined) {
-        marker = markJournalSuperseded(projectDir, paths, journal);
+      let marker: SupersededMarkerOutcome | undefined;
+      if (ours || !journalPresent) {
+        marker = markJournalSuperseded(projectDir, paths, journal, ours);
       }
       // S5-M-04: the typed abort must tell the truth about what is (and is
       // NOT) durably on disk — a persistently failing evidence channel is
@@ -631,10 +636,17 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
         );
       }
       if (marker !== undefined && !marker.landed) {
-        disclosures.push(
-          `PERSISTENT superseded-marker failure: the journal path could NOT be marked superseded after ${marker.attempts} attempts — ` +
-            `the stale journal may auto-retire on the next trusted read; manually inspect the trusted state before any re-run`,
-        );
+        if (marker.failed === 'race') {
+          disclosures.push(
+            `SUPERSEDED-MARKER RACE: the marker was NOT written — a concurrent writer's journal occupied the path and its ` +
+              `rollback authority was PRESERVED (the marker refuses to clobber it); manually inspect the trusted state before any re-run`,
+          );
+        } else {
+          disclosures.push(
+            `PERSISTENT superseded-marker failure: the journal path could NOT be marked superseded after ${marker.attempts} attempts — ` +
+              `the stale journal may auto-retire on the next trusted read; manually inspect the trusted state before any re-run`,
+          );
+        }
       }
       const retention =
         marker !== undefined && marker.landed
@@ -729,7 +741,12 @@ function abortEvidencePath(projectDir: string): string {
  *  caller MUST know when the marker did NOT land so the typed abort can
  *  disclose the evidence channel is down — never claim retention that
  *  physics did not permit. */
-type MarkerWriteOutcome = { landed: true } | { landed: false; attempts: 3 };
+type MarkerWriteOutcome = { landed: true } | { landed: false; failed: 'persistent'; attempts: 3 };
+/** Post-PR5 L5 (RC1): the superseded marker's outcome additionally includes
+ *  the CAS-race loss — a concurrent writer's journal occupied the path, so
+ *  the marker was NOT written and the racer's rollback authority is
+ *  PRESERVED (disclosed, never clobbered). */
+type SupersededMarkerOutcome = MarkerWriteOutcome | { landed: false; failed: 'race' };
 
 /** Bounded-retry sidecar write (closing-verify hardening): the evidence
  *  channel must survive a TRANSIENT single I/O fault at exactly this write
@@ -757,25 +774,37 @@ function writeAbortEvidence(projectDir: string, journal: TxJournalFile, performe
       // typed and disclosed by the caller below (S5-M-04).
     }
   }
-  return { landed: false, attempts: 3 };
+  return { landed: false, failed: 'persistent', attempts: 3 };
 }
 
 /** Bounded-retry superseded-marker write on the journal path (S5-M-04):
  *  same class as the sidecar — when this write persistently fails, the
  *  stale journal may auto-retire on the next trusted read; the abort must
  *  say so instead of claiming the marker was retained. */
-function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof renewalPaths>, journal: TxJournalFile): MarkerWriteOutcome {
+function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof renewalPaths>, journal: TxJournalFile, ours: boolean): SupersededMarkerOutcome {
   const supersededJournal: TxJournalFile = { ...journal, superseded: true };
   supersededJournal.integrity = txJournalIntegrity(supersededJournal);
+  // Post-PR5 L5 (RC1) CAS fence: the marker may never destructively replace
+  // bytes it has not PROVED are its own or absent. Our own journal is removed
+  // first (ownership-conditioned inside removeJournal); the superseded marker
+  // is then CREATED with O_EXCL — a concurrent writer parking its journal in
+  // the historical check→write window can no longer be clobbered: the create
+  // fails atomically (record_exists), the racer wins, and its rollback
+  // authority survives. Bytes match the historical persistTrustedJson format.
+  if (ours) removeJournal(projectDir, paths, journal.holder);
+  const content = `${JSON.stringify(supersededJournal, null, 2)}\n`;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
+      authorizedCreateExclusive({ projectDir, path: paths.journal, content, mode: 0o600 });
       return { landed: true };
-    } catch {
+    } catch (err) {
+      if (err instanceof TrustFsError && err.code === 'record_exists') {
+        return { landed: false, failed: 'race' };
+      }
       // transient fault — retry (bounded); persistent failure is typed
     }
   }
-  return { landed: false, attempts: 3 };
+  return { landed: false, failed: 'persistent', attempts: 3 };
 }
 
 /** Read the journal currently on disk (undefined when absent/unparseable). */
