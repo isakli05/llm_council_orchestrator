@@ -2698,6 +2698,7 @@ describe('L6: persistent evidence-channel physics boundary (ACCEPTED, contract-p
   });
 
   it('entry probe: a dead evidence channel refuses the paid analyze at ENTRY (named channel, no probe residue)', async () => {
+    if (process.getuid?.() === 0) return; // root: chmod 0o555 does not deny root — no EACCES to pin
     const { project, caps } = await freshProject();
     const root = join(project, '.lco', 'renewal');
     chmodSync(root, 0o555);
@@ -2714,6 +2715,55 @@ describe('L6: persistent evidence-channel physics boundary (ACCEPTED, contract-p
     // no probe temp residue (write+unlink in the same breath)
     const residue = readdirSync(root).filter((f) => f.includes('evidence-channel-probe'));
     expect(residue).toEqual([]);
+  });
+
+  it('F-L6-1/M-2 (pre-v0.2.1): the entry probe fires BEFORE the staleness/paid boundary — ZERO provider/git calls on a dead channel', async () => {
+    // Pins the EARLY placement: caps.provider() is constructed eagerly by the
+    // staleness check and every later stage routes through it before the
+    // journal write — any placement at/after that point trips the counter.
+    // A late-placement mutation passes the rest of the suite; THIS cell
+    // fails it. (Adapted from the fresh re-audit's Lane F verification cell.)
+    const { project } = await freshProject();
+    const root = join(project, '.lco', 'renewal');
+    let eaccesHolds = true;
+    chmodSync(root, 0o500);
+    const accessProbe = join(root, '.fl61-eacces-probe');
+    try {
+      writeFileSync(accessProbe, 'x');
+      rmSync(accessProbe, { force: true });
+      eaccesHolds = false;
+    } catch {
+      eaccesHolds = true;
+    }
+    if (!eaccesHolds) {
+      if (process.getuid?.() === 0) return; // root never gets EACCES from mode bits
+      throw new Error('eacces does not hold on this filesystem — cannot pin the dead channel deterministically');
+    }
+    let providerCalls = 0;
+    let gitCalls = 0;
+    const caps = {
+      nowIso: () => '2026-09-06T00:00:00Z',
+      provider: () => {
+        providerCalls += 1;
+        throw new Error('provider must not be reached on a dead evidence channel');
+      },
+      gitCommit: () => {
+        gitCalls += 1;
+        return undefined;
+      },
+    } as never;
+    let result: { code: number; output: string } | undefined;
+    try {
+      const init = await import('../../cli/commands/renew');
+      result = await init.cmdRenewAnalyze({ dir: project }, caps);
+    } finally {
+      chmodSync(root, 0o755);
+    }
+    expect(result!.code).toBe(2);
+    expect(result!.output).toMatch(/durable evidence channel is NOT writable/i);
+    // THE PIN: the probe refusal happened before ANY provider/staleness work
+    expect(providerCalls).toBe(0);
+    expect(gitCalls).toBe(0);
   });
 
   it('contrast: a LANDED sidecar fail-closes reads (the boundary is about TOTAL failure, not any failure)', async () => {
