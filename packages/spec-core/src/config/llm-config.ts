@@ -79,7 +79,18 @@ const HeaderNameSchema = z
   .refine(
     (n) => n.toLowerCase() !== 'authorization' && n.toLowerCase() !== 'content-type',
     "LCO sets authorization and content-type itself — they cannot be configured per provider",
-  );
+  )
+  // Post-PR5 I1: refuse LOUDLY instead of letting zod's output construction
+  // silently drop the key (an own "__proto__" survives key validation but is
+  // swallowed by plain-assignment output building — a silent strip is a
+  // config the operator believes is live but never transports).
+  .refine((n) => n !== '__proto__', "'__proto__' is not a valid header name (refused instead of silently dropped)");
+
+/** Key schema for record-valued escape hatches: same loud refusal as headers. */
+const NoProtoKeySchema = z.string().refine(
+  (k) => k !== '__proto__',
+  "'__proto__' is not a valid key (refused instead of silently dropped)",
+);
 
 const ProviderTypeSchema = z.enum(PROVIDER_KINDS as [ProviderKind, ...ProviderKind[]]);
 
@@ -117,7 +128,7 @@ const ProviderSchema = z
     /** Default per-call generation cap for this provider. */
     maxTokens: z.number().int().positive().optional(),
     /** Provider escape hatch merged last into the body (model/messages pinned). */
-    extraBody: z.record(z.unknown()).optional(),
+    extraBody: z.record(NoProtoKeySchema, z.unknown()).optional(),
     /** OpenRouter upstream routing pins (used by evaluation-mode profiles). */
     routing: OpenRouterRoutingSchema.optional(),
   })

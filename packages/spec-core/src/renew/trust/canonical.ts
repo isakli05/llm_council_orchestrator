@@ -38,6 +38,13 @@ export function sha256Content(content: string): `sha256:${string}` {
  * bytes. Sorting is the only transformation: values, nesting, and array
  * order are untouched. (Byte-identical to the historical algorithm frozen
  * specs already carry — artifact_hashes pin exactly these bytes.)
+ *
+ * OWN-KEY RULE (post-PR5 L1 hardening): every OWN enumerable key is
+ * preserved exactly — including an own `"__proto__"` — so the digest binds
+ * precisely what a plain JSON.stringify of the same value binds. Input
+ * boundaries (config schema / env parsing), not this layer, decide whether
+ * a special key is refused; copies of canonicalization elsewhere must
+ * inherit this rule.
  */
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(value, canonicalReplacer, 2);
@@ -47,7 +54,12 @@ export function canonicalJson(value: unknown): string {
 function canonicalReplacer(_key: string, value: unknown): unknown {
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const src = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
+    // Null-prototype container: copying into a plain `{}` would route an own
+    // "__proto__" key through Object.prototype's inherited setter (the key is
+    // silently dropped — the pre-hardening wire/digest divergence). A
+    // null-proto target makes every Object.keys() key a plain own data
+    // property; JSON.stringify serializes null-prototype objects normally.
+    const sorted = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(src).sort()) {
       sorted[key] = src[key];
     }

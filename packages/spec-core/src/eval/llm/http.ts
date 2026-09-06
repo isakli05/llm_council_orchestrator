@@ -70,6 +70,12 @@ export function createHttpLlm(budget?: BudgetLedger): LlmAdapter {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error('LCO_LLM_EXTRA_BODY must be a JSON object');
     }
+    // Post-PR5 L1/I1 symmetry with the paid route: an own "__proto__" key is
+    // refused loudly here too (this path is also schema-free) instead of
+    // riding the body under a silently-divergent identity.
+    if (Object.hasOwn(parsed, '__proto__')) {
+      throw new Error("LCO_LLM_EXTRA_BODY must not carry an own '__proto__' key — remove the key");
+    }
     extraBody = parsed as Record<string, unknown>;
   }
 

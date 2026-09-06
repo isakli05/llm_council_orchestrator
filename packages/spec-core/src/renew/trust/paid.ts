@@ -93,6 +93,17 @@ export function resolveLegacyEnvRoute(env: NodeJS.ProcessEnv, defaults: { maxAtt
     try {
       const parsed = JSON.parse(rawExtra);
       if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // Post-PR5 L1/I1: this path is schema-free (no zod boundary), so the
+        // own-key refusal lives HERE. JSON.parse produces a REAL own
+        // "__proto__" key; the canonical layer would bind it while the
+        // historical drop silently discarded it — either way a half-bound
+        // state. Consent/wire equivalence demands both-or-neither: refuse.
+        if (Object.hasOwn(parsed, '__proto__')) {
+          throw new TrustPaidError(
+            'route_unresolved',
+            "LCO_LLM_EXTRA_BODY must not carry an own '__proto__' key (consent/wire equivalence: it cannot be half-bound) — remove the key and re-consent",
+          );
+        }
         extraBody = parsed as Record<string, unknown>;
       } else {
         throw new TrustPaidError('route_unresolved', 'LCO_LLM_EXTRA_BODY must be a JSON object');

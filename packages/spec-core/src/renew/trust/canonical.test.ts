@@ -30,6 +30,50 @@ describe('trust canonical serialization', () => {
   });
 });
 
+describe('trust canonical serialization — own-key rule (post-PR5 L1)', () => {
+  /** JSON.parse produces a REAL own enumerable "__proto__" key (object
+   *  literals cannot — the literal syntax routes through the proto setter). */
+  function ownProtoObject(): Record<string, unknown> {
+    return JSON.parse('{"__proto__":"phantom","zz":1}') as Record<string, unknown>;
+  }
+
+  it('preserves an own "__proto__" key exactly (no silent drop)', () => {
+    expect(Object.hasOwn(ownProtoObject(), '__proto__')).toBe(true);
+    expect(canonicalJson(ownProtoObject())).toBe('{\n  "__proto__": "phantom",\n  "zz": 1\n}');
+  });
+
+  it('a digest over an own "__proto__" key DIFFERS from the same payload without it', () => {
+    // Pre-hardening, the replacer dropped the key and these digests COLLIDED —
+    // the wire/digest divergence. It must stay bound.
+    expect(domainDigest('LCO:CONSENT', 1, ownProtoObject())).not.toBe(
+      domainDigest('LCO:CONSENT', 1, { zz: 1 }),
+    );
+  });
+
+  it('defineProperty and null-prototype constructions are preserved too', () => {
+    const byDefine = {} as Record<string, unknown>;
+    Object.defineProperty(byDefine, '__proto__', { value: 'x', enumerable: true, writable: true, configurable: true });
+    const nullProto = Object.assign(Object.create(null), JSON.parse('{"__proto__":"x"}'));
+    expect(canonicalJson(byDefine)).toBe('{\n  "__proto__": "x"\n}');
+    expect(canonicalJson(nullProto)).toBe('{\n  "__proto__": "x"\n}');
+  });
+
+  it('an object-valued own "__proto__" is preserved and sorted like any value', () => {
+    const o = JSON.parse('{"temperature":0.2,"__proto__":{"evil":1}}');
+    expect(canonicalJson(o)).toBe('{\n  "__proto__": {\n    "evil": 1\n  },\n  "temperature": 0.2\n}');
+  });
+
+  it('ordinary shapes keep their exact historical bytes (stability)', () => {
+    expect(canonicalJson({})).toBe('{}');
+    expect(canonicalJson({ a: 1 })).toBe('{\n  "a": 1\n}');
+    expect(canonicalJson({ b: 1, a: 2 })).toBe('{\n  "a": 2,\n  "b": 1\n}');
+    expect(canonicalJson({ b: 1, a: 2 })).toBe(canonicalJson({ a: 2, b: 1 }));
+    expect(canonicalJson({ n: [1, 'two', null, true] })).toBe(
+      '{\n  "n": [\n    1,\n    "two",\n    null,\n    true\n  ]\n}',
+    );
+  });
+});
+
 describe('trust domain digests', () => {
   it('separates domains: same payload, different domain → different digest', () => {
     const payload = { snapshot_id: 'RSN-0123456789abcdef', files: ['a'] };

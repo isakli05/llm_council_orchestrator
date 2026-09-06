@@ -366,4 +366,25 @@ describe('parseLlmConfig — header-name hardening (review F4)', () => {
       expect(parseLlmConfig(withHeaders({ [name]: 'x' })).ok).toBe(false);
     }
   });
+
+  it("rejects an own '__proto__' header LOUDLY instead of silently dropping it (post-PR5 I1)", () => {
+    // zod's output construction silently strips an own "__proto__" that key
+    // validation accepted — a config the operator believes is live but never
+    // transports. The refine makes the strip a parse-time refusal.
+    const r = parseLlmConfig(withHeaders(JSON.parse('{"X-Title":"t","__proto__":"phantom"}') as Record<string, string>));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/__proto__/);
+  });
+
+  it("rejects an own '__proto__' key in extraBody loudly (post-PR5 I1)", () => {
+    const doc = JSON.stringify({
+      llm: {
+        providers: { x: { type: 'openrouter', apiKeyEnv: 'A', extraBody: JSON.parse('{"__proto__":"p","legal":1}') } },
+        profiles: { p: { variant: 'single', roles: { single: { provider: 'x', model: 'm' } } } },
+      },
+    });
+    const r = parseLlmConfig(doc);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/__proto__/);
+  });
 });
