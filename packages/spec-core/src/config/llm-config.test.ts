@@ -402,3 +402,85 @@ describe('parseLlmConfig — header-name hardening (review F4)', () => {
     if (!r.ok) expect(r.error).toMatch(/__proto__/);
   });
 });
+
+describe('record-key + own-property resolution hardening (pre-v0.2.1 NF-1/NF-2)', () => {
+  const BASE = {
+    providers: { x: { type: 'openrouter', apiKeyEnv: 'A' } },
+  };
+
+  it("rejects a role NAMED '__proto__' loudly instead of silently stripping it (NF-1)", () => {
+    // Same zod-strip class as providers/profiles (V-L2): the roles record
+    // key must be refused, not dropped while the operator believes the role
+    // is live.
+    const doc = JSON.stringify({
+      llm: {
+        ...BASE,
+        profiles: {
+          p: {
+            variant: 'single',
+            roles: JSON.parse('{"single":{"provider":"x","model":"m"},"__proto__":{"provider":"x","model":"m"}}'),
+          },
+        },
+      },
+    });
+    const r = parseLlmConfig(doc);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/__proto__/);
+  });
+
+  it("roles-only '__proto__' is refused loudly, not reported as 'got [none]' (NF-1 misleading variant)", () => {
+    const doc = JSON.stringify({
+      llm: {
+        ...BASE,
+        profiles: { p: { variant: 'single', roles: JSON.parse('{"__proto__":{"provider":"x","model":"m"}}') } },
+      },
+    });
+    const r = parseLlmConfig(doc);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/__proto__/);
+  });
+
+  it("profile resolution requires an OWN key — inherited names refuse typed, never a raw TypeError (NF-2)", () => {
+    const doc = JSON.stringify({
+      llm: { ...BASE, profiles: { p: { variant: 'single', roles: { single: { provider: 'x', model: 'm' } } } } },
+    });
+    const parsed = parseLlmConfig(doc);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    for (const inherited of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const r = resolveProfile(parsed.config, inherited);
+      expect(r.ok, inherited).toBe(false);
+      if (!r.ok) expect(r.error, inherited).toMatch(/unknown llm profile/);
+    }
+  });
+
+  it("a role provider named via the prototype chain refuses pointedly — no bogus route (NF-2)", () => {
+    // provider '__proto__' passes string validation and the bare bracket
+    // lookup resolves Object.prototype → previously ok:true with an
+    // apiKeyEnv-less bogus route; must be a typed unknown-provider refusal.
+    const doc = JSON.stringify({
+      llm: { ...BASE, profiles: { p: { variant: 'single', roles: { single: { provider: '__proto__', model: 'm' } } } } },
+    });
+    const parsed = parseLlmConfig(doc);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const r = resolveProfile(parsed.config, 'p');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/unknown provider '__proto__'/);
+  });
+
+  it('unknown profile/provider names keep the existing pointed refusals (NF-2 regression)', () => {
+    const doc = JSON.stringify({
+      llm: { ...BASE, profiles: { p: { variant: 'single', roles: { single: { provider: 'x', model: 'm' } } } } },
+    });
+    const parsed = parseLlmConfig(doc);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const unknown = resolveProfile(parsed.config, 'no-such-profile');
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) {
+      expect(unknown.error).toMatch(/unknown llm profile 'no-such-profile'/);
+      expect(unknown.error).toMatch(/configured: p/);
+    }
+  });
+});

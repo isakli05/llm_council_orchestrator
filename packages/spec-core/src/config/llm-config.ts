@@ -166,7 +166,11 @@ const ProfileSchema = z
     topology: z.enum(['fused', 'decomposed']).optional(),
     /** 'product' (default; fallbacks allowed) or 'evaluation' (reproducible). */
     routingMode: z.enum(['product', 'evaluation']).optional(),
-    roles: z.record(z.string().min(1), RoleSchema),
+    // NF-1 (pre-v0.2.1): role keys get the same loud own-key refusal as
+    // providers/profiles — zod's output construction silently strips an own
+    // "__proto__" a plain z.string() key accepted, leaving a role the
+    // operator believes is live but never resolves.
+    roles: z.record(NoProtoKeySchema, RoleSchema),
   })
   .strict();
 
@@ -252,13 +256,18 @@ export function resolveProfile(
   config: LlmConfig,
   name: string,
 ): { ok: true; resolved: ResolvedProfile } | { ok: false; error: string } {
-  const profile = config.llm.profiles[name];
-  if (profile === undefined) {
+  // NF-2 (pre-v0.2.1): profile resolution requires an OWN key. A bare
+  // bracket lookup resolves inherited Object.prototype names ('__proto__',
+  // 'constructor', 'toString', …) — reachable from requester-supplied
+  // profile names — and defeated the typed refusal below with a raw
+  // TypeError or a bogus apiKeyEnv-less route.
+  if (!Object.hasOwn(config.llm.profiles, name)) {
     return {
       ok: false,
       error: `unknown llm profile '${name}' (configured: ${Object.keys(config.llm.profiles).join(', ') || 'none'})`,
     };
   }
+  const profile = config.llm.profiles[name];
 
   const topology: CouncilTopology | undefined =
     profile.variant === 'council' ? (profile.topology ?? 'fused') : undefined;
@@ -282,8 +291,10 @@ export function resolveProfile(
   const roles: Partial<Record<LlmRole, ResolvedRole>> = {};
   for (const role of required) {
     const roleCfg = profile.roles[role]!;
-    const provider = config.llm.providers[roleCfg.provider];
-    if (provider === undefined) {
+    // NF-2 (pre-v0.2.1): own-key lookup — a provider named via the
+    // prototype chain ('__proto__', 'constructor', …) must refuse pointedly,
+    // never resolve to a bogus inherited "provider".
+    if (!Object.hasOwn(config.llm.providers, roleCfg.provider)) {
       return {
         ok: false,
         error:
@@ -291,6 +302,7 @@ export function resolveProfile(
           `(configured: ${Object.keys(config.llm.providers).join(', ') || 'none'})`,
       };
     }
+    const provider = config.llm.providers[roleCfg.provider];
 
     // Generic providers must name their endpoint (enforced at parse time);
     // openrouter/routellm fall back to their documented defaults.
