@@ -504,23 +504,36 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       `refusing to commit an invalid ${kind} payload (${why}) — nothing was written`,
     );
   };
+  // D-F-01 (pre-v0.2.1): validate through the exact JSON value domain — a
+  // value JSON.stringify cannot serialize (bigint, circular structure, a
+  // throwing toJSON/getter) must refuse TYPED here, not escape as a raw
+  // TypeError from inside the write boundary. Note: this is a REFUSAL, never
+  // a coercion — ad-hoc bigint stringifying would change canonical semantics
+  // and diverge durable bytes from validation bytes.
+  const serializeForValidation = (kind: string, value: unknown): string => {
+    try {
+      return JSON.stringify(value);
+    } catch (e) {
+      return refuseInvalid(kind, `value is not JSON-serializable (${(e as Error).message})`);
+    }
+  };
   if (mutation.overlay !== undefined) {
-    const r = parseOverlayStore(JSON.stringify(mutation.overlay));
+    const r = parseOverlayStore(serializeForValidation('overlay', mutation.overlay));
     if (!r.ok) refuseInvalid('overlay', r.message);
   }
   if (mutation.parity !== undefined) {
-    const r = parseParityStore(JSON.stringify(mutation.parity));
+    const r = parseParityStore(serializeForValidation('parity', mutation.parity));
     if (!r.ok) refuseInvalid('parity', r.message);
   }
   if (mutation.project !== undefined && !RenewalProjectSchema.safeParse(mutation.project).success) {
     refuseInvalid('project', 'renewal project schema validation failed');
   }
   if (mutation.snapshot !== undefined) {
-    const r = reloadSnapshot(JSON.stringify(mutation.snapshot));
+    const r = reloadSnapshot(serializeForValidation('snapshot', mutation.snapshot));
     if (!r.ok) refuseInvalid('snapshot', r.message);
   }
   if (mutation.strategy !== undefined) {
-    const r = parseStrategyDecision(JSON.stringify(mutation.strategy));
+    const r = parseStrategyDecision(serializeForValidation('strategy', mutation.strategy));
     if (!r.ok) refuseInvalid('strategy', r.message);
   }
   const entries = planJournalEntries(projectDir, paths, mutation);
@@ -532,7 +545,14 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
     integrity: '' as `sha256:${string}`,
     entries,
   };
-  journal.integrity = txJournalIntegrity(journal);
+  // D-F-01 companion: the journal integrity digest serializes the entry list
+  // BEFORE any durable write — a non-serializable entry must refuse typed
+  // here too, not raw-throw pre-journal.
+  try {
+    journal.integrity = txJournalIntegrity(journal);
+  } catch (e) {
+    refuseInvalid('journal', `an entry is not JSON-serializable (${(e as Error).message})`);
+  }
   // V1-verifier V4: the in-flight marker is set only AFTER the journal lands
   // (a failed journal write leaves no journal, so nothing to skip) — and the
   // failure itself is typed (nothing was written).

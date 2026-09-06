@@ -2222,6 +2222,39 @@ describe('I6: store write-boundary validation (refuse before any durable effect)
     void ok;
     expect(readRevision(project)).toBe(begin.identity.revision + 1);
   });
+
+  it('D-F-01 (pre-v0.2.1): a non-JSON-serializable payload (bigint) refuses TYPED at the boundary — never a raw TypeError', async () => {
+    const { project } = await freshProject();
+    const before = snapshotTrustedBytes(project);
+    const begin = loadActiveState(project);
+    const poisoned: Record<string, unknown>[] = [
+      { overlay: { schema_version: 1, snapshot_id: 's', records: [{ status: 'active', id: 'R-1', relation: 'business_rule', subject: { path: 'a.ts' }, anchors: [], snapshot_id: 's', statement: { text: 'x' }, superseded_by_analysis: null, extra: 10n }] } },
+      { snapshot: { schema_version: 1, identity: { revision: 5n as unknown as number, snapshotId: 'RSN-0123456789abcdef' } } },
+    ];
+    for (const extra of poisoned) {
+      let rejection: (Error & { code?: string }) | undefined;
+      try {
+        await runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-06T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: { ...(analyzeStyleMutation(fresh) as Record<string, unknown>), ...extra }, result: undefined }),
+        });
+      } catch (e) {
+        rejection = e as Error & { code?: string };
+      }
+      expect(rejection).toBeDefined();
+      // pre-fix: raw `TypeError: Do not know how to serialize a BigInt`
+      // escaped untyped from inside the write boundary.
+      expect(rejection!.code).toBe('commit_failed_without_state_change');
+      expect(rejection!.message).toMatch(/not JSON-serializable/i);
+      expect(existsSync(renewalPaths(project).journal)).toBe(false);
+    }
+    // durable guarantee intact: byte-identical trusted tree
+    expect(snapshotTrustedBytes(project)).toEqual(before);
+  });
 });
 
 // ---------------------------------------------------------------------------
