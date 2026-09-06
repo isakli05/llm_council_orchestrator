@@ -417,16 +417,15 @@ describe('architecture: post-PR5 hardening guards', () => {
     expect(replacer.includes('const sorted: Record<string, unknown> = {};')).toBe(false);
   });
 
-  it('I3: every production sealContextBundle call site derives slices and items from ONE array (coherence is the caller’s)', () => {
+  it('I3: every production sealContextBundle site derives slices and items from ONE array (coherence is the caller’s)', () => {
     const sites: string[] = [];
     for (const file of productionFiles(join(PKG, 'src'))) {
       if (REL(file) === 'src/renew/trust/evidence.ts') continue; // the primitive itself
       const text = readFileSync(file, 'utf8');
-      let idx = text.indexOf('sealContextBundle(');
-      while (idx !== -1) {
-        sites.push(REL(file));
-        idx = text.indexOf('sealContextBundle(', idx + 1);
-      }
+      // ANY textual occurrence — call, import, or aliased import — counts:
+      // a rename-import (`sealContextBundle as x`) must not slip a second
+      // site past a calls-only scan.
+      if (text.includes('sealContextBundle')) sites.push(REL(file));
     }
     // A new production seal site MUST fail here and force an explicit
     // coherence decision (derive both sides from one array, or extend the
