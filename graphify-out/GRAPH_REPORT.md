@@ -1,134 +1,123 @@
 # Graph Report - llm_council_orchestrator  (2026-09-06)
 
 ## Corpus Check
-- 402 files · ~421,172 words
+- 402 files · ~421,816 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2669 nodes · 7310 edges · 123 communities (118 shown, 5 thin omitted)
+- 2669 nodes · 7311 edges · 112 communities (108 shown, 4 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 20 edges (avg confidence: 0.83)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ec6fc68d`
+- Built from commit: `e47c4489`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- renew/clarify/approvals.ts
+- generate-interactive.ts
 - app.ts
 - pipeline.test.ts
 - check/runner.ts
-- cli/index.ts
-- sha256Content
+- runcli-renew.test.ts
+- lifecycle.ts
 - trust/evidence.ts
-- live-experiment.ts
+- aggregate.ts
 - engine.ts
-- project.ts
+- parseGraphText
 - generate.test.ts
 - consent.ts
 - manifest.json
 - fs.ts
 - schemas/index.ts
 - budget.ts
-- src/clarify/approvals.ts
-- parseLlmConfig
+- sha256Content
+- generate.ts
 - doctor.ts
-- generate-interactive.ts
+- server/http.ts
 - structural.ts
 - compilerOptions
-- snapshot.ts
+- planner/plan.test.ts
 - server.ts
 - commands/plan.test.ts
 - fixture-provider.ts
-- session/state.ts
-- hash.ts
+- session.ts
+- canonical.ts
 - graph-reader.ts
-- eval/runner.ts
+- prompts-v4.ts
 - orders.ts
-- schemas.ts
-- trust/state.ts
+- pipeline.ts
+- composition.test.ts
 - coverage-hardening.test.ts
 - GraphifyAdapter
-- constraint-trace.test.ts
+- args.ts
 - models.ts
 - SpecBundleSchema
 - devDependencies
-- root-invariants.test.ts
-- context-provider.test.ts
 - transaction-atomicity.test.ts
+- renewalPaths
+- trust/state.ts
 - graphify-adapter.test.ts
-- createClarifySession
+- enrich.ts
 - model.ts
-- tasks/index.ts
+- intent-fidelity.test.ts
 - spec-core/package.json
-- canonical.ts
+- eval/runner.test.ts
 - paths.ts
 - llm-config.ts
-- graphify-adapter.ts
+- SpecBundle
 - package.json
-- review-interactive.test.ts
+- runner.branch-coverage.test.ts
 - paid.ts
 - recovery/prompts.ts
 - orchestrator.ts
-- acquireSpecRootLock
+- check/runner.test.ts
 - copy-browser-assets.js
 - verifier.ts
 - compilerOptions
-- schemas/version.ts
+- acquireSpecRootLock
+- McpStdioServer
+- EVAL_TASKS
 - context/redact.ts
-- corpus-lock.ts
-- cli.test.ts
-- pipeline.ts
-- tranche4.test.ts
-- distiller.ts
+- adapter.ts
+- intel-contract.test.ts
 - concurrency.test.ts
+- journey.test.ts
 - scale-benchmark.test.ts
 - orchestrator.branch-coverage.test.ts
-- generate-interactive.test.ts
 - renew-richstate.test.ts
-- strategy.ts
-- McpStdioServer
+- revision.test.ts
+- tranche4.test.ts
+- council.test.ts
 - scripts
 - stdio.ts
-- runner.branch-coverage.test.ts
-- architecture.test.ts
-- ledger.ts
-- orchestrator.test.ts
-- check/runner.test.ts
-- parseGraphText
-- planner/plan.test.ts
-- legacy-app/package.json
-- models.test.ts
-- SpecBundle
 - check.ts
+- architecture.test.ts
+- root-invariants.test.ts
+- orchestrator.test.ts
+- StaticGraphProvider
+- cli/index.ts
+- legacy-app/package.json
+- commands/trace.test.ts
 - authority.ts
 - revision.ts
 - renew.ts
-- openai-compatible.ts
+- providers.ts
 - snapshot-trust.test.ts
 - make-bins-executable.js
-- envelope.ts
-- adapter.ts
-- e2e.test.ts
+- eval/runner.ts
+- LlmAdapter
 - check.test.ts
 - packed-install-smoke.sh
 - CodeIntelligenceProvider
 - report.ts
 - prepublish-check.js
-- egress.test.ts
-- score.ts
+- ContextBundle
+- constraint-trace.test.ts
 - compileSpecDir
-- cmdRenewAnalyze
-- renew-branches.test.ts
 - files
-- adversarial.test.ts
 - app.test.ts
-- journey.test.ts
 - prepublish-check.boundary.test.ts
-- pipeline.function-coverage.test.ts
-- revision.test.ts
-- llm/http.test.ts
 - context-provider.ts
 - server.test.ts
 - handleRpcLine
@@ -150,25 +139,25 @@
 10. `LlmResponse` - 38 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `views()` --calls--> `questionViews()`  [EXTRACTED]
-  packages/spec-core/src/clarify/enrich.test.ts → packages/spec-core/src/clarify/model.ts
 - `compiledBundle()` --calls--> `compileSpecDir()`  [EXTRACTED]
   packages/spec-core/src/cli/commands/plan.test.ts → packages/spec-core/src/compiler/compile.ts
+- `compiledBundle()` --calls--> `compileSpecDir()`  [EXTRACTED]
+  packages/spec-core/src/cli/commands/trace.test.ts → packages/spec-core/src/compiler/compile.ts
 - `ApplyResult` --references--> `SpecBundle`  [EXTRACTED]
   packages/spec-core/src/compiler/changeset.ts → packages/spec-core/src/schemas/index.ts
-- `CompileResult` --references--> `SpecBundle`  [EXTRACTED]
-  packages/spec-core/src/compiler/compile.ts → packages/spec-core/src/schemas/index.ts
 - `HandleRpcOptions` --references--> `LlmAdapter`  [EXTRACTED]
   packages/spec-core/src/mcp/server.ts → packages/spec-core/src/eval/llm/adapter.ts
+- `MockEvalScripts` --references--> `MockScript`  [EXTRACTED]
+  packages/spec-core/src/eval/report.ts → packages/spec-core/src/eval/llm/mock.ts
 
 ## Import Cycles
 - 3-file cycle: `packages/spec-core/src/eval/budget.ts -> packages/spec-core/src/eval/llm/http.ts -> packages/spec-core/src/llm/openai-compatible.ts -> packages/spec-core/src/eval/budget.ts`
 
-## Communities (123 total, 5 thin omitted)
+## Communities (112 total, 4 thin omitted)
 
-### Community 0 - "renew/clarify/approvals.ts"
-Cohesion: 0.14
-Nodes (11): loadRenewalApproval(), RenewalApprovalLoad, RenewalDecisionSet, RenewalDecisionSetSchema, payload, tmpDirs, WriteApprovalResult, RenewalRoundDriver (+3 more)
+### Community 0 - "generate-interactive.ts"
+Cohesion: 0.08
+Nodes (29): ASSETS, baseBundle(), blockedJson(), complete(), fakeLlm(), REAL_FETCH, startWorkspace(), createClarifySession() (+21 more)
 
 ### Community 1 - "app.ts"
 Cohesion: 0.05
@@ -182,29 +171,29 @@ Nodes (8): freshDir(), makeBundle(), persisted, setupTarget(), sha(), tmpDirs, w
 Cohesion: 0.13
 Nodes (19): parseExpect(), REDACTION_RULES, RedactionRule, redactSecrets(), SecretKind, activeProcessGroups, EVIDENCE_FILE_MODE, evidenceRunName() (+11 more)
 
-### Community 4 - "cli/index.ts"
-Cohesion: 0.15
-Nodes (18): commandHelp(), renewSubHelp(), normalizeFileIntent(), cmdRenewExport(), cmdRenewRefresh(), cmdRenewStatus(), readBudgetEnv(), readEnginesFloor() (+10 more)
+### Community 4 - "runcli-renew.test.ts"
+Cohesion: 0.40
+Nodes (5): FIXTURE_SRC, freshDir(), graphifyAvailable, makeTarget(), tmpDirs
 
-### Community 5 - "sha256Content"
-Cohesion: 0.22
-Nodes (11): userAnswerFromPlainText(), canonicalJson(), FAMILY_SECTIONS, projectReview(), ReviewSection, ReviewSegment, segment(), specContentDigest() (+3 more)
+### Community 5 - "lifecycle.ts"
+Cohesion: 0.12
+Nodes (24): applyChangeSet(), ApplyResult, ChangeSetSchema, formatIssues(), checkTransition(), FREEZE_REFUSAL_HINTS, LIFECYCLE_STATES, LIFECYCLE_TRANSITIONS (+16 more)
 
 ### Community 6 - "trust/evidence.ts"
 Cohesion: 0.12
 Nodes (18): sealedFor(), bundleDigestCache, bundleDigestPayload(), CitationClaim, contextBundleDigest(), ContextBundleIdentity, ContextRecord, deepFreezeItem() (+10 more)
 
-### Community 7 - "live-experiment.ts"
-Cohesion: 0.08
-Nodes (40): aggregateEmitted(), Aggregation, EMITTED_SCHEMA, EmittedOutcome, loadRunDir(), parseEmittedOutcome(), renderAggregation(), baseScore() (+32 more)
+### Community 7 - "aggregate.ts"
+Cohesion: 0.12
+Nodes (24): Aggregation, EmittedOutcome, loadRunDir(), parseEmittedOutcome(), baseScore(), BLOCKED, EmitOverrides, emittedRecord() (+16 more)
 
 ### Community 8 - "engine.ts"
 Cohesion: 0.12
 Nodes (21): EXPECT_GRAMMAR_DOC, EXPECTED_EXIT_PATTERN, isJudgeableExpect(), BAD, BadFixtureExpectation, RULES, rule, rule (+13 more)
 
-### Community 9 - "project.ts"
-Cohesion: 0.23
-Nodes (10): reloadSnapshot(), dirs, MINIMAL_PROJECT, MINIMAL_SNAPSHOT, loadRenewalProject(), loadSnapshotFile(), persistRenewalProject(), persistSnapshotFile() (+2 more)
+### Community 9 - "parseGraphText"
+Cohesion: 0.09
+Nodes (23): FIXTURES, initProject(), TMP_PIN, tmpDirs, graphCaps(), caps(), parseGraphText(), FIXTURE_SRC (+15 more)
 
 ### Community 10 - "generate.test.ts"
 Cohesion: 0.10
@@ -219,32 +208,32 @@ Cohesion: 0.07
 Nodes (28): artifact_hashes, assumptions, contracts, decisions, evidence, glossary, intent, requirements (+20 more)
 
 ### Community 13 - "fs.ts"
-Cohesion: 0.17
-Nodes (17): authorizedCopyWrite(), authorizedCreateDirAtomically(), authorizedCreateExclusive(), authorizedEnsureDir(), authorizedRemoveTree(), authorizedRenameNoClobber(), authorizedWrite(), authorizeProjectDestination() (+9 more)
+Cohesion: 0.15
+Nodes (20): TrustFsError, authorizedCopyWrite(), authorizedCreateDirAtomically(), authorizedCreateExclusive(), authorizedEnsureDir(), authorizedRemoveTree(), authorizedRenameNoClobber(), authorizedStat() (+12 more)
 
 ### Community 14 - "schemas/index.ts"
 Cohesion: 0.06
-Nodes (49): Contract, Decision, EvidenceItem, GlossaryEntry, InitOptions, InitResult, Intent, Requirement (+41 more)
+Nodes (50): Contract, Decision, EvidenceItem, GlossaryEntry, InitOptions, InitResult, Intent, Requirement (+42 more)
 
 ### Community 15 - "budget.ts"
-Cohesion: 0.09
-Nodes (31): errOf(), Command, COMMANDS, GenerateVariant, InitProfile, parseArgs(), parseRenew(), ParseResult (+23 more)
+Cohesion: 0.12
+Nodes (18): BudgetCap, BudgetExceededError, BudgetSpentSnapshot, DEFAULT_WALL_SLACK_MS, MAX_COMPLETIONS, maxCompletions(), ResolvedRunBudget, resolveRunBudget() (+10 more)
 
-### Community 16 - "src/clarify/approvals.ts"
-Cohesion: 0.17
-Nodes (15): AnswerLedgerSchema, answersExportDocument(), APPROVAL_RECORD_SCHEMA_ID, approvalFileName(), ApprovalRecord, ApprovalRecordSchema, buildApprovalRecord(), ChangeLedgerSchema (+7 more)
+### Community 16 - "sha256Content"
+Cohesion: 0.11
+Nodes (24): AnswerLedgerSchema, answersExportDocument(), APPROVAL_RECORD_SCHEMA_ID, approvalFileName(), ApprovalRecord, ApprovalRecordSchema, buildApprovalRecord(), ChangeLedgerSchema (+16 more)
 
-### Community 17 - "parseLlmConfig"
-Cohesion: 0.21
-Nodes (8): GLM, resolveSingleRole(), LlmConfig, parseLlmConfig(), resolveProfile(), VALID, zodIssues(), loadLlmConfigForProfiles()
+### Community 17 - "generate.ts"
+Cohesion: 0.16
+Nodes (18): ClarifySessionOptions, checkIntent(), clarificationBlock(), cmdGenerate(), GenerateOptions, GenerateResult, IntentCheck, GenerateInteractiveOptions (+10 more)
 
 ### Community 18 - "doctor.ts"
 Cohesion: 0.10
 Nodes (30): BIN_FILES, BUDGET_ENV, checkBins(), checkBudgetEnv(), checkLlmConfig(), checkLock(), checkMcpFlags(), checkNodeVersion() (+22 more)
 
-### Community 19 - "generate-interactive.ts"
-Cohesion: 0.06
-Nodes (39): ASSETS, baseBundle(), blockedJson(), complete(), fakeLlm(), REAL_FETCH, startWorkspace(), ClarifySession (+31 more)
+### Community 19 - "server/http.ts"
+Cohesion: 0.07
+Nodes (20): ClarifySession, ASSETS, blocked(), bundle(), fakeLlm(), Ready, run(), ApplyRoundRequestSchema (+12 more)
 
 ### Community 20 - "structural.ts"
 Cohesion: 0.15
@@ -254,9 +243,9 @@ Nodes (22): TrustStructuralError, bindStructuralArtifacts(), coerceStructuralBin
 Cohesion: 0.10
 Nodes (19): compilerOptions, esModuleInterop, lib, module, moduleResolution, noEmitOnError, outDir, rootDir (+11 more)
 
-### Community 22 - "snapshot.ts"
-Cohesion: 0.08
-Nodes (34): createSnapshot(), deriveSnapshotId(), ProjectSnapshotSchema, Sha256, SnapshotFileEntrySchema, snapshotIdentityPayload(), SnapshotInputs, SnapshotReload (+26 more)
+### Community 22 - "planner/plan.test.ts"
+Cohesion: 0.05
+Nodes (52): createSnapshot(), deriveSnapshotId(), ProjectSnapshotSchema, Sha256, SnapshotFileEntrySchema, snapshotIdentityPayload(), SnapshotInputs, SnapshotReload (+44 more)
 
 ### Community 23 - "server.ts"
 Cohesion: 0.09
@@ -267,48 +256,48 @@ Cohesion: 0.08
 Nodes (22): cmdPlan(), PlanOptions, PlanResult, PlanTask, renderHuman(), renderJson(), compiledBundle(), FIXTURES (+14 more)
 
 ### Community 25 - "fixture-provider.ts"
-Cohesion: 0.13
-Nodes (19): StaticGraphProvider, affectedReverse(), godNodes(), neighborhood(), querySeeds(), shortestPath(), fixturePath, parsed (+11 more)
+Cohesion: 0.16
+Nodes (21): affectedReverse(), godNodes(), graphHealthOf(), neighborhood(), querySeeds(), shortestPath(), fixturePath, parsed (+13 more)
 
-### Community 26 - "session/state.ts"
-Cohesion: 0.29
-Nodes (9): canTransition(), CLARIFY_SESSION_STATES, ClarifySessionState, isTerminal(), nextSessionState(), TERMINAL, LEGAL, TransitionRule (+1 more)
+### Community 26 - "session.ts"
+Cohesion: 0.21
+Nodes (14): DecisionRecords, mergeRoundRecords(), SessionOpResult, canTransition(), CLARIFY_SESSION_STATES, ClarifySessionState, isTerminal(), nextSessionState() (+6 more)
 
-### Community 27 - "hash.ts"
+### Community 27 - "canonical.ts"
 Cohesion: 0.06
-Nodes (49): applyChangeSet(), ApplyResult, ChangeSetSchema, formatIssues(), cleanLint, FIXTURES, freeze(), cleanLint (+41 more)
+Nodes (34): FIXTURES, SECTION_FILES, tmpDirs, cleanLint, FIXTURES, freeze(), cleanLint, FIXTURES (+26 more)
 
 ### Community 28 - "graph-reader.ts"
-Cohesion: 0.09
-Nodes (22): ArchitectureView, ArchitectureViewSchema, buildArchitectureView(), GENERATED_PATTERNS, isGeneratedPath(), fixturePath, loadGraph(), MANIFEST (+14 more)
+Cohesion: 0.11
+Nodes (19): ArchitectureViewSchema, fixturePath, loadGraph(), MANIFEST, rawFixture, fixturePath, parsed, basename() (+11 more)
 
-### Community 29 - "eval/runner.ts"
-Cohesion: 0.07
-Nodes (56): ClarifySessionOptions, checkIntent(), clarificationBlock(), cmdGenerate(), GenerateOptions, GenerateResult, IntentCheck, GenerateInteractiveOptions (+48 more)
+### Community 29 - "prompts-v4.ts"
+Cohesion: 0.13
+Nodes (28): DecomposedCouncilDeps, runDecomposedCouncil(), CLARIFY_RULES, CLASSIFY_RULES, CONSTRAINT_FIDELITY, decomposedClassifier(), decomposedJudge(), decomposedJudgeAlone() (+20 more)
 
 ### Community 30 - "orders.ts"
 Cohesion: 0.22
 Nodes (13): checkStock(), decrementStock(), stock, CATALOG, quote(), run(), createOrder(), OrderResult (+5 more)
 
-### Community 31 - "schemas.ts"
+### Community 31 - "pipeline.ts"
 Cohesion: 0.08
-Nodes (20): AnalysisUsageSchema, AnchorResult, AnchorResultSchema, AnchorScope, AnchorScopeSchema, RECOVERY_CATEGORIES, RecoveryHypothesis, RecoveryHypothesisSchema (+12 more)
+Nodes (28): RecoveryDeps, RecoveryOutcome, UsageState, zodIssues(), RECOVERY_PROMPT_PROTOCOL, AnalysisUsageSchema, AnchorResult, AnchorResultSchema (+20 more)
 
-### Community 32 - "trust/state.ts"
+### Community 32 - "composition.test.ts"
 Cohesion: 0.12
-Nodes (31): RenewalProject, RenewalProjectSchema, ProjectSnapshot, ParityStore, PlanInputs, StrategyDecision, FIXTURE_SRC, tmpDirs (+23 more)
+Nodes (13): capsWith(), FIXTURE_SRC, freshProject(), tmpDirs, isTrustError(), TrustAuthorityError, TrustCitationError, TrustDomainTag (+5 more)
 
 ### Community 33 - "coverage-hardening.test.ts"
-Cohesion: 0.14
-Nodes (23): emptyOverlay(), nextOverlayId(), OVERLAY_RELATIONS, OverlayRecordSchema, OverlayStoreSchema, parseOverlayStore(), FIXTURE_SRC, freshDir() (+15 more)
+Cohesion: 0.07
+Nodes (42): DistillerInputs, distillRenewalQuestions(), makeRenewalDriver(), RENEWAL_CLAIM_ID, STRATEGY_CLAIM_ID, STRATEGY_OPTIONS, strategyQuestion(), analysisWithUncertainty() (+34 more)
 
-### Community 35 - "constraint-trace.test.ts"
-Cohesion: 0.10
-Nodes (21): et07Requirement(), et12Requirement(), failureCodes(), FIXTURES, genericBundleFor(), groundedEt01(), groundedEt02(), groundedEt04() (+13 more)
+### Community 35 - "args.ts"
+Cohesion: 0.12
+Nodes (18): errOf(), Command, COMMANDS, GenerateVariant, InitProfile, parseArgs(), parseRenew(), ParseResult (+10 more)
 
 ### Community 36 - "models.ts"
-Cohesion: 0.27
-Nodes (9): BUILTIN_PROVIDERS, cmdModels(), fmt(), ModelCatalogEntry, MODELS_REQUEST_TIMEOUT_MS, ModelsOptions, ModelsResult, parseCatalog() (+1 more)
+Cohesion: 0.13
+Nodes (15): BUILTIN_PROVIDERS, cmdModels(), fmt(), MAX_CATALOG_BYTES, ModelCatalogEntry, MODELS_REQUEST_TIMEOUT_MS, ModelsOptions, ModelsResult (+7 more)
 
 ### Community 37 - "SpecBundleSchema"
 Cohesion: 0.13
@@ -318,61 +307,61 @@ Nodes (8): GOOD, BAD, BadFixtureExpectation, FIXTURES, GOOD, SpecBundleForExport
 Cohesion: 0.15
 Nodes (13): jsdom, devDependencies, jsdom, @types/node, typescript, vitest, @vitest/coverage-v8, zod-to-json-schema (+5 more)
 
-### Community 39 - "root-invariants.test.ts"
-Cohesion: 0.20
-Nodes (14): MAX_RECOVERY_PROMPT_BYTES, build(), ctxWindow(), FIXTURE_SRC, freshDir(), graphCaps(), groundedResponse(), initProject() (+6 more)
+### Community 39 - "transaction-atomicity.test.ts"
+Cohesion: 0.14
+Nodes (22): parseOverlayStore(), FIXTURE_SRC, tmpDirs, abortEvidencePath(), foreignObjectAtEvidencePath(), loadActiveState(), readRevision(), runRenewalStateTx() (+14 more)
 
-### Community 40 - "context-provider.test.ts"
-Cohesion: 0.22
-Nodes (8): ContextBundleSchema, SliceReader, FILES, fixturePath, makeProvider(), manifest, parsed, reader()
+### Community 40 - "renewalPaths"
+Cohesion: 0.21
+Nodes (14): transitiveRenewalRootCheck(), renewalPaths, RenewalProject, RenewalProjectSchema, reloadSnapshot(), dirs, MINIMAL_PROJECT, MINIMAL_SNAPSHOT (+6 more)
 
-### Community 41 - "transaction-atomicity.test.ts"
-Cohesion: 0.11
-Nodes (32): renewalPaths, FIXTURE_SRC, tmpDirs, authorizedRead(), abortEvidencePath(), bumpStateRevisionTrusted(), foreignObjectAtEvidencePath(), loadActiveState() (+24 more)
+### Community 41 - "trust/state.ts"
+Cohesion: 0.14
+Nodes (29): authorizedRead(), applyStateMutation(), bumpStateRevisionTrusted(), fenceBeforeWrite(), fenceWriterLock(), journalIsOurs(), journalOnDisk(), loadJoinedStore() (+21 more)
 
 ### Community 42 - "graphify-adapter.test.ts"
-Cohesion: 0.08
-Nodes (19): GraphifyAdapterOptions, cleanup, installedVersion, parseGraphifyVersion(), bindingTextFor(), fixtureGraphText, fixturePath, validManifestText (+11 more)
+Cohesion: 0.17
+Nodes (8): compareTriple(), parseGraphifyVersion(), bindingTextFor(), fixtureGraphText, fixturePath, validManifestText, workspaceFiles(), versionSupported()
 
-### Community 43 - "createClarifySession"
-Cohesion: 0.16
-Nodes (16): applyEnrichment(), buildEnrichPrompt(), CLARIFY_ENRICH_PROTOCOL, DecisionEnrichment, EnrichedItemSchema, EnrichOutputSchema, EnrichParseResult, MAX_CONTEXT_CHARS (+8 more)
+### Community 43 - "enrich.ts"
+Cohesion: 0.18
+Nodes (13): applyEnrichment(), buildEnrichPrompt(), CLARIFY_ENRICH_PROTOCOL, DecisionEnrichment, EnrichedItemSchema, EnrichOutputSchema, EnrichParseResult, MAX_CONTEXT_CHARS (+5 more)
 
 ### Community 44 - "model.ts"
 Cohesion: 0.13
-Nodes (25): AnswerCheck, applyAnswersToRecords(), ApplyResult, open(), QUESTIONS, ClarificationAnswer, ClarificationOptionView, ClarificationQuestionView (+17 more)
+Nodes (23): views(), AnswerCheck, answerToUserAnswer(), applyAnswersToRecords(), ApplyResult, attachStatuses(), open(), QUESTIONS (+15 more)
 
-### Community 45 - "tasks/index.ts"
-Cohesion: 0.05
-Nodes (28): BASE, complete(), unresolvedBundle(), BUNDLE_OK(), CLASSIFIER_BLOCK, CLASSIFIER_OK, complete(), et01Bundle() (+20 more)
+### Community 45 - "intent-fidelity.test.ts"
+Cohesion: 0.25
+Nodes (4): FIXTURES, genericBundleFor(), loadFixture(), U
 
 ### Community 46 - "spec-core/package.json"
 Cohesion: 0.22
 Nodes (8): description, engines, node, license, main, name, type, version
 
-### Community 47 - "canonical.ts"
-Cohesion: 0.31
-Nodes (7): canonicalJsonOfIds(), CANONICAL_HASH_VERSION, canonicalJson(), canonicalReplacer(), DigestDomain, isKnownHashVersion(), KNOWN_HASH_VERSIONS
+### Community 47 - "eval/runner.test.ts"
+Cohesion: 0.14
+Nodes (11): BASE, complete(), unresolvedBundle(), complete(), counterOnlyUnresolvedBundle(), et01Bundle(), PET_CLINIC, proposalAJson() (+3 more)
 
 ### Community 48 - "paths.ts"
 Cohesion: 0.13
-Nodes (23): transitiveRenewalRootCheck(), refuseIfInsideTarget(), assertDisjointRealRoots(), assertNoSymlinkBelow(), assertWritableSpecDir(), authorizeRenewalPaths(), tmpDirs, checkMcpDir() (+15 more)
+Nodes (22): refuseIfInsideTarget(), assertDisjointRealRoots(), assertNoSymlinkBelow(), assertWritableSpecDir(), authorizeRenewalPaths(), tmpDirs, checkMcpDir(), ContainedOutputCheck (+14 more)
 
 ### Community 49 - "llm-config.ts"
-Cohesion: 0.11
-Nodes (20): RFC-7230, BaseUrlSchema, HeaderNameSchema, LINK_LOCAL_PREFIXES, LlmConfigSchema, METADATA_HOSTS, NoProtoKeySchema, OpenRouterRoutingSchema (+12 more)
+Cohesion: 0.09
+Nodes (24): RFC-7230, BaseUrlSchema, GLM, resolveSingleRole(), HeaderNameSchema, LINK_LOCAL_PREFIXES, LlmConfig, LlmConfigSchema (+16 more)
 
-### Community 50 - "graphify-adapter.ts"
-Cohesion: 0.23
-Nodes (9): graphHealthOf(), compareTriple(), DEFAULTS, MAX_EXCLUSIVE, MIN_VERSION, tail(), versionSupported(), GraphHealth (+1 more)
+### Community 50 - "SpecBundle"
+Cohesion: 0.05
+Nodes (17): CompileResult, FIXTURES, SECTION_FILES, tmpDirs, FreezeResult, FIXTURES, FIXTURES, FIXTURES (+9 more)
 
 ### Community 51 - "package.json"
 Cohesion: 0.25
 Nodes (7): _archival, name, packageManager, private, scripts, test:spec, version
 
-### Community 52 - "review-interactive.test.ts"
-Cohesion: 0.25
-Nodes (8): analyzedProject(), capsWith(), ctxWindow(), DIST_PRESENT, FIXTURE_SRC, freshDir(), interiorCitation(), tmpDirs
+### Community 52 - "runner.branch-coverage.test.ts"
+Cohesion: 0.14
+Nodes (6): childCtl, FIXTURES, PET_CLINIC, tmpDirs, Verification, execCommand()
 
 ### Community 53 - "paid.ts"
 Cohesion: 0.17
@@ -384,11 +373,11 @@ Nodes (13): redactSecrets(), runRecovery(), buildRecoveryPrompt(), buildValidati
 
 ### Community 55 - "orchestrator.ts"
 Cohesion: 0.14
-Nodes (17): BehaviorReview, changeRequestEvidence, ChangeSetValidation, CLARIFY_REVIEW_CHANGES_PROTOCOL, MAX_CHANGE_INSTRUCTION_CHARS, MAX_CHANGES_PER_SET, ReviewChange, ReviewChangeSchema (+9 more)
+Nodes (18): ClarificationQuestionView, BehaviorReview, changeRequestEvidence, ChangeSetValidation, CLARIFY_REVIEW_CHANGES_PROTOCOL, MAX_CHANGE_INSTRUCTION_CHARS, MAX_CHANGES_PER_SET, ReviewChange (+10 more)
 
-### Community 56 - "acquireSpecRootLock"
-Cohesion: 0.18
-Nodes (14): buildSections(), cmdInit(), pathExists(), SECTION_KEYS, stageSpecDir(), PET_CLINIC, SECTION_FILES, tmpDirs (+6 more)
+### Community 56 - "check/runner.test.ts"
+Cohesion: 0.13
+Nodes (7): DEFAULT_TIMEOUT_MS, killActiveProcessGroups(), FakeCall, FIXTURES, PET_CLINIC, tmpDirs, Verification
 
 ### Community 57 - "copy-browser-assets.js"
 Cohesion: 0.25
@@ -402,37 +391,33 @@ Nodes (10): AnchorBatchResult, AnchorFailureCode, AnchorVerification, canonicalF
 Cohesion: 0.12
 Nodes (15): compilerOptions, declaration, esModuleInterop, module, moduleResolution, outDir, rootDir, skipLibCheck (+7 more)
 
-### Community 60 - "schemas/version.ts"
-Cohesion: 0.36
-Nodes (7): checkSpecSchemaVersion(), ParsedVersion, parseVersion(), SPEC_SCHEMA_VERSION, SpecSchemaVersionFieldSchema, SpecSchemaVersionVerdict, SUPPORTED
+### Community 60 - "acquireSpecRootLock"
+Cohesion: 0.18
+Nodes (14): buildSections(), cmdInit(), pathExists(), SECTION_KEYS, stageSpecDir(), PET_CLINIC, SECTION_FILES, tmpDirs (+6 more)
 
-### Community 61 - "context/redact.ts"
+### Community 62 - "EVAL_TASKS"
+Cohesion: 0.12
+Nodes (24): canonicalJson(), computeCorpusHash(), CORPUS_LOCK_VERSION, CorpusLock, CorpusLockEntry, frozenThresholds, loadCorpusLock(), lockCandidates() (+16 more)
+
+### Community 63 - "context/redact.ts"
 Cohesion: 0.31
 Nodes (9): credentialAssignmentEnd(), isIdentCont(), isIdentStart(), isInlineSpace(), isValueStop(), redactCredentialAssignments(), RedactionResult, Rule (+1 more)
 
-### Community 62 - "corpus-lock.ts"
-Cohesion: 0.24
-Nodes (16): canonicalJson(), computeCorpusHash(), CORPUS_LOCK_VERSION, CorpusLock, CorpusLockEntry, frozenThresholds, loadCorpusLock(), lockCandidates() (+8 more)
+### Community 64 - "adapter.ts"
+Cohesion: 0.18
+Nodes (14): LlmCompleteOptions, LlmResponse, LlmUsage, MockScript, SCRIPT, ChatResponse, CostExtractor, parseSuccess() (+6 more)
 
-### Community 63 - "cli.test.ts"
-Cohesion: 0.22
-Nodes (3): FIXTURES, SECTION_FILES, tmpDirs
-
-### Community 64 - "pipeline.ts"
-Cohesion: 0.25
-Nodes (8): RecoveryDeps, RecoveryOutcome, UsageState, zodIssues(), RECOVERY_PROMPT_PROTOCOL, ResolvedCitation, SealedContext, TrustedAnchorPayload
-
-### Community 65 - "tranche4.test.ts"
+### Community 65 - "intel-contract.test.ts"
 Cohesion: 0.13
-Nodes (15): emptyOverlay, makeSession(), uncertaintyAnalysis(), setRuling(), loadAnalysisRecords(), LoadedAnalyses, nextAnalysisId(), persistAnalysisRecord() (+7 more)
+Nodes (13): GraphifyAdapterOptions, cleanup, installedVersion, FIXTURE_SRC, freshDir(), graphWorkspace(), readFileFixture(), tmpDirs (+5 more)
 
-### Community 66 - "distiller.ts"
-Cohesion: 0.12
-Nodes (16): DistillerInputs, distillRenewalQuestions(), makeRenewalDriver(), RENEWAL_CLAIM_ID, STRATEGY_CLAIM_ID, STRATEGY_OPTIONS, strategyQuestion(), analysisWithUncertainty() (+8 more)
-
-### Community 67 - "concurrency.test.ts"
+### Community 66 - "concurrency.test.ts"
 Cohesion: 0.25
 Nodes (8): capsWith(), complete(), ctxWindow(), FIXTURE_SRC, fixtureGraph(), freshReviewedProject(), OUTPUT(), tmpDirs
+
+### Community 67 - "journey.test.ts"
+Cohesion: 0.22
+Nodes (7): capsWith(), CONFORMING_OUTPUT(), FIXTURE_SRC, interiorCitation(), inventory(), sha(), tmpDirs
 
 ### Community 68 - "scale-benchmark.test.ts"
 Cohesion: 0.10
@@ -442,17 +427,21 @@ Nodes (15): ClosureFinding, ClosureFindingCode, closureFindings(), DuplicateTask
 Cohesion: 0.43
 Nodes (7): atReview(), blockedBundle(), bundle(), complete(), OPTS, scriptedLlm(), sessionWith()
 
-### Community 70 - "generate-interactive.test.ts"
-Cohesion: 0.32
-Nodes (6): ASSETS, blocked(), bundle(), fakeLlm(), Ready, run()
-
-### Community 71 - "renew-richstate.test.ts"
+### Community 70 - "renew-richstate.test.ts"
 Cohesion: 0.24
 Nodes (7): analysisRecord(), caps(), FIXTURE_SRC, freshDir(), makeTarget(), sha(), tmpDirs
 
-### Community 72 - "strategy.ts"
-Cohesion: 0.29
-Nodes (9): BuildStrategyArgs, persistStrategy(), loadStrategyFile(), tmpDirs, MODERNIZATION_STRATEGIES, ModernizationStrategy, parseStrategyDecision(), StrategyDecisionSchema (+1 more)
+### Community 71 - "revision.test.ts"
+Cohesion: 0.20
+Nodes (4): DEFAULT_STALE_MS, LockHeldError, fsyncCtl, tmpDirs
+
+### Community 72 - "tranche4.test.ts"
+Cohesion: 0.10
+Nodes (26): ArchitectureView, buildArchitectureView(), GENERATED_PATTERNS, isGeneratedPath(), ProjectSnapshot, ParityStore, PlanInputs, PlanOutcome (+18 more)
+
+### Community 73 - "council.test.ts"
+Cohesion: 0.28
+Nodes (6): BUNDLE_OK(), CLASSIFIER_BLOCK, CLASSIFIER_OK, complete(), et01Bundle(), PET_CLINIC
 
 ### Community 74 - "scripts"
 Cohesion: 0.22
@@ -462,65 +451,49 @@ Nodes (9): scripts, build, lint, prepublishOnly, pretest, smoke:packed, test, te
 Cohesion: 0.13
 Nodes (14): EPIPE_DRAIN_TIMEOUT_MS, EXIT_CLIENT_GONE, EXIT_DRAIN_TIMEOUT, EXIT_OK, MAX_FRAME_BYTES, MAX_IN_FLIGHT, SchedulingPeek, StdioServerLimits (+6 more)
 
-### Community 76 - "runner.branch-coverage.test.ts"
-Cohesion: 0.14
-Nodes (6): childCtl, FIXTURES, PET_CLINIC, tmpDirs, Verification, execCommand()
+### Community 76 - "check.ts"
+Cohesion: 0.36
+Nodes (7): CheckOutcome, Executor, CheckOptions, CheckResult, cmdCheck(), expectedActual(), renderReport()
 
 ### Community 77 - "architecture.test.ts"
 Cohesion: 0.31
 Nodes (7): allSpecifiers(), importSpecifiers(), PKG, productionFiles(), REL(), renewalSurface(), WRITE_PRIMITIVES
 
-### Community 78 - "ledger.ts"
-Cohesion: 0.09
-Nodes (35): emptyParity(), nextParityId(), OverlayEntityRefSchema, OverlayLoad, ParityEntry, ParityEntrySchema, ParityEvidenceSchema, ParityLoad (+27 more)
+### Community 78 - "root-invariants.test.ts"
+Cohesion: 0.07
+Nodes (45): nextParityId(), ParityEntry, ParityEntrySchema, ParityEvidenceSchema, ParityLoad, ParityStoreSchema, parseParityStore(), loadParityFile() (+37 more)
 
 ### Community 79 - "orchestrator.test.ts"
 Cohesion: 0.27
 Nodes (8): MAX_CLARIFY_ROUNDS, atReview(), blockedBundle(), bundle(), complete(), OPTS, scriptedLlm(), sessionWith()
 
-### Community 80 - "check/runner.test.ts"
-Cohesion: 0.13
-Nodes (7): DEFAULT_TIMEOUT_MS, killActiveProcessGroups(), FakeCall, FIXTURES, PET_CLINIC, tmpDirs, Verification
-
-### Community 81 - "parseGraphText"
-Cohesion: 0.11
-Nodes (18): FIXTURES, initProject(), TMP_PIN, tmpDirs, graphCaps(), caps(), parseGraphText(), FIXTURE_SRC (+10 more)
-
-### Community 82 - "planner/plan.test.ts"
-Cohesion: 0.19
-Nodes (13): PlanOutcome, TaskSeed, archView, baseInputs(), blastRadius(), fixtureGraphPath, graphParsed, MANIFEST (+5 more)
+### Community 81 - "cli/index.ts"
+Cohesion: 0.08
+Nodes (33): commandHelp(), renewSubHelp(), normalizeFileIntent(), cmdRenewAnalyze(), cmdRenewExport(), cmdRenewInit(), cmdRenewRefresh(), cmdRenewStatus() (+25 more)
 
 ### Community 83 - "legacy-app/package.json"
 Cohesion: 0.40
 Nodes (4): description, name, private, version
 
-### Community 84 - "models.test.ts"
-Cohesion: 0.25
-Nodes (3): MAX_CATALOG_BYTES, CATALOG, ENV
-
-### Community 85 - "SpecBundle"
-Cohesion: 0.04
-Nodes (28): cmdTrace(), renderTrace(), FIXTURES, SECTION_FILES, tmpDirs, TraceResult, FreezeResult, FIXTURES (+20 more)
-
-### Community 86 - "check.ts"
-Cohesion: 0.36
-Nodes (7): CheckOutcome, Executor, CheckOptions, CheckResult, cmdCheck(), expectedActual(), renderReport()
+### Community 85 - "commands/trace.test.ts"
+Cohesion: 0.10
+Nodes (16): cmdTrace(), renderTrace(), compiledBundle(), FIXTURES, SECTION_FILES, tmpDirs, TraceResult, buildTrace() (+8 more)
 
 ### Community 87 - "authority.ts"
-Cohesion: 0.09
-Nodes (22): ActiveAuthorityScope, ApprovalDecision, ApprovalDecisionSchema, AuthorityBody, CANONICAL_PARITY_RULINGS, CanonicalParityRuling, RENEWAL_APPROVAL_DIGEST_VERSION, Sha256 (+14 more)
+Cohesion: 0.08
+Nodes (28): loadRenewalApproval(), nextRenewalApprovalId(), RenewalApprovalLoad, RenewalDecisionSet, RenewalDecisionSetSchema, payload, tmpDirs, WriteApprovalResult (+20 more)
 
 ### Community 88 - "revision.ts"
 Cohesion: 0.18
 Nodes (13): backupPathFor(), fsCtl, tmpDirs, createDirAtomically(), fsyncDir(), LOCK_FILE, LockIdentity, LockOptions (+5 more)
 
 ### Community 89 - "renew.ts"
-Cohesion: 0.16
-Nodes (23): affectedSync(), analyzeWithFresh(), cmdRenewInit(), cmdRenewPlan(), cmdRenewReview(), currentStaleness(), finishReview(), persistGuard() (+15 more)
+Cohesion: 0.09
+Nodes (27): affectedSync(), analyzeWithFresh(), cmdRenewPlan(), cmdRenewReview(), currentStaleness(), finishReview(), persistGuard(), readWorkspaceFile() (+19 more)
 
-### Community 90 - "openai-compatible.ts"
-Cohesion: 0.11
-Nodes (26): buildLlmPlanFromProfile(), ResolvedRole, baseConfig(), jsonResponse(), okBody(), ChatResponse, CostExtractor, createOpenAiCompatibleLlm() (+18 more)
+### Community 90 - "providers.ts"
+Cohesion: 0.16
+Nodes (18): baseConfig(), jsonResponse(), okBody(), createOpenAiCompatibleLlm(), OpenAiCompatibleConfig, baseConfig(), jsonResponse(), okBody() (+10 more)
 
 ### Community 91 - "snapshot-trust.test.ts"
 Cohesion: 0.27
@@ -530,17 +503,13 @@ Nodes (10): baseCaps(), ctxWindow(), FIXTURE_SRC, fixtureGraph(), freshDir(), in
 Cohesion: 0.50
 Nodes (3): BINS, { join }, { readFileSync, chmodSync }
 
-### Community 93 - "envelope.ts"
-Cohesion: 0.19
-Nodes (19): computeCostEnvelope(), CostEnvelope, measurePromptSizes(), PromptSize, renderCostEnvelopeTable(), VariantEnvelope, CLASSIFY_RULES, classifyAndProposeSingle() (+11 more)
+### Community 93 - "eval/runner.ts"
+Cohesion: 0.11
+Nodes (30): validateGenerationOutput(), BudgetLedger, CouncilTopology, computeCostEnvelope(), CostEnvelope, measurePromptSizes(), PromptSize, renderCostEnvelopeTable() (+22 more)
 
-### Community 94 - "adapter.ts"
+### Community 94 - "LlmAdapter"
 Cohesion: 0.09
-Nodes (22): LlmAdapter, LlmCompleteOptions, LlmResponse, MockScript, SCRIPT, isLlmPlan(), LLM_ROLES, LlmRoute (+14 more)
-
-### Community 95 - "e2e.test.ts"
-Cohesion: 0.29
-Nodes (4): dirHash(), FIXTURE_SRC, sha(), tmpDirs
+Nodes (19): LlmAdapter, isLlmPlan(), LLM_ROLES, LlmRoute, singleRoutePlan(), ProviderKind, FIXTURE_SRC, freshDir() (+11 more)
 
 ### Community 96 - "check.test.ts"
 Cohesion: 0.21
@@ -551,32 +520,24 @@ Cohesion: 1.00
 Nodes (3): run(), say(), packed-install-smoke.sh script
 
 ### Community 99 - "report.ts"
-Cohesion: 0.08
-Nodes (36): BadFixtureCapture, calcs(), GateCalcs, GateReportInput, gateVerdict, groundedBundleFor(), BAD, BadFixtureExpectation (+28 more)
+Cohesion: 0.06
+Nodes (50): aggregateEmitted(), EMITTED_SCHEMA, renderAggregation(), BadFixtureCapture, gateVerdict, groundedBundleFor(), ENV_KEYS, emittedFileName() (+42 more)
 
 ### Community 100 - "prepublish-check.js"
 Cohesion: 0.29
 Nodes (5): describe, pkg, result, { spawnSync }, status
 
-### Community 101 - "egress.test.ts"
+### Community 101 - "ContextBundle"
 Cohesion: 0.15
-Nodes (9): ContextBundle, ContextItemSchema, RENEW_CONTEXT_LIMITS, FIXTURE_SRC, tmpDirs, RecoveryRequest, RecoveryPromptArgs, ITEMS (+1 more)
+Nodes (7): ContextBundle, SCRIPTED_INVALID, tmpDirs, RecoveryRequest, RecoveryPromptArgs, ITEMS, SLICES
 
-### Community 102 - "score.ts"
-Cohesion: 0.17
-Nodes (24): allUnGrounded(), anchorSentences(), checkConstraintTrace(), commitmentSurfaces(), ConstraintFailure, ConstraintFailureCode, containsTerm(), containsWholeTerm() (+16 more)
+### Community 102 - "constraint-trace.test.ts"
+Cohesion: 0.06
+Nodes (46): et07Requirement(), et12Requirement(), failureCodes(), FIXTURES, genericBundleFor(), groundedEt01(), groundedEt02(), groundedEt04() (+38 more)
 
 ### Community 103 - "compileSpecDir"
 Cohesion: 0.05
-Nodes (52): applyUnderLock(), ChangeResult, cmdChange(), findingLine(), FIXTURES, frozenSpecRoot(), inlineBundle(), makeSpecRoot() (+44 more)
-
-### Community 104 - "cmdRenewAnalyze"
-Cohesion: 0.27
-Nodes (9): cmdRenewAnalyze(), analyzedProject(), caps(), ctxWindow(), FIXTURE_SRC, freshDir(), interiorCitation(), tmpDirs (+1 more)
-
-### Community 105 - "renew-branches.test.ts"
-Cohesion: 0.39
-Nodes (6): caps(), FIXTURE_SRC, freshDir(), initProject(), makeTarget(), tmpDirs
+Nodes (47): applyUnderLock(), ChangeResult, cmdChange(), findingLine(), FIXTURES, frozenSpecRoot(), inlineBundle(), makeSpecRoot() (+39 more)
 
 ### Community 106 - "files"
 Cohesion: 0.33
@@ -586,25 +547,13 @@ Nodes (6): files, dist, examples, generated, LICENSE, README.md
 Cohesion: 0.32
 Nodes (6): ASSETS, blocked(), bootApp(), bundle(), settle(), waitFor()
 
-### Community 109 - "journey.test.ts"
-Cohesion: 0.22
-Nodes (7): capsWith(), CONFORMING_OUTPUT(), FIXTURE_SRC, interiorCitation(), inventory(), sha(), tmpDirs
-
 ### Community 110 - "prepublish-check.boundary.test.ts"
 Cohesion: 0.50
 Nodes (3): DIST_PRESENT, git(), makeRepo()
 
-### Community 112 - "revision.test.ts"
-Cohesion: 0.20
-Nodes (4): DEFAULT_STALE_MS, LockHeldError, fsyncCtl, tmpDirs
-
-### Community 114 - "llm/http.test.ts"
-Cohesion: 0.22
-Nodes (6): BudgetExceededError, FAKE_ENV, FakeEnv, jsonResponse(), okFetch(), PartialFakeEnv
-
 ### Community 115 - "context-provider.ts"
-Cohesion: 0.24
-Nodes (7): ContextItem, ContextLimits, AnalysisScope, ContextProvider, GraphContextProvider, GraphContextProviderOptions, parseLoc()
+Cohesion: 0.10
+Nodes (19): ContextBundleSchema, ContextItem, ContextItemSchema, ContextLimits, RENEW_CONTEXT_LIMITS, AnalysisScope, ContextProvider, GraphContextProvider (+11 more)
 
 ### Community 116 - "server.test.ts"
 Cohesion: 0.11
@@ -633,21 +582,21 @@ Nodes (3): repository, type, url
 ## Knowledge Gaps
 - **703 isolated node(s):** `name`, `version`, `private`, `packageManager`, `_archival` (+698 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **5 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `SpecBundle` connect `SpecBundle` to `check/runner.ts`, `sha256Content`, `engine.ts`, `generate.test.ts`, `consent.ts`, `schemas/index.ts`, `budget.ts`, `src/clarify/approvals.ts`, `generate-interactive.ts`, `commands/plan.test.ts`, `hash.ts`, `eval/runner.ts`, `constraint-trace.test.ts`, `SpecBundleSchema`, `tasks/index.ts`, `orchestrator.ts`, `acquireSpecRootLock`, `scale-benchmark.test.ts`, `orchestrator.branch-coverage.test.ts`, `generate-interactive.test.ts`, `runner.branch-coverage.test.ts`, `orchestrator.test.ts`, `check/runner.test.ts`, `planner/plan.test.ts`, `check.ts`, `report.ts`, `score.ts`, `compileSpecDir`, `app.test.ts`?**
+- **Why does `SpecBundle` connect `SpecBundle` to `generate-interactive.ts`, `check/runner.ts`, `lifecycle.ts`, `engine.ts`, `generate.test.ts`, `consent.ts`, `schemas/index.ts`, `budget.ts`, `sha256Content`, `generate.ts`, `server/http.ts`, `commands/plan.test.ts`, `canonical.ts`, `prompts-v4.ts`, `SpecBundleSchema`, `intent-fidelity.test.ts`, `eval/runner.test.ts`, `runner.branch-coverage.test.ts`, `orchestrator.ts`, `check/runner.test.ts`, `acquireSpecRootLock`, `EVAL_TASKS`, `scale-benchmark.test.ts`, `orchestrator.branch-coverage.test.ts`, `tranche4.test.ts`, `council.test.ts`, `check.ts`, `orchestrator.test.ts`, `commands/trace.test.ts`, `eval/runner.ts`, `report.ts`, `constraint-trace.test.ts`, `compileSpecDir`, `app.test.ts`?**
   _High betweenness centrality (0.082) - this node is a cross-community bridge._
-- **Why does `LlmAdapter` connect `adapter.ts` to `pipeline.test.ts`, `generate.test.ts`, `budget.ts`, `generate-interactive.ts`, `server.ts`, `eval/runner.ts`, `root-invariants.test.ts`, `tasks/index.ts`, `review-interactive.test.ts`, `paid.ts`, `orchestrator.ts`, `concurrency.test.ts`, `orchestrator.branch-coverage.test.ts`, `generate-interactive.test.ts`, `renew-richstate.test.ts`, `orchestrator.test.ts`, `openai-compatible.ts`, `snapshot-trust.test.ts`, `e2e.test.ts`, `egress.test.ts`, `cmdRenewAnalyze`, `renew-branches.test.ts`, `adversarial.test.ts`, `app.test.ts`, `journey.test.ts`, `pipeline.function-coverage.test.ts`, `server.test.ts`?**
+- **Why does `LlmAdapter` connect `LlmAdapter` to `generate-interactive.ts`, `pipeline.test.ts`, `parseGraphText`, `generate.test.ts`, `budget.ts`, `generate.ts`, `server/http.ts`, `server.ts`, `eval/runner.test.ts`, `paid.ts`, `orchestrator.ts`, `EVAL_TASKS`, `adapter.ts`, `concurrency.test.ts`, `journey.test.ts`, `orchestrator.branch-coverage.test.ts`, `renew-richstate.test.ts`, `council.test.ts`, `root-invariants.test.ts`, `orchestrator.test.ts`, `cli/index.ts`, `renew.ts`, `providers.ts`, `snapshot-trust.test.ts`, `eval/runner.ts`, `ContextBundle`, `constraint-trace.test.ts`, `app.test.ts`, `context-provider.ts`, `server.test.ts`?**
   _High betweenness centrality (0.031) - this node is a cross-community bridge._
-- **Why does `SpecBundleSchema` connect `SpecBundleSchema` to `report.ts`, `scale-benchmark.test.ts`, `compileSpecDir`, `engine.ts`, `generate.test.ts`, `runner.branch-coverage.test.ts`, `schemas/index.ts`, `check/runner.test.ts`, `src/clarify/approvals.ts`, `doctor.ts`, `planner/plan.test.ts`, `SpecBundle`, `eval/runner.ts`?**
+- **Why does `SpecBundleSchema` connect `SpecBundleSchema` to `report.ts`, `scale-benchmark.test.ts`, `compileSpecDir`, `engine.ts`, `tranche4.test.ts`, `generate.test.ts`, `schemas/index.ts`, `sha256Content`, `doctor.ts`, `runner.branch-coverage.test.ts`, `commands/trace.test.ts`, `planner/plan.test.ts`, `check/runner.test.ts`, `eval/runner.ts`?**
   _High betweenness centrality (0.013) - this node is a cross-community bridge._
 - **What connects `name`, `version`, `private` to the rest of the system?**
   _703 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `renew/clarify/approvals.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.1437908496732026 - nodes in this community are weakly interconnected._
+- **Should `generate-interactive.ts` be split into smaller, more focused modules?**
+  _Cohesion score 0.08456659619450317 - nodes in this community are weakly interconnected._
 - **Should `app.ts` be split into smaller, more focused modules?**
   _Cohesion score 0.05217391304347826 - nodes in this community are weakly interconnected._
 - **Should `check/runner.ts` be split into smaller, more focused modules?**

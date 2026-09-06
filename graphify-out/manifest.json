@@ -1080,15 +1080,15 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/cli/commands/doctor.test.ts": {
-    "mtime": 1788705176.1551483,
-    "seen": 1788705325.4326932,
-    "ast_hash": "19655dbf5d7f2d40f0dc684b6842aeda",
+    "mtime": 1788706695.1874292,
+    "seen": 1788706979.1939893,
+    "ast_hash": "2aab25d5dd89091093054fb79e14987d",
     "semantic_hash": ""
   },
   "packages/spec-core/src/cli/commands/doctor.ts": {
-    "mtime": 1788461904.9256108,
-    "seen": 1788462871.4723694,
-    "ast_hash": "9f69a7de2bb205fbf6fedfd967cdddba",
+    "mtime": 1788706579.4658341,
+    "seen": 1788706979.193991,
+    "ast_hash": "b9361b102e263cd70ba652a94ed20a9b",
     "semantic_hash": ""
   },
   "packages/spec-core/src/eval/gate.ts": {
@@ -1284,15 +1284,15 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/config/llm-config.test.ts": {
-    "mtime": 1788702512.816563,
-    "seen": 1788702614.0899603,
-    "ast_hash": "125469115b3ab4dfbfeacb526941c707",
+    "mtime": 1788706644.0865993,
+    "seen": 1788706979.194034,
+    "ast_hash": "cbbd7212db7e09c399234012ef1bcaab",
     "semantic_hash": ""
   },
   "packages/spec-core/src/config/llm-config.ts": {
-    "mtime": 1788702376.730477,
-    "seen": 1788702614.0899618,
-    "ast_hash": "f7c2ead8d2329d59bfbdf7d70d05a3ba",
+    "mtime": 1788706583.0617595,
+    "seen": 1788706979.1940353,
+    "ast_hash": "10fcbc02cc4e1e5ad0d4095afbfe43c3",
     "semantic_hash": ""
   },
   "packages/spec-core/src/llm/providers.test.ts": {
@@ -1896,9 +1896,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/cli/commands/renew.ts": {
-    "mtime": 1788704889.7429512,
-    "seen": 1788705007.938162,
-    "ast_hash": "5a5f05f34ebc129281a188507e64198b",
+    "mtime": 1788706601.7843702,
+    "seen": 1788706979.1940064,
+    "ast_hash": "91bf82c660dad0f3b61337f11790c78c",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/e2e.test.ts": {
@@ -2214,9 +2214,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/state.ts": {
-    "mtime": 1788704576.4559035,
-    "seen": 1788704786.666024,
-    "ast_hash": "626577b45371a4d5cd6d01922199976d",
+    "mtime": 1788706598.189445,
+    "seen": 1788706979.1942627,
+    "ast_hash": "06ea96a3b0aaa88d808c2f220e143b31",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/structural.test.ts": {
@@ -2256,9 +2256,9 @@
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/transaction-atomicity.test.ts": {
-    "mtime": 1788704974.9291809,
-    "seen": 1788705007.9383357,
-    "ast_hash": "115c0b2a94ede6c94eb4753af6d4cc5b",
+    "mtime": 1788706662.8251016,
+    "seen": 1788706979.194267,
+    "ast_hash": "31b965c76c45c1219cdd8d2d8fed18c8",
     "semantic_hash": ""
   },
   "packages/spec-core/src/renew/trust/paid-immutability.test.ts": {
