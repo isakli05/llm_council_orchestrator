@@ -77,7 +77,7 @@ describe('evidence: context bundle sealing (S4-H-02)', () => {
   });
 });
 
-describe('evidence: S5-M-01 — identity must cover the ENTIRE model-visible payload', () => {
+describe('evidence: S5-M-01 — identity must cover the ENTIRE model-visible BUNDLE payload (request framing excluded by design)', () => {
   // The standard one-slice + one-node bundle: identical file slices, a node
   // label that varies (node items ARE rendered to the model).
   const baseSlices: SuppliedContextSlice[] = [

@@ -623,8 +623,10 @@ export async function analyzeWithFresh(
   // ONLY material citations may cover, and its digest binds project,
   // snapshot, every window, and the structural epoch.
   // S5-M-01: the FULL item list (nodes/edges/facts included) is sealed too —
-  // the identity covers the entire model-visible payload, and the pipeline
-  // entry join refuses a request whose items diverge from the seal.
+  // the identity covers the bundle's entire model-visible payload (request
+  // framing — run context/scope — is outside the identity by design), and
+  // the pipeline entry join refuses a request whose items diverge from the
+  // seal.
   const sealedContext = sealContextBundle({
     projectName: beginState.identity.projectName,
     snapshotId: activeSnapshot,

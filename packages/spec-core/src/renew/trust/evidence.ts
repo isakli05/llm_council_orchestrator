@@ -77,7 +77,13 @@ export interface ContextBundleIdentity {
   /** domainDigest('LCO:PAID_CONTEXT', 2, …) over the ordered records' slice
    *  facts AND the full ordered item list — substituting, splicing, editing,
    *  or reordering any record or item (node/edge/fact/file_slice) changes
-   *  it. The model-visible payload cannot change without changing it. */
+   *  it. The BUNDLE's model-visible payload cannot change without changing
+   *  it. Request framing rendered around the bundle (run context such as
+   *  nowIso and scope) is a SEPARATE identity domain, deliberately not
+   *  digest-covered here: scope is consent-bound (LCO:CONSENT v1) on MCP and
+   *  a compile-time pin on the CLI; run time persists as plaintext
+   *  created_at (see runRecovery — the persisted context_digest is audit
+   *  lineage, not total model-input identity). */
   bundle_id: `sha256:${string}`;
   /** The structural epoch the supplied graph/node context came from (when
    *  graph context participated in the bundle). */
@@ -86,7 +92,8 @@ export interface ContextBundleIdentity {
 
 /** A SEALED context bundle: identity + the immutable records and items it
  *  covers. The items are carried so the digest is recomputable (S5-M-01:
- *  membership proof over the ENTIRE model-visible payload). */
+ *  membership proof over the ENTIRE model-visible BUNDLE payload — request
+ *  framing is outside the identity by design). */
 export interface SealedContext {
   identity: ContextBundleIdentity;
   records: readonly ContextRecord[];
@@ -159,9 +166,10 @@ export function sealContextBundle(args: {
   /**
    * S5-M-01 (REQUIRED, fail-closed): the FULL item list of the bundle being
    * sealed — every kind (file_slice, node, edge, structural_fact), in order.
-   * The bundle identity covers the entire model-visible payload; there is no
-   * way to seal a bundle whose items are not identity-bound. Items are
-   * deep-cloned then frozen here — caller mutation cannot reach the seal.
+   * The bundle identity covers the bundle's entire model-visible payload
+   * (request framing is outside the identity by design); there is no way to
+   * seal a bundle whose items are not identity-bound. Items are deep-cloned
+   * then frozen here — caller mutation cannot reach the seal.
    */
   items: ReadonlyArray<ContextItem>;
   structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` };
