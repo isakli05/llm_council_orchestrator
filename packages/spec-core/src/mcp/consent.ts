@@ -468,12 +468,15 @@ export interface RenewConsentInputs {
   promptProtocol?: string;
   /** Budget envelope (serialized canonically). */
   budget?: { maxAttempts?: number; maxTokens?: number; maxWallMs?: number };
-  /** S3-H-07 (trust kernel): canonical digest of the RESOLVED legacy-env
-   *  route — base URL, model, max tokens, extra body, budget envelope —
-   *  computed via trust/paid.resolveLegacyEnvRoute + resolvedRouteDigest.
-   *  Binding the model alone left every other effectual field free to drift
-   *  after consent. */
-  routeDigest?: string;
+  /** S3-H-07 (trust kernel) + post-PR5 L2: the resolved-route binding of
+   *  this call, TYPED — no undefined-means-skip shape. `resolved` serializes
+   *  into the preimage as `routeDigest` exactly as before (byte-identical
+   *  digests); `unresolved` serializes as an explicit `routeBinding:
+   *  'unresolved'` marker so the preimage can never silently OMIT the route
+   *  authority (an unresolvable route is digest-recorded as exactly that).
+   *  FUTURE RULE for optional binding fields: materialize the state — never
+   *  omit-when-unavailable. */
+  routeBinding?: { status: 'resolved'; routeDigest: `sha256:${string}` } | { status: 'unresolved'; reason: string };
 }
 
 /** Protocol version of the renewal consent binding itself. */
@@ -491,10 +494,48 @@ export function renewConsentDigest(args: RenewConsentInputs): `sha256:${string}`
     ...(args.llmProfile !== undefined ? { llmProfile: args.llmProfile } : {}),
     ...(args.profileFingerprint !== undefined ? { profileFingerprint: args.profileFingerprint } : {}),
     ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
-    ...(args.routeDigest !== undefined ? { routeDigest: args.routeDigest } : {}),
+    ...(args.routeBinding !== undefined
+      ? args.routeBinding.status === 'resolved'
+        ? { routeDigest: args.routeBinding.routeDigest }
+        : { routeBinding: 'unresolved' }
+      : {}),
     ...(args.promptProtocol !== undefined ? { promptProtocol: args.promptProtocol } : {}),
     ...(args.budget !== undefined ? { budget: args.budget } : {}),
   });
+}
+
+/**
+ * Post-PR5 L2: the TOTAL route-binding gate — the "undefined means skip the
+ * authority check" shape is gone. Returns the refusal output when the
+ * executing operation's route authority was not bound to consent; undefined
+ * when execution may proceed. Cells (all pinned by tests):
+ *   op === undefined            → proceed (injected-adapter path: no route)
+ *   binding unresolved + op     → REFUSE (the previously-skipped cell — e.g.
+ *                                 an env/config mutation landing between the
+ *                                 consent-time and effect-time resolutions)
+ *   binding resolved, unequal   → REFUSE (stale consent: re-consent)
+ *   binding resolved, equal     → proceed
+ */
+export function routeBindingRefusal(
+  binding: { status: 'resolved'; routeDigest: `sha256:${string}` } | { status: 'unresolved'; reason: string },
+  op: { routeDigest: `sha256:${string}` } | undefined,
+): string | undefined {
+  if (op === undefined) return undefined;
+  if (binding.status !== 'resolved') {
+    return (
+      `renewal analysis refused: the consented request carried NO resolved route binding (${binding.reason}) ` +
+      `while an LLM route resolved at effect time — the executing route was never bound to consent; ` +
+      `re-consent with the route resolvable; zero LLM calls were made`
+    );
+  }
+  if (op.routeDigest !== binding.routeDigest) {
+    return (
+      `renewal analysis refused: the resolved LLM route no longer matches the consented route digest ` +
+      `(consented ${binding.routeDigest.slice(0, 19)}…, resolved ${op.routeDigest.slice(0, 19)}…) — ` +
+      `re-consent to the current route; zero LLM calls were made`
+    );
+  }
+  return undefined;
 }
 
 export function generateConsentDigest(
