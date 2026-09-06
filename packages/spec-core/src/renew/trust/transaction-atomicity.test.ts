@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RenewCapabilities } from '../../cli/commands/renew';
@@ -1402,6 +1402,76 @@ describe('S4-H-01: V1-re-verifier H1 — post-fence abort preserves a concurrent
     // operator clears it; reads resume
     rmSync(evidencePath, { recursive: true });
     loadActiveState(project);
+  });
+
+  it('S5-M-04 matrix: REAL-FS persistent failure (renewal dir made read-only mid-tx) — evidence channel blocked without mocks, disclosed', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const evidencePath = join(project, '.lco', 'renewal', 'tx-abort-evidence.json');
+    const stateDir = join(project, '.lco', 'renewal');
+    const begin = loadActiveState(project);
+    // Root bypasses directory permissions: the EACCES precondition cannot
+    // hold there. Probe it explicitly — under root the writes succeed, so we
+    // assert the honest environment-specific outcome instead of a fake one.
+    chmodSync(stateDir, 0o500);
+    const probe = join(stateDir, '.lco-eacces-probe');
+    let eaccesHolds = true;
+    try {
+      writeFileSync(probe, 'x');
+    } catch {
+      eaccesHolds = false;
+    } finally {
+      if (eaccesHolds) rmSync(probe, { force: true });
+      chmodSync(stateDir, 0o755);
+    }
+    if (!eaccesHolds) {
+      // The primary (non-root) arm: the mid-tx interleave parks B's journal,
+      // bumps the revision, swaps the lock, and makes the REAL renewal dir
+      // read-only. A's overlay write then fails on the real filesystem, and
+      // every evidence-write attempt fails with REAL EACCES — the sidecar
+      // channel is blocked without any evidence fault mock.
+      const bHolder = { pid: -66670, acquiredAt: '2026-09-03T00:00:00Z' };
+      const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+      const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+      (globalThis as { __txFault?: { interleaveAndFail: { onWrite: number; commit: () => void; only: boolean } } }).__txFault = {
+        interleaveAndFail: {
+          onWrite: 3, // journal(1) and overlay(2) LAND first (performed>0); the parity write hits the chmod
+          only: true, // the mock does NOT throw — the real EACCES is the abort cause
+          commit: () => {
+            writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`);
+            writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: begin.identity.revision + 1 }, null, 2));
+            writeFileSync(join(stateDir, '.lco-revision.lock'), JSON.stringify({ pid: -66670, acquiredAt: '2026-09-03T00:00:00Z' }));
+            chmodSync(stateDir, 0o500); // the REAL persistent storage failure
+          },
+        },
+      };
+      let rejection: (Error & { code?: string }) | undefined;
+      try {
+        await runRenewalStateTx({
+          projectDir: project,
+          nowIso: '2026-09-03T00:00:02Z',
+          expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+          policy: 'additive',
+          work: () => undefined,
+          plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+        });
+      } catch (e) {
+        rejection = e as Error & { code?: string };
+      } finally {
+        delete (globalThis as { __txFault?: unknown }).__txFault;
+        chmodSync(stateDir, 0o755); // restore for cleanup and reads
+      }
+      expect(rejection?.code).toBe('recovery_required');
+      expect(rejection!.message).toMatch(/abort evidence could NOT be written|NO durable marker/i);
+      expect(existsSync(evidencePath)).toBe(false); // real EACCES blocked every attempt — no marker
+      // reader after "restart": B's journal present, C(R+1) > B(R) → auto-retire → healthy
+      expect(loadActiveState(project).identity.revision).toBe(begin.identity.revision + 1);
+    } else {
+      // Running as root (or equivalent): directory permissions cannot block
+      // writes, so this cell's precondition is absent. The mock-based
+      // persistent cell (evidenceFailures: 3) carries the coverage here.
+      expect(process.getuid?.() === 0).toBe(true);
+    }
   });
 
   it('S5-M-04 matrix: PERSISTENT superseded-marker failure is disclosed (journal-path variant)', async () => {

@@ -137,6 +137,9 @@ export async function runRecovery(req: RecoveryRequest, deps: RecoveryDeps): Pro
   // mutated between seal and prompt-build cannot ride an older identity.
   // Canonical-JSON equality: object key order is normalized (documented safe
   // equivalence); item ORDER and every value are exact.
+  // Deliberately OUTSIDE this join (and the bundle identity): req.scope and
+  // nowIso — request framing rendered around the bundle, not bundle content;
+  // each run records them in the analysis record (scope, created_at).
   if (canonicalJson(req.bundle.items) !== canonicalJson(deps.context.items)) {
     throw new TrustCitationError(
       'context_bundle_mismatch',

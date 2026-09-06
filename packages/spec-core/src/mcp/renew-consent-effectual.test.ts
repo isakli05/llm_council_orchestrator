@@ -38,12 +38,12 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
-function renewProfileConfig(model: string, providerKey = 'or'): string {
+function renewProfileConfig(model: string, providerKey = 'or', headers?: Record<string, string>): string {
   return JSON.stringify({
     llm: {
       providers: {
-        or: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY' },
-        or2: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY_2' },
+        or: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY', ...(headers !== undefined && providerKey === 'or' ? { headers } : {}) },
+        or2: { type: 'openrouter', apiKeyEnv: 'MCP_TEST_OPENROUTER_KEY_2', ...(headers !== undefined && providerKey === 'or2' ? { headers } : {}) },
       },
       profiles: {
         'renew-route': { variant: 'renewal', roles: { renew_recover: { provider: providerKey, model } } },
@@ -115,6 +115,26 @@ describe('S2-H-02: consent binds the EFFECTUAL route (actual server call path)',
     // distinguishes these; the digests must differ.
     expect(advertisedDigest(a)).not.toBe(advertisedDigest(b));
     expect(llm).not.toHaveBeenCalled();
+  });
+
+  it('S5-M-02: configs differing ONLY in configured headers advertise different digests — headers are effectual route facts (MCP-level)', async () => {
+    const dir = freshDir('lco-eff-consent-hdr-');
+    const llm = vi.fn();
+    const a = await callRenewAnalyze(
+      { dir, scope: 'whole', llmProfile: 'renew-route' },
+      { allowGenerate: true, llmConfigText: renewProfileConfig('same-model', 'or', { 'HTTP-Referer': 'https://a.example' }), llm: llm as never, env: { LCO_MCP_EXEC_ROOT: TMP_PIN } as NodeJS.ProcessEnv },
+    );
+    const b = await callRenewAnalyze(
+      { dir, scope: 'whole', llmProfile: 'renew-route' },
+      { allowGenerate: true, llmConfigText: renewProfileConfig('same-model', 'or', { 'HTTP-Referer': 'https://b.example' }), llm: llm as never, env: { LCO_MCP_EXEC_ROOT: TMP_PIN } as NodeJS.ProcessEnv },
+    );
+    expect(a.result.isError).toBe(true); // no consent supplied — refusal advertises the digest
+    expect(b.result.isError).toBe(true);
+    // Same model, same gateway, same provider — ONLY the configured header
+    // differs. The advertised route digests must differ: a header change is a
+    // route change, and consent for one cannot authorize the other.
+    expect(advertisedDigest(a)).not.toBe(advertisedDigest(b));
+    expect(llm).not.toHaveBeenCalled(); // zero LLM calls in both arms
   });
 
   it('a digest computed WITHOUT the resolved route no longer authorizes (old binding is stale)', async () => {

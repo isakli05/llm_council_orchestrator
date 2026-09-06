@@ -131,7 +131,10 @@ function bundleDigestPayload(
       whole_file_supplied: r.whole_file_supplied,
       ...(r.node_id !== undefined ? { node_id: r.node_id } : {}),
     })),
-    items: items.map((item) => structuredClone(item)),
+    // No defensive clone here: canonicalJson (the only consumer) never
+    // mutates, and the caller's frozen seal items arrive already isolated —
+    // cloning per payload assembly cost one full copy per citation resolution.
+    items: items as unknown[],
   };
 }
 
