@@ -65,3 +65,18 @@ matter when comparing ledgers:
 
 Neither number contradicts the other: 14 (implementation convention, incl. 1
 pre-fix reproduction) vs 15 (independent audit convention, incl. the fix-revert).
+
+### Row 12 mutation-form clarification (added 2026-09-06, docs-only)
+
+Row 12's mutation cell ("unconditional retention claim (historical M04-a)")
+describes the **cruder constant-claim form** actually applied
+(`const retention = 'the journal is retained as a superseded marker'`
+unconditionally → 3 failures: L7 branches 3/2/4). The **exact-historical**
+M04-a form (the ownership-conditioned ternary, recovered via
+`git show 491fea9`) yields **4 failures** — L7 branch 3, L7 branch 4, the L5
+race cell, and the L6 boundary duplicate pin — and leaves branch 2 passing
+(its historical phrase is identical to the modern branch-2 phrase). The catch
+surface is robust either way (fresh re-audit reports 13 §2 / 20 M11); the
+committed wording is corrected here for record accuracy only. No count or
+verdict changes: row 12 remains a caught semantic mutation.
+

@@ -72,6 +72,14 @@ zero digest-value changes → zero test churn.
 | item-cap 200 items / 134.1k | 460.3 µs → 0.0 µs | 1,401 ms → 0.74 ms |
 | char-heavy 235 items / 244.9k | 723.9 µs → 0.0 µs | 2,266 ms → 0.76 ms |
 
+> **Attribution note (added 2026-09-06, docs-only — fresh re-audit report 21 §4):**
+> the sub-millisecond 3,000-citation-loop AFTER figures (0.74–0.76 ms) are
+> **best-case citation-id distributions** (`records.find` depth ≈ 1). Under a
+> cycling id distribution the AFTER loop measures ≈ 7.5 ms, bounded by the
+> untouched `active.records.find` scan (`evidence.ts`). The digest-path
+> elimination (~8,000×) and the order-of-magnitude loop improvement (~340×)
+> stand; the sub-ms figure is not a general bound.
+
 - resolveCitation per call: 480–727 µs → 0.2–0.7 µs (digest share now ~0);
   ceiling-response digest cost eliminated (~2,000× on the digest path).
 - Node 22 (v22.23.2): identical shape — digest 0.0 µs, loop ≤ ~2 ms.
