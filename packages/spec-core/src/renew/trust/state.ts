@@ -534,29 +534,47 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       // and B's completion will remove the last authority — performed>0 then
       // means our bytes may sit over B's commit with NO surviving evidence.
       // The sidecar (a separate path) fail-closes reads past B's removal.
+      let sidecar: MarkerWriteOutcome | undefined;
       if (performed > 0 && !ours && journalOnDisk(projectDir, paths) !== undefined) {
-        writeAbortEvidence(projectDir, journal, performed);
+        sidecar = writeAbortEvidence(projectDir, journal, performed);
       }
       // The marker is evidence ONLY over our own journal (or an empty path);
       // a foreign journal belongs to the concurrent writer and stays theirs.
+      let marker: MarkerWriteOutcome | undefined;
       if (ours || journalOnDisk(projectDir, paths) === undefined) {
-        const supersededJournal: TxJournalFile = { ...journal, superseded: true };
-        supersededJournal.integrity = txJournalIntegrity(supersededJournal);
-        for (let attempt = 1; attempt <= 3; attempt += 1) {
-          try {
-            persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
-            break;
-          } catch {
-            // transient fault — retry (bounded); the typed refusal remains otherwise
-          }
-        }
+        marker = markJournalSuperseded(projectDir, paths, journal);
       }
+      // S5-M-04: the typed abort must tell the truth about what is (and is
+      // NOT) durably on disk — a persistently failing evidence channel is
+      // disclosed, never silently absorbed.
+      const disclosures: string[] = [];
+      if (sidecar !== undefined && !sidecar.landed) {
+        disclosures.push(
+          `PERSISTENT abort-evidence failure: the abort evidence could NOT be written after ${sidecar.attempts} attempts — ` +
+            `NO durable marker of this abort exists on disk; manually inspect the trusted state against both writers before any re-run`,
+        );
+      }
+      if (marker !== undefined && !marker.landed) {
+        disclosures.push(
+          `PERSISTENT superseded-marker failure: the journal path could NOT be marked superseded after ${marker.attempts} attempts — ` +
+            `the stale journal may auto-retire on the next trusted read; manually inspect the trusted state before any re-run`,
+        );
+      }
+      const retention =
+        marker !== undefined && marker.landed
+          ? 'the journal is retained as a superseded marker'
+          : sidecar !== undefined && sidecar.landed
+            ? 'the concurrent writer owns the journal path (abort evidence retained separately)'
+            : marker !== undefined || sidecar !== undefined
+              ? 'NO durable evidence of this abort could be retained'
+              : 'no in-flight writes were performed (nothing to evidence)';
       throw new TrustStateError(
         'recovery_required',
         `trusted-state commit failed (${cause.message}) AND the revision advanced past this commit's base — ` +
           `a concurrent writer committed. On-disk state may combine both writers; ` +
-          `${ours ? 'the journal is retained as a superseded marker' : journalOnDisk(projectDir, paths) !== undefined ? 'the concurrent writer owns the journal path (abort evidence retained separately)' : 'a superseded marker is retained on the journal path'}; ` +
-          `inspect the state after review before re-running.`,
+          `${retention}; ` +
+          `inspect the state after review before re-running.` +
+          (disclosures.length > 0 ? ` CRITICAL: ${disclosures.join(' · ')}.` : ''),
       );
     }
 
@@ -566,12 +584,17 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       // zombie byte we may already have landed cannot be unsafely rewritten
       // here; leave fail-closed evidence and let review/their-recovery decide.
       if (activeJournalDir === projectDir) activeJournalDir = null;
-      if (performed > 0) writeAbortEvidence(projectDir, journal, performed);
+      const sidecar = performed > 0 ? writeAbortEvidence(projectDir, journal, performed) : undefined;
+      const disclosure =
+        sidecar !== undefined && !sidecar.landed
+          ? ` CRITICAL: PERSISTENT abort-evidence failure: the abort evidence could NOT be written after ${sidecar.attempts} attempts — ` +
+            `NO durable marker of this abort exists on disk; manually inspect the trusted state against both writers before any re-run.`
+          : '';
       throw new TrustStateError(
         'recovery_required',
         `trusted-state commit aborted (${cause.message}) while another writer owns the transaction journal — ` +
           `this commit's partial writes are left to be superseded by the concurrent commit or its recovery; ` +
-          `inspect the state after review before re-running.`,
+          `inspect the state after review before re-running.${disclosure}`,
       );
     }
 
@@ -624,13 +647,20 @@ function abortEvidencePath(projectDir: string): string {
   return join(renewalPaths(projectDir).journal, '..', 'tx-abort-evidence.json');
 }
 
+/** Typed outcome of a best-effort durable-marker write (S5-M-04): the
+ *  caller MUST know when the marker did NOT land so the typed abort can
+ *  disclose the evidence channel is down — never claim retention that
+ *  physics did not permit. */
+type MarkerWriteOutcome = { landed: true } | { landed: false; attempts: 3 };
+
 /** Bounded-retry sidecar write (closing-verify hardening): the evidence
  *  channel must survive a TRANSIENT single I/O fault at exactly this write
  *  (ENOSPC/EIO blip) — three attempts with fresh staging each time. A
- *  PERSISTENT write-selective fault that blocks only this file while
- *  permitting every other trusted write is the documented residual (same
- *  physics-limited class as the journal write itself). */
-function writeAbortEvidence(projectDir: string, journal: TxJournalFile, performed: number): void {
+ *  PERSISTENT fault is REPORTED to the caller (S5-M-04): under total
+ *  persistent failure no durable marker is physically possible through this
+ *  channel — the honest representation is the typed disclosure in the abort
+ *  error, not a silent void. */
+function writeAbortEvidence(projectDir: string, journal: TxJournalFile, performed: number): MarkerWriteOutcome {
   const value = {
     schema_version: 1,
     holder: journal.holder,
@@ -643,12 +673,31 @@ function writeAbortEvidence(projectDir: string, journal: TxJournalFile, performe
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       persistTrustedJson({ projectDir, path: abortEvidencePath(projectDir), value });
-      return;
+      return { landed: true };
     } catch {
-      // transient fault — retry with fresh staging; after the final attempt
-      // the typed refusal (and the process-level abort signal) is what remains
+      // transient fault — retry with fresh staging; a PERSISTENT fault is
+      // typed and disclosed by the caller below (S5-M-04).
     }
   }
+  return { landed: false, attempts: 3 };
+}
+
+/** Bounded-retry superseded-marker write on the journal path (S5-M-04):
+ *  same class as the sidecar — when this write persistently fails, the
+ *  stale journal may auto-retire on the next trusted read; the abort must
+ *  say so instead of claiming the marker was retained. */
+function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof renewalPaths>, journal: TxJournalFile): MarkerWriteOutcome {
+  const supersededJournal: TxJournalFile = { ...journal, superseded: true };
+  supersededJournal.integrity = txJournalIntegrity(supersededJournal);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
+      return { landed: true };
+    } catch {
+      // transient fault — retry (bounded); persistent failure is typed
+    }
+  }
+  return { landed: false, attempts: 3 };
 }
 
 /** Read the journal currently on disk (undefined when absent/unparseable). */
