@@ -1854,3 +1854,246 @@ describe('S5-H-01: post-commit journal recovery — the journal↔revision join'
     expect(final.strategy.store.strategy).toBe('strangler'); // human authority survived everything
   });
 });
+
+// ---------------------------------------------------------------------------
+// Post-PR5 L7 (RF1): the retention clause of the recovery_required abort
+// message is a FUNCTION OF THE MARKER-WRITE OUTCOMES. The S5-M-04 matrix pins
+// the disclosure sentences; these four cells pin every retention branch —
+// under the historical "unconditional retention claim" mutation, cell A's
+// negative assertion fails (the message would simultaneously claim retention
+// and disclose that NO durable marker exists).
+// ---------------------------------------------------------------------------
+describe('L7: retention-clause truthfulness (all four branches pinned)', () => {
+  function foreignJournalCommit(paths: ReturnType<typeof renewalPaths>, baseRevision: number) {
+    const bHolder = { pid: -777001, acquiredAt: '2026-09-03T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: baseRevision, holder: bHolder, entries: bEntries });
+    return {
+      holder: bHolder,
+      commit: () => {
+        writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: baseRevision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`);
+        writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: baseRevision + 1 }, null, 2));
+      },
+    };
+  }
+
+  async function driveTx(project: string, beginRevision: number, snapshotId: string) {
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId, revision: beginRevision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    return rejection!;
+  }
+
+  it('branch 3 — persistent evidence failure + foreign journal: NO retention claim, truthful nothing-retained state', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const foreign = foreignJournalCommit(paths, begin.identity.revision);
+    const evFault = { hookArmed: true, evidenceFailures: 3, evidenceWrites: 0 };
+    (globalThis as { __txEvidenceFault?: typeof evFault }).__txEvidenceFault = evFault;
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: { onWrite: 2, only: true, commit: foreign.commit },
+    };
+    try {
+      const rejection = await driveTx(project, begin.identity.revision, begin.identity.snapshotId);
+      expect(evFault.evidenceWrites).toBe(3); // every bounded attempt failed
+      // LOAD-BEARING NEGATIVE: nothing landed — claiming superseded-marker
+      // retention here would be false (this is the line the pre-fix mutation
+      // slipped past 85 tests with).
+      expect(rejection.message).not.toMatch(/journal is retained as a superseded marker/i);
+      expect(rejection.message).toMatch(/NO durable evidence of this abort could be retained/i);
+      expect(rejection.message).toMatch(/CRITICAL: PERSISTENT abort-evidence failure/i);
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txEvidenceFault?: unknown }).__txEvidenceFault;
+    }
+  });
+
+  it('branch 1 — marker landed over our own journal: retention claim TRUE, no CRITICAL', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      // revision moves but the journal path keeps OUR journal — the marker
+      // write targets our own journal and lands.
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: begin.identity.revision + 1 }, null, 2));
+        },
+      },
+    };
+    try {
+      const rejection = await driveTx(project, begin.identity.revision, begin.identity.snapshotId);
+      expect(rejection.message).toMatch(/journal is retained as a superseded marker/i);
+      expect(rejection.message).not.toMatch(/CRITICAL/i);
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+  });
+
+  it('branch 2 — foreign journal + sidecar landed: retention attributed to the separate evidence channel', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const foreign = foreignJournalCommit(paths, begin.identity.revision);
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: { onWrite: 2, only: true, commit: foreign.commit },
+    };
+    try {
+      const rejection = await driveTx(project, begin.identity.revision, begin.identity.snapshotId);
+      expect(rejection.message).toMatch(/concurrent writer owns the journal path \(abort evidence retained separately\)/i);
+      expect(rejection.message).not.toMatch(/journal is retained as a superseded marker/i);
+      expect(existsSync(join(paths.journal, '..', 'tx-abort-evidence.json'))).toBe(true);
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+  });
+
+  it('branch 4 — performed==0 with a foreign live journal: nothing-to-evidence truth', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const foreign = foreignJournalCommit(paths, begin.identity.revision);
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      // The FIRST store write (write #2) interleaves: the concurrent writer
+      // consumes our journal and commits — then OUR write FAILS. Nothing was
+      // performed (the increment happens only after a successful write), so
+      // neither evidence channel is attempted and the message says exactly
+      // that.
+      interleaveAndFail: { onWrite: 2, only: false, commit: foreign.commit },
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+    }
+    expect(rejection).toBeDefined();
+    expect(rejection!.code).toBe('recovery_required');
+    expect(rejection!.message).toMatch(/no in-flight writes were performed \(nothing to evidence\)/i);
+    expect(existsSync(join(paths.journal, '..', 'tx-abort-evidence.json'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-PR5 I5 (RC2): read-side taxonomy at the abort-evidence path. A foreign
+// object fail-closes reads exactly like a genuine sidecar, but the two states
+// must be DIAGNOSTICALLY distinct — an unexpected object is not an abort
+// narrative, and the abort-side disclosure must not imply the path is empty.
+// ---------------------------------------------------------------------------
+describe('I5: foreign-object diagnostics at the abort-evidence path', () => {
+  const GENUINE = {
+    schema_version: 1,
+    holder: { pid: -777003, acquiredAt: '2026-09-03T00:00:00Z' },
+    base_revision: 1,
+    performed_steps: 2,
+    evidence: 'a transaction aborted while another writer owned the journal path; in-flight bytes may have landed over the concurrent commit',
+    written_at: '2026-09-03T00:00:03Z',
+    remedy: 'inspect the trusted state against both writers, then remove tx-abort-evidence.json',
+  };
+
+  function parkAndRead(project: string, content: string | null): Error & { code?: string } {
+    const evidencePath = join(renewalPaths(project).journal, '..', 'tx-abort-evidence.json');
+    if (content === null) writeFileSync(evidencePath, '');
+    else writeFileSync(evidencePath, content);
+    try {
+      readRevision(project);
+    } catch (e) {
+      return e as Error & { code?: string };
+    }
+    throw new Error('readRevision must fail-close when the evidence path is occupied');
+  }
+
+  it('foreign garbage / wrong-shape JSON / empty file: distinguishable FOREIGN refusal, still recovery_required', async () => {
+    const { project } = await freshProject();
+    for (const [label, content] of [
+      ['garbage', 'not json at all'],
+      ['wrong shape', JSON.stringify({ hello: 'world' })],
+      ['empty file', null],
+    ] as [string, string | null][]) {
+      const err = parkAndRead(project, content);
+      expect(err.code, label).toBe('recovery_required');
+      expect(err.message, label).toMatch(/unexpected object occupies the abort-evidence path/i);
+      expect(err.message, label).toMatch(/not a transaction-abort marker/i);
+      expect(err.message, label).not.toMatch(/a transaction aborted with in-flight writes/i);
+    }
+  });
+
+  it('an oversized object is foreign without being read (size guard)', async () => {
+    const { project } = await freshProject();
+    const err = parkAndRead(project, JSON.stringify({ ...GENUINE, padding: 'x'.repeat(65 * 1024) }));
+    expect(err.code).toBe('recovery_required');
+    expect(err.message).toMatch(/unexpected object occupies the abort-evidence path/i);
+  });
+
+  it('a GENUINE sidecar keeps the abort-narrative message (taxonomies do not swallow the real case)', async () => {
+    const { project } = await freshProject();
+    const err = parkAndRead(project, JSON.stringify(GENUINE));
+    expect(err.code).toBe('recovery_required');
+    expect(err.message).toMatch(/a transaction aborted with in-flight writes while a concurrent writer owned the journal/i);
+    expect(err.message).not.toMatch(/unexpected object/i);
+  });
+
+  it('branch-3 abort disclosure names the evidence path and the pre-existing-object caveat (abort side)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const bHolder = { pid: -777004, acquiredAt: '2026-09-03T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+    const evFault = { hookArmed: true, evidenceFailures: 3, evidenceWrites: 0 };
+    (globalThis as { __txEvidenceFault?: typeof evFault }).__txEvidenceFault = evFault;
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`);
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: begin.identity.revision + 1 }, null, 2));
+        },
+      },
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txEvidenceFault?: unknown }).__txEvidenceFault;
+    }
+    expect(rejection!.code).toBe('recovery_required');
+    expect(rejection!.message).toMatch(/could NOT be written to .*tx-abort-evidence\.json/i);
+    expect(rejection!.message).toMatch(/any pre-existing object at that path still fail-closes reads/i);
+  });
+});

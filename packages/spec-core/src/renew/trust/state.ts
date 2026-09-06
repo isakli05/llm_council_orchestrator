@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireSpecRootLock, type SpecRootLock } from '../../storage/revision';
 import { tryRealpath } from '../../storage/paths';
@@ -87,17 +87,58 @@ export interface ActiveRenewalState {
   specExists: boolean;
 }
 
+/** Post-PR5 I5: classify what occupies the abort-evidence path. A GENUINE
+ *  sidecar (the exact shape `writeAbortEvidence` persists) and a foreign
+ *  object BOTH fail-close reads, but the diagnostic must say which one is
+ *  there — an unexpected object must not read as a transaction-abort
+ *  narrative. The read is size-guarded (64 KiB) and never TRUSTS the
+ *  content: every non-genuine shape (unparseable, wrong shape, oversized,
+ *  unreadable) is foreign, and the caller stays fail-closed either way. */
+function foreignObjectAtEvidencePath(projectDir: string): { foreign: boolean; path: string } {
+  const path = abortEvidencePath(projectDir);
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > 64 * 1024) return { foreign: true, path };
+    const parsed = JSON.parse(authorizedRead({ projectDir, path })) as Record<string, unknown>;
+    const genuine =
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      parsed.schema_version === 1 &&
+      typeof parsed.holder === 'object' &&
+      parsed.holder !== null &&
+      typeof parsed.base_revision === 'number' &&
+      typeof parsed.performed_steps === 'number' &&
+      typeof parsed.evidence === 'string' &&
+      typeof parsed.written_at === 'string' &&
+      typeof parsed.remedy === 'string';
+    return { foreign: !genuine, path };
+  } catch {
+    return { foreign: true, path };
+  }
+}
+
 /** Read + parse state.json — the FIRST trusted read (corrupt fails closed).
  *  Exported for the domain wrapper (project.readStateRevision).
  *  S4-H-01: a leftover transaction journal is detected HERE (the first
- *  trusted read) and deterministically recovered — see recoverTxJournal. */
+ *  trusted read) and deterministically recovered — see recoverTxJournal.
+ *  Post-PR5 I5: a foreign object at the evidence path gets a distinguishable
+ *  typed refusal — same recovery_required fail-closed direction, honest
+ *  about what is actually on disk. */
 export function readRevision(projectDir: string): number {
   const paths = renewalPaths(projectDir);
   if (existsSync(abortEvidencePath(projectDir))) {
+    const { foreign, path } = foreignObjectAtEvidencePath(projectDir);
+    if (foreign) {
+      throw new TrustStateError(
+        'recovery_required',
+        `an unexpected object occupies the abort-evidence path (${path}) — it fail-closes trusted reads but is ` +
+          `not a transaction-abort marker; inspect and remove it after review; recovery refuses to guess`,
+      );
+    }
     throw new TrustStateError(
       'recovery_required',
       `a transaction aborted with in-flight writes while a concurrent writer owned the journal ` +
-        `(${abortEvidencePath(projectDir)}) — the on-disk state may combine both writers. Inspect the trusted ` +
+        `(${path}) — the on-disk state may combine both writers. Inspect the trusted ` +
         `state after review, then remove the evidence file; recovery refuses to guess`,
     );
   }
@@ -550,8 +591,10 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       const disclosures: string[] = [];
       if (sidecar !== undefined && !sidecar.landed) {
         disclosures.push(
-          `PERSISTENT abort-evidence failure: the abort evidence could NOT be written after ${sidecar.attempts} attempts — ` +
-            `NO durable marker of this abort exists on disk; manually inspect the trusted state against both writers before any re-run`,
+          `PERSISTENT abort-evidence failure: the abort evidence could NOT be written to ${abortEvidencePath(projectDir)} ` +
+            `after ${sidecar.attempts} attempts — NO durable marker of this abort exists on disk ` +
+            `(any pre-existing object at that path still fail-closes reads, but is not evidence of this abort); ` +
+            `manually inspect the trusted state against both writers before any re-run`,
         );
       }
       if (marker !== undefined && !marker.landed) {
@@ -587,8 +630,10 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       const sidecar = performed > 0 ? writeAbortEvidence(projectDir, journal, performed) : undefined;
       const disclosure =
         sidecar !== undefined && !sidecar.landed
-          ? ` CRITICAL: PERSISTENT abort-evidence failure: the abort evidence could NOT be written after ${sidecar.attempts} attempts — ` +
-            `NO durable marker of this abort exists on disk; manually inspect the trusted state against both writers before any re-run.`
+          ? ` CRITICAL: PERSISTENT abort-evidence failure: the abort evidence could NOT be written to ${abortEvidencePath(projectDir)} ` +
+            `after ${sidecar.attempts} attempts — NO durable marker of this abort exists on disk ` +
+            `(any pre-existing object at that path still fail-closes reads, but is not evidence of this abort); ` +
+            `manually inspect the trusted state against both writers before any re-run.`
           : '';
       throw new TrustStateError(
         'recovery_required',
