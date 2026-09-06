@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { RenewCapabilities } from '../../cli/commands/renew';
 import { StaticGraphProvider } from '../intel/fixture-provider';
 import { parseGraphText } from '../intel/graph-reader';
@@ -83,6 +83,16 @@ vi.mock('./fs', async (importOriginal) => {
       }
       // closing-verify arm: transient single-fault on the ABORT-EVIDENCE write
       const evFault = (globalThis as { __txEvidenceFault?: { hookArmed: boolean; evidenceFailures: number; evidenceWrites: number } }).__txEvidenceFault;
+      // S2a (pre-v0.2.1) window: park a FOREIGN journal AFTER the revision
+      // write lands but BEFORE the commit-cleanup removeJournal — pins that
+      // the success-path cleanup is ownership-conditioned (NH-1/NH-2).
+      const park = (globalThis as { __txPostStatePark?: { armed: boolean; bytes?: string; fired?: boolean } }).__txPostStatePark;
+      if (park !== undefined && park.armed && !park.fired && args.path.endsWith('state.json')) {
+        park.fired = true;
+        const written = actual.authorizedWrite(args);
+        if (park.bytes !== undefined) writeFileSync(join(dirname(args.path), 'tx-journal.json'), park.bytes);
+        return written;
+      }
       if (evFault !== undefined && evFault.hookArmed && args.path.endsWith('tx-abort-evidence.json')) {
         evFault.evidenceWrites += 1;
         if (evFault.evidenceFailures >= evFault.evidenceWrites) {
@@ -2564,6 +2574,47 @@ describe('pre-v0.2.1: cleanup-failure typing, debris attribution, landed-commit 
     // …and a fresh reader fails CLOSED on it (typed unreadable-journal
     // refusal — never interprets debris as authority).
     expect(() => readRevision(project)).toThrow(/journal is unreadable/i);
+  });
+
+  it('S2a (ownership conditioning): a racer journal that replaced ours BEFORE the commit-cleanup read is PRESERVED — our success path never deletes another writer\'s authority', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const bHolder = { pid: -777011, acquiredAt: '2026-09-06T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+    const racerBytes = `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`;
+    // OUR commit completes; between the revision write landing and the
+    // commit-cleanup removeJournal, the racer's journal replaces ours.
+    (globalThis as { __txPostStatePark?: { armed: boolean; bytes: string } }).__txPostStatePark = {
+      armed: true,
+      bytes: racerBytes,
+    };
+    let failure: unknown;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-06T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      failure = e;
+    } finally {
+      delete (globalThis as { __txPostStatePark?: unknown }).__txPostStatePark;
+    }
+    // our own commit SUCCEEDED — the ownership-conditioned cleanup quietly
+    // left the racer's journal alone (removing it would destroy the racer's
+    // rollback authority — the exact NH-1/NH-2 hazard).
+    expect(failure).toBeUndefined();
+    expect(readFileSync(paths.journal, 'utf8')).toBe(racerBytes); // PRESERVED byte-identically
+    expect(JSON.parse(readFileSync(paths.state, 'utf8')).revision).toBe(begin.identity.revision + 1);
+    // fresh reader: the racer's journal (base R) at revision R+1 → C>B RETIRE
+    // — deterministic recovery, committed authority intact
+    expect(readRevision(project)).toBe(begin.identity.revision + 1);
+    expect(existsSync(paths.journal)).toBe(false);
   });
 
   it('S10 (E-2 accepted boundary): an out-of-protocol racer landing in the read→unlink window IS unlinked — pinned deterministically; committed authority stands', async () => {
