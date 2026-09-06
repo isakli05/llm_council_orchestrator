@@ -63,14 +63,29 @@ single-threaded JS; WeakMap adds no shared mutable state.
 Blast radius: no test pins a literal LCO:PAID_CONTEXT digest (all relational) →
 zero digest-value changes → zero test churn.
 
-## 5. AFTER-metrics acceptance criteria (required before closure)
+## 5. AFTER-metrics (measured at implementation commit, node v24.14.0 + v22.23.2)
 
-- Identical digest values across all existing fixtures (evidence.test.ts +
-  composition.test.ts unchanged-green).
-- Per-citation resolveCitation @213 items: ~480 µs → ~10–15 µs; 3,000-citation
-  loop: ~1.5 s → <100 ms (remainder dominated by verifyAnchor disk ~290 ms).
-- tamper-repro steps 1–8 still PASS (esp. 8b naive-shape prohibition, 8c detection).
-- Re-run benchmark on Node 22 before merge (program requirement).
+| config | contextBundleDigest before → after | 3,000-citation loop before → after |
+|---|---|---|
+| typical 20 items / 16.2k chars | 64.3 µs → 0.1 µs | 194 ms → ~1 ms |
+| representative 213 items / 135.8k | 473.3 µs → 0.0 µs (WeakMap hit) | 1,508 ms → ~1 ms |
+| item-cap 200 items / 134.1k | 460.3 µs → 0.0 µs | 1,401 ms → 0.74 ms |
+| char-heavy 235 items / 244.9k | 723.9 µs → 0.0 µs | 2,266 ms → 0.76 ms |
+
+- resolveCitation per call: 480–727 µs → 0.2–0.7 µs (digest share now ~0);
+  ceiling-response digest cost eliminated (~2,000× on the digest path).
+- Node 22 (v22.23.2): identical shape — digest 0.0 µs, loop ≤ ~2 ms.
+- Identity equivalence: all 55 tests green across evidence/composition/
+  cross-primitive-closure (no digest-value change; no literal pins existed).
+- Tamper repro: all load-bearing checks PASS (1–5, 7, 8a–8d), including the
+  explicit "seal-time-only cache does NOT mask thawed tampering" (8c) and the
+  naive-shape hazard demonstration (8b). One probe check (6a) fails by its
+  own construction: check 3 deliberately mutates the shared items array and
+  6a then re-seals that mutated array while expecting an unchanged digest —
+  the mutated label is model-visible content that S5-M-01 REQUIRES to change
+  the identity. Verified empirically: fresh identical inputs seal to equal
+  digests; mutated-between-seals inputs correctly differ. Probe artifact,
+  not a regression.
 
 ## 6. Tests
 

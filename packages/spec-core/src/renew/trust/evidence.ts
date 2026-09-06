@@ -101,6 +101,18 @@ export interface SealedContext {
   items: readonly ContextItem[];
 }
 
+/**
+ * Post-PR5 I4: memoized digest of SEALED bundles, keyed by reference.
+ * Written ONLY inside `sealContextBundle` after the final freeze — a sealed
+ * bundle is deep-frozen, so a cached digest can never go stale. Anything
+ * else (a tampered copy, a hand-built lookalike, a JSON-round-tripped thawed
+ * bundle) is a different reference and takes the FULL recompute path, so
+ * tamper detection is structurally preserved. NEVER cache on read: a naive
+ * read-side cache would mask post-cache mutation of a thawed bundle riding a
+ * stolen identity (demonstrated during investigation — forbidden shape).
+ */
+const bundleDigestCache = new WeakMap<SealedContext, `sha256:${string}`>();
+
 /** One server-owned supplied slice — the rendered text IS the authority. */
 export interface SuppliedContextSlice {
   path: string;
@@ -211,7 +223,7 @@ export function sealContextBundle(args: {
   const frozenItems: ContextItem[] = args.items.map((item) => deepFreezeItem(structuredClone(item)));
   const bundle_id = domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base, frozenItems));
   const records: ContextRecord[] = base.map((r) => Object.freeze({ ...r, bundle_id }));
-  return Object.freeze({
+  const sealed: SealedContext = Object.freeze({
     identity: Object.freeze({
       schema_version: 2 as const,
       project_name: args.projectName,
@@ -222,6 +234,10 @@ export function sealContextBundle(args: {
     records: Object.freeze(records),
     items: Object.freeze(frozenItems),
   });
+  // Post-freeze, post-freeze-only write (I4): the reference-keyed cache entry
+  // for THIS sealed instance — never on read, never for any other object.
+  bundleDigestCache.set(sealed, bundle_id);
+  return sealed;
 }
 
 /** Deep-freeze one cloned item (S5-M-01: the sealed items are immutable). */
@@ -242,6 +258,13 @@ function deepFreezeItem<T>(value: T): T {
  * the identity's bundle_id.
  */
 export function contextBundleDigest(bundle: SealedContext): `sha256:${string}` {
+  // Sealed instances resolve in O(1) from the seal-time cache (per-citation
+  // recomputation previously cost ~0.5–0.7 ms each at scale — ~1.5 s per
+  // 3,000-citation ceiling response). Miss = anything not produced by
+  // sealContextBundle: recompute fully and DO NOT store (keeps tampered
+  // lookalikes on the honest path).
+  const cached = bundleDigestCache.get(bundle);
+  if (cached !== undefined) return cached;
   return domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload(bundle.identity, bundle.records, bundle.items));
 }
 
