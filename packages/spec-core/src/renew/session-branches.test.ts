@@ -161,6 +161,7 @@ describe('pipeline: staleness during the RETRY call also blocks (C-10 second bra
           file_line_count: i.file_line_count ?? i.end_line,
           ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
         })),
+      items: bundle.items,
     });
 
   it('first response invalid + source mutates before the retry → blocked_stale with retry_used', async () => {

@@ -130,6 +130,7 @@ describe('Composition B — EvidenceCitation + AuthorityGrant', () => {
           file_line_count: 200,
         },
       ],
+      items: [],
     });
     const citation = resolveCitation(ctx, { context_id: 'CTX-0001' });
     expect(citation.scope).toBe('range'); // provenance resolved…
@@ -190,6 +191,7 @@ describe('Composition C — EvidenceCitation + Planner policy', () => {
           file_line_count: 8,
         },
       ],
+      items: [],
     });
     const c = resolveCitation(ctx, { context_id: 'CTX-0001' });
     expect(c.scope).toBe('whole_file');

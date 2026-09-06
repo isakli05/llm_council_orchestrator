@@ -74,8 +74,9 @@ describe('pipeline usage and persist arms', () => {
           file_line_count: i.file_line_count ?? i.end_line,
           ...(i.node_id !== undefined ? { node_id: i.node_id } : {}),
         })),
+      items: bundle.items,
     });
-  const depsFor = (adapter: LlmAdapter, target: string, persist: (r: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string }, context = sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', slices: [] })) => ({
+  const depsFor = (adapter: LlmAdapter, target: string, persist: (r: AnalysisRecord) => { ok: true } | { ok: false; code: string; message: string }, context = sealContextBundle({ projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', slices: [], items: [] })) => ({
     llm: singleRoutePlan(adapter, { gateway: 'g', providerKind: 'openai-compatible', requestedModel: 'm' }),
     nowIso: 't',
     targetRoot: target,
@@ -118,9 +119,10 @@ describe('pipeline usage and persist arms', () => {
   it('persist failure during a BLOCKED-SCHEMA run surfaces persist_failed (nothing silently lost)', async () => {
     const { target, hash } = setupTarget();
     const alwaysBad: LlmAdapter = { complete: async () => ({ text: 'garbage' }) };
+    const bundle = bundleOf(hash);
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
-      depsFor(alwaysBad, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' })),
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
+      depsFor(alwaysBad, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' }), sealedFor(bundle)),
     );
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
@@ -139,9 +141,10 @@ describe('pipeline usage and persist arms', () => {
     expect(o1.ok).toBe(false);
     if (!o1.ok) expect(o1.code).toBe('persist_failed');
     // Empty output over a non-empty context → blocked_empty path.
+    const bundle = bundleOf(hash);
     const o2 = await runRecovery(
-      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
-      depsFor(empty, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' })),
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
+      depsFor(empty, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' }), sealedFor(bundle)),
     );
     expect(o2.ok).toBe(false);
     if (!o2.ok) expect(o2.code).toBe('persist_failed');
@@ -150,10 +153,11 @@ describe('pipeline usage and persist arms', () => {
   it('persist failure during BLOCKED-STALE surfaces persist_failed', async () => {
     const { target, hash } = setupTarget();
     const adapter: LlmAdapter = { complete: async () => ({ text: JSON.stringify({ hypotheses: [], uncertainties: [], coverage_notes: [] }) }) };
+    const bundle = bundleOf(hash);
     const outcome = await runRecovery(
-      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
+      { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
       {
-        ...depsFor(adapter, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' })),
+        ...depsFor(adapter, target, () => ({ ok: false as const, code: 'already_exists' as const, message: 'exists' }), sealedFor(bundle)),
         recheckFreshness: () => ({ ok: false as const, reasons: ['file_changed'] }),
       },
     );
@@ -169,10 +173,11 @@ describe('pipeline usage and persist arms', () => {
     const responses = ['garbage', 'also-garbage'];
     let i = 0;
     const adapter: LlmAdapter = { complete: async () => ({ text: responses[i++] ?? 'x' }) };
+    const bundle = bundleOf(hash);
     await expect(
       runRecovery(
-        { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle: bundleOf(hash) },
-        { ...depsFor(adapter, target, () => ({ ok: true as const })), budget: ledger },
+        { analysisId: 'AN-0001', projectName: 'legacy-renewal', snapshotId: 'RSN-deadbeefdeadbeef', scope: {}, bundle },
+        { ...depsFor(adapter, target, () => ({ ok: true as const }), sealedFor(bundle)), budget: ledger },
       ),
     ).rejects.toThrow(/BUDGET_EXCEEDED/);
   });

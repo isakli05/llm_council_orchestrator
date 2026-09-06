@@ -94,6 +94,7 @@ describe('buildRecoveryPrompt (untrusted-data delimiting)', () => {
           file_line_count: 60,
         },
       ],
+      items: bundle.items,
     }).records;
     const withRecords = buildRecoveryPrompt({ scope: bundle.scope, bundle, nowIso: '2026-09-02T00:00:00Z', contextRecords: records });
     expect(withRecords).toMatch(/CITABLE CONTEXTS \(context_id → path, supplied line window, whole-file hash\)/);
