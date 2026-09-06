@@ -75,6 +75,17 @@ async function settle(ms = 60): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+// post-PR5 I7 idiom (app.test.ts): poll for the OBSERVABLE state instead of
+// sleeping past a real round-trip / poll cycle.
+async function waitFor(fn: () => Element | null, tries = 40): Promise<Element | null> {
+  for (let i = 0; i < tries; i++) {
+    const found = fn();
+    if (found !== null) return found;
+    await settle(30);
+  }
+  return fn();
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'lco-app2-'));
   document.body.replaceChildren();
@@ -106,11 +117,13 @@ describe('app busy/poll path', () => {
     (window as unknown as { fetch: typeof fetch }).fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
       REAL_FETCH(typeof input === 'string' && input.startsWith('/') ? `${origin}${input}` : input, init)) as typeof fetch;
     window.location.hash = `#${handle.token}`;
-    await boot(); // the initial round is still in flight
-    await settle(30);
+    await boot(); // the initial round is still in flight — the busy screen
+    // renders synchronously inside the awaited boot (no window to sleep past)
     expect(document.querySelector('.busy')?.getAttribute('aria-busy')).toBe('true');
-    await settle(1400); // poll cadence is 900ms
-    expect(document.querySelector('fieldset legend')?.textContent).toContain('Who?');
+    // the 900ms poll cycle lands on the questions — await the OBSERVABLE
+    // state (bounded past one poll + the 150ms slow adapter), not 1400ms
+    const legend = await waitFor(() => document.querySelector('fieldset legend'), 130);
+    expect(legend?.textContent).toContain('Who?');
   }, 15000);
 });
 
@@ -118,7 +131,6 @@ describe('app error paths', () => {
   it('no token anywhere → the expired-link screen, no server call', async () => {
     await startWorkspace([blockedJson()]);
     await boot();
-    await settle(40);
     expect(document.querySelector('h2')?.textContent).toContain('no longer valid');
   });
 
@@ -128,7 +140,6 @@ describe('app error paths', () => {
     }) as typeof fetch;
     window.location.hash = '#tok';
     await boot();
-    await settle(40);
     expect(document.querySelector('h2')?.textContent).toContain('Cannot reach');
     const retry = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Try again') as HTMLButtonElement;
     expect(retry).toBeTruthy();
@@ -138,21 +149,17 @@ describe('app error paths', () => {
     await startWorkspace([blockedJson()]);
     window.location.hash = `#${handle.token}`;
     await boot();
-    await settle(120);
     const submit = [...document.querySelectorAll('button')].find((b) => /Submit/.test(b.textContent ?? '')) as HTMLButtonElement;
     expect(submit.disabled).toBe(true); // nothing drafted: cannot even submit
     // draft an INVALID other (too short), then submit
     const other = document.getElementById('other-DEC-0004') as HTMLInputElement;
     other.checked = true;
     other.dispatchEvent(new Event('change', { bubbles: true }));
-    await settle(20);
     const area = document.getElementById('other-text-DEC-0004') as HTMLTextAreaElement;
     area.value = 'short';
     area.dispatchEvent(new Event('input', { bubbles: true }));
-    await settle(20);
     const submit2 = [...document.querySelectorAll('button')].find((b) => /Submit 1 answer/.test(b.textContent ?? '')) as HTMLButtonElement;
     submit2.click();
-    await settle(40);
     expect(document.querySelector('ul.errors')).not.toBeNull();
     expect(document.querySelector('ul.errors')?.getAttribute('role')).toBe('alert');
   });
@@ -167,12 +174,9 @@ describe('app error paths', () => {
       REAL_FETCH(typeof input === 'string' && input.startsWith('/') ? `${origin}${input}` : input, init)) as typeof fetch;
     window.location.hash = `#${handle.token}`;
     await boot();
-    await settle(100);
     (document.querySelector('.btn.approve') as HTMLButtonElement).click();
-    await settle(30);
     const notYet = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Not yet') as HTMLButtonElement;
     notYet.click();
-    await settle(30);
     // still in review, not approved, nothing written
     expect(document.querySelector('.approved-banner')).toBeNull();
     expect(document.querySelector('.review-title')).not.toBeNull();
@@ -183,11 +187,11 @@ describe('app error paths', () => {
     await startWorkspace([blockedJson()]);
     window.location.hash = `#${handle.token}`;
     await boot();
-    await settle(80);
     window.confirm = () => true;
     ([...document.querySelectorAll('button')].find((b) => b.textContent === 'Cancel session') as HTMLButtonElement).click();
-    await settle(120);
-    expect(document.querySelector('.terminal h2')?.textContent).toContain('Session ended');
+    // real POST /cancel round-trip — await the observable terminal screen
+    const terminal = await waitFor(() => document.querySelector('.terminal h2'));
+    expect(terminal?.textContent).toContain('Session ended');
     expect(require('node:fs').existsSync(join(dir, 'spec'))).toBe(false);
   });
 });

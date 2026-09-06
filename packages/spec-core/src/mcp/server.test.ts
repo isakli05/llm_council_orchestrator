@@ -1874,10 +1874,18 @@ describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js — EPIPE 
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     child.stderr.on('data', () => {});
+    // collect stdout; wait for the OBSERVABLE first JSON-RPC response line
+    // before killing the read end (the response to the SECOND request then
+    // writes into the dead pipe -> EPIPE -> nonzero exit). A fixed 300ms
+    // window races slow CI stdout flushing.
+    const delivered: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => delivered.push(c));
     child.stdin.write('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n');
-    // Let the first response flush, then kill the read end; the response to
-    // the SECOND request writes into the dead pipe -> EPIPE -> nonzero exit.
-    await new Promise((r) => setTimeout(r, 300));
+    const firstLineDeadline = Date.now() + 10_000;
+    while (!Buffer.concat(delivered).toString('utf8').includes('\n') && Date.now() < firstLineDeadline) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    expect(Buffer.concat(delivered).toString('utf8')).toContain('"id":1');
     child.stdout.destroy();
     child.stdin.write('{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
     child.stdin.end();
