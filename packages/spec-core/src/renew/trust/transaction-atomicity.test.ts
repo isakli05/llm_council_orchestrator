@@ -109,6 +109,15 @@ vi.mock('./fs', async (importOriginal) => {
         race.parked = true;
         writeFileSync(args.path, race.bytes ?? '');
       }
+      // V-B finding seam: a mid-write fault leaves OUR OWN truncated partial
+      // file at the path; the marker loop must clean it up and retry rather
+      // than misattribute a concurrent-writer race to its own debris.
+      const partial = (globalThis as { __txMarkerPartial?: { armed: boolean; fired?: boolean } }).__txMarkerPartial;
+      if (partial !== undefined && partial.armed && !partial.fired && args.path.endsWith('tx-journal.json')) {
+        partial.fired = true;
+        writeFileSync(args.path, '{"schema_version":1,"holder"'); // truncated debris
+        throw new Error('injected mid-write marker fault (partial debris left)');
+      }
       return actual.authorizedCreateExclusive(args);
     },
     authorizedRemoveTree: (args: Parameters<typeof actual.authorizedRemoveTree>[0]) => {
@@ -133,6 +142,7 @@ afterEach(() => {
   delete (globalThis as { __txEvidenceFault?: unknown }).__txEvidenceFault;
   delete (globalThis as { __txMarkerFault?: unknown }).__txMarkerFault;
   delete (globalThis as { __txMarkerRace?: unknown }).__txMarkerRace;
+  delete (globalThis as { __txMarkerPartial?: unknown }).__txMarkerPartial;
 });
 
 const FIXTURE_SRC = join(__dirname, '..', '..', '..', 'fixtures', 'legacy-app');
@@ -2448,5 +2458,63 @@ describe('L6: persistent evidence-channel physics boundary (ACCEPTED, contract-p
       refusal = e as Error & { code?: string };
     }
     expect(refusal!.code).toBe('recovery_required');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verifier findings (post-implementation hardening, all Low/diagnostics-only):
+//   V-A: doctor/provider-map special-key parity; V-B: marker partial-debris
+//   retry, probe-after-project-check. Cells pin each fix.
+// ---------------------------------------------------------------------------
+describe('verifier findings: marker partial-debris retry + probe placement', () => {
+  it('V-B: our own truncated partial marker is cleaned up and the retry LANDS (no false race)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const partial = { armed: true, fired: false };
+    (globalThis as { __txMarkerPartial?: typeof partial }).__txMarkerPartial = partial;
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: begin.identity.revision + 1 }, null, 2));
+        },
+      },
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txMarkerPartial?: unknown }).__txMarkerPartial;
+    }
+    expect(rejection!.code).toBe('recovery_required');
+    // the marker survived its own mid-write fault: debris removed, retry landed
+    expect(rejection!.message).toMatch(/journal is retained as a superseded marker/i);
+    expect(rejection!.message).not.toMatch(/SUPERSEDED-MARKER RACE/i);
+    const onDisk = JSON.parse(readFileSync(paths.journal, 'utf8'));
+    expect(onDisk.superseded).toBe(true);
+    expect(onDisk.holder).toBeDefined(); // full content, not the truncated debris
+  });
+
+  it('V-B: analyze on a NON-project dir refuses on the project check and leaves NO .lco/renewal residue', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lco-nonproj-'));
+    tmpDirs.push(dir);
+    const { cmdRenewAnalyze } = await import('../../cli/commands/renew');
+    const caps = { nowIso: () => '2026-09-06T00:00:00Z', provider: () => undefined, gitCommit: () => undefined } as never;
+    const r = await cmdRenewAnalyze({ dir }, caps);
+    expect(r.code).toBe(2);
+    expect(r.output).toMatch(/not a renewal project|project\.json not found/i);
+    expect(existsSync(join(dir, '.lco', 'renewal'))).toBe(false); // no probe residue
   });
 });

@@ -794,3 +794,11 @@ describe('checkLlmConfig', () => {
     expect(r.detail).toMatch(/apiKeyEnv/);
   });
 });
+
+describe('doctor: provider env parity (post-PR5 V-A finding)', () => {
+  it('LCO_LLM_EXTRA_BODY with an own __proto__ key is diagnosed as refused (parity with the live transport)', () => {
+    const r = checkProviderEnv({ LCO_LLM_EXTRA_BODY: '{"__proto__":"phantom","temperature":0.2}' });
+    expect(r.status).not.toBe('ok');
+    expect(JSON.stringify(r)).toMatch(/__proto__/);
+  });
+});

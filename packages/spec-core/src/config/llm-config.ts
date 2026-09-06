@@ -174,10 +174,10 @@ export const LlmConfigSchema = z
   .object({
     llm: z
       .object({
-        providers: z.record(z.string().min(1), ProviderSchema).refine((p) => Object.keys(p).length > 0, {
+        providers: z.record(NoProtoKeySchema, ProviderSchema).refine((p) => Object.keys(p).length > 0, {
           message: 'llm.providers must declare at least one provider',
         }),
-        profiles: z.record(z.string().min(1), ProfileSchema).refine((p) => Object.keys(p).length > 0, {
+        profiles: z.record(NoProtoKeySchema, ProfileSchema).refine((p) => Object.keys(p).length > 0, {
           message: 'llm.profiles must declare at least one profile',
         }),
       })

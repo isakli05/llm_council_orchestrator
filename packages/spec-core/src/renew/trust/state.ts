@@ -801,7 +801,17 @@ function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof rene
       if (err instanceof TrustFsError && err.code === 'record_exists') {
         return { landed: false, failed: 'race' };
       }
-      // transient fault — retry (bounded); persistent failure is typed
+      // V-B finding: a mid-write fault (ENOSPC/EIO) can leave OUR OWN
+      // TRUNCATED partial file at the path — the next attempt would EEXIST
+      // and misattribute a concurrent-writer race to our own debris. Remove
+      // the partial file (best-effort) so the retry races only a REAL
+      // concurrent writer.
+      try {
+        authorizedRemoveTree({ projectDir, path: paths.journal });
+      } catch {
+        // best-effort: if this also fails, the bounded retry keeps the
+        // fail-closed outcome (worst case: EEXIST → race disclosure)
+      }
     }
   }
   return { landed: false, failed: 'persistent', attempts: 3 };

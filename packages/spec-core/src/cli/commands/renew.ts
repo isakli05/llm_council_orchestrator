@@ -513,14 +513,16 @@ export async function cmdRenewAnalyze(
   // never surfaces through a redirected chain.
   const stateAuth = authorizeRenewalState(args.dir);
   if (!stateAuth.ok) return { code: 2, output: `renewal analyze refused: ${stateAuth.message}` };
+  const p = loadRenewalProject(args.dir);
+  if (!p.ok) return { code: 2, output: p.message };
   // Post-PR5 L6: the paid call refuses at ENTRY when the durable evidence
   // channel is dead — an abort here could otherwise leave no durable marker
   // and only a process-ephemeral disclosure (the accepted physics boundary,
-  // surfaced as early as it can be).
+  // surfaced as early as it can be). Runs AFTER the project check (V-B
+  // finding) so a non-project directory gets the pointed refusal instead of
+  // an empty .lco/renewal/ left behind.
   const evidenceHealth = evidenceChannelHealthRefusal(args.dir);
   if (evidenceHealth !== undefined) return { code: 2, output: `renewal analyze refused: ${evidenceHealth}` };
-  const p = loadRenewalProject(args.dir);
-  if (!p.ok) return { code: 2, output: p.message };
 
   // INV-B1 (S2-H-11): identity joins (target realpath AND snapshot ids) are
   // enforced inside analyzeWithFresh's loadActiveState read view.

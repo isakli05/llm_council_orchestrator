@@ -376,6 +376,20 @@ describe('parseLlmConfig — header-name hardening (review F4)', () => {
     if (!r.ok) expect(r.error).toMatch(/__proto__/);
   });
 
+  it("rejects a provider/profile NAMED '__proto__' loudly (V-A finding: same zod-strip class)", () => {
+    for (const map of ['providers', 'profiles'] as const) {
+      const doc = JSON.stringify({
+        llm:
+          map === 'providers'
+            ? { providers: JSON.parse('{"__proto__": {"type": "openrouter", "apiKeyEnv": "A"}}'), profiles: {} }
+            : { providers: { x: { type: 'openrouter', apiKeyEnv: 'A' } }, profiles: JSON.parse('{"__proto__": {"variant": "single", "roles": {}}}') },
+      });
+      const r = parseLlmConfig(doc);
+      expect(r.ok, map).toBe(false);
+      if (!r.ok) expect(r.error, map).toMatch(/__proto__/);
+    }
+  });
+
   it("rejects an own '__proto__' key in extraBody loudly (post-PR5 I1)", () => {
     const doc = JSON.stringify({
       llm: {
