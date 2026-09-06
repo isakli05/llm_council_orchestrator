@@ -49,7 +49,14 @@ export class TrustFsError extends TrustError {
 /**
  * RenewalStateTransaction refusals (S3-H-03/H-04/H-09/M-03/M-04 class).
  * `code` distinguishes: state_corrupt, state_lock_held, stale_revision,
- * snapshot_superseded, project_mismatch, fold_conflict, spec_current_mismatch.
+ * snapshot_superseded, project_mismatch, fold_conflict, spec_current_mismatch,
+ * and recovery_required — whose sub-shapes (all fail-closed, each with its own
+ * truthful message): abort with concurrent-writer journal; abort with the
+ * journal retained as a superseded marker; abort with evidence retained
+ * separately (sidecar); abort with NO durable evidence (persistent channel
+ * failure); rollback/retire failure; superseded journal at read; and a
+ * foreign/unexpected object occupying the abort-evidence path (post-PR5 I5 —
+ * fail-closes reads, but is not an abort narrative).
  */
 export class TrustStateError extends TrustError {
   constructor(code: string, message: string) {

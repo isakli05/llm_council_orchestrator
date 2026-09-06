@@ -52,7 +52,7 @@ import {
   routeFromConfig,
   resolvedRouteDigest,
 } from '../renew/trust/paid';
-import { renewConsentDigest } from './consent';
+import { renewConsentDigest, routeBindingRefusal } from './consent';
 import { domainDigest } from '../renew/trust/canonical';
 import { RECOVERY_PROMPT_PROTOCOL } from '../renew/recovery/prompts';
 import { createBudgetLedger } from '../eval/budget';
@@ -243,7 +243,9 @@ async function renewalConsentState(
   graphDigest?: string;
   profileFingerprint?: string;
   resolvedModel?: string;
-  routeDigest?: `sha256:${string}`;
+  /** Post-PR5 L2: ALWAYS present — the route binding is resolved(value) or
+   *  explicitly unresolved(reason); there is no undefined-skip shape. */
+  routeBinding: { status: 'resolved'; routeDigest: `sha256:${string}` } | { status: 'unresolved'; reason: string };
 }> {
   const dirReal = realpathSync(dir);
   let snapshotId: string | undefined;
@@ -274,7 +276,11 @@ async function renewalConsentState(
   }
   let profileFingerprint: string | undefined;
   let resolvedModel: string | undefined;
-  let legacyRouteDigest: `sha256:${string}` | undefined;
+  // Post-PR5 L2: the binding is ALWAYS typed — resolved(value) or explicitly
+  // unresolved(reason). The historical `undefined` skip shape is gone.
+  let routeBinding:
+    | { status: 'resolved'; routeDigest: `sha256:${string}` }
+    | { status: 'unresolved'; reason: string } = { status: 'unresolved', reason: 'no route resolution was attempted' };
   if (opts?.llmProfile !== undefined && opts.resolveProfile !== undefined) {
     const resolved = opts.resolveProfile(opts.llmProfile);
     if (resolved.ok) {
@@ -302,20 +308,25 @@ async function renewalConsentState(
             const { config } = resolveRoleConfig(fullRole, process.env, { routingMode: profile.routingMode });
             const { routeFromConfig, resolvedRouteDigest } = await import('../renew/trust/paid');
             const rb = defaultRenewalBudget();
-            legacyRouteDigest = resolvedRouteDigest(
-              routeFromConfig({
-                config,
-                origin: 'named-profile',
-                profileName: opts.llmProfile,
-                routingMode: profile.routingMode,
-                apiKeyEnvName: fullRole.apiKeyEnv,
-                budget: { maxAttempts: rb.maxAttempts ?? 8, ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}) },
-              }),
-            );
+            routeBinding = {
+              status: 'resolved',
+              routeDigest: resolvedRouteDigest(
+                routeFromConfig({
+                  config,
+                  origin: 'named-profile',
+                  profileName: opts.llmProfile,
+                  routingMode: profile.routingMode,
+                  apiKeyEnvName: fullRole.apiKeyEnv,
+                  budget: { maxAttempts: rb.maxAttempts ?? 8, ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}) },
+                }),
+              ),
+            };
           }
-        } catch {
-          // unresolvable route (missing key env etc.): nothing to bind — the
-          // tool call refuses before any adapter exists (zero spend)
+        } catch (e) {
+          // unresolvable route (missing key env etc.): EXPLICITLY unbound —
+          // the preimage records the absence and the effect-time gate refuses
+          // if a route resolves anyway (post-PR5 L2; zero spend either way).
+          routeBinding = { status: 'unresolved', reason: `route unresolvable at consent time (${(e as Error).message})` };
         }
       }
     }
@@ -332,15 +343,20 @@ async function renewalConsentState(
       // budget shape (maxAttempts AND wallMs) as the transported operation —
       // the digests must be equal by construction, never incidentally.
       const rb = defaultRenewalBudget();
-      legacyRouteDigest = resolvedRouteDigest(
-        resolveLegacyEnvRoute(process.env, {
-          maxAttempts: rb.maxAttempts ?? 8,
-          ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}),
-        }),
-      );
-    } catch {
-      // unconfigured env: nothing to bind — post-consent resolution refuses
-      // before any adapter exists (zero spend), same as before.
+      routeBinding = {
+        status: 'resolved',
+        routeDigest: resolvedRouteDigest(
+          resolveLegacyEnvRoute(process.env, {
+            maxAttempts: rb.maxAttempts ?? 8,
+            ...(rb.maxWallMs !== undefined ? { wallMs: rb.maxWallMs } : {}),
+          }),
+        ),
+      };
+    } catch (e) {
+      // unconfigured env: EXPLICITLY unbound (post-PR5 L2) — the preimage
+      // records the absence; the effect-time gate refuses if a route resolves
+      // anyway, and construction still fails closed with zero spend.
+      routeBinding = { status: 'unresolved', reason: `legacy env route unresolvable at consent time (${(e as Error).message})` };
     }
   }
   return {
@@ -349,7 +365,7 @@ async function renewalConsentState(
     graphDigest,
     ...(profileFingerprint !== undefined ? { profileFingerprint } : {}),
     ...(resolvedModel !== undefined ? { resolvedModel } : {}),
-    ...(legacyRouteDigest !== undefined ? { routeDigest: legacyRouteDigest } : {}),
+    routeBinding,
   };
 }
 
@@ -822,7 +838,7 @@ const TOOLS: readonly ToolDef[] = [
         ...(input.llmProfile !== undefined ? { llmProfile: input.llmProfile } : {}),
         ...(consentState.profileFingerprint !== undefined ? { profileFingerprint: consentState.profileFingerprint } : {}),
         ...(consentState.resolvedModel !== undefined ? { resolvedModel: consentState.resolvedModel } : {}),
-        ...(consentState.routeDigest !== undefined ? { routeDigest: consentState.routeDigest } : {}),
+        routeBinding: consentState.routeBinding,
         promptProtocol: RECOVERY_PROMPT_PROTOCOL,
         budget,
       });
@@ -938,18 +954,15 @@ const TOOLS: readonly ToolDef[] = [
                 }),
               }
             : undefined;
-      // S4-H-03/V6 verifier closure: the constructed operation IS the
-      // consented operation — assert the digests are equal instead of
-      // relying on twin resolutions staying in sync. A mismatch refuses with
-      // zero transports.
-      if (op !== undefined && consentState.routeDigest !== undefined && op.routeDigest !== consentState.routeDigest) {
-        return {
-          code: 1,
-          output:
-            `renewal analysis refused: the resolved LLM route no longer matches the consented route digest ` +
-            `(consented ${consentState.routeDigest.slice(0, 19)}…, resolved ${op.routeDigest.slice(0, 19)}…) — ` +
-            `re-consent to the current route; zero LLM calls were made`,
-        };
+      // S4-H-03/V6 verifier closure + post-PR5 L2: the constructed operation
+      // IS the consented operation — the TOTAL route-binding gate (consent.ts
+      // routeBindingRefusal) asserts the executing route's authority was bound
+      // to consent. No undefined-skip cell exists: unresolved binding + a
+      // constructed op (intra-request divergence) refuses exactly like a
+      // stale digest does. Zero transports on any refusal.
+      const routeRefusal = routeBindingRefusal(consentState.routeBinding, op);
+      if (routeRefusal !== undefined) {
+        return { code: 1, output: routeRefusal };
       }
       const capsWithLlm: RenewCapabilities = {
         ...caps,

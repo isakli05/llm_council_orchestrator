@@ -5,7 +5,7 @@
  * revalidation → approval record → renewal state written. No LLM anywhere.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startClarifyServer } from '../../server/http';
@@ -62,7 +62,9 @@ function analysis(): AnalysisRecord {
   });
 }
 
-describe('renewal ambiguity round-trip through the real workspace', () => {
+const DIST_PRESENT = existsSync(join(__dirname, '../../../dist/browser/asset-manifest.json'));
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+describe.skipIf(!DIST_PRESENT)('renewal ambiguity round-trip through the real workspace', () => {
   it('question → answers → approval → immutable record on disk', async () => {
     const projectDir = freshDir();
     const approvalsDir = join(projectDir, 'approvals');

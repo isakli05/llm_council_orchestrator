@@ -172,8 +172,8 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
       llm.queue([JSON.stringify(regenerated)]);
       const applyBtn = [...document.querySelectorAll('button')].find((b) => /Apply 1 change/.test(b.textContent ?? '')) as HTMLButtonElement;
       applyBtn.click();
-      await settle(200);
-      expect(document.querySelector('.change-outcomes')?.textContent).toContain('incorporated');
+      const outcomes = await waitFor(() => document.querySelector('.change-outcomes'));
+      expect(outcomes?.textContent).toContain('incorporated');
       expect(document.querySelector('.review-meta')?.textContent).toContain('Review v2');
     }
 
@@ -184,8 +184,13 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
     await settle(30);
     const confirmYes = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Yes, approve') as HTMLButtonElement;
     confirmYes.click();
-    await settle(60);
-    expect(document.querySelector('.approved-banner')?.textContent).toContain('revision 1');
+    // post-PR5 I7: await the OBSERVABLE state transition, not a fixed 60ms
+    // window — the banner appears only after the real HTTP round-trip AND
+    // the server-side artifact writes complete (the Node22 CI flake raced
+    // exactly that). Banner presence implies the response returned, which
+    // makes the disk assertions below race-free too.
+    const banner = await waitFor(() => document.querySelector('.approved-banner'));
+    expect(banner?.textContent).toContain('revision 1');
     expect(existsSync(join(dir, 'spec', 'manifest.json'))).toBe(true);
     expect(existsSync(join(dir, 'approvals', 'APPR-0001.json'))).toBe(true);
     const answers = JSON.parse(readFileSync(join(dir, 'clarify-answers.json'), 'utf8')) as Record<string, string>;
@@ -206,9 +211,10 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
     area.dispatchEvent(new Event('input', { bubbles: true }));
     await settle(20);
     ([...document.querySelectorAll('button')].find((b) => /Submit 1 answer/.test(b.textContent ?? '')) as HTMLButtonElement).click();
-    await settle(140);
+    // post-PR5 I7: await the observable transition (was a fixed 140ms window)
+    const reviewTitle = await waitFor(() => document.querySelector('.review-title'));
     // the Other-only answer was accepted by the server (canonical validation) and the review appeared
-    expect(document.querySelector('.review-title')).toBeTruthy();
+    expect(reviewTitle).toBeTruthy();
     // nothing persisted yet: approval is the only write (§31)
     expect(existsSync(join(dir, 'spec'))).toBe(false);
   }, 20000);

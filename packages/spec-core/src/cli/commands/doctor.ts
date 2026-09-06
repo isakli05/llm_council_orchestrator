@@ -207,6 +207,10 @@ export function checkProviderEnv(env: Record<string, string | undefined>): Docto
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       issues.push('LCO_LLM_EXTRA_BODY is set but not a JSON object');
+    } else if (Object.hasOwn(parsed, '__proto__')) {
+      // Post-PR5 V-A finding: keep doctor's parity claim with the live path
+      // (createHttpLlm/resolveLegacyEnvRoute refuse own "__proto__") honest.
+      issues.push("LCO_LLM_EXTRA_BODY must not carry an own '__proto__' key — remove the key (the live transport refuses it)");
     }
   }
 

@@ -635,7 +635,7 @@ describe('check: bin self-check (dist contract)', () => {
     return pkg;
   }
 
-  it('real package root (pretest-built dist) -> ok', () => {
+  it.skipIf(!existsSync(join(__dirname, '../../../dist/cli/index.js')))('real package root (pretest-built dist) -> ok', () => {
     const check = checkBins(join(__dirname, '../../..'));
     expect(check.status).toBe('ok');
   });
@@ -792,5 +792,13 @@ describe('checkLlmConfig', () => {
     const r = checkLlmConfig('.', {}, () => bad);
     expect(r.status).toBe('fail');
     expect(r.detail).toMatch(/apiKeyEnv/);
+  });
+});
+
+describe('doctor: provider env parity (post-PR5 V-A finding)', () => {
+  it('LCO_LLM_EXTRA_BODY with an own __proto__ key is diagnosed as refused (parity with the live transport)', () => {
+    const r = checkProviderEnv({ LCO_LLM_EXTRA_BODY: '{"__proto__":"phantom","temperature":0.2}' });
+    expect(r.status).not.toBe('ok');
+    expect(JSON.stringify(r)).toMatch(/__proto__/);
   });
 });

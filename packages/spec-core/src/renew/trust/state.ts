@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireSpecRootLock, type SpecRootLock } from '../../storage/revision';
 import { tryRealpath } from '../../storage/paths';
@@ -8,8 +8,8 @@ import { parseOverlayStore, type OverlayStore } from '../core/store-records';
 import { parseParityStore, type ParityStore } from '../core/store-records';
 import { parseStrategyDecision, type StrategyDecision } from './authority';
 import { AnalysisRecordSchema, type AnalysisRecord } from '../recovery/schemas';
-import { authorizedRead, authorizedWrite, authorizeProjectDestination, authorizedRenameNoClobber, authorizedEnsureDir, authorizedRemoveTree, authorizedCreateDirAtomically } from './fs';
-import { TrustStateError } from './errors';
+import { authorizedRead, authorizedWrite, authorizeProjectDestination, authorizedRenameNoClobber, authorizedEnsureDir, authorizedRemoveTree, authorizedCreateDirAtomically, authorizedCreateExclusive } from './fs';
+import { TrustStateError, TrustFsError } from './errors';
 import { domainDigest } from './canonical';
 
 /**
@@ -87,17 +87,58 @@ export interface ActiveRenewalState {
   specExists: boolean;
 }
 
+/** Post-PR5 I5: classify what occupies the abort-evidence path. A GENUINE
+ *  sidecar (the exact shape `writeAbortEvidence` persists) and a foreign
+ *  object BOTH fail-close reads, but the diagnostic must say which one is
+ *  there — an unexpected object must not read as a transaction-abort
+ *  narrative. The read is size-guarded (64 KiB) and never TRUSTS the
+ *  content: every non-genuine shape (unparseable, wrong shape, oversized,
+ *  unreadable) is foreign, and the caller stays fail-closed either way. */
+function foreignObjectAtEvidencePath(projectDir: string): { foreign: boolean; path: string } {
+  const path = abortEvidencePath(projectDir);
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > 64 * 1024) return { foreign: true, path };
+    const parsed = JSON.parse(authorizedRead({ projectDir, path })) as Record<string, unknown>;
+    const genuine =
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      parsed.schema_version === 1 &&
+      typeof parsed.holder === 'object' &&
+      parsed.holder !== null &&
+      typeof parsed.base_revision === 'number' &&
+      typeof parsed.performed_steps === 'number' &&
+      typeof parsed.evidence === 'string' &&
+      typeof parsed.written_at === 'string' &&
+      typeof parsed.remedy === 'string';
+    return { foreign: !genuine, path };
+  } catch {
+    return { foreign: true, path };
+  }
+}
+
 /** Read + parse state.json — the FIRST trusted read (corrupt fails closed).
  *  Exported for the domain wrapper (project.readStateRevision).
  *  S4-H-01: a leftover transaction journal is detected HERE (the first
- *  trusted read) and deterministically recovered — see recoverTxJournal. */
+ *  trusted read) and deterministically recovered — see recoverTxJournal.
+ *  Post-PR5 I5: a foreign object at the evidence path gets a distinguishable
+ *  typed refusal — same recovery_required fail-closed direction, honest
+ *  about what is actually on disk. */
 export function readRevision(projectDir: string): number {
   const paths = renewalPaths(projectDir);
   if (existsSync(abortEvidencePath(projectDir))) {
+    const { foreign, path } = foreignObjectAtEvidencePath(projectDir);
+    if (foreign) {
+      throw new TrustStateError(
+        'recovery_required',
+        `an unexpected object occupies the abort-evidence path (${path}) — it fail-closes trusted reads but is ` +
+          `not a transaction-abort marker; inspect and remove it after review; recovery refuses to guess`,
+      );
+    }
     throw new TrustStateError(
       'recovery_required',
       `a transaction aborted with in-flight writes while a concurrent writer owned the journal ` +
-        `(${abortEvidencePath(projectDir)}) — the on-disk state may combine both writers. Inspect the trusted ` +
+        `(${path}) — the on-disk state may combine both writers. Inspect the trusted ` +
         `state after review, then remove the evidence file; recovery refuses to guess`,
     );
   }
@@ -449,6 +490,39 @@ function planJournalEntries(projectDir: string, paths: ReturnType<typeof renewal
 /** The identity of the writer lock this commit holds (V6 fence). */
 function applyStateMutation(projectDir: string, mutation: StateMutationPlan, lockIdentity: { pid: number; acquiredAt: string }): void {
   const paths = renewalPaths(projectDir);
+  // Post-PR5 I6 (RD1): the durable write boundary validates with the SAME
+  // schemas the reader will — no payload may commit that the read side would
+  // refuse as `store_corrupt`/`project_corrupt`. Runs BEFORE the journal
+  // write, so a refusal changes nothing on disk (typed
+  // commit_failed_without_state_change). Read-side validation remains as the
+  // backstop against external tampering (the write boundary cannot cover
+  // that). Objects are validated through the exact JSON value domain the
+  // durable bytes will carry (persistTrustedJson serializes the same value).
+  const refuseInvalid = (kind: string, why: string): never => {
+    throw new TrustStateError(
+      'commit_failed_without_state_change',
+      `refusing to commit an invalid ${kind} payload (${why}) — nothing was written`,
+    );
+  };
+  if (mutation.overlay !== undefined) {
+    const r = parseOverlayStore(JSON.stringify(mutation.overlay));
+    if (!r.ok) refuseInvalid('overlay', r.message);
+  }
+  if (mutation.parity !== undefined) {
+    const r = parseParityStore(JSON.stringify(mutation.parity));
+    if (!r.ok) refuseInvalid('parity', r.message);
+  }
+  if (mutation.project !== undefined && !RenewalProjectSchema.safeParse(mutation.project).success) {
+    refuseInvalid('project', 'renewal project schema validation failed');
+  }
+  if (mutation.snapshot !== undefined) {
+    const r = reloadSnapshot(JSON.stringify(mutation.snapshot));
+    if (!r.ok) refuseInvalid('snapshot', r.message);
+  }
+  if (mutation.strategy !== undefined) {
+    const r = parseStrategyDecision(JSON.stringify(mutation.strategy));
+    if (!r.ok) refuseInvalid('strategy', r.message);
+  }
   const entries = planJournalEntries(projectDir, paths, mutation);
   const holder = lockIdentity; // the REAL lock identity — the fence compares against it
   const journal: TxJournalFile = {
@@ -535,14 +609,19 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       // means our bytes may sit over B's commit with NO surviving evidence.
       // The sidecar (a separate path) fail-closes reads past B's removal.
       let sidecar: MarkerWriteOutcome | undefined;
-      if (performed > 0 && !ours && journalOnDisk(projectDir, paths) !== undefined) {
+      // ONE journal-presence read drives BOTH evidence channels (post-PR5 L5:
+      // this was two separate reads; the check→write window between them and
+      // the marker write is now closed by the O_EXCL CAS inside
+      // markJournalSuperseded, not by read ordering).
+      const journalPresent = journalOnDisk(projectDir, paths) !== undefined;
+      if (performed > 0 && !ours && journalPresent) {
         sidecar = writeAbortEvidence(projectDir, journal, performed);
       }
       // The marker is evidence ONLY over our own journal (or an empty path);
       // a foreign journal belongs to the concurrent writer and stays theirs.
-      let marker: MarkerWriteOutcome | undefined;
-      if (ours || journalOnDisk(projectDir, paths) === undefined) {
-        marker = markJournalSuperseded(projectDir, paths, journal);
+      let marker: SupersededMarkerOutcome | undefined;
+      if (ours || !journalPresent) {
+        marker = markJournalSuperseded(projectDir, paths, journal, ours);
       }
       // S5-M-04: the typed abort must tell the truth about what is (and is
       // NOT) durably on disk — a persistently failing evidence channel is
@@ -550,15 +629,24 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       const disclosures: string[] = [];
       if (sidecar !== undefined && !sidecar.landed) {
         disclosures.push(
-          `PERSISTENT abort-evidence failure: the abort evidence could NOT be written after ${sidecar.attempts} attempts — ` +
-            `NO durable marker of this abort exists on disk; manually inspect the trusted state against both writers before any re-run`,
+          `PERSISTENT abort-evidence failure: the abort evidence could NOT be written to ${abortEvidencePath(projectDir)} ` +
+            `after ${sidecar.attempts} attempts — NO durable marker of this abort exists on disk ` +
+            `(any pre-existing object at that path still fail-closes reads, but is not evidence of this abort); ` +
+            `manually inspect the trusted state against both writers before any re-run`,
         );
       }
       if (marker !== undefined && !marker.landed) {
-        disclosures.push(
-          `PERSISTENT superseded-marker failure: the journal path could NOT be marked superseded after ${marker.attempts} attempts — ` +
-            `the stale journal may auto-retire on the next trusted read; manually inspect the trusted state before any re-run`,
-        );
+        if (marker.failed === 'race') {
+          disclosures.push(
+            `SUPERSEDED-MARKER RACE: the marker was NOT written — a concurrent writer's journal occupied the path and its ` +
+              `rollback authority was PRESERVED (the marker refuses to clobber it); manually inspect the trusted state before any re-run`,
+          );
+        } else {
+          disclosures.push(
+            `PERSISTENT superseded-marker failure: the journal path could NOT be marked superseded after ${marker.attempts} attempts — ` +
+              `the stale journal may auto-retire on the next trusted read; manually inspect the trusted state before any re-run`,
+          );
+        }
       }
       const retention =
         marker !== undefined && marker.landed
@@ -587,8 +675,10 @@ function applyStateMutation(projectDir: string, mutation: StateMutationPlan, loc
       const sidecar = performed > 0 ? writeAbortEvidence(projectDir, journal, performed) : undefined;
       const disclosure =
         sidecar !== undefined && !sidecar.landed
-          ? ` CRITICAL: PERSISTENT abort-evidence failure: the abort evidence could NOT be written after ${sidecar.attempts} attempts — ` +
-            `NO durable marker of this abort exists on disk; manually inspect the trusted state against both writers before any re-run.`
+          ? ` CRITICAL: PERSISTENT abort-evidence failure: the abort evidence could NOT be written to ${abortEvidencePath(projectDir)} ` +
+            `after ${sidecar.attempts} attempts — NO durable marker of this abort exists on disk ` +
+            `(any pre-existing object at that path still fail-closes reads, but is not evidence of this abort); ` +
+            `manually inspect the trusted state against both writers before any re-run.`
           : '';
       throw new TrustStateError(
         'recovery_required',
@@ -651,7 +741,12 @@ function abortEvidencePath(projectDir: string): string {
  *  caller MUST know when the marker did NOT land so the typed abort can
  *  disclose the evidence channel is down — never claim retention that
  *  physics did not permit. */
-type MarkerWriteOutcome = { landed: true } | { landed: false; attempts: 3 };
+type MarkerWriteOutcome = { landed: true } | { landed: false; failed: 'persistent'; attempts: 3 };
+/** Post-PR5 L5 (RC1): the superseded marker's outcome additionally includes
+ *  the CAS-race loss — a concurrent writer's journal occupied the path, so
+ *  the marker was NOT written and the racer's rollback authority is
+ *  PRESERVED (disclosed, never clobbered). */
+type SupersededMarkerOutcome = MarkerWriteOutcome | { landed: false; failed: 'race' };
 
 /** Bounded-retry sidecar write (closing-verify hardening): the evidence
  *  channel must survive a TRANSIENT single I/O fault at exactly this write
@@ -679,25 +774,47 @@ function writeAbortEvidence(projectDir: string, journal: TxJournalFile, performe
       // typed and disclosed by the caller below (S5-M-04).
     }
   }
-  return { landed: false, attempts: 3 };
+  return { landed: false, failed: 'persistent', attempts: 3 };
 }
 
 /** Bounded-retry superseded-marker write on the journal path (S5-M-04):
  *  same class as the sidecar — when this write persistently fails, the
  *  stale journal may auto-retire on the next trusted read; the abort must
  *  say so instead of claiming the marker was retained. */
-function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof renewalPaths>, journal: TxJournalFile): MarkerWriteOutcome {
+function markJournalSuperseded(projectDir: string, paths: ReturnType<typeof renewalPaths>, journal: TxJournalFile, ours: boolean): SupersededMarkerOutcome {
   const supersededJournal: TxJournalFile = { ...journal, superseded: true };
   supersededJournal.integrity = txJournalIntegrity(supersededJournal);
+  // Post-PR5 L5 (RC1) CAS fence: the marker may never destructively replace
+  // bytes it has not PROVED are its own or absent. Our own journal is removed
+  // first (ownership-conditioned inside removeJournal); the superseded marker
+  // is then CREATED with O_EXCL — a concurrent writer parking its journal in
+  // the historical check→write window can no longer be clobbered: the create
+  // fails atomically (record_exists), the racer wins, and its rollback
+  // authority survives. Bytes match the historical persistTrustedJson format.
+  if (ours) removeJournal(projectDir, paths, journal.holder);
+  const content = `${JSON.stringify(supersededJournal, null, 2)}\n`;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      persistTrustedJson({ projectDir, path: paths.journal, value: supersededJournal });
+      authorizedCreateExclusive({ projectDir, path: paths.journal, content, mode: 0o600 });
       return { landed: true };
-    } catch {
-      // transient fault — retry (bounded); persistent failure is typed
+    } catch (err) {
+      if (err instanceof TrustFsError && err.code === 'record_exists') {
+        return { landed: false, failed: 'race' };
+      }
+      // V-B finding: a mid-write fault (ENOSPC/EIO) can leave OUR OWN
+      // TRUNCATED partial file at the path — the next attempt would EEXIST
+      // and misattribute a concurrent-writer race to our own debris. Remove
+      // the partial file (best-effort) so the retry races only a REAL
+      // concurrent writer.
+      try {
+        authorizedRemoveTree({ projectDir, path: paths.journal });
+      } catch {
+        // best-effort: if this also fails, the bounded retry keeps the
+        // fail-closed outcome (worst case: EEXIST → race disclosure)
+      }
     }
   }
-  return { landed: false, attempts: 3 };
+  return { landed: false, failed: 'persistent', attempts: 3 };
 }
 
 /** Read the journal currently on disk (undefined when absent/unparseable). */

@@ -209,3 +209,66 @@ describe('S2-M-04: transitive renewal-root containment at the server boundary', 
     expect(String(res.result.content[0].text)).toMatch(/renewal status/);
   });
 });
+
+describe('post-PR5 L2: typed route binding at the MCP boundary', () => {
+  it('an HONEST unresolved-route consent passes the digest gate but still refuses at construction (zero transports)', async () => {
+    // Legacy-env path with LCO_LLM_* unset: the advertised digest is craftable
+    // exactly (dir/scope/promptProtocol/budget + the explicit unresolved
+    // marker). Supplying it proves the marker round-trips through the real
+    // server preimage AND that the still-unresolvable route fails closed at
+    // PaidOperation construction — the effectual-bypass falsification leg.
+    // (No injected adapter here on purpose: the injected-llm path is the
+    // caller-authorized library path where op === undefined and the gate
+    // correctly stays a no-op.)
+    const dir = freshDir('lco-eff-consent-unres-');
+    const { renewConsentDigest } = await import('./consent');
+    const { defaultRenewalBudget } = await import('./server');
+    const { RECOVERY_PROMPT_PROTOCOL } = await import('../renew/recovery/prompts');
+    const { realpathSync } = await import('node:fs');
+    const honest = renewConsentDigest({
+      dir: realpathSync(dir),
+      scope: 'whole',
+      routeBinding: { status: 'unresolved', reason: 'legacy env route unresolvable at consent time (legacy LLM route is not configured)' },
+      promptProtocol: RECOVERY_PROMPT_PROTOCOL,
+      budget: defaultRenewalBudget(),
+    });
+    const res = await callRenewAnalyze(
+      { dir, scope: 'whole', consent: { digest: honest } },
+      { allowGenerate: true, env: { LCO_MCP_EXEC_ROOT: TMP_PIN } as NodeJS.ProcessEnv },
+    );
+    expect(res.result.isError).toBe(true);
+    // the honest marker PASSED the digest gate (no 'digest mismatch') — the
+    // refusal is the fail-closed construction, with zero paid calls
+    expect(String(res.result.content[0].text)).not.toMatch(/digest mismatch/);
+    expect(String(res.result.content[0].text)).toMatch(/no LLM route/);
+    expect(String(res.result.content[0].text)).toMatch(/zero calls were made/);
+  });
+
+  it('named-profile advertisement differs by key availability alone (unresolved marker vs resolved binding)', async () => {
+    // Same profile text, same model: with the key env UNSET the route is
+    // unresolvable at consent time (explicit unresolved marker in the
+    // preimage); with it SET the resolvedRouteDigest binds. Availability is
+    // effectual — an unbound digest can never equal a bound one.
+    const dir = freshDir('lco-eff-consent-avail-');
+    const llm = vi.fn();
+    const unbound = advertisedDigest(
+      await callRenewAnalyze(
+        { dir, scope: 'whole', llmProfile: 'renew-route' },
+        { allowGenerate: true, llmConfigText: renewProfileConfig('model-a'), llm: llm as never, env: { LCO_MCP_EXEC_ROOT: TMP_PIN } as NodeJS.ProcessEnv },
+      ),
+    );
+    vi.stubEnv('MCP_TEST_OPENROUTER_KEY', 'sk-test-availability-probe');
+    try {
+      const bound = advertisedDigest(
+        await callRenewAnalyze(
+          { dir, scope: 'whole', llmProfile: 'renew-route' },
+          { allowGenerate: true, llmConfigText: renewProfileConfig('model-a'), llm: llm as never, env: { LCO_MCP_EXEC_ROOT: TMP_PIN } as NodeJS.ProcessEnv },
+        ),
+      );
+      expect(bound).not.toBe(unbound);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(llm).not.toHaveBeenCalled();
+  });
+});

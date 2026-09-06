@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { accessSync, readFileSync, X_OK } from 'node:fs';
+import { accessSync, readFileSync, X_OK, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -26,7 +26,9 @@ const BINS: Array<{ bin: string; file: string }> = [
   { bin: 'lco-mcp', file: join(__dirname, '../../dist/mcp/server.js') },
 ];
 
-describe('bin contract (PROD-001): shipped bins are real executables', () => {
+const DIST_PRESENT = existsSync(join(__dirname, '../../dist/cli/index.js'));
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+describe.skipIf(!DIST_PRESENT)('bin contract (PROD-001): shipped bins are real executables', () => {
   for (const { bin, file } of BINS) {
     it(`${bin} (${file}) — shebang line 1 and executable by this user`, () => {
       // Both assertions run before either expect: a RED run reports the

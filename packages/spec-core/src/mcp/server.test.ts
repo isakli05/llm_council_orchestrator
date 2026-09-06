@@ -1267,7 +1267,9 @@ describe('PROD-004 e2e: intent → draft → frozen → change, without a shell'
 // stdout-purity regression the plan mandates (the old mcp_bridge wrote logs
 // to stdout and corrupted the stream; that class of bug dies here).
 
-describe('integration: spawn dist/mcp/server.js (anti-F18)', () => {
+const DIST_PRESENT = existsSync(join(__dirname, '../../dist/mcp/server.js'));
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js (anti-F18)', () => {
   it(
     'a full session over stdio: every stdout line is valid JSON-RPC, clean exit',
     async () => {
@@ -1700,7 +1702,7 @@ describe('handleRpcLine: lco_check execution consent (SEC-002)', () => {
 // `printenv PATH` (kept by the allowlist) exits 0. This is the end-to-end
 // env-scrub + consent-chain proof against the real bin.
 
-describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () => {
+describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () => {
   it(
     'full chain executes with a scrubbed environment (allowExec flag invisible to children, PATH kept)',
     async () => {
@@ -1801,7 +1803,7 @@ describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_EXEC=1', () =
 // writes). A second scenario pins the fast path: EPIPE with nothing truly
 // in flight still exits nonzero.
 
-describe('integration: spawn dist/mcp/server.js — EPIPE (OPS-001)', () => {
+describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js — EPIPE (OPS-001)', () => {
   it(
     'client dies mid-check-execution: server waits for the work, then exits nonzero; delivered lines all parse',
     async () => {
@@ -1891,7 +1893,7 @@ describe('integration: spawn dist/mcp/server.js — EPIPE (OPS-001)', () => {
 // when the operator provided no live LLM credentials — createHttpLlm throws
 // and NO key is ever invented. Every stdout line stays valid JSON-RPC.
 
-describe('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_GENERATE=1', () => {
+describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js with LCO_MCP_ALLOW_GENERATE=1', () => {
   it(
     'full consent chain + no LCO_LLM_* env → the fail-closed env refusal, zero invented keys, pure stdout',
     async () => {

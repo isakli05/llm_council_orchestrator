@@ -448,3 +448,47 @@ export function preflightRenewalSurface(projectDir: string): string[] {
 export function authorizedStat(p: string): import('node:fs').Stats {
   return lstatSync(p);
 }
+
+/**
+ * Post-PR5 L6 (RC3) safe improvement: probe the DURABLE EVIDENCE CHANNEL's
+ * health at the entry of long/paid operations. A uniquely-named staging temp
+ * is written and unlinked inside the renewal root IN THE SAME BREATH — never
+ * at the journal/sidecar paths, so it can never be mistaken for a pre-arm
+ * marker or authority state (this is NOT a second store and carries no
+ * rollback semantics). Propagate/disclose ONLY: under a read-only renewal
+ * root, the operation fails HERE with a message naming the dead evidence
+ * channel — instead of discovering mid-abort that no durable marker can
+ * physically land (the accepted physics boundary, which the abort path
+ * discloses truthfully but only in-process).
+ */
+export function evidenceChannelHealthRefusal(projectDir: string): string | undefined {
+  const root = join(projectDir, '.lco', 'renewal');
+  const probePath = join(root, `.evidence-channel-probe-${randomTail()}.tmp`);
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const fd = openSync(probePath, 'wx', 0o600);
+    try {
+      const buf = Buffer.from('evidence-channel-probe\n', 'utf8');
+      let offset = 0;
+      while (offset < buf.length) {
+        offset += writeSync(fd, buf, offset, buf.length - offset);
+      }
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    return undefined;
+  } catch (err) {
+    return (
+      `the durable evidence channel is NOT writable (${(err as Error).message}) — an abort during this ` +
+      `operation could leave NO durable marker (the abort disclosure would be process-ephemeral); ` +
+      `fix the renewal directory permissions before running long or paid operations`
+    );
+  } finally {
+    try {
+      unlinkSync(probePath);
+    } catch {
+      // best-effort cleanup (the probe is gone or never landed)
+    }
+  }
+}

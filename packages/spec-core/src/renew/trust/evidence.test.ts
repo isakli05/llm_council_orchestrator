@@ -77,7 +77,7 @@ describe('evidence: context bundle sealing (S4-H-02)', () => {
   });
 });
 
-describe('evidence: S5-M-01 — identity must cover the ENTIRE model-visible payload', () => {
+describe('evidence: S5-M-01 — identity must cover the ENTIRE model-visible BUNDLE payload (request framing excluded by design)', () => {
   // The standard one-slice + one-node bundle: identical file slices, a node
   // label that varies (node items ARE rendered to the model).
   const baseSlices: SuppliedContextSlice[] = [
@@ -351,5 +351,113 @@ describe('evidence: support policy is load-bearing', () => {
     expect(() => assertSupportPolicy('hypothesis', 'contradicted', 'x')).toThrow();
     expect(() => assertSupportPolicy('planning_input', 'human_confirmed', 'x')).not.toThrow();
     expect(() => assertSupportPolicy('destructive_rationale', 'human_confirmed', 'x')).not.toThrow();
+  });
+});
+
+describe('evidence: seal digests the SAME frozen clone it exposes (post-PR5 I2)', () => {
+  it('a getter-equipped item cannot split the identity from the exposed bytes', () => {
+    let accesses = 0;
+    const dynamic = {
+      kind: 'file_slice',
+      path: 'src/a.ts',
+      start_line: 1,
+      end_line: 2,
+      get text() {
+        accesses += 1;
+        return accesses === 1 ? 'FIRST-ACCESS\n' : 'LATER-ACCESS\n';
+      },
+      content_hash: 'sha256:cc',
+    };
+    const sealed = sealContextBundle({
+      projectName: PROJECT,
+      snapshotId: SNAP,
+      slices: slices(),
+      items: [dynamic] as never,
+    });
+    // The clone materializes the accessor ONCE (access #1) and the digest is
+    // computed over that same frozen clone — pre-fix the digest read the raw
+    // caller item (access #1) while the exposed clone carried access #2,
+    // splitting identity from exposed bytes.
+    expect(accesses).toBe(1);
+    expect((sealed.items[0] as unknown as { text: string }).text).toBe('FIRST-ACCESS\n');
+    expect(Object.isFrozen(sealed.items[0])).toBe(true);
+    // Load-bearing invariant: membership proof over the EXPOSED value holds.
+    expect(contextBundleDigest(sealed)).toBe(sealed.identity.bundle_id);
+  });
+
+  it('static items keep byte-identical digests after the reorder (stability)', () => {
+    const items = [
+      { kind: 'file_slice', path: 'src/a.ts', start_line: 1, end_line: 2, text: 'line1\nline2\n', content_hash: 'sha256:aa' },
+      { kind: 'node', node_id: 'N-1', label: 'x', source_file: 'src/a.ts' },
+    ] as never[];
+    const a = sealContextBundle({ projectName: PROJECT, snapshotId: SNAP, slices: slices(), items });
+    const b = sealContextBundle({ projectName: PROJECT, snapshotId: SNAP, slices: slices(), items });
+    expect(a.identity.bundle_id).toBe(b.identity.bundle_id);
+    expect(contextBundleDigest(a)).toBe(a.identity.bundle_id);
+  });
+});
+
+describe('evidence: seal-time digest memoization (post-PR5 I4)', () => {
+  function bigSealed(itemCount: number) {
+    const items = Array.from({ length: itemCount }, (_, i) => ({
+      kind: 'file_slice',
+      path: `src/f${i}.ts`,
+      start_line: 1,
+      end_line: 10,
+      text: `content for item ${i}\n`.repeat(20),
+      content_hash: `sha256:${String(i).padStart(64, '0')}`,
+    })) as never[];
+    const slices = items.map((it, i) => ({
+      path: `src/f${i}.ts`,
+      whole_file_hash: `sha256:${String(i).padStart(64, '0')}`,
+      start_line: 1,
+      end_line: 10,
+      text: `content for item ${i}\n`.repeat(20),
+      file_line_count: 10,
+    }));
+    return sealContextBundle({ projectName: PROJECT, snapshotId: SNAP, slices, items });
+  }
+
+  it('cached and recomputed digests are IDENTICAL for sealed bundles (identity equivalence)', () => {
+    const sealed = bigSealed(50);
+    // first call may be cache hit (seal wrote it) — repeated calls are pure lookups
+    const a = contextBundleDigest(sealed);
+    const b = contextBundleDigest(sealed);
+    expect(a).toBe(b);
+    expect(a).toBe(sealed.identity.bundle_id);
+  });
+
+  it('a THAWED mutated copy riding a stolen identity is refused (cache cannot mask tampering)', () => {
+    const sealed = bigSealed(3);
+    const thawed = JSON.parse(JSON.stringify(sealed)) as typeof sealed;
+    (thawed.items[0] as unknown as { text: string }).text = 'TAMPERED-BYTES\n';
+    // different reference → full recompute → membership proof breaks
+    expect(contextBundleDigest(thawed)).not.toBe(thawed.identity.bundle_id);
+    expect(() => resolveCitation(thawed, { context_id: thawed.records[0]!.context_id })).toThrowError(
+      /context_bundle_mismatch|bundle/i,
+    );
+  });
+
+  it('read-side caching must NOT mask post-read mutation of a thawed bundle (forbidden naive shape)', () => {
+    const sealed = bigSealed(3);
+    const thawed = JSON.parse(JSON.stringify(sealed)) as typeof sealed;
+    // first read on the copy — a naive cache-on-first-read pins this result
+    expect(contextBundleDigest(thawed)).toBe(thawed.identity.bundle_id);
+    // mutate AFTER the first read: the naive shape would return the STALE
+    // digest and mask the tamper; the committed contract must recompute and
+    // detect. (This exact cell is the hazard the investigation demonstrated.)
+    (thawed.items[0] as unknown as { text: string }).text = 'TAMPERED-AFTER-READ\n';
+    expect(contextBundleDigest(thawed)).not.toBe(thawed.identity.bundle_id);
+  });
+
+  it('perf smoke: 1,000 membership recomputes of a 200-item seal stay far under the un-memoized cost', () => {
+    const sealed = bigSealed(200);
+    const t0 = process.hrtime.bigint();
+    for (let i = 0; i < 1000; i += 1) contextBundleDigest(sealed);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    // Un-memoized cost is ~0.46 ms/resolve at 200 items (≈460 ms for 1,000).
+    // The bound has ~9x headroom against runner jitter while still failing
+    // loudly if the cache is lost (regression guard, not a microbenchmark).
+    expect(ms, `${ms.toFixed(1)} ms for 1,000 resolves of a 200-item seal`).toBeLessThan(50);
   });
 });

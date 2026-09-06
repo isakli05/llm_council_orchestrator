@@ -404,3 +404,39 @@ describe('architecture: graphify identity only through StructuralIdentity', () =
     }
   });
 });
+
+describe('architecture: post-PR5 hardening guards', () => {
+  it('L1: the canonical replacer accumulates into a NULL-PROTOTYPE container (own "__proto__" stays bound)', () => {
+    const canonical = readFileSync(join(PKG, 'src', 'renew', 'trust', 'canonical.ts'), 'utf8');
+    const replacer = canonical.slice(canonical.indexOf('function canonicalReplacer'));
+    // Own-key rule: a plain `{}` container routes an own "__proto__" key
+    // through Object.prototype's inherited setter and silently drops it from
+    // EVERY digest (the pre-hardening wire/digest divergence). The clone must
+    // be null-prototype — reintroducing a plain container fails here.
+    expect(replacer).toMatch(/Object\.create\(null\)/);
+    expect(replacer.includes('const sorted: Record<string, unknown> = {};')).toBe(false);
+  });
+
+  it('I3: every production sealContextBundle site derives slices and items from ONE array (coherence is the caller’s)', () => {
+    const sites: string[] = [];
+    for (const file of productionFiles(join(PKG, 'src'))) {
+      if (REL(file) === 'src/renew/trust/evidence.ts') continue; // the primitive itself
+      const text = readFileSync(file, 'utf8');
+      // ANY textual occurrence — call, import, or aliased import — counts:
+      // a rename-import (`sealContextBundle as x`) must not slip a second
+      // site past a calls-only scan.
+      if (text.includes('sealContextBundle')) sites.push(REL(file));
+    }
+    // A new production seal site MUST fail here and force an explicit
+    // coherence decision (derive both sides from one array, or extend the
+    // primitive with a real cross-check) — the invariant belongs to the
+    // constructor, and this guard keeps the set explicit.
+    expect(sites, `seal sites must stay an explicit, reviewed set: ${sites.join(', ')}`).toEqual([
+      'src/cli/commands/renew.ts',
+    ]);
+    // and the sole site derives BOTH sides from the same bundle array
+    const renew = readFileSync(join(PKG, 'src', 'cli', 'commands', 'renew.ts'), 'utf8');
+    expect(renew).toMatch(/slices:\s*bundle\.items\s*\.filter\([\s\S]*?=>\s*i\.kind === 'file_slice'\)\s*\.map/);
+    expect(renew).toMatch(/items:\s*bundle\.items/);
+  });
+});

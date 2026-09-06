@@ -914,6 +914,15 @@ describe('INV-E3/F paid boundary (S2-H-04, S2-H-01, S2-H-02)', () => {
     expect(renewConsentDigest({ ...base, promptProtocol: 'lco-renew/recovery-v0' })).not.toBe(d1);
     expect(renewConsentDigest({ ...base, budget: { maxAttempts: 4, maxWallMs: 900_000 } })).not.toBe(d1);
     expect(renewConsentDigest({ ...base, snapshotId: 'RSN-fedcba9876543210' })).not.toBe(d1);
+    // post-PR5 L2: the route binding is materialized — resolved(value) differs
+    // from unresolved, and BOTH differ from omitted (the absence is
+    // digest-recorded; a resolved binding equals the historical routeDigest).
+    const ROUTE = 'sha256:' + 'd'.repeat(64) as `sha256:${string}`;
+    const resolved = renewConsentDigest({ ...base, routeBinding: { status: 'resolved', routeDigest: ROUTE } });
+    const unresolved = renewConsentDigest({ ...base, routeBinding: { status: 'unresolved', reason: 'missing key env' } });
+    expect(resolved).not.toBe(d1);
+    expect(resolved).not.toBe(unresolved);
+    expect(unresolved).not.toBe(d1);
     expect(RENEW_CONSENT_PROTOCOL).toBe('lco-renew/consent-v2');
   });
 });

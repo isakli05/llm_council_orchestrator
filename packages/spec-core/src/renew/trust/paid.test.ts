@@ -5,6 +5,7 @@ import {
   createPaidOperation,
   resolveLegacyEnvRoute,
   resolvedRouteDigest,
+  routeFromConfig,
 } from './paid';
 import { TrustPaidError } from './errors';
 import type { ResolvedRole } from '../../config/llm-config';
@@ -62,6 +63,61 @@ describe('paid: legacy-env route resolves EVERY effectual field (S3-H-07)', () =
     }
     // identical resolution → identical digest (deterministic)
     expect(resolvedRouteDigest(resolveLegacyEnvRoute({ ...base }, { maxAttempts: 8 }))).toBe(d);
+  });
+});
+
+describe('paid: special-key consent/wire equivalence (post-PR5 L1/I1)', () => {
+  const baseEnv = { LCO_LLM_BASE_URL: 'https://gw.example/v1', LCO_LLM_MODEL: 'm-1' };
+
+  it("refuses an own '__proto__' key in LCO_LLM_EXTRA_BODY loudly (schema-free path)", () => {
+    // JSON.parse yields a REAL own "__proto__": pre-hardening the route kept
+    // it on the wire while the canonical digest dropped it (consent/wire
+    // divergence). Both-or-neither: refuse at the boundary.
+    expect(() =>
+      resolveLegacyEnvRoute(
+        { ...baseEnv, LCO_LLM_EXTRA_BODY: '{"__proto__":"phantom","temperature":0.2}' },
+        { maxAttempts: 1 },
+      ),
+    ).toThrowError(/__proto__/);
+    // the clean subset still resolves (only the special key is refused)
+    expect(
+      resolveLegacyEnvRoute({ ...baseEnv, LCO_LLM_EXTRA_BODY: '{"temperature":0.2}' }, { maxAttempts: 1 }).model,
+    ).toBe('m-1');
+  });
+
+  it("binds a zod-bypassed own '__proto__' header into the route digest (preserve rule)", () => {
+    const dirtyConfig = {
+      gateway: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'm-1',
+      extraHeaders: JSON.parse('{"X-Title":"t","__proto__":"phantom"}'),
+    };
+    const cleanConfig = {
+      gateway: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'm-1',
+      extraHeaders: { 'X-Title': 't' },
+    };
+    const dirty = routeFromConfig({
+      config: dirtyConfig as never,
+      origin: 'named-profile',
+      routingMode: 'single',
+      apiKeyEnvName: 'K',
+      budget: { maxAttempts: 1 },
+    });
+    const clean = routeFromConfig({
+      config: cleanConfig,
+      origin: 'named-profile',
+      routingMode: 'single',
+      apiKeyEnvName: 'K',
+      budget: { maxAttempts: 1 },
+    });
+    // structuredClone preserves the own key through route construction…
+    expect(Object.hasOwn(dirty.headers as object, '__proto__')).toBe(true);
+    // …so the digest MUST differ. Pre-hardening the replacer dropped the key
+    // and these two digests COLLIDED (digest-blind) — restoring the
+    // plain-object replacer makes this assertion fail.
+    expect(resolvedRouteDigest(dirty)).not.toBe(resolvedRouteDigest(clean));
   });
 });
 

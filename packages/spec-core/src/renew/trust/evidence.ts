@@ -77,7 +77,13 @@ export interface ContextBundleIdentity {
   /** domainDigest('LCO:PAID_CONTEXT', 2, …) over the ordered records' slice
    *  facts AND the full ordered item list — substituting, splicing, editing,
    *  or reordering any record or item (node/edge/fact/file_slice) changes
-   *  it. The model-visible payload cannot change without changing it. */
+   *  it. The BUNDLE's model-visible payload cannot change without changing
+   *  it. Request framing rendered around the bundle (run context such as
+   *  nowIso and scope) is a SEPARATE identity domain, deliberately not
+   *  digest-covered here: scope is consent-bound (LCO:CONSENT v1) on MCP and
+   *  a compile-time pin on the CLI; run time persists as plaintext
+   *  created_at (see runRecovery — the persisted context_digest is audit
+   *  lineage, not total model-input identity). */
   bundle_id: `sha256:${string}`;
   /** The structural epoch the supplied graph/node context came from (when
    *  graph context participated in the bundle). */
@@ -86,13 +92,26 @@ export interface ContextBundleIdentity {
 
 /** A SEALED context bundle: identity + the immutable records and items it
  *  covers. The items are carried so the digest is recomputable (S5-M-01:
- *  membership proof over the ENTIRE model-visible payload). */
+ *  membership proof over the ENTIRE model-visible BUNDLE payload — request
+ *  framing is outside the identity by design). */
 export interface SealedContext {
   identity: ContextBundleIdentity;
   records: readonly ContextRecord[];
   /** The full item list the digest covers (frozen at seal time). */
   items: readonly ContextItem[];
 }
+
+/**
+ * Post-PR5 I4: memoized digest of SEALED bundles, keyed by reference.
+ * Written ONLY inside `sealContextBundle` after the final freeze — a sealed
+ * bundle is deep-frozen, so a cached digest can never go stale. Anything
+ * else (a tampered copy, a hand-built lookalike, a JSON-round-tripped thawed
+ * bundle) is a different reference and takes the FULL recompute path, so
+ * tamper detection is structurally preserved. NEVER cache on read: a naive
+ * read-side cache would mask post-cache mutation of a thawed bundle riding a
+ * stolen identity (demonstrated during investigation — forbidden shape).
+ */
+const bundleDigestCache = new WeakMap<SealedContext, `sha256:${string}`>();
 
 /** One server-owned supplied slice — the rendered text IS the authority. */
 export interface SuppliedContextSlice {
@@ -145,6 +164,12 @@ function bundleDigestPayload(
  * domain-separated canonical digest, and stamps each record with it. The
  * returned records are frozen. A hand-edited or foreign record set cannot
  * carry a valid bundle_id — resolveCitation recomputes it.
+ *
+ * Post-PR5 I3: the seal treats `slices` (records) and `items` as two
+ * independently identity-bound lists BY DESIGN; their semantic coherence
+ * (each file_slice item corresponds to its record) is owned by the CALLER —
+ * the sole production site derives both sides from one array, an invariant
+ * pinned by the architecture guard in architecture.test.ts.
  */
 export function sealContextBundle(args: {
   projectName: string;
@@ -153,9 +178,10 @@ export function sealContextBundle(args: {
   /**
    * S5-M-01 (REQUIRED, fail-closed): the FULL item list of the bundle being
    * sealed — every kind (file_slice, node, edge, structural_fact), in order.
-   * The bundle identity covers the entire model-visible payload; there is no
-   * way to seal a bundle whose items are not identity-bound. Items are
-   * deep-cloned then frozen here — caller mutation cannot reach the seal.
+   * The bundle identity covers the bundle's entire model-visible payload
+   * (request framing is outside the identity by design); there is no way to
+   * seal a bundle whose items are not identity-bound. Items are deep-cloned
+   * then frozen here — caller mutation cannot reach the seal.
    */
   items: ReadonlyArray<ContextItem>;
   structural?: { manifest_digest: `sha256:${string}`; graph_digest: `sha256:${string}` };
@@ -187,10 +213,17 @@ export function sealContextBundle(args: {
     });
     seen.set(key, base.length - 1);
   }
-  const bundle_id = domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base, args.items));
-  const records: ContextRecord[] = base.map((r) => Object.freeze({ ...r, bundle_id }));
+  // Post-PR5 I2: clone+freeze FIRST, then digest the same frozen clone the
+  // seal exposes — the identity can never diverge from the exposed items (a
+  // getter-equipped item previously presented access #1 to the digest and
+  // access #2 to the clone). For static items digest(clone) ===
+  // digest(original) — canonical key-sorting normalizes insertion order, and
+  // proxies/functions already threw at clone time — so every ordinary digest
+  // is byte-unchanged.
   const frozenItems: ContextItem[] = args.items.map((item) => deepFreezeItem(structuredClone(item)));
-  return Object.freeze({
+  const bundle_id = domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload({ project_name: args.projectName, snapshot_id: args.snapshotId, ...(args.structural !== undefined ? { structural: args.structural } : {}) }, base, frozenItems));
+  const records: ContextRecord[] = base.map((r) => Object.freeze({ ...r, bundle_id }));
+  const sealed: SealedContext = Object.freeze({
     identity: Object.freeze({
       schema_version: 2 as const,
       project_name: args.projectName,
@@ -201,6 +234,10 @@ export function sealContextBundle(args: {
     records: Object.freeze(records),
     items: Object.freeze(frozenItems),
   });
+  // Post-freeze, post-freeze-only write (I4): the reference-keyed cache entry
+  // for THIS sealed instance — never on read, never for any other object.
+  bundleDigestCache.set(sealed, bundle_id);
+  return sealed;
 }
 
 /** Deep-freeze one cloned item (S5-M-01: the sealed items are immutable). */
@@ -221,6 +258,13 @@ function deepFreezeItem<T>(value: T): T {
  * the identity's bundle_id.
  */
 export function contextBundleDigest(bundle: SealedContext): `sha256:${string}` {
+  // Sealed instances resolve in O(1) from the seal-time cache (per-citation
+  // recomputation previously cost ~0.5–0.7 ms each at scale — ~1.5 s per
+  // 3,000-citation ceiling response). Miss = anything not produced by
+  // sealContextBundle: recompute fully and DO NOT store (keeps tampered
+  // lookalikes on the honest path).
+  const cached = bundleDigestCache.get(bundle);
+  if (cached !== undefined) return cached;
   return domainDigest('LCO:PAID_CONTEXT', 2, bundleDigestPayload(bundle.identity, bundle.records, bundle.items));
 }
 

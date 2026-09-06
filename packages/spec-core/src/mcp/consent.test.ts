@@ -514,3 +514,80 @@ describe('generate refusal texts', () => {
     expect(text).toContain('ZERO LLM calls');
   });
 });
+
+describe('post-PR5 L2: typed route binding — preimage pins', () => {
+  const ROUTE = 'sha256:' + 'c'.repeat(64) as `sha256:${string}`;
+
+  it('a RESOLVED binding serializes exactly as the historical routeDigest field (byte-compat)', async () => {
+    const { renewConsentDigest, RENEW_CONSENT_PROTOCOL } = await import('./consent');
+    const { domainDigest } = await import('../renew/trust/canonical');
+    const got = renewConsentDigest({ dir: '/proj', scope: 'whole', routeBinding: { status: 'resolved', routeDigest: ROUTE } });
+    // the exact pre-fix preimage: consent digests that authorized routes are unchanged
+    const historical = domainDigest('LCO:CONSENT', 1, {
+      renew: 'analyze',
+      consentProtocol: RENEW_CONSENT_PROTOCOL,
+      dir: '/proj',
+      scope: 'whole',
+      routeDigest: ROUTE,
+    });
+    expect(got).toBe(historical);
+  });
+
+  it('an UNRESOLVED binding is DIGEST-RECORDED, never silently omitted', async () => {
+    const { renewConsentDigest, RENEW_CONSENT_PROTOCOL } = await import('./consent');
+    const { domainDigest } = await import('../renew/trust/canonical');
+    const base = { dir: '/proj', scope: 'whole' as const };
+    const unbound = renewConsentDigest({ ...base, routeBinding: { status: 'unresolved', reason: 'route unresolvable at consent time (…)' } });
+    const omitted = renewConsentDigest(base);
+    expect(unbound).not.toBe(omitted); // the absence is IN the preimage
+    expect(unbound).toBe(
+      domainDigest('LCO:CONSENT', 1, {
+        renew: 'analyze',
+        consentProtocol: RENEW_CONSENT_PROTOCOL,
+        dir: '/proj',
+        scope: 'whole',
+        routeBinding: 'unresolved',
+      }),
+    );
+    // the reason string is NOT part of the preimage (no stringly digest drift)
+    expect(renewConsentDigest({ ...base, routeBinding: { status: 'unresolved', reason: 'other reason' } })).toBe(unbound);
+  });
+});
+
+describe('post-PR5 L2: TOTAL route-binding gate (routeBindingRefusal) — no undefined-skip cell', () => {
+  it('op undefined (injected adapter path) → proceed (no route to bind)', async () => {
+    const { routeBindingRefusal } = await import('./consent');
+    expect(routeBindingRefusal({ status: 'unresolved', reason: 'x' }, undefined)).toBeUndefined();
+    expect(routeBindingRefusal({ status: 'resolved', routeDigest: 'sha256:' + '1'.repeat(64) as `sha256:${string}` }, undefined)).toBeUndefined();
+  });
+
+  it('unresolved binding + a constructed op → REFUSE (the historically-skipped cell)', async () => {
+    const { routeBindingRefusal } = await import('./consent');
+    const refusal = routeBindingRefusal(
+      { status: 'unresolved', reason: 'route unresolvable at consent time (missing key env)' },
+      { routeDigest: 'sha256:' + '2'.repeat(64) as `sha256:${string}` },
+    );
+    expect(refusal).toBeDefined();
+    expect(refusal).toMatch(/NO resolved route binding/);
+    expect(refusal).toMatch(/zero LLM calls were made/);
+  });
+
+  it('resolved binding, unequal digest → REFUSE (stale consent)', async () => {
+    const { routeBindingRefusal } = await import('./consent');
+    const refusal = routeBindingRefusal(
+      { status: 'resolved', routeDigest: 'sha256:' + '1'.repeat(64) as `sha256:${string}` },
+      { routeDigest: 'sha256:' + '2'.repeat(64) as `sha256:${string}` },
+    );
+    expect(refusal).toMatch(/no longer matches the consented route digest/);
+  });
+
+  it('resolved binding, equal digest → proceed', async () => {
+    const { routeBindingRefusal } = await import('./consent');
+    expect(
+      routeBindingRefusal(
+        { status: 'resolved', routeDigest: 'sha256:' + '3'.repeat(64) as `sha256:${string}` },
+        { routeDigest: 'sha256:' + '3'.repeat(64) as `sha256:${string}` },
+      ),
+    ).toBeUndefined();
+  });
+});

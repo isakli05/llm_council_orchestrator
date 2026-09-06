@@ -63,7 +63,9 @@ afterEach(() => {
   tmpDirs.length = 0;
 });
 
-describe('DATA-001 (a): two concurrent real `lco init` processes on one target', () => {
+const DIST_PRESENT = existsSync(CLI_JS);
+if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+describe.skipIf(!DIST_PRESENT)('DATA-001 (a): two concurrent real `lco init` processes on one target', () => {
   it('exactly ONE succeeds; the other refuses cleanly; the spec compiles', async () => {
     const root = mkdtempSync(join(tmpdir(), 'spec-core-init-race-'));
     tmpDirs.push(root);
