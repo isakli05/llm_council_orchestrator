@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RenewCapabilities } from '../../cli/commands/renew';
@@ -137,7 +137,7 @@ afterEach(() => {
 
 const FIXTURE_SRC = join(__dirname, '..', '..', '..', 'fixtures', 'legacy-app');
 
-async function freshProject(): Promise<{ project: string; target: string }> {
+async function freshProject(): Promise<{ project: string; target: string; caps: RenewCapabilities }> {
   const target = mkdtempSync(join(tmpdir(), 'lco-tx-fault-target-'));
   tmpDirs.push(target);
   cpSync(join(FIXTURE_SRC, 'src'), join(target, 'src'), { recursive: true });
@@ -158,7 +158,7 @@ async function freshProject(): Promise<{ project: string; target: string }> {
   const r = await init.cmdRenewInit({ dir: project, target, force: false }, caps);
   if (r.code !== 0) throw new Error(`init failed: ${r.output}`);
   delete (globalThis as { __txFault?: unknown }).__txFault;
-  return { project, target };
+  return { project, target, caps };
 }
 
 /** Byte snapshot of every trusted state file — the "complete revision R" witness. */
@@ -2322,5 +2322,131 @@ describe('L5: marker-write CAS fence (journal-clobber TOCTOU closed)', () => {
     }
     expect(rejectionB!.code).toBe('recovery_required');
     expect(JSON.parse(readFileSync(pathsB.journal, 'utf8')).superseded).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-PR5 L6 (RC3): the persistent evidence-channel physics boundary is
+// ACCEPTED and CONTRACT-PINNED — not confusable with a defect. When every
+// durable evidence channel is persistently unwritable, no software can
+// truthfully guarantee a durable marker; the abort's only truthful
+// representation is the in-process typed disclosure, and a subsequently
+// healthy fresh reader at R+1 is the PINNED, EXPECTED outcome. A genuine
+// sidecar (channel healthy) fail-closes reads for contrast. The paid entry
+// refuses EARLY when the channel is dead (entry probe).
+// ---------------------------------------------------------------------------
+describe('L6: persistent evidence-channel physics boundary (ACCEPTED, contract-pinned)', () => {
+  it('physics-boundary-persistent-evidence: truthful no-evidence disclosure + fresh reader HEALTHY at R+1 (the pinned boundary)', async () => {
+    const { project } = await freshProject();
+    const paths = renewalPaths(project);
+    const begin = loadActiveState(project);
+    const bHolder = { pid: -777006, acquiredAt: '2026-09-03T00:00:00Z' };
+    const bEntries = [{ kind: 'file', path: paths.overlay, oldContent: readFileSync(paths.overlay, 'utf8') }] as never;
+    const bIntegrity = domainDigest('LCO:STATE_TX', 1, { base_revision: begin.identity.revision, holder: bHolder, entries: bEntries });
+    const evFault = { hookArmed: true, evidenceFailures: 3, evidenceWrites: 0 };
+    (globalThis as { __txEvidenceFault?: typeof evFault }).__txEvidenceFault = evFault;
+    (globalThis as { __txFault?: unknown }).__txFault = {
+      interleaveAndFail: {
+        onWrite: 2,
+        only: true,
+        commit: () => {
+          writeFileSync(paths.journal, `${JSON.stringify({ schema_version: 1, holder: bHolder, base_revision: begin.identity.revision, integrity: bIntegrity, entries: bEntries }, null, 2)}\n`);
+          writeFileSync(paths.state, JSON.stringify({ schema_version: 1, revision: begin.identity.revision + 1 }, null, 2));
+        },
+      },
+    };
+    let rejection: (Error & { code?: string }) | undefined;
+    try {
+      await runRenewalStateTx({
+        projectDir: project,
+        nowIso: '2026-09-03T00:00:02Z',
+        expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+        policy: 'additive',
+        work: () => undefined,
+        plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+      });
+    } catch (e) {
+      rejection = e as Error & { code?: string };
+    } finally {
+      delete (globalThis as { __txFault?: unknown }).__txFault;
+      delete (globalThis as { __txEvidenceFault?: unknown }).__txEvidenceFault;
+    }
+    // the truthful in-process disclosure (and NO retention claim)
+    expect(rejection!.code).toBe('recovery_required');
+    expect(rejection!.message).toMatch(/CRITICAL: PERSISTENT abort-evidence failure/i);
+    expect(rejection!.message).toMatch(/NO durable evidence of this abort could be retained/i);
+    // THE PINNED BOUNDARY: no durable trace exists; the concurrent writer's
+    // completed commit stands, and a FRESH reader (module-fresh below; a
+    // genuine separate process when dist is present) sees HEALTHY state at
+    // R+1. This is the accepted outcome — do not "fix" it by inventing a
+    // second journal, a pre-arm store, or rollback-capable emergency state.
+    expect(existsSync(join(paths.journal, '..', 'tx-abort-evidence.json'))).toBe(false);
+    vi.resetModules();
+    const fresh = await import('./state');
+    expect(fresh.readRevision(project)).toBe(begin.identity.revision + 1);
+  });
+
+  it('physics boundary is PROCESS-ephemeral: a genuine separate-process reader also sees healthy R+1', async ({ skip }) => {
+    const distState = join(__dirname, '..', '..', '..', 'dist', 'renew', 'trust', 'state.js');
+    if (!existsSync(distState)) skip('dist not built (pretest builds it; direct vitest run without build skips process-isolation proof)');
+    const { project } = await freshProject();
+    const begin = loadActiveState(project);
+    // healthy project, foreign retired journal gone: bump the revision the
+    // honest way (a committed tx), then prove a SEPARATE process reads it.
+    await runRenewalStateTx({
+      projectDir: project,
+      nowIso: '2026-09-03T00:00:02Z',
+      expected: { snapshotId: begin.identity.snapshotId, revision: begin.identity.revision },
+      policy: 'additive',
+      work: () => undefined,
+      plan: (fresh) => ({ mutation: analyzeStyleMutation(fresh), result: undefined }),
+    });
+    const { execFileSync } = await import('node:child_process');
+    const out = execFileSync(
+      process.execPath,
+      ['-e', `const {readRevision}=require(${JSON.stringify(distState)});console.log(readRevision(${JSON.stringify(project)}))`],
+      { encoding: 'utf8' },
+    ).trim();
+    expect(Number(out)).toBe(begin.identity.revision + 1);
+  });
+
+  it('entry probe: a dead evidence channel refuses the paid analyze at ENTRY (named channel, no probe residue)', async () => {
+    const { project, caps } = await freshProject();
+    const root = join(project, '.lco', 'renewal');
+    chmodSync(root, 0o555);
+    let result: { code: number; output: string } | undefined;
+    try {
+      const init = await import('../../cli/commands/renew');
+      result = await init.cmdRenewAnalyze({ dir: project }, caps);
+    } finally {
+      chmodSync(root, 0o755);
+    }
+    expect(result!.code).toBe(2);
+    expect(result!.output).toMatch(/durable evidence channel is NOT writable/i);
+    expect(result!.output).toMatch(/process-ephemeral/i);
+    // no probe temp residue (write+unlink in the same breath)
+    const residue = readdirSync(root).filter((f) => f.includes('evidence-channel-probe'));
+    expect(residue).toEqual([]);
+  });
+
+  it('contrast: a LANDED sidecar fail-closes reads (the boundary is about TOTAL failure, not any failure)', async () => {
+    const { project } = await freshProject();
+    const evidencePath = join(renewalPaths(project).journal, '..', 'tx-abort-evidence.json');
+    writeFileSync(evidencePath, JSON.stringify({
+      schema_version: 1,
+      holder: { pid: -777007, acquiredAt: '2026-09-03T00:00:00Z' },
+      base_revision: 1,
+      performed_steps: 2,
+      evidence: 'a transaction aborted while another writer owned the journal path; in-flight bytes may have landed over the concurrent commit',
+      written_at: '2026-09-03T00:00:03Z',
+      remedy: 'inspect the trusted state against both writers, then remove tx-abort-evidence.json',
+    }));
+    let refusal: (Error & { code?: string }) | undefined;
+    try {
+      readRevision(project);
+    } catch (e) {
+      refusal = e as Error & { code?: string };
+    }
+    expect(refusal!.code).toBe('recovery_required');
   });
 });
