@@ -1466,10 +1466,10 @@ birlikte yaşar (bkz. "Yayın ve Sahiplik").
   (çift-açılış yarışı dahil, I7), çapraz-kalıntı kompozisyonları (R1-R4, H,
   C1-C5), Graphify uyumluluk doğrulaması (Node22+0.9.50 / Node24+0.9.53
   matrisi) ve doküman-doğruluk düzeltmeleri (D1-D8). Bağımsız denetim
-  kalıntılarının tümü giderildi/kategori olarak sınırlandı (27/27: 14 kapatıldı
-  + 13 belgelenmiş sınır); API/CLI/şema/MCP protokolünde kırıcı değişiklik
-  YOKTUR (`src/schemas/` ve `generated/` bu aralıkta değişmedi). — 2708 test
-  (194 dosya, 0 atlanmış).
+  kalıntılarının tümü giderildi/kategori olarak sınırlandı (27/27: 13 kapatıldı
+  + 14 kabul edilip belgelenmiş değişmez sınır, 0 açık); API/CLI/şema/MCP
+  protokolünde kırıcı değişiklik YOKTUR (`src/schemas/` ve `generated/` bu
+  aralıkta değişmedi). — 2708 test (194 dosya, 0 atlanmış).
 - **2026-08-30 — canlı deney İCRA ve kapanışı:** 3 tekrar × 20 görev × 2 varyant
   (glm-5.3, dondurulmuş mühür 15884058 altında) tamamlandı; ölçüt 1-5 MET, bağlayıcı
   signTest NOT MET (9 ayrışık çift < 10) → konsey-üstünlük iddiası emekli edildi
