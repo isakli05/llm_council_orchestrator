@@ -28,7 +28,7 @@ npx lco --help
 # PATH filtresi (CI'nın kullandığı form): isim filtresi paketin adı
 # değişirse sessizce hiçbir şeyle eşleşmez; yol filtresi eşleşmeyi garanti eder.
 pnpm --filter ./packages/spec-core build   # dist'i temizler + tsc + JSON Schema dışa aktarımı (generated/spec-schema.json)
-pnpm --filter ./packages/spec-core test    # vitest (2200+ test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
+pnpm --filter ./packages/spec-core test    # vitest (2700+ test: şema, derleyici, lint, eval, CLI, check, doctor, MCP, bütçe, yayın kapısı, ölçek-tavanı, kısıt-iz, canlı-deney araçları)
 pnpm --filter ./packages/spec-core lint    # tsc --noEmit
 pnpm --filter ./packages/spec-core smoke:packed  # pack -> temiz kurulum -> lco init -> lco-mcp handshake
 ```
@@ -1442,6 +1442,34 @@ commit'te** güncellenir (bu girişler + Kurulum bölümündeki sayı bu kuralı
 izler). Sürüm girdileri `prepublish-check`'in beklediği `v<sürüm>` etiketiyle
 birlikte yaşar (bkz. "Yayın ve Sahiplik").
 
+- **2026-09-07 — v0.2.1 (patch; v0.2.0 = `e7dedf0` sonrası üç sertleştirme PR'ı
+  #5/#6/#7):** sürüm kimliği tek kaynaktan türer (`package.json` →
+  `readPackageVersion()`; CLI `--version` ve MCP `serverInfo.version` dahil) —
+  bump runtime kod değişikliği gerektirmez. Kapsam (kullanıcıya dönük
+  kategoriler): **(1) Legacy Renewal güven/iyileştirme sertleştirmesi** —
+  model-görünür ContextBundle kimliğinin tam bağlanması (S5-M-01), ücretli
+  rotalarda yapılandırılmış başlıkların korunması (S5-M-02), kalıcı
+  iptal-kanıtı arıza anlamlarının sertleştirilmesi (S5-M-04), çözülmemiş rota
+  yetkisinin açık fail-closed reddi (L2). **(2) kanonik/kimlik sertleştirmesi**
+  — özel-anahtar kanonizasyonu ve doğrulaması (L1/I1), mühürlü demetlerin
+  sergilediği klonlanmış dondurulmuş ögelerin özetlerini mühürlemesi (I2/I3),
+  istek-çerçeveleme kimlik sınırının nitelendirilip mekanik sabitlenmesi
+  (L3/L4), mühürlü-demet özetlerinin mühür zamanında hatırlanması (I4,
+  performans). **(3) dayanıklı durum/kanıt deposu sertleştirmesi** — yazma
+  sınırı doğrulaması ve dedup-anahtarlı analyze katlaması (I6/NEW-F-01),
+  süperseded işaret yazımının CAS-çiti (L5), tutma dürüstlüğü ve yabancı nesne
+  ayrımı (L7/I5), kanıt temizliğinde tipli hatalar/enkaz atfı/dürüst
+  landed-commit kolu, JSON-serialize olamayan dayanıklı yüklerde tipli ret.
+  **(4) yapılandırma güvenliği** — roles record anahtarlarının ve
+  own-property profil/sağlayıcı çözümünün sertleştirilmesi. **(5) test/CI
+  determinizmi ve kanıt** — tarayıcı istemci testlerinin hermetikleştirilmesi
+  (çift-açılış yarışı dahil, I7), çapraz-kalıntı kompozisyonları (R1-R4, H,
+  C1-C5), Graphify uyumluluk doğrulaması (Node22+0.9.50 / Node24+0.9.53
+  matrisi) ve doküman-doğruluk düzeltmeleri (D1-D8). Bağımsız denetim
+  kalıntılarının tümü giderildi/kategori olarak sınırlandı (27/27: 13 kapatıldı
+  + 14 kabul edilip belgelenmiş değişmez sınır, 0 açık); API/CLI/şema/MCP
+  protokolünde kırıcı değişiklik YOKTUR (`src/schemas/` ve `generated/` bu
+  aralıkta değişmedi). — 2708 test (194 dosya, 0 atlanmış).
 - **2026-08-30 — canlı deney İCRA ve kapanışı:** 3 tekrar × 20 görev × 2 varyant
   (glm-5.3, dondurulmuş mühür 15884058 altında) tamamlandı; ölçüt 1-5 MET, bağlayıcı
   signTest NOT MET (9 ayrışık çift < 10) → konsey-üstünlük iddiası emekli edildi
