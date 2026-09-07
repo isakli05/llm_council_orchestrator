@@ -117,7 +117,14 @@ export function parseOverlayStore(text: string): OverlayLoad {
     }
     seenIds.add(rec.id);
     if (rec.status === 'active') {
-      const key = `${rec.relation}|${rec.subject.path}${rec.subject.symbol ?? ''}`;
+      // D-OBS-1 (pre-v0.2.1) — documented boundary: path and symbol are
+    // concatenated WITHOUT a delimiter, so ('src/a.ts', 'x') and
+    // ('src/a.tsx', undefined) collide on e.g. `business_rule|src/a.tsx`.
+    // Consequence is a false duplicate-ACTIVE verdict → store_corrupt
+    // refusal (fail-closed both sides, never a merge or silent winner).
+    // No production overlay writer sets subject.symbol today; reopen if one
+    // ever does (then key structurally, e.g. JSON of [relation,path,symbol]).
+    const key = `${rec.relation}|${rec.subject.path}${rec.subject.symbol ?? ''}`;
       if (seenActive.has(key)) {
         return { ok: false, code: 'overlay_corrupt', message: `overlay.json contains duplicate active ${rec.relation} record for ${rec.subject.path} — resolve the conflict explicitly` };
       }

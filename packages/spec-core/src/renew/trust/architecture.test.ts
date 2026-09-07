@@ -438,5 +438,10 @@ describe('architecture: post-PR5 hardening guards', () => {
     const renew = readFileSync(join(PKG, 'src', 'cli', 'commands', 'renew.ts'), 'utf8');
     expect(renew).toMatch(/slices:\s*bundle\.items\s*\.filter\([\s\S]*?=>\s*i\.kind === 'file_slice'\)\s*\.map/);
     expect(renew).toMatch(/items:\s*bundle\.items/);
+    // B-2 (pre-v0.2.1): per-CALL-SITE pin — a second seal CALL inside the
+    // allowlisted file (the per-file guard's documented blind spot) must
+    // also fail, forcing the same explicit coherence decision. The import
+    // line has no call parenthesis, so this counts calls, not mentions.
+    expect((renew.match(/sealContextBundle\s*\(/g) ?? []).length).toBe(1);
   });
 });

@@ -9,6 +9,7 @@ import { createClarifySession } from '../clarify/session/orchestrator';
 import { startClarifyServer } from '../server/http';
 import { generateSessionToken } from '../server/tokens';
 import type { StaticAssets } from '../server/http';
+import { boot } from './app.js';
 
 /**
  * §34 — the full-stack UI test: the REAL client app (app.ts booted in jsdom)
@@ -75,12 +76,16 @@ let handle: Awaited<ReturnType<typeof startClarifyServer>>;
 
 async function bootApp(): Promise<void> {
   // the real index.html bootstrap path: body carries the session id, the
-  // fragment carries the token; app.ts is imported once per test file
+  // fragment carries the token. app.ts is imported STATICALLY above, so its
+  // module side-effect boot() already ran at file load with NO #app host
+  // (a guaranteed no-op) — this explicit boot() is therefore the single,
+  // fully-awaited boot. The old dynamic import fired a SECOND concurrent
+  // real boot whose late mount could clobber the DOM mid-test (masked by a
+  // settle(80) that was not a sound mask even in principle).
   document.body.dataset.session = 's-e2e';
   window.location.hash = `#${handle.token}`;
   window.history.replaceState = window.history.replaceState.bind(window.history);
-  const mod = await import('./app.js');
-  await mod.boot();
+  await boot();
 }
 
 async function settle(ms = 50): Promise<void> {
@@ -122,16 +127,18 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
   it('questions → option preview → Other answer on a second decision → review → change request → approval', async () => {
     llm.queue([JSON.stringify(bundle())]); // round 2 regeneration after answers
     await bootApp();
-    await settle(80);
 
-    // the questionnaire rendered with the real question
-    expect(document.querySelector('legend')?.textContent).toContain('Who gets the last fabric');
+    // the questionnaire rendered with the real question (observable gate —
+    // the single boot is fully awaited, but poll for CI variance, not a
+    // fixed window)
+    const legend = await waitFor(() => document.querySelector('legend'));
+    expect(legend?.textContent).toContain('Who gets the last fabric');
 
-    // selecting the option shows the INSTANT preview (bundle layer, verbatim)
+    // selecting the option shows the INSTANT preview (bundle layer, verbatim;
+    // the preview render is synchronous in the change handler)
     const radio = document.getElementById('opt-DEC-0004-0') as HTMLInputElement;
     radio.checked = true;
     radio.dispatchEvent(new Event('change', { bubbles: true }));
-    await settle(30);
     const preview = document.getElementById('preview-DEC-0004')!;
     expect(preview.textContent).toContain('the other dealer sees an out-of-stock message');
 
@@ -139,50 +146,47 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
     const extra = document.getElementById('extra-DEC-0004') as HTMLTextAreaElement;
     extra.value = 'Pre-paid dealers always win the fabric.';
     extra.dispatchEvent(new Event('input', { bubbles: true }));
-    await settle(30);
 
-    // submit the round
+    // submit the round — the next line's waitFor gates the round-trip
     const submit = [...document.querySelectorAll('button')].find((b) => /Submit 1 answer/.test(b.textContent ?? '')) as HTMLButtonElement;
     expect(submit).toBeTruthy();
     submit.click();
-    await settle(120);
 
     // the review rendered from the regenerated bundle
     const reviewTitle = await waitFor(() => document.querySelector('.review-title'));
     expect(reviewTitle?.textContent).toBe('How your application will work');
     expect(document.querySelector('[data-segment-id="SEG-REQ-0001"]')?.textContent).toContain('product catalogue');
 
-    // a pending change request on one segment
+    // a pending change request on one segment — await the observable panel,
+    // never a null-tolerant conditional that silently skips half the test
     (document.querySelector('[data-segment-id="SEG-REQ-0001"] .change-trigger') as HTMLButtonElement).click();
-    await settle(30);
-    const app = (window as unknown as { lcoApp: unknown }).lcoApp;
-    expect(app).toBeTruthy();
-    // re-render after the state change (the app does this internally; the DOM here is driven by the app)
-    const area = document.getElementById('change-instruction') as HTMLTextAreaElement | null;
-    if (area !== null) {
-      area.value = 'Show live stock levels in the catalogue.';
-      ([...document.querySelectorAll('.change-panel .btn.primary')].find((b) => b.textContent === 'Add change request') as HTMLButtonElement).click();
-      await settle(30);
-    }
+    // (the window.lcoApp debug-exposure harness hook stays asserted — a prior
+    // edit dropped this line; verifier observation restored it)
+    expect((window as unknown as { lcoApp: unknown }).lcoApp).toBeTruthy();
+    const area = (await waitFor(() => document.getElementById('change-instruction'))) as HTMLTextAreaElement;
+    area.value = 'Show live stock levels in the catalogue.';
+    ([...document.querySelectorAll('.change-panel .btn.primary')].find((b) => b.textContent === 'Add change request') as HTMLButtonElement).click();
 
-    if (area !== null) {
-      // apply the change set → one regeneration (queued) → review v2
-      const regenerated = bundle();
-      regenerated.requirements[0]!.statement = 'Dealers browse the catalogue with live stock levels.';
-      llm.queue([JSON.stringify(regenerated)]);
-      const applyBtn = [...document.querySelectorAll('button')].find((b) => /Apply 1 change/.test(b.textContent ?? '')) as HTMLButtonElement;
-      applyBtn.click();
-      const outcomes = await waitFor(() => document.querySelector('.change-outcomes'));
-      expect(outcomes?.textContent).toContain('incorporated');
-      expect(document.querySelector('.review-meta')?.textContent).toContain('Review v2');
-    }
+    // apply the change set → one regeneration (queued) → review v2 (await
+    // the observable Apply button, not a fixed window)
+    const regenerated = bundle();
+    regenerated.requirements[0]!.statement = 'Dealers browse the catalogue with live stock levels.';
+    llm.queue([JSON.stringify(regenerated)]);
+    const applyBtn = (await waitFor(() =>
+      [...document.querySelectorAll('button')].find((b) => /Apply 1 change/.test(b.textContent ?? '')) ?? null,
+    )) as HTMLButtonElement;
+    applyBtn.click();
+    const outcomes = await waitFor(() => document.querySelector('.change-outcomes'));
+    expect(outcomes?.textContent).toContain('incorporated');
+    expect(document.querySelector('.review-meta')?.textContent).toContain('Review v2');
 
     // approve (two-step confirm) — artifacts land on disk
     const approveBtn = document.querySelector('.btn.approve') as HTMLButtonElement;
     expect(approveBtn.hasAttribute('disabled')).toBe(false);
     approveBtn.click();
-    await settle(30);
-    const confirmYes = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Yes, approve') as HTMLButtonElement;
+    const confirmYes = (await waitFor(() =>
+      [...document.querySelectorAll('button')].find((b) => b.textContent === 'Yes, approve') ?? null,
+    )) as HTMLButtonElement;
     confirmYes.click();
     // post-PR5 I7: await the OBSERVABLE state transition, not a fixed 60ms
     // window — the banner appears only after the real HTTP round-trip AND
@@ -201,15 +205,12 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
   it('an Other-only answer reaches the canonical evidence verbatim (no option required)', async () => {
     llm.queue([JSON.stringify(bundle())]);
     await bootApp();
-    await settle(80);
-    const other = document.getElementById('other-DEC-0004') as HTMLInputElement;
+    const other = (await waitFor(() => document.getElementById('other-DEC-0004'))) as HTMLInputElement;
     other.checked = true;
     other.dispatchEvent(new Event('change', { bubbles: true }));
-    await settle(20);
     const area = document.getElementById('other-text-DEC-0004') as HTMLTextAreaElement;
     area.value = 'The dealer with the longest relationship gets the last fabric, always.';
     area.dispatchEvent(new Event('input', { bubbles: true }));
-    await settle(20);
     ([...document.querySelectorAll('button')].find((b) => /Submit 1 answer/.test(b.textContent ?? '')) as HTMLButtonElement).click();
     // post-PR5 I7: await the observable transition (was a fixed 140ms window)
     const reviewTitle = await waitFor(() => document.querySelector('.review-title'));
@@ -217,6 +218,43 @@ describe('the full vertical slice in jsdom (real app + real server + scripted LL
     expect(reviewTitle).toBeTruthy();
     // nothing persisted yet: approval is the only write (§31)
     expect(existsSync(join(dir, 'spec'))).toBe(false);
+  }, 20000);
+
+  it('C5 (pre-v0.2.1): a deterministically DELAYED transport still passes — no fixed sleep determines correctness', async () => {
+    // Every round-trip is delayed 300ms past any historical settle window;
+    // the flow must complete purely on observable-state gates. This is the
+    // H-1 regression shape: a fixed-wait version of this test would flake.
+    const origin = handle.origin;
+    const realFetch = globalThis.fetch.bind(globalThis);
+    (window as unknown as { fetch: typeof fetch }).fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' && input.startsWith('/') ? `${origin}${input}` : input;
+      return new Promise<Response>((resolve, reject) => {
+        setTimeout(() => {
+          realFetch(url as string, init).then(resolve, reject);
+        }, 300);
+      });
+    }) as typeof fetch;
+    llm.queue([JSON.stringify(bundle())]);
+    await bootApp();
+    const other = (await waitFor(() => document.getElementById('other-DEC-0004'), 100)) as HTMLInputElement;
+    other.checked = true;
+    other.dispatchEvent(new Event('change', { bubbles: true }));
+    const area = document.getElementById('other-text-DEC-0004') as HTMLTextAreaElement;
+    area.value = 'The dealer with the longest relationship gets the last fabric, always.';
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+    ([...document.querySelectorAll('button')].find((b) => /Submit 1 answer/.test(b.textContent ?? '')) as HTMLButtonElement).click();
+    // 300ms-delayed POST + regeneration — only the observable gate passes it
+    const reviewTitle = await waitFor(() => document.querySelector('.review-title'), 100);
+    expect(reviewTitle).toBeTruthy();
+    expect(existsSync(join(dir, 'spec'))).toBe(false);
+    // verifier hygiene note: restore the standard (undelayed) per-test shim so
+    // nothing after this cell observes the delayed wrapper.
+    const pristine = globalThis.fetch.bind(globalThis);
+    const liveOrigin = origin;
+    (window as unknown as { fetch: typeof fetch }).fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' && input.startsWith('/') ? `${liveOrigin}${input}` : input;
+      return pristine(url as string, init);
+    }) as typeof fetch;
   }, 20000);
 });
 

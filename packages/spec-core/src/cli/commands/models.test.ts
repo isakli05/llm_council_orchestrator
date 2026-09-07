@@ -90,6 +90,20 @@ describe('cmdModels', () => {
     expect(r.output).toContain('gw (openai-compatible)');
   });
 
+  it("refuses --provider '__proto__' pointedly — own-key resolution, no prototype-chain lookup (pre-v0.2.1 NF-2)", async () => {
+    const configText = JSON.stringify({
+      llm: {
+        providers: { gw: { type: 'openai-compatible', baseUrl: 'https://gw.example.test/v1', apiKeyEnv: 'GW_KEY' } },
+        profiles: { p: { variant: 'single', roles: { single: { provider: 'gw', model: 'm' } } } },
+      },
+    });
+    const fetchImpl = vi.fn();
+    const r = await cmdModels({ providerName: '__proto__', configText, env: { GW_KEY: 'k' }, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(r.code).toBe(2);
+    expect(r.output).toMatch(/unknown provider '__proto__'/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('malformed catalog JSON → exit 2', async () => {
     const bad = vi.fn(async () => new Response('<html>not json</html>', { status: 200 })) as unknown as typeof fetch;
     const r = await cmdModels({ builtin: 'routellm', env: ENV, fetchImpl: bad });

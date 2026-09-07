@@ -156,13 +156,16 @@ export async function cmdModels(opts: ModelsOptions): Promise<ModelsResult> {
     }
     const parsed = parseLlmConfig(opts.configText);
     if (!parsed.ok) return { code: 2, output: parsed.error };
-    const provider = parsed.config.llm.providers[opts.providerName];
-    if (provider === undefined) {
+    // NF-2 (pre-v0.2.1): own-key lookup — '--provider __proto__' must refuse
+    // pointedly here, not resolve the prototype chain into a nonsense
+    // apiKeyEnv-less route that fails later with an unpointed message.
+    if (!Object.hasOwn(parsed.config.llm.providers, opts.providerName)) {
       return {
         code: 2,
         output: `unknown provider '${opts.providerName}' (configured: ${Object.keys(parsed.config.llm.providers).join(', ') || 'none'})`,
       };
     }
+    const provider = parsed.config.llm.providers[opts.providerName];
     baseUrl =
       provider.baseUrl !== undefined
         ? provider.baseUrl

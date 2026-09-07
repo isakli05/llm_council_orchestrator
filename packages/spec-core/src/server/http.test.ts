@@ -321,7 +321,14 @@ describe('lifecycle + HEAD (§5/§30)', () => {
       // authenticated activity advances the clock baseline
       await fetch(`${h.origin}/api/s-inact/session`, { headers: { 'x-lco-session': h.token } });
       clock += 1_000; // past the inactivity window
-      await new Promise((r) => setTimeout(r, 400));
+      // await the OBSERVABLE state transition (the sweep is a real timer
+      // tick; polling the in-process snapshot is the deterministic gate —
+      // not a fixed 400ms window). Deadline sits UNDER vitest's default 5s
+      // per-test timeout so exhaustion surfaces as this expect, not a hang.
+      const deadline = Date.now() + 4_000;
+      while (session.snapshot().state !== 'CANCELLED' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
       expect(session.snapshot().state).toBe('CANCELLED');
       await h.close();
     } finally {

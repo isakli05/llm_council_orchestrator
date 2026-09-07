@@ -271,6 +271,14 @@ describe('McpStdioServer: in-flight cap and busy errors (OPS-001)', () => {
 // --- mutation serialization + generate dedup -----------------------------------------
 
 describe('McpStdioServer: same-root mutations serialize (T6 pinned at session level)', () => {
+  beforeEach(() => {
+    // H-2 (pre-v0.2.1): the LOSER's lco_init throw surfaces on raw stderr via
+    // the server's diagnostic print (server.ts console.error). The assertion
+    // target is the JSON-RPC response text, not stderr noise — silence the
+    // expected diagnostic here (the file-wide afterEach restores the spy).
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
   it('two concurrent lco_init on ONE root: exactly one scaffold, one CLEAN refusal', async () => {
     const root = freshRoot('spec-core-stdio-ser-');
     const h = makeSession();

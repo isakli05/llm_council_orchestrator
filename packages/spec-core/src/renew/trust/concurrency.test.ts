@@ -200,6 +200,53 @@ describe('Phase 10 — deterministic interleavings (no silent lost updates)', ()
     expect(activeRules.length).toBeGreaterThan(0); // the fold landed in overlay too
   });
 
+  it('M-1 (pre-v0.2.1): a CHANGED-statement re-analysis supersedes the prior machine record and installs its own — fold semantics pinned DIRECTLY, not only via the I6 backstop', async () => {
+    // The committed NEW-F-01 coverage catches corruption through the I6
+    // write-boundary backstop (poison refusal) and idempotence for IDENTICAL
+    // statements. This cell pins the fold's own success shape for a
+    // CHANGED statement — mutations that keep the store single-ACTIVE but
+    // semantically wrong (e.g. supersede-but-never-add silently dropping the
+    // new machine statement) commit cleanly through I6 and are invisible to it.
+    const target = mkdtempSync(join(tmpdir(), 'lco-conc-m1-target-'));
+    tmpDirs.push(target);
+    cpSync(join(FIXTURE_SRC, 'src'), join(target, 'src'), { recursive: true });
+    cpSync(join(FIXTURE_SRC, 'package.json'), join(target, 'package.json'));
+    const project = mkdtempSync(join(tmpdir(), 'lco-conc-m1-project-'));
+    tmpDirs.push(project);
+    const graph = fixtureGraph();
+    const s1 = 'Orders under $25 incur a $4.95 small-order fee.';
+    const s2 = 'Orders under $25 incur a $4.95 small-order fee (waived for pickups).';
+    const adapterWith = (statement: string): LlmAdapter => ({
+      async complete(prompt) {
+        const base = JSON.parse(OUTPUT(prompt)) as { hypotheses: { statement: string }[] };
+        base.hypotheses[0]!.statement = statement;
+        return { text: JSON.stringify(base), usage: { in_tokens: 1, out_tokens: 1 }, attempts: 1, latencyMs: 1 };
+      },
+    });
+    const caps1 = capsWith(adapterWith(s1), graph);
+    expect((await cmdRenewInit({ dir: project, target }, caps1)).code).toBe(0);
+    expect((await cmdRenewAnalyze({ dir: project }, caps1)).code).toBe(0);
+    // re-analysis of the SAME subject with a CHANGED machine statement
+    const caps2 = capsWith(adapterWith(s2), graph);
+    const second = await cmdRenewAnalyze({ dir: project }, caps2);
+    expect(second.code, second.output).toBe(0);
+
+    const state = loadActiveState(project);
+    if (!state.overlay.ok) throw new Error(`overlay must remain readable: ${state.overlay.message}`);
+    const subjectRules = state.overlay.store.records.filter(
+      (r) => r.relation === 'business_rule' && r.subject.path === 'src/orders.ts',
+    );
+    // the prior machine record is retained as history with the re-analysis note
+    const superseded = subjectRules.filter((r) => r.status === 'superseded');
+    expect(superseded.length).toBe(1);
+    expect(superseded[0]!.value).toContain('$4.95');
+    expect(superseded[0]!.note).toMatch(/superseded by re-analysis AN-\d{4}/);
+    // exactly ONE ACTIVE record — and it carries the NEW statement
+    const active = subjectRules.filter((r) => r.status === 'active');
+    expect(active.length).toBe(1);
+    expect(active[0]!.value).toContain('waived for pickups');
+  });
+
   it('plan ↔ human update: any trusted mutation during planning refuses the plan (typed, nothing written)', async () => {
     const { project, target, graph } = await freshReviewedProject();
     // Plan reads state, then (in its work phase) we mutate trusted state.

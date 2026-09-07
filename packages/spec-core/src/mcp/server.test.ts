@@ -1269,6 +1269,15 @@ describe('PROD-004 e2e: intent → draft → frozen → change, without a shell'
 
 const DIST_PRESENT = existsSync(join(__dirname, '../../dist/mcp/server.js'));
 if (!DIST_PRESENT) process.stderr.write('[skip] built dist absent — run `pnpm build` (pretest does) to exercise this suite\n');
+
+// H-2 (pre-v0.2.1): inside CI the built dist MUST be present — a silent skip
+// there is a CI bug, not a pass (pretest/test:coverage build first; the
+// graphify-canary idiom). Local direct-vitest runs keep skip semantics.
+const IN_CI = process.env.GITHUB_ACTIONS === 'true' || process.env.CI === 'true';
+it('inside CI the built dist MUST be present — skipping is a CI bug', () => {
+  if (!IN_CI) return;
+  expect(DIST_PRESENT).toBe(true);
+});
 describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js (anti-F18)', () => {
   it(
     'a full session over stdio: every stdout line is valid JSON-RPC, clean exit',
@@ -1874,10 +1883,18 @@ describe.skipIf(!DIST_PRESENT)('integration: spawn dist/mcp/server.js — EPIPE 
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     child.stderr.on('data', () => {});
+    // collect stdout; wait for the OBSERVABLE first JSON-RPC response line
+    // before killing the read end (the response to the SECOND request then
+    // writes into the dead pipe -> EPIPE -> nonzero exit). A fixed 300ms
+    // window races slow CI stdout flushing.
+    const delivered: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => delivered.push(c));
     child.stdin.write('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n');
-    // Let the first response flush, then kill the read end; the response to
-    // the SECOND request writes into the dead pipe -> EPIPE -> nonzero exit.
-    await new Promise((r) => setTimeout(r, 300));
+    const firstLineDeadline = Date.now() + 10_000;
+    while (!Buffer.concat(delivered).toString('utf8').includes('\n') && Date.now() < firstLineDeadline) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    expect(Buffer.concat(delivered).toString('utf8')).toContain('"id":1');
     child.stdout.destroy();
     child.stdin.write('{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
     child.stdin.end();
